@@ -1,0 +1,29 @@
+reset players database: 
+
+psql -h localhost -U postgres -d postgres -c "TRUNCATE TABLE characters RESTART IDENTITY CASCADE;"
+
+reset useres database
+
+rm -rf /home/avilo/mmo_server/database/databases/users.db
+
+seeing database info
+
+# Quick view of databases
+psql -l
+
+# View tables in a database
+psql -d realm_db -c "\dt"
+
+# View character data
+psql -d realm_db -c "SELECT * FROM characters;"
+
+# Or use the Makefile
+make show-dbs
+
+# make new databases for all servers
+make setup-postgres
+# to show all character databases
+make show-dbs
+# reset all databases 
+make set-db
+# reset all character databases 

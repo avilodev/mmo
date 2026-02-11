@@ -1,0 +1,15 @@
+North America - 6
+Armeia 192.168.1.2 7778
+Bosteuis 192.168.1.2 7779
+Cardinal 192.168.1.2 7780
+Derive 192.168.1.2 7781
+Exodus 192.168.1.2 7782
+Prototype 192.168.1.2 7790
+
+Europe - 3 
+Karmel 192.168.1.2 7785
+Longevity 192.168.1.2 7786
+Nervow 192.168.1.2 7787 
+
+Asia - 1
+Jatrus 192.168.1.2 7788
