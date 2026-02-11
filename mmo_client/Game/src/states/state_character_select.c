@@ -1,0 +1,364 @@
+#include "state_handler.h"
+#include "renderer.h"
+#include "input/input.h"
+#include "network/network.h"
+#include <stdio.h>
+#include <string.h>
+#include <winsock2.h>
+
+// ============================================================================
+// CHARACTER SELECT STATE
+// ============================================================================
+
+static void char_select_enter(GameState* game) {
+    printf("[STATE] Entering character select\n");
+    game->char_select.loaded = 0;
+    game->char_select.selected_index = -1;
+    game->char_select.show_creation = 0;
+    game->char_select.selected_class = 1;
+    game->char_select.selected_race = 1;
+    memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
+    memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
+    game->net_state = NET_STATE_IDLE;
+}
+
+static void char_select_exit(GameState* game) {
+    (void)game;
+    printf("[STATE] Exiting character select\n");
+}
+
+static void char_select_update(GameState* game, float delta_time) {
+    (void)delta_time;
+    
+    // Handle deferred character creation
+    if (game->char_select.pending_create) {
+        game->char_select.pending_create = 0;
+        
+        if (strlen(game->char_select.new_name) < 3) {
+            strcpy(game->char_select.error_message, "Name must be at least 3 characters");
+        } else if (game->net_state == NET_STATE_IDLE) {
+            uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
+            
+            if (network_create_character(world_id, game->char_select.new_name,
+                                         game->char_select.selected_class,
+                                         game->char_select.selected_race)) {
+                game->net_state = NET_STATE_CREATING_CHARACTER;
+                memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
+            }
+        }
+    }
+    
+    // State machine
+    switch (game->net_state) {
+        case NET_STATE_IDLE:
+            if (!game->char_select.loaded && game->server_list.selected_index >= 0) {
+                uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
+                if (network_request_character_list(world_id)) {
+                    game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
+                }
+            }
+            break;
+            
+        case NET_STATE_WAITING_FOR_CHARACTERS:
+            if (network_get_character_list(&game->char_select.list)) {
+                game->char_select.loaded = 1;
+                game->net_state = NET_STATE_IDLE;
+                printf("[CHAR_SELECT] Received %d characters\n", game->char_select.list.count);
+            }
+            break;
+            
+        case NET_STATE_CREATING_CHARACTER:
+            {
+                CharacterCreateResponsePacket response;
+                if (network_get_character_create_response(&response)) {
+                    game->net_state = NET_STATE_IDLE;
+                    if (response.success) {
+                        game->char_select.show_creation = 0;
+                        game->char_select.loaded = 0;  // Reload list
+                        memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
+                    } else {
+                        strncpy(game->char_select.error_message, response.message, 127);
+                    }
+                }
+            }
+            break;
+            
+        case NET_STATE_WAITING_FOR_ENTER_WORLD:
+            {
+                EnterWorldResponsePacket response;
+                if (network_get_enter_world_response(&response)) {
+                    game->net_state = NET_STATE_IDLE;
+                    
+                    if (response.success) {
+                        char world_ip[16];
+                        strncpy(world_ip, response.world_ip, 15);
+                        world_ip[15] = '\0';
+                        uint16_t world_port = ntohs(response.world_port);
+                        
+                        uint32_t char_id = ntohl(
+                            game->char_select.list.characters[game->char_select.selected_index].character_id
+                        );
+                        
+                        if (network_connect_to_world(world_ip, world_port,
+                                                    response.game_ticket, char_id)) {
+                            game->network_connected = 1;
+                            game->player.info_loaded = 0;
+                            game->mode = GAME_MODE_PLAYING;
+                            
+                            uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
+                            network_request_character_data(char_id, world_id);
+                            network_set_character_id(char_id);
+                        }
+                    } else {
+                        printf("[CHAR_SELECT] Enter world denied: %s\n", response.message);
+                    }
+                }
+            }
+            break;
+            
+        default:
+            break;
+    }
+}
+
+static void char_select_render_creation(GameState* game) {
+    int vw = game->camera.viewport_width;
+    int vh = game->camera.viewport_height;
+    
+    float panel_w = 500;
+    float panel_h = 500;
+    float panel_x = (vw - panel_w) / 2;
+    float panel_y = (vh - panel_h) / 2;
+    
+    renderer_draw_rect(panel_x, panel_y, panel_w, panel_h, 0.15f, 0.15f, 0.2f, 0.95f);
+    renderer_draw_rect(panel_x, panel_y, panel_w, 60, 0.2f, 0.3f, 0.4f, 1.0f);
+    renderer_draw_text(panel_x + 20, panel_y + 40, "CREATE CHARACTER");
+    
+    // Name input
+    renderer_draw_rect(panel_x + 50, panel_y + 80, panel_w - 100, 40, 0.1f, 0.1f, 0.15f, 1.0f);
+    renderer_draw_text(panel_x + 60, panel_y + 105, "Name:");
+    renderer_draw_text(panel_x + 130, panel_y + 105, game->char_select.new_name);
+    
+    // Class selection
+    renderer_draw_text(panel_x + 50, panel_y + 140, "Class:");
+    const char* classes[] = {"Gladiator", "Ninja", "Landweaver", "Spirit"};
+    
+    for (int i = 0; i < 4; i++) {
+        float y = panel_y + 160 + i * 45;
+        int selected = (game->char_select.selected_class == i + 1);
+        int hovered = input_mouse_in_rect(&game->input, panel_x + 50, y, 200, 35);
+        
+        float c = selected ? 0.4f : (hovered ? 0.3f : 0.2f);
+        renderer_draw_rect(panel_x + 50, y, 200, 35, c, c, c + 0.1f, 1.0f);
+        renderer_draw_text(panel_x + 60, y + 25, classes[i]);
+        
+        if (hovered && game->input.mouse_left_clicked) {
+            game->char_select.selected_class = i + 1;
+        }
+    }
+    
+    // Race selection
+    renderer_draw_text(panel_x + 270, panel_y + 140, "Race:");
+    const char* races[] = {"Human", "Pyseck", "Infor"};
+    
+    for (int i = 0; i < 3; i++) {
+        float y = panel_y + 160 + i * 45;
+        int selected = (game->char_select.selected_race == i + 1);
+        int hovered = input_mouse_in_rect(&game->input, panel_x + 270, y, 180, 35);
+        
+        float c = selected ? 0.4f : (hovered ? 0.3f : 0.2f);
+        renderer_draw_rect(panel_x + 270, y, 180, 35, c, c, c + 0.1f, 1.0f);
+        renderer_draw_text(panel_x + 280, y + 25, races[i]);
+        
+        if (hovered && game->input.mouse_left_clicked) {
+            game->char_select.selected_race = i + 1;
+        }
+    }
+    
+    // Create button
+    float btn_y = panel_y + panel_h - 100;
+    int create_hovered = input_mouse_in_rect(&game->input, panel_x + 150, btn_y, 200, 45);
+    int creating = (game->net_state == NET_STATE_CREATING_CHARACTER);
+    
+    renderer_draw_rect(panel_x + 150, btn_y, 200, 45,
+                      creating ? 0.15f : (create_hovered ? 0.3f : 0.2f),
+                      creating ? 0.4f : (create_hovered ? 0.7f : 0.5f),
+                      0.2f, 1.0f);
+    renderer_draw_text(panel_x + 220, btn_y + 30, "CREATE");
+    
+    if (create_hovered && game->input.mouse_left_clicked && !creating) {
+        game->char_select.pending_create = 1;
+    }
+    
+    // Error message
+    if (game->char_select.error_message[0] != '\0') {
+        renderer_draw_rect(panel_x + 50, panel_y + panel_h - 50, panel_w - 100, 30,
+                          0.8f, 0.2f, 0.2f, 1.0f);
+        renderer_draw_text(panel_x + 60, panel_y + panel_h - 30, game->char_select.error_message);
+    }
+    
+    // Cancel button
+    int cancel_hovered = input_mouse_in_rect(&game->input, panel_x + 50, btn_y, 80, 45);
+    renderer_draw_rect(panel_x + 50, btn_y, 80, 45,
+                      cancel_hovered ? 0.7f : 0.5f, 0.2f, 0.2f, 1.0f);
+    renderer_draw_text(panel_x + 55, btn_y + 30, "CANCEL");
+    
+    if (cancel_hovered && game->input.mouse_left_clicked) {
+        game->char_select.show_creation = 0;
+        memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
+        memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
+    }
+}
+
+static void char_select_render(GameState* game) {
+    int vw = game->camera.viewport_width;
+    int vh = game->camera.viewport_height;
+    
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, vw, vh, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    
+    // Background
+    if (game->textures.background != 0) {
+        renderer_draw_sprite(0, 0, vw, vh, game->textures.background);
+    } else {
+        renderer_draw_rect(0, 0, vw, vh, 0.1f, 0.1f, 0.2f, 1.0f);
+    }
+    
+    // Character creation overlay
+    if (game->char_select.show_creation) {
+        char_select_render_creation(game);
+        return;
+    }
+    
+    // Character list panel
+    float panel_w = 600;
+    float panel_h = 500;
+    float panel_x = (vw - panel_w) / 2;
+    float panel_y = (vh - panel_h) / 2;
+    
+    renderer_draw_rect(panel_x, panel_y, panel_w, panel_h, 0.15f, 0.15f, 0.2f, 0.95f);
+    renderer_draw_rect(panel_x, panel_y, panel_w, 4, 0.4f, 0.6f, 0.8f, 1.0f);
+    renderer_draw_rect(panel_x, panel_y + panel_h - 4, panel_w, 4, 0.4f, 0.6f, 0.8f, 1.0f);
+    renderer_draw_rect(panel_x, panel_y, 4, panel_h, 0.4f, 0.6f, 0.8f, 1.0f);
+    renderer_draw_rect(panel_x + panel_w - 4, panel_y, 4, panel_h, 0.4f, 0.6f, 0.8f, 1.0f);
+    
+    renderer_draw_rect(panel_x, panel_y, panel_w, 60, 0.2f, 0.3f, 0.4f, 1.0f);
+    renderer_draw_text(panel_x + 20, panel_y + 40, "SELECT CHARACTER");
+    
+    if (!game->char_select.loaded) {
+        renderer_draw_text(panel_x + 250, panel_y + 200, "Loading...");
+    } else {
+        float item_y = panel_y + 80;
+        float item_h = 60;
+        float item_spacing = 10;
+        
+        const char* class_names[] = {"", "Gladiator", "Ninja", "Landweaver", "Spirit"};
+        const char* race_names[] = {"", "Human", "Pyseck", "Infor"};
+        
+        for (int i = 0; i < game->char_select.list.count && i < 10; i++) {
+            float y = item_y + i * (item_h + item_spacing);
+            
+            int hovered = input_mouse_in_rect(&game->input, panel_x + 20, y, panel_w - 40, item_h);
+            float c = hovered ? 0.3f : 0.2f;
+            renderer_draw_rect(panel_x + 20, y, panel_w - 40, item_h, c, c, c + 0.1f, 1.0f);
+            
+            char info[128];
+            uint32_t class_id = ntohl(game->char_select.list.characters[i].class_id);
+            uint32_t race_id = ntohl(game->char_select.list.characters[i].race_id);
+            
+            snprintf(info, sizeof(info), "%s - Lv.%lu %s %s",
+                    game->char_select.list.characters[i].name,
+                    ntohl(game->char_select.list.characters[i].level),
+                    class_id <= 4 ? class_names[class_id] : "Unknown",
+                    race_id <= 3 ? race_names[race_id] : "Unknown");
+            
+            renderer_draw_text(panel_x + 40, y + 40, info);
+            
+            if (hovered && game->input.mouse_left_clicked && game->net_state == NET_STATE_IDLE) {
+                game->char_select.selected_index = i;
+                
+                uint32_t char_id = ntohl(game->char_select.list.characters[i].character_id);
+                uint32_t world_id = ntohl(game->char_select.list.world_id);
+                
+                if (network_request_enter_world(char_id, world_id)) {
+                    game->net_state = NET_STATE_WAITING_FOR_ENTER_WORLD;
+                }
+            }
+        }
+        
+        // New character button
+        float btn_y = panel_y + panel_h - 70;
+        int btn_hovered = input_mouse_in_rect(&game->input, panel_x + 200, btn_y, 200, 45);
+        
+        renderer_draw_rect(panel_x + 200, btn_y, 200, 45,
+                          btn_hovered ? 0.3f : 0.2f, btn_hovered ? 0.7f : 0.5f, 0.2f, 1.0f);
+        renderer_draw_text(panel_x + 215, btn_y + 30, "NEW CHARACTER");
+        
+        if (btn_hovered && game->input.mouse_left_clicked) {
+            game->char_select.show_creation = 1;
+        }
+    }
+    
+    // Loading indicator
+    if (game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD) {
+        renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.2f, 0.6f, 0.8f, 0.9f);
+        renderer_draw_text(panel_x + 220, panel_y + 230, "Entering world...");
+    }
+    
+    // Back button
+    float back_x = panel_x - 120;
+    float back_y = panel_y + panel_h / 2 - 25;
+    int back_hovered = input_mouse_in_rect(&game->input, back_x, back_y, 100, 50);
+    
+    renderer_draw_rect(back_x, back_y, 100, 50,
+                      back_hovered ? 0.8f : 0.6f, 0.3f, 0.3f, 1.0f);
+    renderer_draw_text(back_x + 25, back_y + 35, "Back");
+    
+    if (back_hovered && game->input.mouse_left_clicked) {
+        game->mode = GAME_MODE_SERVER_LIST;
+    }
+}
+
+static void char_select_input(GameState* game, GLFWwindow* window, float delta_time) {
+    (void)delta_time;
+    
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        if (game->char_select.show_creation) {
+            game->char_select.show_creation = 0;
+        } else {
+            game->mode = GAME_MODE_SERVER_LIST;
+        }
+    }
+    
+    // Handle text input for character creation
+    if (game->char_select.show_creation) {
+        for (int key = GLFW_KEY_A; key <= GLFW_KEY_Z; key++) {
+            if (input_key_just_pressed(&game->input, key)) {
+                size_t len = strlen(game->char_select.new_name);
+                if (len < 31) {
+                    char c = 'a' + (key - GLFW_KEY_A);
+                    if (len == 0) c = 'A' + (key - GLFW_KEY_A);
+                    game->char_select.new_name[len] = c;
+                }
+            }
+        }
+        
+        if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
+            size_t len = strlen(game->char_select.new_name);
+            if (len > 0) {
+                game->char_select.new_name[len - 1] = '\0';
+            }
+        }
+    }
+}
+
+const StateHandler g_state_character_select = {
+    .enter = char_select_enter,
+    .exit = char_select_exit,
+    .update = char_select_update,
+    .render = char_select_render,
+    .handle_input = char_select_input
+};
