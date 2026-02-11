@@ -2,6 +2,7 @@
 #include "player_level.h"
 #include "routes.h"
 #include "combat.h"
+#include "dialogue_handler.h"
 
 extern NPCWorld g_npc_world;
 
@@ -119,7 +120,19 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
            }
            break;
        }
-                
+
+        case PACKET_NPC_INTERACT_REQUEST:
+            handle_npc_interact_request(client_fd, character_id, buffer, bytes);
+            break;
+
+        case PACKET_DIALOGUE_OPTION_SELECT:
+            handle_dialogue_option_select(client_fd, character_id, buffer, bytes);
+            break;
+
+        case PACKET_DIALOGUE_CLOSE:
+            handle_dialogue_close(character_id);
+            break;
+
         default:
             printf("Unknown packet type: %d\n", header->type);
             return 0;

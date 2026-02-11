@@ -753,6 +753,59 @@ typedef struct {
 } NPCPositionPacket;
 
 // ============================================================================
+// DIALOGUE SYSTEM (Client-side text storage)
+// ============================================================================
+
+#define MAX_DIALOGUE_OPTIONS 6
+
+// Client -> Server: Request to interact with NPC
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;
+} NPCInteractRequestPacket;
+
+// Server -> Client: Initial dialogue response
+// Client looks up text from local dialogues.json using dialogue_id + page_num
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;
+    uint32_t dialogue_id;
+    uint8_t  page_num;
+    uint8_t  option_count;
+    char     npc_name[32];              // Keep: dynamic per NPC instance
+    uint8_t  option_ids[MAX_DIALOGUE_OPTIONS];
+    uint8_t  padding[2];
+} NPCInteractResponsePacket;
+
+// Client -> Server: Player selects dialogue option
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;
+    uint32_t dialogue_id;
+    uint8_t  current_page;
+    uint8_t  option_selected;
+    uint8_t  padding[2];
+} DialogueOptionSelectPacket;
+
+// Server -> Client: Update to new dialogue page
+// Client looks up text from local dialogues.json using dialogue_id + page_num
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;
+    uint32_t dialogue_id;
+    uint8_t  page_num;
+    uint8_t  option_count;
+    uint8_t  option_ids[MAX_DIALOGUE_OPTIONS];
+    uint8_t  padding[2];
+} DialogueUpdatePacket;
+
+// Bidirectional: Close dialogue window
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;
+} DialogueClosePacket;
+
+// ============================================================================
 // HELPER MACROS
 // ============================================================================
 

@@ -20,7 +20,9 @@ uint32_t combat_npc_spawn(NPCWorld* world,
                           const char* name,
                           float x, float y,
                           int health,
-                          float hitbox_radius);
+                          float hitbox_radius,
+                          uint32_t dialogue_id,
+                          uint8_t is_interactable);
 
 // Remove a dead NPC (or despawn). Pass the NPC's ID.
 void combat_npc_remove(NPCWorld* world, uint32_t npc_id);

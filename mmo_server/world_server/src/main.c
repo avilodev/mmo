@@ -8,6 +8,7 @@
 #include "class_stats.h"
 #include "config.h"
 #include "combat.h"
+#include "dialogue_system.h"
 #include "routes.h"
 #include "packet_handler.h"
 #include "player_data.h" 
@@ -22,6 +23,7 @@
 
 #define DATA_PATH "/home/avilo/mmo_server/world_server/data/items.json"
 #define ABILITIES_PATH "/home/avilo/mmo_server/world_server/data/abilities.json"
+#define DIALOGUES_PATH "/home/avilo/mmo_server/world_server/data/dialogues.json"
 
 static pthread_t g_combat_thread;
 static pthread_t g_player_broadcast_thread;
@@ -771,7 +773,15 @@ int main(int argc, char** argv) {
     }
 
     ability_handler_init();
-    
+
+    printf("Loading dialogue system... ");
+    fflush(stdout);
+    if (!dialogue_system_init(DIALOGUES_PATH)) {
+        fprintf(stderr, "FAILED - Dialogue system initialization\n");
+        return 1;
+    }
+    printf("OK (%d dialogues loaded)\n", dialogues_get_count());
+
     // Connect to database
     printf("Connecting to database for world '%s'\n", g_server.server_name);
     
@@ -802,6 +812,16 @@ int main(int argc, char** argv) {
         float ring_radius = 120.0f;
         int   npc_count   = 8;
 
+        // Spawn one interactable NPC with dialogue in the center
+        combat_npc_spawn(&g_npc_world,
+                         "Friendly Guard",
+                         cx, cy,
+                         200,
+                         16.0f,
+                         1,      // dialogue_id = 1 (from dialogues.json)
+                         1);     // is_interactable = 1
+
+        // Spawn combat dummies in a ring (no dialogue)
         for (int i = 0; i < npc_count; i++) {
             float angle = (2.0f * M_PI * i) / npc_count;
             float x = cx + ring_radius * cosf(angle);
@@ -814,7 +834,9 @@ int main(int argc, char** argv) {
                              name,
                              x, y,
                              100,
-                             16.0f);
+                             16.0f,
+                             0,      // dialogue_id = 0 (no dialogue)
+                             0);     // is_interactable = 0 (combat only)
         }
     }
     
@@ -931,6 +953,7 @@ int main(int argc, char** argv) {
     // Cleanup
     ability_handler_cleanup();
     abilities_cleanup();
+    dialogue_system_cleanup();
     items_cleanup();
     playerdata_stop_save_thread();
     playerdata_close();

@@ -57,10 +57,14 @@ typedef struct {
     float       hitbox_radius;     // For collision / hit detection
 
     int         defense;           // Damage reduction stat
-    int         evasion;           // Dodge chance stat  
+    int         evasion;           // Dodge chance stat
     uint32_t    xp_reward;         // XP granted to killer
 
     uint8_t     is_alive;          // 0 = dead, 1 = alive
+
+    // Dialogue support
+    uint32_t    dialogue_id;       // 0 = no dialogue, otherwise dialogue ID from JSON
+    uint8_t     is_interactable;   // 1 if player can talk to this NPC
 } NPCEntity;
 
 // ---------------------------------------------------------------------------

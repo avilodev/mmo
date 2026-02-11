@@ -133,7 +133,9 @@ uint32_t combat_npc_spawn(NPCWorld* world,
                           const char* name,
                           float x, float y,
                           int health,
-                          float hitbox_radius) {
+                          float hitbox_radius,
+                          uint32_t dialogue_id,
+                          uint8_t is_interactable) {
     pthread_mutex_lock(&world->lock);
 
     if (world->count >= MAX_NPCS) {
@@ -177,6 +179,8 @@ uint32_t combat_npc_spawn(NPCWorld* world,
     npc->xp_reward      = 50;    // Default XP reward
     npc->defense        = 0;     // Default NPC defense
     npc->evasion        = 0;     // Default NPC evasion
+    npc->dialogue_id    = dialogue_id;
+    npc->is_interactable = is_interactable;
 
     if (world->count < MAX_NPCS) world->count++;
 

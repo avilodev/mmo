@@ -99,7 +99,14 @@ typedef enum {
     PACKET_USE_ITEM_RESPONSE = 126,
     PACKET_DROP_ITEM = 127,
     PACKET_DROP_ITEM_RESPONSE = 128,
-    
+
+    // Dialogue packets (130-139)
+    PACKET_NPC_INTERACT_REQUEST = 130,      // Client -> Server
+    PACKET_NPC_INTERACT_RESPONSE = 131,     // Server -> Client
+    PACKET_DIALOGUE_OPTION_SELECT = 132,    // Client -> Server
+    PACKET_DIALOGUE_UPDATE = 133,           // Server -> Client
+    PACKET_DIALOGUE_CLOSE = 134,            // Bidirectional
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,
