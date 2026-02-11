@@ -107,6 +107,11 @@ typedef enum {
     PACKET_DIALOGUE_UPDATE = 133,           // Server -> Client
     PACKET_DIALOGUE_CLOSE = 134,            // Bidirectional
 
+    // Projectile packets (140-149)
+    PACKET_PROJECTILE_SPAWN   = 140,        // Server -> Client: new projectile
+    PACKET_PROJECTILE_UPDATE  = 141,        // Server -> Client: position batch (30Hz)
+    PACKET_PROJECTILE_DESTROY = 142,        // Server -> Client: projectile removed
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,

@@ -530,6 +530,19 @@ void combat_tick(NPCWorld* world) {
         float cone_half_rad = cast->cone_half_angle * (M_PI / 180.0f);
         float line_half_w   = cast->line_width / 2.0f;
 
+        // Collect hit results under lock, send after unlock
+        #define MAX_HIT_RESULTS 16
+        typedef struct {
+            uint32_t target_id;
+            uint32_t damage;
+            uint32_t new_health;
+            uint8_t  is_kill;
+            uint64_t xp_reward;     // >0 if should award XP
+        } HitResult;
+
+        HitResult hits[MAX_HIT_RESULTS];
+        int hit_count = 0;
+
         pthread_mutex_lock(&world->lock);
 
         // --- SINGLE target: find closest, damage it ---
@@ -548,55 +561,57 @@ void combat_tick(NPCWorld* world) {
             }
 
             if (best) {
-                // Evasion check
                 if (combat_check_evasion(best->evasion)) {
-                    // MISS — send 0 damage
-                    DamageV2Packet dmg = {0};
-                    dmg.header.type         = PACKET_DAMAGE_V2;
-                    dmg.header.player_id    = htonl(attacker_id);
-                    dmg.attacker_id         = htonl(attacker_id);
-                    dmg.target_id           = htonl(best->id);
-                    dmg.damage              = 0;
-                    dmg.target_new_health   = htonl((uint32_t)best->health);
-                    dmg.is_kill             = 0;
-                    send(client_fd, &dmg, sizeof(dmg), 0);
+                    // MISS
+                    hits[hit_count].target_id   = best->id;
+                    hits[hit_count].damage      = 0;
+                    hits[hit_count].new_health  = (uint32_t)best->health;
+                    hits[hit_count].is_kill     = 0;
+                    hits[hit_count].xp_reward   = 0;
+                    hit_count++;
                     printf("[COMBAT] %u MISSED NPC %u (evasion)\n", attacker_id, best->id);
                 } else {
                     int damage = compute_final_damage(cast->base_damage, cast->damage_variance,
                                                        a_str, a_agi, a_int, a_wis, a_class,
                                                        best->defense);
-
                     best->health -= damage;
                     if (best->health < 0) best->health = 0;
 
                     uint8_t is_kill = (best->health == 0) ? 1 : 0;
                     if (is_kill) best->is_alive = 0;
 
-                    DamageV2Packet dmg = {0};
-                    dmg.header.type         = PACKET_DAMAGE_V2;
-                    dmg.header.player_id    = htonl(attacker_id);
-                    dmg.attacker_id         = htonl(attacker_id);
-                    dmg.target_id           = htonl(best->id);
-                    dmg.damage              = htonl((uint32_t)damage);
-                    dmg.target_new_health   = htonl((uint32_t)best->health);
-                    dmg.is_kill             = is_kill;
-                    send(client_fd, &dmg, sizeof(dmg), 0);
+                    hits[hit_count].target_id   = best->id;
+                    hits[hit_count].damage      = (uint32_t)damage;
+                    hits[hit_count].new_health  = (uint32_t)best->health;
+                    hits[hit_count].is_kill     = is_kill;
+                    hits[hit_count].xp_reward   = (is_kill && best->xp_reward > 0) ? best->xp_reward : 0;
+                    hit_count++;
 
                     printf("[COMBAT] %u hit NPC %u (%s) for %d dmg (hp=%d)%s\n",
                            attacker_id, best->id, best->name, damage, best->health,
                            is_kill ? " — KILLED" : "");
-
-                    // XP on kill
-                    if (is_kill && best->xp_reward > 0) {
-                        ActivePlayer* killer = player_find_active(attacker_id);
-                        if (killer) {
-                            player_award_xp(killer, best->xp_reward);
-                        }
-                    }
                 }
             }
 
             pthread_mutex_unlock(&world->lock);
+
+            // Send packets outside lock
+            for (int h = 0; h < hit_count; h++) {
+                DamageV2Packet dmg = {0};
+                dmg.header.type         = PACKET_DAMAGE_V2;
+                dmg.header.player_id    = htonl(attacker_id);
+                dmg.attacker_id         = htonl(attacker_id);
+                dmg.target_id           = htonl(hits[h].target_id);
+                dmg.damage              = htonl(hits[h].damage);
+                dmg.target_new_health   = htonl(hits[h].new_health);
+                dmg.is_kill             = hits[h].is_kill;
+                send(client_fd, &dmg, sizeof(dmg), 0);
+
+                if (hits[h].xp_reward > 0) {
+                    ActivePlayer* killer = player_find_active(attacker_id);
+                    if (killer) player_award_xp(killer, hits[h].xp_reward);
+                }
+            }
             continue;  // Next pending cast
         }
 
@@ -655,18 +670,16 @@ void combat_tick(NPCWorld* world) {
             }
 
             if (!hit) continue;
+            if (hit_count >= MAX_HIT_RESULTS) break;
 
             // Evasion check per target
             if (combat_check_evasion(npc->evasion)) {
-                DamageV2Packet dmg = {0};
-                dmg.header.type         = PACKET_DAMAGE_V2;
-                dmg.header.player_id    = htonl(attacker_id);
-                dmg.attacker_id         = htonl(attacker_id);
-                dmg.target_id           = htonl(npc->id);
-                dmg.damage              = 0;
-                dmg.target_new_health   = htonl((uint32_t)npc->health);
-                dmg.is_kill             = 0;
-                send(client_fd, &dmg, sizeof(dmg), 0);
+                hits[hit_count].target_id   = npc->id;
+                hits[hit_count].damage      = 0;
+                hits[hit_count].new_health  = (uint32_t)npc->health;
+                hits[hit_count].is_kill     = 0;
+                hits[hit_count].xp_reward   = 0;
+                hit_count++;
                 printf("[COMBAT] %u MISSED NPC %u (evasion)\n", attacker_id, npc->id);
                 continue;
             }
@@ -681,30 +694,37 @@ void combat_tick(NPCWorld* world) {
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
             if (is_kill) npc->is_alive = 0;
 
-            DamageV2Packet dmg = {0};
-            dmg.header.type         = PACKET_DAMAGE_V2;
-            dmg.header.player_id    = htonl(attacker_id);
-            dmg.attacker_id         = htonl(attacker_id);
-            dmg.target_id           = htonl(npc->id);
-            dmg.damage              = htonl((uint32_t)damage);
-            dmg.target_new_health   = htonl((uint32_t)npc->health);
-            dmg.is_kill             = is_kill;
-            send(client_fd, &dmg, sizeof(dmg), 0);
+            hits[hit_count].target_id   = npc->id;
+            hits[hit_count].damage      = (uint32_t)damage;
+            hits[hit_count].new_health  = (uint32_t)npc->health;
+            hits[hit_count].is_kill     = is_kill;
+            hits[hit_count].xp_reward   = (is_kill && npc->xp_reward > 0) ? npc->xp_reward : 0;
+            hit_count++;
 
             printf("[COMBAT] %u hit NPC %u (%s) for %d dmg (hp=%d)%s\n",
                    attacker_id, npc->id, npc->name, damage, npc->health,
                    is_kill ? " — KILLED" : "");
-
-            // XP on kill
-            if (is_kill && npc->xp_reward > 0) {
-                ActivePlayer* killer = player_find_active(attacker_id);
-                if (killer) {
-                    player_award_xp(killer, npc->xp_reward);
-                }
-            }
         }
 
         pthread_mutex_unlock(&world->lock);
+
+        // Send all damage packets outside lock
+        for (int h = 0; h < hit_count; h++) {
+            DamageV2Packet dmg = {0};
+            dmg.header.type         = PACKET_DAMAGE_V2;
+            dmg.header.player_id    = htonl(attacker_id);
+            dmg.attacker_id         = htonl(attacker_id);
+            dmg.target_id           = htonl(hits[h].target_id);
+            dmg.damage              = htonl(hits[h].damage);
+            dmg.target_new_health   = htonl(hits[h].new_health);
+            dmg.is_kill             = hits[h].is_kill;
+            send(client_fd, &dmg, sizeof(dmg), 0);
+
+            if (hits[h].xp_reward > 0) {
+                ActivePlayer* killer = player_find_active(attacker_id);
+                if (killer) player_award_xp(killer, hits[h].xp_reward);
+            }
+        }
     }
 
     pthread_mutex_unlock(&g_pending_casts_lock);

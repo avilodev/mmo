@@ -8,6 +8,7 @@
 #include "combat.h"
 #include "combat_stats.h"
 #include "player_level.h"
+#include "projectile.h"
 
 #include <math.h>
 #include <string.h>
@@ -34,10 +35,6 @@ static pthread_mutex_t    g_ability_casts_lock = PTHREAD_MUTEX_INITIALIZER;
 static ActiveZone         g_zones[MAX_ZONES];
 static pthread_mutex_t    g_zones_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t           g_next_zone_id = 1;
-
-static ActiveProjectile   g_projectiles[MAX_PROJECTILES];
-static pthread_mutex_t    g_projectiles_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t           g_next_projectile_id = 1;
 
 // Per-player mana regen accumulator (fractional mana between ticks)
 static float g_mana_accum[MAX_PLAYERS];
@@ -280,72 +277,46 @@ static void spawn_zone(const AbilityDef* ability, uint32_t caster_id,
 }
 
 // ---------------------------------------------------------------------------
-// Projectile spawning (unchanged)
+// Projectile spawning — delegates to the modular projectile system
 // ---------------------------------------------------------------------------
 
-static void spawn_projectile(const AbilityDef* ability, uint32_t caster_id,
-                             int client_fd, float ox, float oy,
-                             float aim_x, float aim_y) {
-    pthread_mutex_lock(&g_projectiles_lock);
+static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_id,
+                                     int client_fd, float ox, float oy,
+                                     float aim_x, float aim_y) {
+    ProjectileSpawnInfo info = {0};
+    info.owner_type  = PROJECTILE_OWNER_PLAYER;
+    info.owner_id    = caster_id;
+    info.ability_id  = ability->id;
+    info.owner_fd    = client_fd;
+    info.origin_x    = ox;
+    info.origin_y    = oy;
+    info.aim_x       = aim_x;
+    info.aim_y       = aim_y;
+    info.speed       = ability->projectile.speed;
+    info.width       = ability->projectile.width;
+    info.max_range   = ability->range;
+    info.damage      = ability->damage;
+    info.damage_type = ability->damage_type;
+    info.bonus_damage = ability->bonus_damage;
 
-    int slot = -1;
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
-        if (!g_projectiles[i].is_active) { slot = i; break; }
-    }
-
-    if (slot == -1) {
-        pthread_mutex_unlock(&g_projectiles_lock);
-        printf("[PROJ] No free projectile slots\n");
-        return;
-    }
-
-    ActiveProjectile* proj = &g_projectiles[slot];
-    memset(proj, 0, sizeof(ActiveProjectile));
-
-    float dx = aim_x - ox;
-    float dy = aim_y - oy;
-    float len = sqrtf(dx * dx + dy * dy);
-    float dir_x = (len > 0.001f) ? dx / len : 1.0f;
-    float dir_y = (len > 0.001f) ? dy / len : 0.0f;
-
-    proj->is_active         = 1;
-    proj->projectile_id     = g_next_projectile_id++;
-    proj->caster_id         = caster_id;
-    proj->ability_id        = ability->id;
-    proj->client_fd         = client_fd;
-    proj->pos_x             = ox;
-    proj->pos_y             = oy;
-    proj->dir_x             = dir_x;
-    proj->dir_y             = dir_y;
-    proj->speed             = ability->projectile.speed;
-    proj->width             = ability->projectile.width;
-    proj->max_range         = ability->range;
-    proj->distance_traveled = 0.0f;
-    proj->damage            = ability->damage;
-    proj->damage_type       = ability->damage_type;
-    proj->bonus_damage      = ability->bonus_damage;
-
-    // Snapshot caster stats for damage calc at hit time
+    // Snapshot caster stats
     ActivePlayer* caster = player_find_active(caster_id);
     if (caster) {
         pthread_mutex_lock(&caster->lock);
-        proj->caster_strength     = caster->strength;
-        proj->caster_agility      = caster->agility;
-        proj->caster_intelligence = caster->intelligence;
-        proj->caster_wisdom       = caster->wisdom;
-        proj->caster_class        = caster->player_class;
+        info.caster_strength     = caster->strength;
+        info.caster_agility      = caster->agility;
+        info.caster_intelligence = caster->intelligence;
+        info.caster_wisdom       = caster->wisdom;
+        info.caster_class        = caster->player_class;
         pthread_mutex_unlock(&caster->lock);
     }
 
-    proj->effect_count = ability->effect_count;
+    info.effect_count = ability->effect_count;
     for (int i = 0; i < ability->effect_count && i < MAX_ABILITY_EFFECTS; i++) {
-        proj->effects[i] = ability->effects[i];
+        info.effects[i] = ability->effects[i];
     }
 
-    pthread_mutex_unlock(&g_projectiles_lock);
-
-    printf("[PROJ] Spawned projectile %u ('%s') from (%.1f, %.1f) dir=(%.2f, %.2f)\n",
-           proj->projectile_id, ability->name, ox, oy, dir_x, dir_y);
+    projectile_spawn(&info);
 }
 
 // ---------------------------------------------------------------------------
@@ -390,10 +361,8 @@ static int calc_ability_damage(int base_damage, const AbilityBonusDamageDef* bon
 void ability_handler_init(void) {
     memset(g_ability_casts, 0, sizeof(g_ability_casts));
     memset(g_zones, 0, sizeof(g_zones));
-    memset(g_projectiles, 0, sizeof(g_projectiles));
     memset(g_mana_accum, 0, sizeof(g_mana_accum));
     g_next_zone_id = 1;
-    g_next_projectile_id = 1;
     printf("[ABILITY] Handler initialized\n");
 }
 
@@ -603,8 +572,8 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
 
     // --- Projectile abilities ---
     if (ability->projectile.type != PROJECTILE_NONE) {
-        spawn_projectile(ability, caster_id, client_fd,
-                         origin_x, origin_y, aim_x, aim_y);
+        spawn_ability_projectile(ability, caster_id, client_fd,
+                                 origin_x, origin_y, aim_x, aim_y);
         cast->is_active = 0;
         return;
     }
@@ -705,10 +674,24 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
         return;
     }
 
-    // --- Damage to NPCs — UPDATED with evasion, defense, stat scaling, XP ---
+    // --- Damage to NPCs — snapshot under lock, send after unlock ---
     if (ability->damage > 0) {
         float aim_dx = aim_x - origin_x;
         float aim_dy = aim_y - origin_y;
+
+        // Snapshot results under lock
+        typedef struct {
+            uint32_t npc_id;
+            int      damage;
+            int      new_health;
+            uint8_t  is_kill;
+            uint8_t  evaded;
+            uint64_t xp_reward;
+        } AbilityHitResult;
+
+        #define MAX_ABILITY_HITS 32
+        AbilityHitResult hits[MAX_ABILITY_HITS];
+        int hit_count = 0;
 
         pthread_mutex_lock(&world->lock);
 
@@ -743,30 +726,31 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             } else if (ability->aoe.shape == ABILITY_AOE_RECTANGLE) {
                 hit = (d <= ability->range + npc->hitbox_radius);
             } else {
-                // No AOE shape — single target or dash-path hit
                 if (had_movement) {
-                    // Dash/movement ability: check if NPC is within a narrow
-                    // corridor along the travel path (start → end)
-                    float dash_width = 50.0f;  // Half-width of dash hitbox
+                    float dash_width = 50.0f;
                     float seg_dist = point_to_segment_dist(
                         npc->pos_x, npc->pos_y,
                         dash_start_x, dash_start_y,
                         origin_x, origin_y);
                     hit = (seg_dist <= dash_width + npc->hitbox_radius);
                 } else {
-                    // Normal melee/ranged single-target
                     float check_range = ability->range + npc->hitbox_radius;
                     hit = (d <= check_range);
                 }
             }
 
             if (!hit) continue;
+            if (hit_count >= MAX_ABILITY_HITS) break;
 
             // Evasion check
             if (combat_check_evasion(npc->evasion)) {
-                send_ability_effect(client_fd, caster_id, npc->id,
-                                    cast->ability_id, 0, 0, npc->health, 0);
-                printf("[ABILITY] '%s' MISSED NPC %u (evasion)\n", ability->name, npc->id);
+                hits[hit_count].npc_id     = npc->id;
+                hits[hit_count].damage     = 0;
+                hits[hit_count].new_health = npc->health;
+                hits[hit_count].is_kill    = 0;
+                hits[hit_count].evaded     = 1;
+                hits[hit_count].xp_reward  = 0;
+                hit_count++;
                 if (ability->aoe.shape == ABILITY_AOE_NONE && !had_movement) break;
                 continue;
             }
@@ -782,29 +766,46 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
             if (is_kill) npc->is_alive = 0;
 
-            send_ability_effect(client_fd, caster_id, npc->id,
-                                cast->ability_id, damage, 0, npc->health, is_kill);
-
             for (int e = 0; e < ability->effect_count; e++) {
                 apply_effect_to_npc(npc, &ability->effects[e], caster_id);
             }
 
-            printf("[ABILITY] '%s' hit NPC %u for %d dmg (hp=%d)%s\n",
-                   ability->name, npc->id, damage, npc->health,
-                   is_kill ? " — KILLED" : "");
-
-            // XP on kill
-            if (is_kill && npc->xp_reward > 0) {
-                ActivePlayer* killer = player_find_active(caster_id);
-                if (killer) {
-                    player_award_xp(killer, npc->xp_reward);
-                }
-            }
+            hits[hit_count].npc_id     = npc->id;
+            hits[hit_count].damage     = damage;
+            hits[hit_count].new_health = npc->health;
+            hits[hit_count].is_kill    = is_kill;
+            hits[hit_count].evaded     = 0;
+            hits[hit_count].xp_reward  = is_kill ? npc->xp_reward : 0;
+            hit_count++;
 
             if (ability->aoe.shape == ABILITY_AOE_NONE && !had_movement) break;
         }
 
         pthread_mutex_unlock(&world->lock);
+
+        // Send results outside world lock
+        for (int h = 0; h < hit_count; h++) {
+            if (hits[h].evaded) {
+                send_ability_effect(client_fd, caster_id, hits[h].npc_id,
+                                    cast->ability_id, 0, 0, hits[h].new_health, 0);
+                printf("[ABILITY] '%s' MISSED NPC %u (evasion)\n",
+                       ability->name, hits[h].npc_id);
+            } else {
+                send_ability_effect(client_fd, caster_id, hits[h].npc_id,
+                                    cast->ability_id, hits[h].damage, 0,
+                                    hits[h].new_health, hits[h].is_kill);
+                printf("[ABILITY] '%s' hit NPC %u for %d dmg (hp=%d)%s\n",
+                       ability->name, hits[h].npc_id, hits[h].damage,
+                       hits[h].new_health, hits[h].is_kill ? " — KILLED" : "");
+            }
+
+            if (hits[h].xp_reward > 0) {
+                ActivePlayer* killer = player_find_active(caster_id);
+                if (killer) {
+                    player_award_xp(killer, hits[h].xp_reward);
+                }
+            }
+        }
     }
 
     // --- Self-buff on damage abilities ---
@@ -988,76 +989,8 @@ void ability_tick(NPCWorld* world, double delta_time) {
     pthread_mutex_unlock(&g_zones_lock);
 
     // -----------------------------------------------------------------------
-    // 5. Tick projectiles — UPDATED with stat-scaled damage + evasion + XP
+    // 5. Tick projectiles — handled by projectile.c (projectile_tick)
     // -----------------------------------------------------------------------
-    pthread_mutex_lock(&g_projectiles_lock);
-    for (int p = 0; p < MAX_PROJECTILES; p++) {
-        if (!g_projectiles[p].is_active) continue;
-
-        ActiveProjectile* proj = &g_projectiles[p];
-        float move_dist = proj->speed * dt;
-        proj->pos_x += proj->dir_x * move_dist;
-        proj->pos_y += proj->dir_y * move_dist;
-        proj->distance_traveled += move_dist;
-
-        if (proj->distance_traveled >= proj->max_range) {
-            proj->is_active = 0;
-            continue;
-        }
-
-        pthread_mutex_lock(&world->lock);
-        for (int n = 0; n < MAX_NPCS; n++) {
-            NPCEntity* npc = &world->npcs[n];
-            if (!npc->is_alive || npc->id == 0) continue;
-
-            float d = dist2d(proj->pos_x, proj->pos_y, npc->pos_x, npc->pos_y);
-            float hit_range = (proj->width / 2.0f) + npc->hitbox_radius;
-
-            if (d <= hit_range) {
-                // Evasion check
-                if (combat_check_evasion(npc->evasion)) {
-                    send_ability_effect(proj->client_fd, proj->caster_id, npc->id,
-                                        proj->ability_id, 0, 0, npc->health, 0);
-                    proj->is_active = 0;
-                    break;
-                }
-
-                int damage = calc_ability_damage(proj->damage, &proj->bonus_damage,
-                                                  npc->health, npc->max_health,
-                                                  npc->defense,
-                                                  proj->caster_strength,
-                                                  proj->caster_agility,
-                                                  proj->caster_intelligence,
-                                                  proj->caster_wisdom,
-                                                  proj->caster_class);
-
-                npc->health -= damage;
-                if (npc->health < 0) npc->health = 0;
-
-                uint8_t is_kill = (npc->health == 0) ? 1 : 0;
-                if (is_kill) npc->is_alive = 0;
-
-                send_ability_effect(proj->client_fd, proj->caster_id, npc->id,
-                                    proj->ability_id, damage, 0, npc->health, is_kill);
-
-                for (int e = 0; e < proj->effect_count; e++) {
-                    apply_effect_to_npc(npc, &proj->effects[e], proj->caster_id);
-                }
-
-                if (is_kill && npc->xp_reward > 0) {
-                    ActivePlayer* killer = player_find_active(proj->caster_id);
-                    if (killer) {
-                        player_award_xp(killer, npc->xp_reward);
-                    }
-                }
-
-                proj->is_active = 0;
-                break;
-            }
-        }
-        pthread_mutex_unlock(&world->lock);
-    }
-    pthread_mutex_unlock(&g_projectiles_lock);
 
     // -----------------------------------------------------------------------
     // 6. Mana regen — UPDATED: scaled by wisdom

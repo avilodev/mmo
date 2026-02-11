@@ -9,9 +9,10 @@
 #include "config.h"
 #include "combat.h"
 #include "dialogue_system.h"
+#include "projectile.h"
 #include "routes.h"
 #include "packet_handler.h"
-#include "player_data.h" 
+#include "player_data.h"
 #include "session_registry.h"
 #include "utils.h"
 
@@ -47,30 +48,33 @@ void* client_handler_thread(void* arg) {
 
     printf("World client handler started: fd %d\n", client_fd);
     
-    uint8_t buffer[MAX_PACKET_SIZE]; 
+    uint8_t buffer[MAX_PACKET_SIZE * 2];  // Reassembly buffer (room for carry-over + new data)
+    ssize_t buf_len = 0;                  // Bytes currently in buffer
     struct pollfd pfd = {.fd = client_fd, .events = POLLIN};
-    
+
     int authenticated = 0;
     uint32_t character_id = 0;
-    uint32_t account_id = 0; 
-    
+    uint32_t account_id = 0;
+
     while (g_server.running) {
         int ret = poll(&pfd, 1, 1000);
-        
+
         if (ret < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (ret == 0) continue;
-        
+
         if (pfd.revents & POLLIN) {
-            ssize_t bytes = recv(client_fd, buffer, sizeof(buffer), 0);
-            
+            ssize_t bytes = recv(client_fd, buffer + buf_len,
+                                 sizeof(buffer) - (size_t)buf_len, 0);
+
             if (bytes <= 0) break;
-            
+            buf_len += bytes;
+
             if (!authenticated) {
                 // Handle authentication
-                if (bytes >= (ssize_t)sizeof(WorldConnectPacket)) {
+                if (buf_len >= (ssize_t)sizeof(WorldConnectPacket)) {
                     WorldConnectPacket* pkt = (WorldConnectPacket*)buffer;
                     
                     if (pkt->header.type == PACKET_WORLD_CONNECT) {
@@ -123,7 +127,8 @@ void* client_handler_thread(void* arg) {
                                 printf("Account %u, Character %u entered world\n", 
                                     account_id, character_id);
                                 
-                                // Authentication packet has been handled, continue to next packet
+                                // Authentication packet consumed, reset buffer
+                                buf_len = 0;
                                 continue;
                             } else {
                                 // Failed to load, remove session
@@ -146,32 +151,32 @@ void* client_handler_thread(void* arg) {
                 break;
             } else {
                 uint8_t* ptr = buffer;
-                ssize_t remaining = bytes;
-                
+                ssize_t remaining = buf_len;
+
                 while (remaining >= (ssize_t)sizeof(PacketHeader)) {
                     PacketHeader* header = (PacketHeader*)ptr;
-                    
+
                     // Calculate full packet size (header + payload)
                     size_t packet_size = sizeof(PacketHeader) + ntohs(header->payload_size);
-                    
+
                     if (remaining < (ssize_t)packet_size) {
-                        printf("[WARNING] Incomplete packet (need %zu, have %zd)\n", 
-                               packet_size, remaining);
-                        break;  // Incomplete packet, wait for more data
+                        break;  // Incomplete packet, carry over
                     }
-                    
+
                     // Process this packet
                     session_update_activity(client_fd);
                     process_packet(client_fd, character_id, packet_size, ptr);
-                    
+
                     // Move to next packet
                     ptr += packet_size;
                     remaining -= packet_size;
                 }
-                
-                if (remaining > 0 && remaining < (ssize_t)sizeof(PacketHeader)) {
-                    printf("[WARNING] %zd leftover bytes in buffer (partial header)\n", remaining);
+
+                // Carry over any leftover bytes to the start of the buffer
+                if (remaining > 0 && ptr != buffer) {
+                    memmove(buffer, ptr, (size_t)remaining);
                 }
+                buf_len = remaining;
             }
         }
         
@@ -418,6 +423,7 @@ void* combat_update_thread(void* arg) {
     while (g_combat_running && g_server.running) {
         combat_tick(&g_npc_world);           // basic attack resolution
         ability_tick(&g_npc_world, DELTA_TIME); // ability resolution + effects
+        projectile_tick(&g_npc_world, DELTA_TIME); // projectile movement + collision
 
         // Calculate next tick time
         next_tick.tv_nsec += TARGET_INTERVAL_NS;
@@ -492,8 +498,6 @@ void* player_broadcast_thread(void* arg) {
 }
 
 void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPCWorld* world) {
-    extern ActivePlayer active_players[];
-    
     // Find player
     ActivePlayer* player = player_find_active(character_id);
     if (!player || !player->is_loaded) return;
@@ -660,14 +664,7 @@ void* projectile_broadcast_thread(void* arg) {
     printf("Projectile broadcast thread started (30Hz)\n");
     
     while (g_projectile_broadcast_running && g_server.running) {
-        // --- Broadcast projectile/bullet positions ---
-        // TODO: Implement projectile system and broadcasting
-        // For each active projectile:
-        //   - Find all players that can see it
-        //   - Build ProjectilePositionPacket
-        //   - Send to relevant clients
-        
-        // This will be implemented when projectile system is added
+        projectile_broadcast();
         
         // Calculate next tick time
         next_tick.tv_nsec += TARGET_INTERVAL_NS;
@@ -773,6 +770,7 @@ int main(int argc, char** argv) {
     }
 
     ability_handler_init();
+    projectile_init();
 
     printf("Loading dialogue system... ");
     fflush(stdout);
@@ -951,6 +949,7 @@ int main(int argc, char** argv) {
     pthread_join(g_server.accept_thread, NULL);
     
     // Cleanup
+    projectile_cleanup();
     ability_handler_cleanup();
     abilities_cleanup();
     dialogue_system_cleanup();

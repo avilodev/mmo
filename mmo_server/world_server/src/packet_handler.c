@@ -25,7 +25,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     double time_delta = (now.tv_sec - player->last_move_tv.tv_sec) + 
                         (now.tv_usec - player->last_move_tv.tv_usec) / 1000000.0;
     
-    if (time_delta < 0.001) time_delta = 0.1;
+    if (time_delta < 0.001 || time_delta > 5.0) time_delta = 0.1;
     
     float dx = client_x - player->pos_x;
     float dy = client_y - player->pos_y;

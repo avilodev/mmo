@@ -806,6 +806,45 @@ typedef struct {
 } DialogueClosePacket;
 
 // ============================================================================
+// PROJECTILE PACKETS
+// ============================================================================
+
+#define MAX_PROJECTILES_PER_PACKET 32
+
+// Server -> Client: A new projectile was spawned (client starts rendering)
+typedef struct {
+    PacketHeader header;
+    uint32_t projectile_id;
+    uint16_t ability_id;        // Client uses for VFX lookup
+    uint32_t owner_id;
+    uint8_t  owner_type;        // 0=player, 1=npc
+    float    pos_x, pos_y;
+    float    dir_x, dir_y;
+    float    speed;
+} ProjectileSpawnPacket;
+
+// Single projectile position entry for batch updates
+typedef struct {
+    uint32_t projectile_id;
+    float    pos_x, pos_y;
+} ProjectilePositionData;
+
+// Server -> Client: Batch update of visible projectile positions (30Hz)
+typedef struct {
+    PacketHeader header;
+    uint8_t count;
+    uint8_t padding[3];
+    ProjectilePositionData projectiles[MAX_PROJECTILES_PER_PACKET];
+} ProjectileUpdatePacket;
+
+// Server -> Client: A projectile was destroyed
+typedef struct {
+    PacketHeader header;
+    uint32_t projectile_id;
+    uint8_t  reason;            // 0=expired, 1=hit_target, 2=cancelled
+} ProjectileDestroyPacket;
+
+// ============================================================================
 // HELPER MACROS
 // ============================================================================
 
