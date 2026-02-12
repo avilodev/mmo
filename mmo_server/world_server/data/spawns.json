@@ -1,0 +1,109 @@
+{
+  "spawns": [
+    {
+      "name": "Friendly Guard",
+      "category": "passive",
+      "npc_type_id": 0,
+      "x": 608.0,
+      "y": 608.0,
+      "health": 200,
+      "hitbox_radius": 16.0,
+      "dialogue_id": 1,
+      "is_interactable": 1,
+      "respawn_time": 0,
+      "xp_reward": 0,
+      "defense": 10,
+      "evasion": 0
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 728.0,
+      "y": 608.0,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25,
+      "defense": 0,
+      "evasion": 0
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 692.9,
+      "y": 692.9,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 608.0,
+      "y": 728.0,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 523.1,
+      "y": 692.9,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 488.0,
+      "y": 608.0,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 523.1,
+      "y": 523.1,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 608.0,
+      "y": 488.0,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    },
+    {
+      "name": "Training Dummy",
+      "category": "hostile",
+      "npc_type_id": 1,
+      "x": 692.9,
+      "y": 523.1,
+      "health": 100,
+      "hitbox_radius": 16.0,
+      "respawn_time": 10.0,
+      "xp_reward": 25
+    }
+  ]
+}

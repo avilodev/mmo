@@ -2,7 +2,10 @@
 
 #include "routes.h"
 #include "player_data.h"
+#include "player_level.h"
 #include "items_database.h"
+#include "loot.h"
+#include "party.h"
 #include "utils.h"
 
 #include <sys/socket.h>
@@ -20,3 +23,9 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
 void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);
 void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);
 void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);
+void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);
+void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);
+void handle_party_accept(int client_fd, uint32_t character_id);
+void handle_party_decline(int client_fd, uint32_t character_id);
+void handle_party_leave(int client_fd, uint32_t character_id);
+void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);

@@ -6,6 +6,8 @@
 #include "combat.h"
 #include "combat_stats.h"
 #include "player_level.h"
+#include "party.h"
+#include "loot.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -135,7 +137,10 @@ uint32_t combat_npc_spawn(NPCWorld* world,
                           int health,
                           float hitbox_radius,
                           uint32_t dialogue_id,
-                          uint8_t is_interactable) {
+                          uint8_t is_interactable,
+                          uint16_t npc_type_id,
+                          float respawn_time,
+                          uint8_t category) {
     pthread_mutex_lock(&world->lock);
 
     if (world->count >= MAX_NPCS) {
@@ -176,20 +181,36 @@ uint32_t combat_npc_spawn(NPCWorld* world,
     npc->max_health     = health;
     npc->hitbox_radius  = hitbox_radius;
     npc->is_alive       = 1;
-    npc->xp_reward      = 50;    // Default XP reward
-    npc->defense        = 0;     // Default NPC defense
-    npc->evasion        = 0;     // Default NPC evasion
+    npc->category       = category;
+    npc->xp_reward      = (category == NPC_CATEGORY_HOSTILE) ? 50 : 0;
+    npc->defense        = 0;
+    npc->evasion        = 0;
     npc->dialogue_id    = dialogue_id;
     npc->is_interactable = is_interactable;
+    npc->spawn_x        = x;
+    npc->spawn_y        = y;
+    npc->npc_type_id    = npc_type_id;
+    npc->respawn_time   = respawn_time;
+    npc->death_time     = 0.0;
 
     if (world->count < MAX_NPCS) world->count++;
 
     uint32_t id = npc->id;
     pthread_mutex_unlock(&world->lock);
 
-    printf("[COMBAT] Spawned NPC '%s' id=%u at (%.1f, %.1f) hp=%d xp=%u\n",
-           name, id, x, y, health, npc->xp_reward);
+    const char* cat_names[] = {"passive", "hostile", "quest"};
+    printf("[COMBAT] Spawned NPC '%s' id=%u at (%.1f, %.1f) hp=%d category=%s\n",
+           name, id, x, y, health, cat_names[category < 3 ? category : 0]);
     return id;
+}
+
+NPCEntity* combat_npc_find(NPCWorld* world, uint32_t npc_id) {
+    for (int i = 0; i < MAX_NPCS; i++) {
+        if (world->npcs[i].id == npc_id) {
+            return &world->npcs[i];
+        }
+    }
+    return NULL;
 }
 
 void combat_npc_remove(NPCWorld* world, uint32_t npc_id) {
@@ -512,6 +533,7 @@ void combat_tick(NPCWorld* world) {
         int a_agi   = active_players[i].agility;
         int a_int   = active_players[i].intelligence;
         int a_wis   = active_players[i].wisdom;
+        int a_wpn   = active_players[i].weapon_damage;
         uint8_t a_class = active_players[i].player_class;
         pthread_mutex_unlock(&active_players[i].lock);
 
@@ -537,7 +559,9 @@ void combat_tick(NPCWorld* world) {
             uint32_t damage;
             uint32_t new_health;
             uint8_t  is_kill;
-            uint64_t xp_reward;     // >0 if should award XP
+            uint64_t xp_reward;
+            uint16_t npc_type_id;   // For loot roll on kill
+            float    npc_x, npc_y;  // NPC position for loot drop
         } HitResult;
 
         HitResult hits[MAX_HIT_RESULTS];
@@ -571,20 +595,26 @@ void combat_tick(NPCWorld* world) {
                     hit_count++;
                     printf("[COMBAT] %u MISSED NPC %u (evasion)\n", attacker_id, best->id);
                 } else {
-                    int damage = compute_final_damage(cast->base_damage, cast->damage_variance,
+                    int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
                                                        a_str, a_agi, a_int, a_wis, a_class,
                                                        best->defense);
                     best->health -= damage;
                     if (best->health < 0) best->health = 0;
 
                     uint8_t is_kill = (best->health == 0) ? 1 : 0;
-                    if (is_kill) best->is_alive = 0;
+                    if (is_kill) {
+                        best->is_alive = 0;
+                        best->death_time = now;
+                    }
 
                     hits[hit_count].target_id   = best->id;
                     hits[hit_count].damage      = (uint32_t)damage;
                     hits[hit_count].new_health  = (uint32_t)best->health;
                     hits[hit_count].is_kill     = is_kill;
                     hits[hit_count].xp_reward   = (is_kill && best->xp_reward > 0) ? best->xp_reward : 0;
+                    hits[hit_count].npc_type_id = best->npc_type_id;
+                    hits[hit_count].npc_x       = best->pos_x;
+                    hits[hit_count].npc_y       = best->pos_y;
                     hit_count++;
 
                     printf("[COMBAT] %u hit NPC %u (%s) for %d dmg (hp=%d)%s\n",
@@ -608,8 +638,10 @@ void combat_tick(NPCWorld* world) {
                 send(client_fd, &dmg, sizeof(dmg), 0);
 
                 if (hits[h].xp_reward > 0) {
-                    ActivePlayer* killer = player_find_active(attacker_id);
-                    if (killer) player_award_xp(killer, hits[h].xp_reward);
+                    party_award_xp(attacker_id, hits[h].xp_reward);
+                }
+                if (hits[h].is_kill) {
+                    loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, attacker_id);
                 }
             }
             continue;  // Next pending cast
@@ -684,7 +716,7 @@ void combat_tick(NPCWorld* world) {
                 continue;
             }
 
-            int damage = compute_final_damage(cast->base_damage, cast->damage_variance,
+            int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
                                                a_str, a_agi, a_int, a_wis, a_class,
                                                npc->defense);
 
@@ -692,13 +724,19 @@ void combat_tick(NPCWorld* world) {
             if (npc->health < 0) npc->health = 0;
 
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
-            if (is_kill) npc->is_alive = 0;
+            if (is_kill) {
+                npc->is_alive = 0;
+                npc->death_time = now;
+            }
 
             hits[hit_count].target_id   = npc->id;
             hits[hit_count].damage      = (uint32_t)damage;
             hits[hit_count].new_health  = (uint32_t)npc->health;
             hits[hit_count].is_kill     = is_kill;
             hits[hit_count].xp_reward   = (is_kill && npc->xp_reward > 0) ? npc->xp_reward : 0;
+            hits[hit_count].npc_type_id = npc->npc_type_id;
+            hits[hit_count].npc_x       = npc->pos_x;
+            hits[hit_count].npc_y       = npc->pos_y;
             hit_count++;
 
             printf("[COMBAT] %u hit NPC %u (%s) for %d dmg (hp=%d)%s\n",
@@ -721,8 +759,10 @@ void combat_tick(NPCWorld* world) {
             send(client_fd, &dmg, sizeof(dmg), 0);
 
             if (hits[h].xp_reward > 0) {
-                ActivePlayer* killer = player_find_active(attacker_id);
-                if (killer) player_award_xp(killer, hits[h].xp_reward);
+                party_award_xp(attacker_id, hits[h].xp_reward);
+            }
+            if (hits[h].is_kill) {
+                loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, attacker_id);
             }
         }
     }
@@ -770,4 +810,154 @@ void combat_tick(NPCWorld* world) {
         }
         pthread_mutex_unlock(&active_players_lock);
     }
+
+    // -------------------------------------------------------------------
+    // 3. Player death detection — snapshot deaths under lock, send after
+    // -------------------------------------------------------------------
+    {
+        #define MAX_DEATH_EVENTS 16
+        typedef struct {
+            uint32_t player_id;
+            int      client_fd;
+        } DeathEvent;
+
+        DeathEvent deaths[MAX_DEATH_EVENTS];
+        int death_count = 0;
+
+        pthread_mutex_lock(&active_players_lock);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!active_players[i].is_loaded) continue;
+            pthread_mutex_lock(&active_players[i].lock);
+
+            if (active_players[i].health <= 0 && !active_players[i].is_dead) {
+                active_players[i].is_dead = 1;
+                active_players[i].death_time = now;
+                active_players[i].health = 0;
+
+                if (death_count < MAX_DEATH_EVENTS) {
+                    deaths[death_count].player_id = active_players[i].character_id;
+                    deaths[death_count].client_fd = active_players[i].client_fd;
+                    death_count++;
+                }
+
+                printf("[COMBAT] Player %u has died!\n", active_players[i].character_id);
+            }
+
+            pthread_mutex_unlock(&active_players[i].lock);
+        }
+        pthread_mutex_unlock(&active_players_lock);
+
+        // Send death packets outside lock
+        for (int d = 0; d < death_count; d++) {
+            PlayerDeathPacket pkt = {0};
+            pkt.header.type = PACKET_PLAYER_DEATH;
+            pkt.header.player_id = htonl(deaths[d].player_id);
+            pkt.dead_player_id = htonl(deaths[d].player_id);
+            pkt.killer_id = 0;
+            pkt.killer_type = 0;
+            send(deaths[d].client_fd, &pkt, sizeof(pkt), 0);
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 4. Player respawn — 3 seconds after death
+    // -------------------------------------------------------------------
+    {
+        #define RESPAWN_DELAY 3.0
+        #define RESPAWN_X 608.0f
+        #define RESPAWN_Y 608.0f
+
+        #define MAX_RESPAWN_EVENTS 16
+        typedef struct {
+            uint32_t player_id;
+            int      client_fd;
+            int32_t  health;
+            int32_t  max_health;
+            int32_t  mana;
+            int32_t  max_mana;
+        } RespawnEvent;
+
+        RespawnEvent respawns[MAX_RESPAWN_EVENTS];
+        int respawn_count = 0;
+
+        pthread_mutex_lock(&active_players_lock);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!active_players[i].is_loaded) continue;
+            pthread_mutex_lock(&active_players[i].lock);
+
+            if (active_players[i].is_dead &&
+                (now - active_players[i].death_time) >= RESPAWN_DELAY) {
+
+                active_players[i].is_dead = 0;
+                active_players[i].health = active_players[i].max_health;
+                active_players[i].mana = active_players[i].max_mana;
+                active_players[i].pos_x = RESPAWN_X;
+                active_players[i].pos_y = RESPAWN_Y;
+                active_players[i].is_dirty = 1;
+
+                if (respawn_count < MAX_RESPAWN_EVENTS) {
+                    respawns[respawn_count].player_id  = active_players[i].character_id;
+                    respawns[respawn_count].client_fd   = active_players[i].client_fd;
+                    respawns[respawn_count].health      = active_players[i].health;
+                    respawns[respawn_count].max_health   = active_players[i].max_health;
+                    respawns[respawn_count].mana        = active_players[i].mana;
+                    respawns[respawn_count].max_mana     = active_players[i].max_mana;
+                    respawn_count++;
+                }
+
+                printf("[COMBAT] Player %u respawned at (%.0f, %.0f)\n",
+                       active_players[i].character_id, RESPAWN_X, RESPAWN_Y);
+            }
+
+            pthread_mutex_unlock(&active_players[i].lock);
+        }
+        pthread_mutex_unlock(&active_players_lock);
+
+        for (int r = 0; r < respawn_count; r++) {
+            PlayerRespawnPacket pkt = {0};
+            pkt.header.type = PACKET_PLAYER_RESPAWN;
+            pkt.header.player_id = htonl(respawns[r].player_id);
+            pkt.player_id = htonl(respawns[r].player_id);
+            pkt.pos_x = RESPAWN_X;
+            pkt.pos_y = RESPAWN_Y;
+            pkt.health = htonl((uint32_t)respawns[r].health);
+            pkt.max_health = htonl((uint32_t)respawns[r].max_health);
+            pkt.mana = htonl((uint32_t)respawns[r].mana);
+            pkt.max_mana = htonl((uint32_t)respawns[r].max_mana);
+            send(respawns[r].client_fd, &pkt, sizeof(pkt), 0);
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // 5. NPC respawn — check dead NPCs with respawn timers
+    // -------------------------------------------------------------------
+    pthread_mutex_lock(&world->lock);
+    for (int i = 0; i < MAX_NPCS; i++) {
+        NPCEntity* npc = &world->npcs[i];
+        if (npc->id == 0) continue;
+        if (npc->is_alive) continue;
+        if (npc->respawn_time <= 0.0f) continue;
+
+        if (npc->death_time > 0.0 && (now - npc->death_time) >= npc->respawn_time) {
+            npc->is_alive = 1;
+            npc->health = npc->max_health;
+            npc->pos_x = npc->spawn_x;
+            npc->pos_y = npc->spawn_y;
+            npc->death_time = 0.0;
+
+            // Reset AI state so NPC doesn't resume mid-attack
+            npc->ai_state = 0;          // NPC_AI_IDLE
+            npc->ai_target_id = 0;
+            npc->ai_is_casting = 0;
+            npc->ai_cast_ability_idx = -1;
+            npc->ai_cast_start = 0.0;
+            for (int c = 0; c < MAX_NPC_ABILITIES_RT; c++) {
+                npc->ai_ability_cooldowns[c] = 0.0;
+            }
+
+            printf("[COMBAT] NPC '%s' (id=%u) respawned at (%.1f, %.1f)\n",
+                   npc->name, npc->id, npc->spawn_x, npc->spawn_y);
+        }
+    }
+    pthread_mutex_unlock(&world->lock);
 }

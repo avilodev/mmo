@@ -78,6 +78,7 @@ typedef enum {
     PACKET_PLAYER_STATS      = 91,   // Server -> Client: Full stat snapshot
     PACKET_REQUEST_PLAYER_STATS = 92,
 
+    PACKET_PLAYER_POSITIONS = 96,     // Server -> Client: nearby player positions
     PACKET_NPC_POSITIONS = 97,
     
     
@@ -86,13 +87,8 @@ typedef enum {
     PACKET_EQUIP_ITEM_RESPONSE = 101,
     PACKET_UNEQUIP_ITEM = 102,
     PACKET_UNEQUIP_ITEM_RESPONSE = 103,
-    PACKET_UPDATE_EQUIPMENT = 104,
-    PACKET_EQUIPMENT_DURABILITY = 105,
-    
+
     // Inventory packets (120-139)
-    PACKET_INVENTORY_UPDATE = 120,
-    PACKET_ADD_ITEM = 121,
-    PACKET_REMOVE_ITEM = 122,
     PACKET_MOVE_ITEM = 123,
     PACKET_MOVE_ITEM_RESPONSE = 124,
     PACKET_USE_ITEM = 125,
@@ -111,6 +107,34 @@ typedef enum {
     PACKET_PROJECTILE_SPAWN   = 140,        // Server -> Client: new projectile
     PACKET_PROJECTILE_UPDATE  = 141,        // Server -> Client: position batch (30Hz)
     PACKET_PROJECTILE_DESTROY = 142,        // Server -> Client: projectile removed
+
+    // Death/Respawn packets (150-154)
+    PACKET_PLAYER_DEATH       = 150,        // Server -> Client: player died
+    PACKET_PLAYER_RESPAWN     = 151,        // Server -> Client: player respawned
+
+    // Loot packets (152-159)
+    PACKET_LOOT_DROP          = 155,        // Server -> Client: item on ground
+    PACKET_LOOT_PICKUP_REQUEST  = 156,      // Client -> Server: pick up ground item
+    PACKET_LOOT_PICKUP_RESPONSE = 157,      // Server -> Client: pickup result
+    PACKET_LOOT_DESPAWN       = 158,        // Server -> Client: ground item gone
+
+    // NPC Telegraph packets (160-164)
+    PACKET_NPC_TELEGRAPH_START   = 160,    // Server -> Client: ground indicator appears
+    PACKET_NPC_TELEGRAPH_RESOLVE = 161,    // Server -> Client: cast finished, impact VFX
+
+    // Chat packets (170-179)
+    PACKET_CHAT_SEND     = 170,            // Client -> Server: player sends a message
+    PACKET_CHAT_MESSAGE  = 171,            // Server -> Client: broadcast chat message
+
+    // Party packets (180-189)
+    PACKET_PARTY_INVITE        = 180,      // Client -> Server: invite player by name
+    PACKET_PARTY_INVITE_NOTIFY = 181,      // Server -> Client: you've been invited
+    PACKET_PARTY_ACCEPT        = 182,      // Client -> Server: accept invite
+    PACKET_PARTY_DECLINE       = 183,      // Client -> Server: decline invite
+    PACKET_PARTY_LEAVE         = 184,      // Client -> Server: leave party
+    PACKET_PARTY_KICK          = 185,      // Client -> Server: leader kicks member
+    PACKET_PARTY_UPDATE        = 186,      // Server -> Client: full party state
+    PACKET_PARTY_DISBAND       = 187,      // Server -> Client: party dissolved
 
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,

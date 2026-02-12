@@ -2,11 +2,14 @@
 #include "player_level.h"
 #include "class_stats.h"
 #include "ability_def.h"
+#include "items_database.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+
+#define VITALITY_HP_PER_POINT 5
 
 void player_apply_class_stats(ActivePlayer* player) {
     if (!player) return;
@@ -26,8 +29,58 @@ void player_apply_class_stats(ActivePlayer* player) {
     player->wisdom       = stats.wisdom;
     player->defense      = stats.defense;
     player->evasion      = stats.evasion;
+    player->vitality     = stats.vitality;
+    player->luck         = stats.luck;
     player->move_speed   = stats.move_speed;
+    player->weapon_damage = 0;
 
+    if (player->health > player->max_health) player->health = player->max_health;
+    if (player->mana > player->max_mana)     player->mana = player->max_mana;
+}
+
+void player_apply_equipment_bonuses(ActivePlayer* player) {
+    if (!player) return;
+
+    // Reset to class base first
+    player_apply_class_stats(player);
+
+    // Gather all 7 equipment slot IDs
+    uint32_t equipped[] = {
+        player->helmet, player->gloves, player->chest_armor,
+        player->leggings, player->boots, player->main_hand,
+        player->second_hand
+    };
+
+    for (int i = 0; i < 7; i++) {
+        if (equipped[i] == 0) continue;
+        const ItemDefinition* item = item_get(equipped[i]);
+        if (!item) continue;
+
+        // Weapon damage stacks (main_hand + off_hand)
+        if (item->type == ITEM_TYPE_WEAPON) {
+            player->weapon_damage += (int)item->damage;
+        }
+
+        // Armor/shield base defense goes into defense stat
+        if (item->type == ITEM_TYPE_ARMOR || item->type == ITEM_TYPE_SHIELD) {
+            player->defense += (int)item->defense;
+        }
+
+        // Stat bonuses from any equipment
+        player->strength     += item->bonus_strength;
+        player->agility      += item->bonus_agility;
+        player->intelligence += item->bonus_intelligence;
+        player->wisdom       += item->bonus_wisdom;
+        player->defense      += item->bonus_defense;
+        player->evasion      += item->bonus_evasion;
+        player->vitality     += item->bonus_vitality;
+        player->luck         += item->bonus_luck;
+    }
+
+    // Vitality increases max HP
+    player->max_health += player->vitality * VITALITY_HP_PER_POINT;
+
+    // Clamp current values
     if (player->health > player->max_health) player->health = player->max_health;
     if (player->mana > player->max_mana)     player->mana = player->max_mana;
 }
@@ -45,7 +98,7 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
 
     if (new_level > old_level) {
         player->level = new_level;
-        player_apply_class_stats(player);
+        player_apply_equipment_bonuses(player);
 
         // Full heal on level-up
         player->health = player->max_health;
@@ -96,6 +149,8 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
         pkt.wisdom              = htonl(player->wisdom);
         pkt.defense             = htonl(player->defense);
         pkt.evasion             = htonl(player->evasion);
+        pkt.vitality            = htonl(player->vitality);
+        pkt.luck                = htonl(player->luck);
         pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
 
         pthread_mutex_unlock(&player->lock);
@@ -121,11 +176,14 @@ void player_send_stats(int client_fd, ActivePlayer* player) {
     pkt.wisdom              = htonl(player->wisdom);
     pkt.defense             = htonl(player->defense);
     pkt.evasion             = htonl(player->evasion);
+    pkt.vitality            = htonl(player->vitality);
+    pkt.luck                = htonl(player->luck);
     pkt.max_health          = htonl(player->max_health);
     pkt.max_mana            = htonl(player->max_mana);
     pkt.current_health      = htonl(player->health);
     pkt.current_mana        = htonl(player->mana);
     pkt.move_speed          = player->move_speed;
+    pkt.weapon_damage       = htonl(player->weapon_damage);
     pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
 
     pthread_mutex_unlock(&player->lock);

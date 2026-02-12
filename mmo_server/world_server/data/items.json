@@ -16,7 +16,7 @@
       "slot": "main_hand",
       "max_stack": 1,
       "damage": 7,
-      "durability": 100,
+      "bonus_strength": 2,
       "level_req": 0,
       "class_req": [1],
       "rarity": "common",
@@ -29,7 +29,8 @@
       "slot": "off_hand",
       "max_stack": 1,
       "defense": 2,
-      "durability": 100,
+      "bonus_defense": 1,
+      "bonus_vitality": 1,
       "level_req": 0,
       "class_req": [1],
       "rarity": "common",
@@ -42,7 +43,7 @@
       "slot": "main_hand",
       "max_stack": 1,
       "damage": 5,
-      "durability": 100,
+      "bonus_agility": 3,
       "level_req": 0,
       "class_req": [2],
       "rarity": "common",
@@ -55,23 +56,24 @@
       "slot": "two_handed",
       "max_stack": 1,
       "damage": 3,
-      "durability": 100,
+      "bonus_intelligence": 4,
       "level_req": 0,
       "class_req": [3],
       "rarity": "common",
       "description": "Ability to move ground"
     },
-        {
+    {
       "id": 1004,
       "name": "Broken Spirit Staff",
       "type": "weapon",
       "slot": "two_handed",
       "max_stack": 1,
       "damage": 2,
-      "durability": 100,
+      "bonus_wisdom": 4,
       "level_req": 0,
       "class_req": [4],
-      "rarity": "Enbowed with magical healing energy"
+      "rarity": "common",
+      "description": "Enbowed with magical healing energy"
     },
     {
       "id": 1005,
@@ -80,10 +82,11 @@
       "slot": "two_handed",
       "max_stack": 1,
       "damage": 15,
-      "durability": 100,
+      "bonus_strength": 5,
       "level_req": 0,
       "class_req": [1],
-      "rarity": "This sword appears to be taller than you!"
+      "rarity": "uncommon",
+      "description": "This sword appears to be taller than you!"
     },
     {
       "id": 2000,
@@ -92,7 +95,8 @@
       "slot": "helmet",
       "max_stack": 1,
       "defense": 5,
-      "durability": 100,
+      "bonus_strength": 1,
+      "bonus_vitality": 1,
       "level_req": 1,
       "description": "Starter Gladiator Helmet"
     },
@@ -103,7 +107,7 @@
       "slot": "gloves",
       "max_stack": 1,
       "defense": 5,
-      "durability": 100,
+      "bonus_strength": 1,
       "level_req": 1,
       "description": "Starter Gladiator Gloves"
     },
@@ -114,7 +118,7 @@
       "slot": "chest",
       "max_stack": 1,
       "defense": 5,
-      "durability": 100,
+      "bonus_vitality": 2,
       "level_req": 1,
       "description": "Starter Gladiator Chest"
     },
@@ -125,7 +129,7 @@
       "slot": "leggings",
       "max_stack": 1,
       "defense": 5,
-      "durability": 100,
+      "bonus_strength": 1,
       "level_req": 1,
       "description": "Starter Gladiator Leggings"
     },
@@ -136,7 +140,7 @@
       "slot": "boots",
       "max_stack": 1,
       "defense": 5,
-      "durability": 100,
+      "bonus_defense": 1,
       "level_req": 1,
       "description": "Starter Gladiator Boots"
     },
@@ -147,7 +151,8 @@
       "slot": "helmet",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_agility": 1,
+      "bonus_evasion": 1,
       "level_req": 1,
       "description": "Starter Ninja Helmet"
     },
@@ -158,7 +163,7 @@
       "slot": "gloves",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_agility": 2,
       "level_req": 1,
       "description": "Starter Ninja Gloves"
     },
@@ -169,7 +174,8 @@
       "slot": "chest",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_agility": 1,
+      "bonus_luck": 1,
       "level_req": 1,
       "description": "Starter Ninja Chest"
     },
@@ -180,7 +186,8 @@
       "slot": "leggings",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_agility": 1,
+      "bonus_evasion": 1,
       "level_req": 1,
       "description": "Starter Ninja Leggings"
     },
@@ -191,7 +198,7 @@
       "slot": "boots",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_agility": 1,
       "level_req": 1,
       "description": "Starter Ninja Boots"
     },
@@ -202,7 +209,7 @@
       "slot": "helmet",
       "max_stack": 1,
       "defense": 3,
-      "durability": 100,
+      "bonus_intelligence": 1,
       "level_req": 1,
       "description": "Starter Landweaver Helmet"
     },
@@ -213,7 +220,7 @@
       "slot": "gloves",
       "max_stack": 1,
       "defense": 3,
-      "durability": 100,
+      "bonus_intelligence": 2,
       "level_req": 1,
       "description": "Starter Landweaver Gloves"
     },
@@ -224,7 +231,8 @@
       "slot": "chest",
       "max_stack": 1,
       "defense": 3,
-      "durability": 100,
+      "bonus_intelligence": 1,
+      "bonus_wisdom": 1,
       "level_req": 1,
       "description": "Starter Landweaver Chest"
     },
@@ -235,7 +243,7 @@
       "slot": "leggings",
       "max_stack": 1,
       "defense": 3,
-      "durability": 100,
+      "bonus_vitality": 1,
       "level_req": 1,
       "description": "Starter Landweaver Leggings"
     },
@@ -246,7 +254,7 @@
       "slot": "boots",
       "max_stack": 1,
       "defense": 3,
-      "durability": 100,
+      "bonus_intelligence": 1,
       "level_req": 1,
       "description": "Starter Landweaver Boots"
     },
@@ -257,7 +265,7 @@
       "slot": "helmet",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_wisdom": 2,
       "level_req": 1,
       "description": "Starter Spirit Helmet"
     },
@@ -268,7 +276,8 @@
       "slot": "gloves",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_wisdom": 1,
+      "bonus_luck": 1,
       "level_req": 1,
       "description": "Starter Spirit Gloves"
     },
@@ -279,7 +288,8 @@
       "slot": "chest",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_wisdom": 1,
+      "bonus_vitality": 1,
       "level_req": 1,
       "description": "Starter Spirit Chest"
     },
@@ -290,7 +300,8 @@
       "slot": "leggings",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_wisdom": 1,
+      "bonus_evasion": 1,
       "level_req": 1,
       "description": "Starter Spirit Leggings"
     },
@@ -301,7 +312,7 @@
       "slot": "boots",
       "max_stack": 1,
       "defense": 1,
-      "durability": 100,
+      "bonus_wisdom": 1,
       "level_req": 1,
       "description": "Starter Spirit Boots"
     },
@@ -309,19 +320,70 @@
       "id": 4000,
       "name": "Common Health Potion",
       "type": "consumable",
-      "effects": 20,
+      "use_effect": "restore_health",
+      "use_value": 30,
+      "use_cooldown": 3.0,
       "max_stack": 50,
       "level_req": 1,
-      "description": "Common Healing Potion"
+      "rarity": "common",
+      "description": "Restores 30 health"
     },
     {
       "id": 4001,
       "name": "Uncommon Health Potion",
       "type": "consumable",
-      "effects": 40,
+      "use_effect": "restore_health",
+      "use_value": 60,
+      "use_cooldown": 3.0,
       "max_stack": 50,
       "level_req": 1,
-      "description": "Common Healing Potion"
+      "rarity": "uncommon",
+      "description": "Restores 60 health"
+    },
+    {
+      "id": 4010,
+      "name": "Common Mana Potion",
+      "type": "consumable",
+      "use_effect": "restore_mana",
+      "use_value": 25,
+      "use_cooldown": 3.0,
+      "max_stack": 50,
+      "level_req": 1,
+      "rarity": "common",
+      "description": "Restores 25 mana"
+    },
+    {
+      "id": 4011,
+      "name": "Uncommon Mana Potion",
+      "type": "consumable",
+      "use_effect": "restore_mana",
+      "use_value": 50,
+      "use_cooldown": 3.0,
+      "max_stack": 50,
+      "level_req": 1,
+      "rarity": "uncommon",
+      "description": "Restores 50 mana"
+    },
+    {
+      "id": 4020,
+      "name": "Rejuvenation Potion",
+      "type": "consumable",
+      "use_effect": "restore_both",
+      "use_value": 20,
+      "use_cooldown": 5.0,
+      "max_stack": 50,
+      "level_req": 1,
+      "rarity": "uncommon",
+      "description": "Restores 20 health and 20 mana"
+    }
+  ],
+  "loot_tables": [
+    {
+      "npc_type_id": 1,
+      "drops": [
+        { "item_id": 1, "chance": 0.5, "min_qty": 1, "max_qty": 3 },
+        { "item_id": 4000, "chance": 0.25, "min_qty": 1, "max_qty": 1 }
+      ]
     }
   ]
 }

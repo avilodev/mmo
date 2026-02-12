@@ -9,6 +9,8 @@
 #include "combat_stats.h"
 #include "player_level.h"
 #include "projectile.h"
+#include "party.h"
+#include "loot.h"
 
 #include <math.h>
 #include <string.h>
@@ -295,7 +297,7 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
     info.speed       = ability->projectile.speed;
     info.width       = ability->projectile.width;
     info.max_range   = ability->range;
-    info.damage      = ability->damage;
+    info.damage      = ability->damage;  // weapon_damage added below after snapshot
     info.damage_type = ability->damage_type;
     info.bonus_damage = ability->bonus_damage;
 
@@ -308,6 +310,7 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
         info.caster_intelligence = caster->intelligence;
         info.caster_wisdom       = caster->wisdom;
         info.caster_class        = caster->player_class;
+        info.damage             += caster->weapon_damage;
         pthread_mutex_unlock(&caster->lock);
     }
 
@@ -526,7 +529,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     float aim_y        = cast->aim_y;
 
     // Snapshot caster stats
-    int c_str = 0, c_agi = 0, c_int = 0, c_wis = 0;
+    int c_str = 0, c_agi = 0, c_int = 0, c_wis = 0, c_wpn = 0;
     uint8_t c_class = 1;
 
     ActivePlayer* caster = player_find_active(caster_id);
@@ -540,6 +543,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
         c_agi   = caster->agility;
         c_int   = caster->intelligence;
         c_wis   = caster->wisdom;
+        c_wpn   = caster->weapon_damage;
         c_class = caster->player_class;
         caster->last_combat_time = get_time();
         pthread_mutex_unlock(&caster->lock);
@@ -687,6 +691,8 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             uint8_t  is_kill;
             uint8_t  evaded;
             uint64_t xp_reward;
+            uint16_t npc_type_id;
+            float    npc_x, npc_y;
         } AbilityHitResult;
 
         #define MAX_ABILITY_HITS 32
@@ -755,7 +761,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                 continue;
             }
 
-            int damage = calc_ability_damage(ability->damage, &ability->bonus_damage,
+            int damage = calc_ability_damage(ability->damage + c_wpn, &ability->bonus_damage,
                                               npc->health, npc->max_health,
                                               npc->defense,
                                               c_str, c_agi, c_int, c_wis, c_class);
@@ -764,7 +770,12 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             if (npc->health < 0) npc->health = 0;
 
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
-            if (is_kill) npc->is_alive = 0;
+            if (is_kill) {
+                npc->is_alive = 0;
+                struct timespec _ts;
+                clock_gettime(CLOCK_MONOTONIC, &_ts);
+                npc->death_time = _ts.tv_sec + _ts.tv_nsec / 1e9;
+            }
 
             for (int e = 0; e < ability->effect_count; e++) {
                 apply_effect_to_npc(npc, &ability->effects[e], caster_id);
@@ -774,8 +785,11 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             hits[hit_count].damage     = damage;
             hits[hit_count].new_health = npc->health;
             hits[hit_count].is_kill    = is_kill;
-            hits[hit_count].evaded     = 0;
-            hits[hit_count].xp_reward  = is_kill ? npc->xp_reward : 0;
+            hits[hit_count].evaded      = 0;
+            hits[hit_count].xp_reward   = is_kill ? npc->xp_reward : 0;
+            hits[hit_count].npc_type_id = npc->npc_type_id;
+            hits[hit_count].npc_x       = npc->pos_x;
+            hits[hit_count].npc_y       = npc->pos_y;
             hit_count++;
 
             if (ability->aoe.shape == ABILITY_AOE_NONE && !had_movement) break;
@@ -800,10 +814,10 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             }
 
             if (hits[h].xp_reward > 0) {
-                ActivePlayer* killer = player_find_active(caster_id);
-                if (killer) {
-                    player_award_xp(killer, hits[h].xp_reward);
-                }
+                party_award_xp(caster_id, hits[h].xp_reward);
+            }
+            if (hits[h].is_kill) {
+                loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, caster_id);
             }
         }
     }

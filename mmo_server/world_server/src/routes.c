@@ -3,6 +3,12 @@
 #include "routes.h"
 #include "combat.h"
 #include "dialogue_handler.h"
+#include "loot.h"
+
+#include <math.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
 extern NPCWorld g_npc_world;
 
@@ -17,18 +23,35 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
     
     printf("Processing packet type: %d from character %u\n", header->type, character_id);
 
+    // Reject most actions from dead players
+    if (header->type == PACKET_PLAYER_MOVE ||
+        header->type == PACKET_ATTACK_INTENT ||
+        header->type == PACKET_ABILITY_CAST_INTENT ||
+        header->type == PACKET_EQUIP_ITEM ||
+        header->type == PACKET_USE_ITEM ||
+        header->type == PACKET_DROP_ITEM ||
+        header->type == PACKET_NPC_INTERACT_REQUEST) {
+        ActivePlayer* p = player_find_active(character_id);
+        if (p) {
+            pthread_mutex_lock(&p->lock);
+            int dead = p->is_dead;
+            pthread_mutex_unlock(&p->lock);
+            if (dead) return 1; // Silently ignore
+        }
+    }
+
     // Route to appropriate handler
     switch (header->type) {
         case PACKET_PING:
             handle_ping(client_fd, buffer);
             break;
-            
+
         case PACKET_REQUEST_PLAYER_DATA:
             handle_request_player_data(client_fd, character_id);
             break;
-            
+
         case PACKET_PLAYER_MOVE:
-            handle_player_move(client_fd, character_id, (PlayerMovePacket*)buffer); 
+            handle_player_move(client_fd, character_id, (PlayerMovePacket*)buffer);
             break;
             
         case PACKET_EQUIP_ITEM:
@@ -132,6 +155,103 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
         case PACKET_DIALOGUE_CLOSE:
             handle_dialogue_close(character_id);
             break;
+
+        case PACKET_CHAT_SEND:
+            handle_chat_send(client_fd, character_id, buffer, bytes);
+            break;
+
+        case PACKET_PARTY_INVITE:
+            handle_party_invite(client_fd, character_id, buffer, bytes);
+            break;
+
+        case PACKET_PARTY_ACCEPT:
+            handle_party_accept(client_fd, character_id);
+            break;
+
+        case PACKET_PARTY_DECLINE:
+            handle_party_decline(client_fd, character_id);
+            break;
+
+        case PACKET_PARTY_LEAVE:
+            handle_party_leave(client_fd, character_id);
+            break;
+
+        case PACKET_PARTY_KICK:
+            handle_party_kick(client_fd, character_id, buffer, bytes);
+            break;
+
+        case PACKET_LOOT_PICKUP_REQUEST: {
+            if (bytes >= (ssize_t)sizeof(LootPickupRequestPacket)) {
+                LootPickupRequestPacket* req = (LootPickupRequestPacket*)buffer;
+                uint32_t ground_item_id = ntohl(req->ground_item_id);
+
+                LootPickupResponsePacket resp = {0};
+                resp.header.type = PACKET_LOOT_PICKUP_RESPONSE;
+                resp.header.player_id = htonl(character_id);
+                resp.ground_item_id = htonl(ground_item_id);
+
+                // Distance check
+                const GroundItem* gi = loot_get_ground_item(ground_item_id);
+                if (!gi) {
+                    resp.success = 0;
+                    strncpy(resp.message, "Item not found", sizeof(resp.message) - 1);
+                    send(client_fd, &resp, sizeof(resp), 0);
+                    break;
+                }
+
+                ActivePlayer* player = player_find_active(character_id);
+                if (!player) break;
+
+                pthread_mutex_lock(&player->lock);
+                float dx = player->pos_x - gi->pos_x;
+                float dy = player->pos_y - gi->pos_y;
+                float dist = sqrtf(dx * dx + dy * dy);
+                pthread_mutex_unlock(&player->lock);
+
+                if (dist > LOOT_PICKUP_RANGE) {
+                    resp.success = 0;
+                    strncpy(resp.message, "Too far away", sizeof(resp.message) - 1);
+                    send(client_fd, &resp, sizeof(resp), 0);
+                    break;
+                }
+
+                uint32_t item_id = 0;
+                uint8_t quantity = 0;
+                if (!loot_try_pickup(ground_item_id, character_id, &item_id, &quantity)) {
+                    resp.success = 0;
+                    strncpy(resp.message, "Cannot pick up yet", sizeof(resp.message) - 1);
+                    send(client_fd, &resp, sizeof(resp), 0);
+                    break;
+                }
+
+                // Add to player inventory
+                pthread_mutex_lock(&player->lock);
+                int inv_slot = -1;
+                for (int s = 0; s < 150; s++) {
+                    if (player->inventory[s] == 0) {
+                        inv_slot = s;
+                        break;
+                    }
+                }
+                if (inv_slot >= 0) {
+                    player->inventory[inv_slot] = item_id;
+                    player->is_dirty = 1;
+                    pthread_mutex_unlock(&player->lock);
+
+                    resp.success = 1;
+                    resp.item_id = htonl(item_id);
+                    resp.quantity = quantity;
+                    resp.inventory_slot = (uint8_t)inv_slot;
+                    strncpy(resp.message, "Item picked up", sizeof(resp.message) - 1);
+                } else {
+                    pthread_mutex_unlock(&player->lock);
+                    resp.success = 0;
+                    strncpy(resp.message, "Inventory full", sizeof(resp.message) - 1);
+                }
+                send(client_fd, &resp, sizeof(resp), 0);
+            }
+            break;
+        }
 
         default:
             printf("Unknown packet type: %d\n", header->type);

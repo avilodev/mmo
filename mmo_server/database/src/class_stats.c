@@ -24,6 +24,8 @@ void class_stats_init(void) {
         .strength_per_level = 30, .agility_per_level = 10,
         .intelligence_per_level = 5, .wisdom_per_level = 5,
         .defense_per_level = 25, .evasion_per_level = 5,
+        .base_vitality = 8, .base_luck = 2,
+        .vitality_per_level = 20, .luck_per_level = 5,
     };
 
     // [2] Ninja — agile burst / evasion
@@ -38,6 +40,8 @@ void class_stats_init(void) {
         .strength_per_level = 10, .agility_per_level = 30,
         .intelligence_per_level = 10, .wisdom_per_level = 5,
         .defense_per_level = 10, .evasion_per_level = 30,
+        .base_vitality = 4, .base_luck = 8,
+        .vitality_per_level = 10, .luck_per_level = 20,
     };
 
     // [3] Landweaver — earth mage, control/AoE
@@ -52,6 +56,8 @@ void class_stats_init(void) {
         .strength_per_level = 5, .agility_per_level = 5,
         .intelligence_per_level = 30, .wisdom_per_level = 20,
         .defense_per_level = 15, .evasion_per_level = 5,
+        .base_vitality = 5, .base_luck = 5,
+        .vitality_per_level = 12, .luck_per_level = 12,
     };
 
     // [4] Spirit — mystic support/hybrid
@@ -66,6 +72,8 @@ void class_stats_init(void) {
         .strength_per_level = 5, .agility_per_level = 10,
         .intelligence_per_level = 20, .wisdom_per_level = 30,
         .defense_per_level = 5, .evasion_per_level = 20,
+        .base_vitality = 4, .base_luck = 6,
+        .vitality_per_level = 10, .luck_per_level = 15,
     };
 
     // XP table: xp_for_level(n) = 50 * n * (n-1)
@@ -104,6 +112,8 @@ int class_stats_compute(uint8_t class_id, int level, DerivedStats* out) {
     out->wisdom         = p->base_wisdom    + (p->wisdom_per_level * lvl_bonus) / 10;
     out->defense        = p->base_defense   + (p->defense_per_level * lvl_bonus) / 10;
     out->evasion        = p->base_evasion   + (p->evasion_per_level * lvl_bonus) / 10;
+    out->vitality       = p->base_vitality + (p->vitality_per_level * lvl_bonus) / 10;
+    out->luck           = p->base_luck     + (p->luck_per_level * lvl_bonus) / 10;
     out->move_speed     = p->base_move_speed;
 
     return 1;

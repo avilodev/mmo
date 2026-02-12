@@ -12,6 +12,8 @@
 #include "combat_stats.h"
 #include "player_data.h"
 #include "player_level.h"
+#include "party.h"
+#include "loot.h"
 
 #include <math.h>
 #include <string.h>
@@ -45,7 +47,8 @@ static uint32_t        g_next_projectile_id = 1;
 typedef enum {
     DSEND_PROJECTILE_DESTROY,
     DSEND_ABILITY_EFFECT,
-    DSEND_XP_AWARD
+    DSEND_XP_AWARD,
+    DSEND_LOOT_ROLL
 } DeferredSendType;
 
 typedef struct {
@@ -69,6 +72,11 @@ typedef struct {
             uint32_t killer_id;
             uint64_t xp;
         } xp;
+        struct {
+            uint16_t npc_type_id;
+            float    npc_x, npc_y;
+            uint32_t killer_id;
+        } loot;
     };
 } DeferredSend;
 
@@ -175,12 +183,13 @@ static void dq_flush(DeferredQueue* q) {
                                     ds->effect.is_kill);
                 break;
             case DSEND_XP_AWARD: {
-                ActivePlayer* killer = player_find_active(ds->xp.killer_id);
-                if (killer) {
-                    player_award_xp(killer, ds->xp.xp);
-                }
+                party_award_xp(ds->xp.killer_id, ds->xp.xp);
                 break;
             }
+            case DSEND_LOOT_ROLL:
+                loot_roll(ds->loot.npc_type_id, ds->loot.npc_x,
+                          ds->loot.npc_y, ds->loot.killer_id);
+                break;
         }
     }
 }
@@ -484,7 +493,10 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                     if (npc->health < 0) npc->health = 0;
 
                     uint8_t is_kill = (npc->health == 0) ? 1 : 0;
-                    if (is_kill) npc->is_alive = 0;
+                    if (is_kill) {
+                        npc->is_alive = 0;
+                        npc->death_time = get_monotonic_time();
+                    }
 
                     if (owner_fd >= 0) {
                         DeferredSend ds = {0};
@@ -503,12 +515,23 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                         apply_effect_to_npc(npc, &proj->effects[e], proj->owner_id);
                     }
 
-                    if (is_kill && npc->xp_reward > 0) {
-                        DeferredSend ds = {0};
-                        ds.type = DSEND_XP_AWARD;
-                        ds.xp.killer_id = proj->owner_id;
-                        ds.xp.xp = npc->xp_reward;
-                        dq_push(&q, &ds);
+                    if (is_kill) {
+                        if (npc->xp_reward > 0) {
+                            DeferredSend ds = {0};
+                            ds.type = DSEND_XP_AWARD;
+                            ds.xp.killer_id = proj->owner_id;
+                            ds.xp.xp = npc->xp_reward;
+                            dq_push(&q, &ds);
+                        }
+                        {
+                            DeferredSend ds = {0};
+                            ds.type = DSEND_LOOT_ROLL;
+                            ds.loot.npc_type_id = npc->npc_type_id;
+                            ds.loot.npc_x = npc->pos_x;
+                            ds.loot.npc_y = npc->pos_y;
+                            ds.loot.killer_id = proj->owner_id;
+                            dq_push(&q, &ds);
+                        }
                     }
 
                     proj->is_active = 0;

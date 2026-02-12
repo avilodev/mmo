@@ -621,13 +621,13 @@ int main(int argc, char** argv) {
     
     // Display current equipment
     printf("\n" BOLD "     Current Equipment:" RESET "\n");
-    printf("       Helmet:     %u (durability: %u)\n", ntohl(player_data.helmet), ntohl(player_data.helmet_durability));
-    printf("       Chest:      %u (durability: %u)\n", ntohl(player_data.chest_armor), ntohl(player_data.chest_durability));
-    printf("       Gloves:     %u (durability: %u)\n", ntohl(player_data.gloves), ntohl(player_data.gloves_durability));
-    printf("       Leggings:   %u (durability: %u)\n", ntohl(player_data.leggings), ntohl(player_data.leggings_durability));
-    printf("       Boots:      %u (durability: %u)\n", ntohl(player_data.boots), ntohl(player_data.boots_durability));
-    printf("       Main Hand:  %u (durability: %u)\n", ntohl(player_data.main_hand), ntohl(player_data.main_hand_durability));
-    printf("       Off Hand:   %u (durability: %u)\n", ntohl(player_data.second_hand), ntohl(player_data.second_hand_durability));
+    printf("       Helmet:     %u\n", ntohl(player_data.helmet));
+    printf("       Chest:      %u\n", ntohl(player_data.chest_armor));
+    printf("       Gloves:     %u\n", ntohl(player_data.gloves));
+    printf("       Leggings:   %u\n", ntohl(player_data.leggings));
+    printf("       Boots:      %u\n", ntohl(player_data.boots));
+    printf("       Main Hand:  %u\n", ntohl(player_data.main_hand));
+    printf("       Off Hand:   %u\n", ntohl(player_data.second_hand));
     
     // Count inventory items
     int inventory_count = 0;

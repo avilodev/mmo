@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <pthread.h>
 
+#define MAX_NPC_ABILITIES_RT 4  // Must match MAX_NPC_ABILITIES in npc_ai.h
+
 // ---------------------------------------------------------------------------
 // Per-class attack profiles.
 // The server looks up the attacker's class and loads these values. Clients
@@ -44,6 +46,15 @@ typedef struct {
 extern const ClassAttackProfile g_class_profiles[5];
  
 // ---------------------------------------------------------------------------
+// NPC categories — sent to client for nameplate color, cursor, etc.
+// ---------------------------------------------------------------------------
+typedef enum {
+    NPC_CATEGORY_PASSIVE    = 0,   // Village NPCs, vendors — never attacks
+    NPC_CATEGORY_HOSTILE    = 1,   // Enemies — will aggro and attack
+    NPC_CATEGORY_QUEST      = 2,   // Quest givers — interactable, special marker
+} NPCCategory;
+
+// ---------------------------------------------------------------------------
 // NPC definition — everything the server needs to track a living entity.
 // This is intentionally minimal; expand as you add AI, loot tables, etc.
 // ---------------------------------------------------------------------------
@@ -61,10 +72,31 @@ typedef struct {
     uint32_t    xp_reward;         // XP granted to killer
 
     uint8_t     is_alive;          // 0 = dead, 1 = alive
+    uint8_t     category;          // NPCCategory — passive/hostile/quest
+
+    // Spawn / respawn
+    float       spawn_x, spawn_y;  // Original spawn position
+    float       respawn_time;      // Seconds until respawn (0 = no respawn)
+    double      death_time;        // When the NPC died (CLOCK_MONOTONIC)
+    uint16_t    npc_type_id;       // For loot table lookup
 
     // Dialogue support
     uint32_t    dialogue_id;       // 0 = no dialogue, otherwise dialogue ID from JSON
     uint8_t     is_interactable;   // 1 if player can talk to this NPC
+
+    // AI runtime state
+    uint8_t     ai_state;          // NPCAIState: 0=idle, 1=aggro, 2=returning, 3=casting
+    uint32_t    ai_target_id;      // Current target character_id (0 = no target)
+    double      ai_ability_cooldowns[MAX_NPC_ABILITIES_RT]; // Last use time per ability slot
+
+    // Telegraph cast state (active when ai_state == NPC_AI_CASTING)
+    uint8_t     ai_is_casting;     // 1 = currently casting a telegraph
+    int         ai_cast_ability_idx; // Which ability slot is being cast
+    double      ai_cast_start;     // When the cast began (CLOCK_MONOTONIC)
+    float       ai_cast_pos_x;     // Telegraph center position
+    float       ai_cast_pos_y;
+    float       ai_cast_dir_x;     // Telegraph direction (for cone/rect/line)
+    float       ai_cast_dir_y;
 } NPCEntity;
 
 // ---------------------------------------------------------------------------

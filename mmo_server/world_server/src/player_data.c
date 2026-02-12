@@ -125,7 +125,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     
     player->player_class = char_info.player_class;
 
-    // --- Compute all derived stats from class + level ---
+    // --- Compute all derived stats from class + level + equipment ---
     player_apply_class_stats(player);
 
     // For first login (DB has default health=100), use the class max
@@ -175,7 +175,10 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     
     // Copy inventory data
     memcpy(player->inventory, char_info.inventory, sizeof(player->inventory));
-    
+
+    // Now that equipment is loaded, recalculate stats with gear bonuses
+    player_apply_equipment_bonuses(player);
+
     player->is_loaded = 1;
     player->is_dirty = player->is_dirty ? 1 : 0;  // Keep dirty flag if we set spawn
     player->last_save = time(NULL);
@@ -383,13 +386,14 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     }
     
     pthread_mutex_unlock(&player->lock);
-    
+
     // Send packet
     send(client_fd, response, sizeof(CharacterInfo), 0);
-    
+    free(response);
+
+    // NOTE: player_send_stats() acquires player->lock internally,
+    // so we MUST call it AFTER unlocking above to avoid deadlock.
     player_send_stats(client_fd, player);
-    
-    free(response); 
     
     printf("Sent player data for character %u\n", character_id);
 }

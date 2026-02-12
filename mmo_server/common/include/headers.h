@@ -254,20 +254,13 @@ typedef struct {
     
     // Equipment
     uint32_t helmet;
-    uint32_t helmet_durability;
     uint32_t gloves;
-    uint32_t gloves_durability;
     uint32_t chest_armor;
-    uint32_t chest_durability;
     uint32_t leggings;
-    uint32_t leggings_durability;
     uint32_t boots;
-    uint32_t boots_durability;
     uint32_t main_hand;
-    uint32_t main_hand_durability;
     uint32_t second_hand;
-    uint32_t second_hand_durability;
-    uint16_t blessing; 
+    uint16_t blessing;
     
     // Inventory (150 slots)
     uint32_t inventory[150]; 
@@ -294,8 +287,15 @@ typedef struct {
     int         wisdom;
     int         defense;
     int         evasion;
+    int         vitality;
+    int         luck;
     float       move_speed;
+    int         weapon_damage;      // Sum of equipped weapon damage values
     double      last_combat_time;   // For out-of-combat HP regen
+
+    // Death/respawn
+    uint8_t     is_dead;            // 1 = dead, waiting for respawn
+    double      death_time;         // When the player died (CLOCK_MONOTONIC)
 
     // Active status effects on this player
     // (Kept simple — expand as needed)
@@ -309,7 +309,13 @@ typedef struct {
         float       tick_rate;
         uint32_t    source_id;          // Who applied this
     } active_effects[MAX_ACTIVE_EFFECTS];
-    
+
+    // Consumable cooldown
+    double      last_consumable_time;  // CLOCK_MONOTONIC timestamp of last consumable use
+
+    // Party
+    uint32_t    party_id;              // 0 = not in a party
+
     pthread_mutex_t lock;
 } ActivePlayer;
 
@@ -443,7 +449,13 @@ typedef struct {
 typedef struct {
     PacketHeader header;
     uint8_t success;
-    uint8_t padding[3];
+    uint8_t effect_type;       // UseEffectType — what effect was applied
+    uint8_t padding[2];
+    int32_t health_changed;    // Amount of health restored (0 if none)
+    int32_t mana_changed;      // Amount of mana restored (0 if none)
+    int32_t new_health;
+    int32_t new_mana;
+    uint32_t item_id;          // Which item was consumed
     char message[128];
 } UseItemResponsePacket;
 
@@ -479,14 +491,6 @@ typedef struct {
     uint8_t padding;
 } MoveItemResponsePacket;
 
-// Server -> Client: Add item to inventory notification
-typedef struct {
-    PacketHeader header;
-    uint32_t item_id;
-    uint8_t slot;
-    uint8_t padding[3];
-} AddItemPacket;
-
 // ============================================================================
 // PLAYER DATA PACKET (Enhanced with equipment/inventory)
 // ============================================================================
@@ -512,21 +516,14 @@ typedef struct {
     float pos_y;
     float pos_z;
     
-    // Equipment (item IDs and durability)
+    // Equipment (item IDs)
     uint32_t helmet;
-    uint32_t helmet_durability;
     uint32_t gloves;
-    uint32_t gloves_durability;
     uint32_t chest_armor;
-    uint32_t chest_durability;
     uint32_t leggings;
-    uint32_t leggings_durability; 
     uint32_t boots;
-    uint32_t boots_durability;
     uint32_t main_hand;
-    uint32_t main_hand_durability;
     uint32_t second_hand;
-    uint32_t second_hand_durability;
     uint16_t blessing;
     uint16_t padding;
     
@@ -709,6 +706,8 @@ typedef struct {
     int32_t      wisdom;
     int32_t      defense;
     int32_t      evasion;
+    int32_t      vitality;
+    int32_t      luck;
     uint64_t     xp_for_next_level; // So client can show XP bar
 } LevelUpPacket;
 
@@ -721,11 +720,14 @@ typedef struct {
     int32_t      wisdom;
     int32_t      defense;
     int32_t      evasion;
+    int32_t      vitality;
+    int32_t      luck;
     int32_t      max_health;
     int32_t      max_mana;
     int32_t      current_health;
     int32_t      current_mana;
     float        move_speed;
+    int32_t      weapon_damage;
     uint64_t     xp_for_next_level;
 } PlayerStatsPacket;
 
@@ -742,7 +744,9 @@ typedef struct {
     uint32_t health;
     uint32_t max_health;
     uint8_t is_alive;
-    uint8_t padding[3];  // Alignment padding
+    uint8_t category;        // NPCCategory: 0=passive, 1=hostile, 2=quest
+    uint8_t is_interactable; // 1 if player can interact (talk)
+    uint8_t npc_type_id;     // NPC type for client display
 } NPCPositionData;
 
 typedef struct {
@@ -845,7 +849,216 @@ typedef struct {
 } ProjectileDestroyPacket;
 
 // ============================================================================
+// DEATH / RESPAWN PACKETS
+// ============================================================================
+
+// Server -> Client: A player died
+typedef struct {
+    PacketHeader header;
+    uint32_t dead_player_id;
+    uint32_t killer_id;         // NPC or player who killed them (0 = environment)
+    uint8_t  killer_type;       // 0=npc, 1=player, 2=environment
+} PlayerDeathPacket;
+
+// Server -> Client: A player respawned
+typedef struct {
+    PacketHeader header;
+    uint32_t player_id;
+    float    pos_x, pos_y;
+    int32_t  health;
+    int32_t  max_health;
+    int32_t  mana;
+    int32_t  max_mana;
+} PlayerRespawnPacket;
+
+// ============================================================================
+// LOOT PACKETS
+// ============================================================================
+
+// Server -> Client: Item dropped on ground
+typedef struct {
+    PacketHeader header;
+    uint32_t ground_item_id;    // Unique ID for this ground item instance
+    uint32_t item_id;           // Item definition ID (from items.json)
+    uint8_t  quantity;
+    float    pos_x, pos_y;
+} LootDropPacket;
+
+// Client -> Server: Pick up a ground item
+typedef struct {
+    PacketHeader header;
+    uint32_t ground_item_id;
+} LootPickupRequestPacket;
+
+// Server -> Client: Pickup result
+typedef struct {
+    PacketHeader header;
+    uint8_t  success;           // 1=picked up, 0=failed
+    uint32_t ground_item_id;
+    uint32_t item_id;
+    uint8_t  quantity;
+    uint8_t  inventory_slot;    // Where it was placed
+    char     message[64];
+} LootPickupResponsePacket;
+
+// Server -> Client: Ground item disappeared (picked up by someone else or despawned)
+typedef struct {
+    PacketHeader header;
+    uint32_t ground_item_id;
+} LootDespawnPacket;
+
+// ============================================================================
+// PLAYER POSITION BROADCAST
+// ============================================================================
+
+#define MAX_NEARBY_PLAYERS 32
+
+// Single player entry in batch position update
+typedef struct {
+    uint32_t player_id;
+    float    pos_x, pos_y;
+    int32_t  health;
+    int32_t  max_health;
+    uint8_t  player_class;
+    uint8_t  is_dead;
+    uint8_t  padding[2];
+} NearbyPlayerData;
+
+// Server -> Client: Batch update of nearby player positions (20Hz)
+typedef struct {
+    PacketHeader header;
+    uint8_t count;
+    uint8_t padding[3];
+    NearbyPlayerData players[MAX_NEARBY_PLAYERS];
+} PlayerPositionBroadcastPacket;
+
+// ============================================================================
+// NPC TELEGRAPH PACKETS (FF14-style ground indicators)
+// ============================================================================
+
+// Server -> Client: NPC started casting — show ground indicator
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;            // Which NPC is casting
+    uint16_t ability_id;        // Client uses for VFX lookup
+    uint8_t  shape;             // 0=circle, 1=cone, 2=rectangle, 3=line
+    float    pos_x, pos_y;      // Center of the telegraph zone
+    float    dir_x, dir_y;      // Direction (for cone/rect/line; ignored for circle)
+    float    radius;            // Circle/cone radius
+    float    angle;             // Cone angle in degrees
+    float    width;             // Rectangle/line width
+    float    length;            // Rectangle/line length
+    float    cast_time;         // Seconds until it resolves (client counts down)
+} NPCTelegraphStartPacket;
+
+// Server -> Client: NPC telegraph resolved — show impact VFX
+typedef struct {
+    PacketHeader header;
+    uint32_t npc_id;
+    uint16_t ability_id;
+} NPCTelegraphResolvePacket;
+
+// ============================================================================
 // HELPER MACROS
+// ============================================================================
+// CHAT PACKETS
+// ============================================================================
+
+#define MAX_CHAT_MESSAGE 256
+
+// Chat channel types
+typedef enum {
+    CHAT_CHANNEL_LOCAL  = 0,   // Nearby players only
+    CHAT_CHANNEL_GLOBAL = 1,   // All players on server
+    CHAT_CHANNEL_WHISPER = 2,  // Private message (future)
+    CHAT_CHANNEL_PARTY  = 3,   // Party members only
+} ChatChannel;
+
+// Client -> Server: Player sends a chat message
+typedef struct {
+    PacketHeader header;
+    uint8_t  channel;          // ChatChannel
+    uint8_t  padding[3];
+    char     message[MAX_CHAT_MESSAGE];
+} ChatSendPacket;
+
+// Server -> Client: Chat message broadcast
+typedef struct {
+    PacketHeader header;
+    uint32_t sender_id;
+    uint8_t  channel;          // ChatChannel
+    uint8_t  padding[3];
+    char     sender_name[32];
+    char     message[MAX_CHAT_MESSAGE];
+} ChatMessagePacket;
+
+// ============================================================================
+
+// ============================================================================
+// PARTY PACKETS
+// ============================================================================
+
+#define MAX_PARTY_SIZE 5
+
+// Client -> Server: invite player by name
+typedef struct {
+    PacketHeader header;
+    char target_name[32];
+} PartyInvitePacket;
+
+// Server -> Client: you have a pending invite
+typedef struct {
+    PacketHeader header;
+    uint32_t from_id;
+    char from_name[32];
+} PartyInviteNotifyPacket;
+
+// Client -> Server: accept invite
+typedef struct {
+    PacketHeader header;
+} PartyAcceptPacket;
+
+// Client -> Server: decline invite
+typedef struct {
+    PacketHeader header;
+} PartyDeclinePacket;
+
+// Client -> Server: leave party
+typedef struct {
+    PacketHeader header;
+} PartyLeavePacket;
+
+// Client -> Server: leader kicks member
+typedef struct {
+    PacketHeader header;
+    uint32_t target_id;
+} PartyKickPacket;
+
+// Server -> Client: full party state update
+typedef struct {
+    PacketHeader header;
+    uint32_t party_id;
+    uint32_t leader_id;
+    uint8_t  member_count;
+    uint8_t  padding[3];
+    struct {
+        uint32_t character_id;
+        char     name[32];
+        uint8_t  level;
+        uint8_t  player_class;
+        uint8_t  padding[2];
+        int32_t  health;
+        int32_t  max_health;
+        int32_t  mana;
+        int32_t  max_mana;
+    } members[MAX_PARTY_SIZE];
+} PartyUpdatePacket;
+
+// Server -> Client: party disbanded
+typedef struct {
+    PacketHeader header;
+} PartyDisbandPacket;
+
 // ============================================================================
 
 // Network byte order conversion for 64-bit values

@@ -10,10 +10,14 @@
 #include "combat.h"
 #include "dialogue_system.h"
 #include "projectile.h"
+#include "loot.h"
+#include "npc_ai.h"
+#include "npc_spawns.h"
 #include "routes.h"
 #include "packet_handler.h"
 #include "player_data.h"
 #include "session_registry.h"
+#include "party.h"
 #include "utils.h"
 
 #include <sys/socket.h>
@@ -25,6 +29,8 @@
 #define DATA_PATH "/home/avilo/mmo_server/world_server/data/items.json"
 #define ABILITIES_PATH "/home/avilo/mmo_server/world_server/data/abilities.json"
 #define DIALOGUES_PATH "/home/avilo/mmo_server/world_server/data/dialogues.json"
+#define NPC_TYPES_PATH "/home/avilo/mmo_server/world_server/data/npc_types.json"
+#define SPAWNS_PATH "/home/avilo/mmo_server/world_server/data/spawns.json"
 
 static pthread_t g_combat_thread;
 static pthread_t g_player_broadcast_thread;
@@ -186,13 +192,14 @@ void* client_handler_thread(void* arg) {
     }
     
     if (authenticated) {
+        party_handle_disconnect(character_id);
         ActivePlayer* player = player_find_active(character_id);
         if (player && player->is_loaded) {
             playerdata_save(player);
         }
         player_remove_active(character_id);
         session_registry_remove(client_fd);
-        g_state.current_players--; 
+        g_state.current_players--;
         printf("Account %u, Character %u disconnected\n", account_id, character_id);
     }
     
@@ -421,9 +428,11 @@ void* combat_update_thread(void* arg) {
     printf("Combat update thread started (20Hz)\n");
 
     while (g_combat_running && g_server.running) {
-        combat_tick(&g_npc_world);           // basic attack resolution
+        combat_tick(&g_npc_world);           // basic attack resolution + death/respawn
         ability_tick(&g_npc_world, DELTA_TIME); // ability resolution + effects
         projectile_tick(&g_npc_world, DELTA_TIME); // projectile movement + collision
+        npc_ai_tick(&g_npc_world, DELTA_TIME);  // NPC AI: targeting, movement, abilities
+        loot_tick();                          // despawn expired ground items
 
         // Calculate next tick time
         next_tick.tv_nsec += TARGET_INTERVAL_NS;
@@ -459,22 +468,109 @@ void* player_broadcast_thread(void* arg) {
     
     while (g_player_broadcast_running && g_server.running) {
         // --- Broadcast player positions to nearby players ---
-        // TODO: Implement player position broadcasting
-        // For each active player:
-        //   - Find all players within view range (e.g. 800 units)
-        //   - Build PlayerPositionPacket with nearby player data
-        //   - Send to each client
-        
-        // Primitive implementation (to be filled in):
-        // pthread_mutex_lock(&active_players_lock);
-        // for (int i = 0; i < MAX_PLAYERS; i++) {
-        //     if (!active_players[i].is_loaded) continue;
-        //     
-        //     // For this player, find all nearby players
-        //     // Send packet with their positions
-        // }
-        // pthread_mutex_unlock(&active_players_lock);
-        
+        extern ActivePlayer active_players[];
+        extern pthread_mutex_t active_players_lock;
+
+        // Snapshot all active players
+        typedef struct {
+            int      valid;
+            int      client_fd;
+            uint32_t character_id;
+            float    pos_x, pos_y;
+            int32_t  health, max_health;
+            uint8_t  player_class;
+            uint8_t  is_dead;
+        } PlayerSnapshot;
+
+        PlayerSnapshot snapshots[MAX_PLAYERS];
+
+        pthread_mutex_lock(&active_players_lock);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (active_players[i].is_loaded) {
+                snapshots[i].valid = 1;
+                snapshots[i].client_fd = active_players[i].client_fd;
+                snapshots[i].character_id = active_players[i].character_id;
+
+                pthread_mutex_lock(&active_players[i].lock);
+                snapshots[i].pos_x = active_players[i].pos_x;
+                snapshots[i].pos_y = active_players[i].pos_y;
+                snapshots[i].health = active_players[i].health;
+                snapshots[i].max_health = active_players[i].max_health;
+                snapshots[i].player_class = active_players[i].player_class;
+                snapshots[i].is_dead = active_players[i].is_dead;
+                pthread_mutex_unlock(&active_players[i].lock);
+            } else {
+                snapshots[i].valid = 0;
+            }
+        }
+        pthread_mutex_unlock(&active_players_lock);
+
+        // For each player, build a packet of nearby players and send
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!snapshots[i].valid) continue;
+
+            PlayerPositionBroadcastPacket pkt;
+            memset(&pkt, 0, sizeof(pkt));
+            pkt.header.type = PACKET_PLAYER_POSITIONS;
+            pkt.header.player_id = htonl(snapshots[i].character_id);
+            pkt.count = 0;
+
+            float px = snapshots[i].pos_x;
+            float py = snapshots[i].pos_y;
+
+            for (int j = 0; j < MAX_PLAYERS; j++) {
+                if (!snapshots[j].valid || j == i) continue;
+                if (pkt.count >= MAX_NEARBY_PLAYERS) break;
+
+                float dx = snapshots[j].pos_x - px;
+                float dy = snapshots[j].pos_y - py;
+                if (dx * dx + dy * dy > 800.0f * 800.0f) continue;
+
+                NearbyPlayerData* np = &pkt.players[pkt.count];
+                np->player_id = htonl(snapshots[j].character_id);
+                np->pos_x = snapshots[j].pos_x;
+                np->pos_y = snapshots[j].pos_y;
+                np->health = htonl(snapshots[j].health);
+                np->max_health = htonl(snapshots[j].max_health);
+                np->player_class = snapshots[j].player_class;
+                np->is_dead = snapshots[j].is_dead;
+                pkt.count++;
+            }
+
+            // Always send (even if count=0, so client knows no one is nearby)
+            send(snapshots[i].client_fd, &pkt, sizeof(pkt), 0);
+        }
+
+        // Broadcast party updates (HP/mana) for players in parties
+        // Track which parties we've already broadcast for this tick
+        {
+            uint32_t broadcast_parties[MAX_PLAYERS];
+            int broadcast_count = 0;
+
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (!snapshots[i].valid) continue;
+
+                ActivePlayer* ap = player_find_active(snapshots[i].character_id);
+                if (!ap) continue;
+
+                pthread_mutex_lock(&ap->lock);
+                uint32_t pid = ap->party_id;
+                pthread_mutex_unlock(&ap->lock);
+
+                if (pid == 0) continue;
+
+                // Check if we already broadcast this party
+                int already = 0;
+                for (int b = 0; b < broadcast_count; b++) {
+                    if (broadcast_parties[b] == pid) { already = 1; break; }
+                }
+                if (already) continue;
+
+                broadcast_parties[broadcast_count++] = pid;
+                party_broadcast_update(pid);
+            }
+        }
+
         // Calculate next tick time
         next_tick.tv_nsec += TARGET_INTERVAL_NS;
         if (next_tick.tv_nsec >= 1000000000) {
@@ -534,12 +630,15 @@ void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPC
             data->health = htonl(npc->health);
             data->max_health = htonl(npc->max_health);
             data->is_alive = npc->is_alive;
+            data->category = npc->category;
+            data->is_interactable = npc->is_interactable;
+            data->npc_type_id = (uint8_t)npc->npc_type_id;
             pkt.npc_count++;
         }
     }
-    
+
     pthread_mutex_unlock(&world->lock);
-    
+
     // Only send if there are NPCs
     if (pkt.npc_count > 0) {
         send(client_fd, &pkt, sizeof(pkt), 0);
@@ -621,6 +720,9 @@ void* npc_broadcast_thread(void* arg) {
                     data->health = htonl(npc->health);
                     data->max_health = htonl(npc->max_health);
                     data->is_alive = npc->is_alive;
+                    data->category = npc->category;
+                    data->is_interactable = npc->is_interactable;
+                    data->npc_type_id = (uint8_t)npc->npc_type_id;
                     pkt.npc_count++;
                 }
             }
@@ -772,6 +874,16 @@ int main(int argc, char** argv) {
     ability_handler_init();
     projectile_init();
 
+    if (!loot_init(DATA_PATH)) {
+        fprintf(stderr, "FAILED - Loot system initialization\n");
+        return 1;
+    }
+
+    if (!npc_ai_init(NPC_TYPES_PATH)) {
+        fprintf(stderr, "FAILED - NPC AI system initialization\n");
+        return 1;
+    }
+
     printf("Loading dialogue system... ");
     fflush(stdout);
     if (!dialogue_system_init(DIALOGUES_PATH)) {
@@ -802,40 +914,16 @@ int main(int argc, char** argv) {
     printf("✓ Connected to world database\n");
 
     combat_npc_init(&g_npc_world);
+    party_init();
 
-    // Spawn ring of 8 dummies
+    // Load NPC spawns from data file
     {
-        float cx = 608.0f;
-        float cy = 608.0f;
-        float ring_radius = 120.0f;
-        int   npc_count   = 8;
-
-        // Spawn one interactable NPC with dialogue in the center
-        combat_npc_spawn(&g_npc_world,
-                         "Friendly Guard",
-                         cx, cy,
-                         200,
-                         16.0f,
-                         1,      // dialogue_id = 1 (from dialogues.json)
-                         1);     // is_interactable = 1
-
-        // Spawn combat dummies in a ring (no dialogue)
-        for (int i = 0; i < npc_count; i++) {
-            float angle = (2.0f * M_PI * i) / npc_count;
-            float x = cx + ring_radius * cosf(angle);
-            float y = cy + ring_radius * sinf(angle);
-
-            char name[32];
-            snprintf(name, sizeof(name), "Dummy_%d", i + 1);
-
-            combat_npc_spawn(&g_npc_world,
-                             name,
-                             x, y,
-                             100,
-                             16.0f,
-                             0,      // dialogue_id = 0 (no dialogue)
-                             0);     // is_interactable = 0 (combat only)
+        int spawn_count = npc_spawns_load(SPAWNS_PATH, &g_npc_world);
+        if (spawn_count < 0) {
+            fprintf(stderr, "FAILED - Could not load NPC spawns from %s\n", SPAWNS_PATH);
+            return 1;
         }
+        printf("Loaded %d NPC spawns\n", spawn_count);
     }
     
     if (!playerdata_start_save_thread()) {
@@ -949,6 +1037,8 @@ int main(int argc, char** argv) {
     pthread_join(g_server.accept_thread, NULL);
     
     // Cleanup
+    npc_ai_cleanup();
+    loot_cleanup();
     projectile_cleanup();
     ability_handler_cleanup();
     abilities_cleanup();

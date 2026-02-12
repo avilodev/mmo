@@ -30,6 +30,14 @@ typedef enum {
     SLOT_TWO_HANDED = 8        // Two-handed weapons
 } EquipSlot;
 
+// Consumable effect types
+typedef enum {
+    USE_EFFECT_NONE = 0,
+    USE_EFFECT_RESTORE_HEALTH = 1,
+    USE_EFFECT_RESTORE_MANA = 2,
+    USE_EFFECT_RESTORE_BOTH = 3,
+} UseEffectType;
+
 // Item rarity
 typedef enum {
     RARITY_COMMON = 0,
@@ -66,7 +74,16 @@ typedef struct {
     // Stats
     uint32_t damage;           // For weapons
     uint32_t defense;          // For armor/shields
-    uint32_t max_durability;   // Maximum durability
+
+    // Stat bonuses (applied when equipped)
+    int32_t bonus_strength;
+    int32_t bonus_agility;
+    int32_t bonus_intelligence;
+    int32_t bonus_wisdom;
+    int32_t bonus_defense;
+    int32_t bonus_evasion;
+    int32_t bonus_vitality;
+    int32_t bonus_luck;
     
     // Requirements
     uint8_t level_req;         // Minimum level required
@@ -80,6 +97,11 @@ typedef struct {
     uint16_t max_stack;        // Maximum stack size
     uint32_t value;            // Gold value (for selling)
     
+    // Consumable
+    uint8_t use_effect;        // UseEffectType — what happens when used
+    int32_t use_value;         // How much to restore/apply
+    float   use_cooldown;      // Seconds before this consumable can be used again
+
     // Flags
     uint8_t is_two_handed;     // 1 if two-handed weapon
     uint8_t bind_on_pickup;    // 1 if binds when picked up

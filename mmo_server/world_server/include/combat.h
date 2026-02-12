@@ -22,7 +22,13 @@ uint32_t combat_npc_spawn(NPCWorld* world,
                           int health,
                           float hitbox_radius,
                           uint32_t dialogue_id,
-                          uint8_t is_interactable);
+                          uint8_t is_interactable,
+                          uint16_t npc_type_id,
+                          float respawn_time,
+                          uint8_t category);
+
+// Look up an NPC by ID. Returns pointer or NULL. Caller must hold world->lock.
+NPCEntity* combat_npc_find(NPCWorld* world, uint32_t npc_id);
 
 // Remove a dead NPC (or despawn). Pass the NPC's ID.
 void combat_npc_remove(NPCWorld* world, uint32_t npc_id);

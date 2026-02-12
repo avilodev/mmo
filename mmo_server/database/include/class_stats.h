@@ -15,6 +15,8 @@ typedef struct {
     int     wisdom;
     int     defense;
     int     evasion;
+    int     vitality;
+    int     luck;
     float   move_speed;
 } DerivedStats;
 
@@ -37,6 +39,10 @@ typedef struct {
     int     wisdom_per_level;
     int     defense_per_level;
     int     evasion_per_level;
+    int     base_vitality;
+    int     base_luck;
+    int     vitality_per_level;
+    int     luck_per_level;
 } ClassStatProfile;
 
 void class_stats_init(void);

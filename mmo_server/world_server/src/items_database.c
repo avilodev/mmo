@@ -196,6 +196,13 @@ static ItemType parse_type(const char* type_str) {
     return ITEM_TYPE_ITEM;
 }
 
+static UseEffectType parse_use_effect(const char* effect_str) {
+    if (strcmp(effect_str, "restore_health") == 0) return USE_EFFECT_RESTORE_HEALTH;
+    if (strcmp(effect_str, "restore_mana") == 0) return USE_EFFECT_RESTORE_MANA;
+    if (strcmp(effect_str, "restore_both") == 0) return USE_EFFECT_RESTORE_BOTH;
+    return USE_EFFECT_NONE;
+}
+
 static ItemRarity parse_rarity(const char* rarity_str) {
     if (strcmp(rarity_str, "common") == 0) return RARITY_COMMON;
     if (strcmp(rarity_str, "uncommon") == 0) return RARITY_UNCOMMON;
@@ -327,10 +334,6 @@ static int parse_items_json(const char* json_content) {
         const char* def_val = find_json_value(obj_json, "defense");
         if (def_val) item->defense = atoi(def_val);
         
-        // Parse durability
-        const char* dur_val = find_json_value(obj_json, "durability");
-        if (dur_val) item->max_durability = atoi(dur_val);
-        
         // Parse level requirement
         const char* lvl_val = find_json_value(obj_json, "level_req");
         if (lvl_val) item->level_req = atoi(lvl_val);
@@ -364,6 +367,46 @@ static int parse_items_json(const char* json_content) {
             }
         }
         
+        // Parse consumable effect
+        const char* effect_val = find_json_value(obj_json, "use_effect");
+        if (effect_val && *effect_val == '"') {
+            const char* effect_end = strchr(effect_val + 1, '"');
+            if (effect_end) {
+                int effect_len = effect_end - (effect_val + 1);
+                char effect_str[32] = {0};
+                if (effect_len < 32) {
+                    memcpy(effect_str, effect_val + 1, effect_len);
+                    item->use_effect = parse_use_effect(effect_str);
+                }
+            }
+        }
+
+        // Parse consumable value
+        const char* use_val = find_json_value(obj_json, "use_value");
+        if (use_val) item->use_value = atoi(use_val);
+
+        // Parse consumable cooldown
+        const char* cd_val = find_json_value(obj_json, "use_cooldown");
+        if (cd_val) item->use_cooldown = (float)atof(cd_val);
+
+        // Parse stat bonuses
+        const char* bs_val = find_json_value(obj_json, "bonus_strength");
+        if (bs_val) item->bonus_strength = atoi(bs_val);
+        const char* ba_val = find_json_value(obj_json, "bonus_agility");
+        if (ba_val) item->bonus_agility = atoi(ba_val);
+        const char* bi_val = find_json_value(obj_json, "bonus_intelligence");
+        if (bi_val) item->bonus_intelligence = atoi(bi_val);
+        const char* bw_val = find_json_value(obj_json, "bonus_wisdom");
+        if (bw_val) item->bonus_wisdom = atoi(bw_val);
+        const char* bd_val = find_json_value(obj_json, "bonus_defense");
+        if (bd_val) item->bonus_defense = atoi(bd_val);
+        const char* be_val = find_json_value(obj_json, "bonus_evasion");
+        if (be_val) item->bonus_evasion = atoi(be_val);
+        const char* bv_val = find_json_value(obj_json, "bonus_vitality");
+        if (bv_val) item->bonus_vitality = atoi(bv_val);
+        const char* bl_val = find_json_value(obj_json, "bonus_luck");
+        if (bl_val) item->bonus_luck = atoi(bl_val);
+
         // Set default value based on rarity
         item->value = (item->rarity + 1) * 10;
         
