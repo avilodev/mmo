@@ -1,4 +1,5 @@
 #include "inventory.h"
+#include "network.h"
 #include "renderer.h"
 #include <string.h>
 #include <stdio.h>
@@ -480,6 +481,7 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
                     ItemSlot temp = inv->slots[slot];
                     inv->slots[slot] = inv->slots[inv->selected_slot];
                     inv->slots[inv->selected_slot] = temp;
+                    network_send_move_item((uint8_t)inv->selected_slot, (uint8_t)slot);
                     inv->selected_slot = -1;
                     printf("[INV] Swapped items\n");
                 }
@@ -748,8 +750,28 @@ void inventory_use_item(InventoryState* inv, int si) {
     const ItemTemplate* item = item_db_get(s->template_id);
     if (!item) return;
     if (item->type == ITEM_TYPE_CONSUMABLE) {
-        printf("[INVENTORY] Used %s\n", item->name);
+        printf("[INVENTORY] Using %s (sending to server)\n", item->name);
+        network_send_use_item((uint8_t)si);
+        // Remove locally immediately for responsiveness;
+        // server will confirm or we could revert on failure
         inventory_remove_item(inv, si, 1);
+    } else if (item->type == ITEM_TYPE_EQUIPMENT && item->equip_slot != EQUIP_SLOT_NONE) {
+        // Map client EquipSlot to server EquipSlotId
+        uint8_t server_slot = 0;
+        switch (item->equip_slot) {
+            case EQUIP_SLOT_HELMET:      server_slot = EQUIP_SLOT_ID_HELMET; break;
+            case EQUIP_SLOT_CHEST:       server_slot = EQUIP_SLOT_ID_CHEST; break;
+            case EQUIP_SLOT_GLOVES:      server_slot = EQUIP_SLOT_ID_GLOVES; break;
+            case EQUIP_SLOT_LEGGINGS:    server_slot = EQUIP_SLOT_ID_LEGGINGS; break;
+            case EQUIP_SLOT_BOOTS:       server_slot = EQUIP_SLOT_ID_BOOTS; break;
+            case EQUIP_SLOT_MAIN_HAND:   server_slot = EQUIP_SLOT_ID_MAIN_HAND; break;
+            case EQUIP_SLOT_SECOND_HAND: server_slot = EQUIP_SLOT_ID_OFF_HAND; break;
+            default: break;
+        }
+        if (server_slot > 0) {
+            printf("[INVENTORY] Equipping %s to slot %u\n", item->name, server_slot);
+            network_send_equip_item(s->template_id, (uint8_t)si, server_slot);
+        }
     }
 }
 

@@ -30,12 +30,26 @@ GameState* g_current_game = NULL;
 static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     (void)xoffset;
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
-    
+
     game->camera.zoom *= (1.0f + (float)yoffset * 0.1f);
-    
+
     // Clamp zoom between min and max (don't wrap around)
     if (game->camera.zoom < 1.0f) game->camera.zoom = 1.0f;
-    if (game->camera.zoom > 2.0f) game->camera.zoom = 2.0f; 
+    if (game->camera.zoom > 2.0f) game->camera.zoom = 2.0f;
+}
+
+static void char_callback(GLFWwindow* window, unsigned int codepoint) {
+    GameState* game = (GameState*)glfwGetWindowUserPointer(window);
+    if (!game || !game->chat.is_typing) return;
+
+    // Only handle printable ASCII
+    if (codepoint >= 32 && codepoint < 127) {
+        if (game->chat.input_len < MAX_CHAT_INPUT_LEN - 1) {
+            game->chat.input_buf[game->chat.input_len] = (char)codepoint;
+            game->chat.input_len++;
+            game->chat.input_buf[game->chat.input_len] = '\0';
+        }
+    }
 }
 
 // ============================================================================
@@ -209,6 +223,7 @@ int main(int argc, char* argv[]) {
     // Set callbacks
     glfwSetWindowUserPointer(window, &game);
     glfwSetScrollCallback(window, scroll_callback);
+    glfwSetCharCallback(window, char_callback);
     
     printf("\n=== Entering Main Loop ===\n");
     printf("Target FPS: %d\n", TARGET_FPS);

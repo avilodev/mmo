@@ -31,6 +31,15 @@ void renderer_draw_text(float x, float y, const char* text);
 
 void renderer_draw_text_centered(float x, float y, float w, float h, const char* text);
 
+// Draw a filled circle (for telegraphs, zones)
+void renderer_draw_circle(float cx, float cy, float radius,
+                          float r, float g, float b, float a, int segments);
+
+// Draw a filled cone (for telegraph cones)
+void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
+                        float radius, float angle_deg,
+                        float r, float g, float b, float a, int segments);
+
 // Clean up renderer resources
 void renderer_cleanup(void);
 

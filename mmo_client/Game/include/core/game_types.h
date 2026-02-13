@@ -20,9 +20,15 @@ typedef struct WorldState WorldState;  // Fully defined in world.h (included bel
 // ============================================================================
 // CONSTANTS
 // ============================================================================
-#define MAX_VISIBLE_NPCS    64
-#define MAX_DAMAGE_NUMBERS  10
-#define MAX_WORLDS          10
+#define MAX_VISIBLE_NPCS        64
+#define MAX_DAMAGE_NUMBERS      10
+#define MAX_WORLDS              10
+#define MAX_VISIBLE_PROJECTILES 64
+#define MAX_TELEGRAPHS          16
+#define MAX_ZONES               32
+#define MAX_GROUND_ITEMS        64
+#define MAX_CHAT_LINES          50
+#define MAX_CHAT_INPUT_LEN      256
 
 #define INVENTORY_SIZE 150
 #define INVENTORY_COLS 10
@@ -180,6 +186,9 @@ typedef struct {
     uint32_t health;
     uint32_t max_health;
     uint8_t is_alive;
+    uint8_t category;        // 0=passive, 1=hostile, 2=quest
+    uint8_t is_interactable; // 1 if player can interact (talk)
+    uint8_t npc_type_id;     // NPC type for client display
     char name[32];
 } VisibleNPC;
 
@@ -289,6 +298,115 @@ typedef struct {
 } HUDLayout;
 
 // ============================================================================
+// NEARBY PLAYERS
+// ============================================================================
+
+typedef struct {
+    uint32_t player_id;
+    float pos_x, pos_y;
+    int32_t health, max_health;
+    uint8_t player_class;
+    uint8_t is_dead;
+} NearbyPlayer;
+
+// ============================================================================
+// PROJECTILES
+// ============================================================================
+
+typedef struct {
+    uint32_t id;
+    float pos_x, pos_y;
+    float dir_x, dir_y;
+    float speed;
+    uint8_t active;
+} VisibleProjectile;
+
+// ============================================================================
+// NPC TELEGRAPHS
+// ============================================================================
+
+typedef struct {
+    uint32_t npc_id;
+    uint8_t shape;          // 0=circle, 1=cone, 2=rectangle, 3=line
+    float pos_x, pos_y;
+    float dir_x, dir_y;
+    float radius, angle, width, length;
+    float cast_time;
+    float elapsed;
+    uint8_t active;
+} VisibleTelegraph;
+
+// ============================================================================
+// ZONES (AoE areas)
+// ============================================================================
+
+typedef struct {
+    uint32_t zone_id;
+    float pos_x, pos_y;
+    float radius;
+    float duration;
+    float elapsed;
+    uint8_t active;
+} VisibleZone;
+
+// ============================================================================
+// GROUND LOOT
+// ============================================================================
+
+typedef struct {
+    uint32_t ground_item_id;
+    uint32_t item_id;
+    uint8_t quantity;
+    float pos_x, pos_y;
+    uint8_t active;
+} GroundItem;
+
+// ============================================================================
+// CHAT STATE
+// ============================================================================
+
+typedef struct {
+    char sender[32];
+    char text[256];
+    uint8_t channel;
+} ChatLine;
+
+typedef struct {
+    ChatLine lines[MAX_CHAT_LINES];
+    int line_count;
+    int is_typing;
+    char input_buf[MAX_CHAT_INPUT_LEN];
+    int input_len;
+    uint8_t active_channel;
+} ChatState;
+
+// ============================================================================
+// PARTY STATE
+// ============================================================================
+
+typedef struct {
+    uint32_t id;
+    char name[32];
+    uint8_t level;
+    uint8_t player_class;
+    int32_t health, max_health;
+    int32_t mana, max_mana;
+} PartyMember;
+
+typedef struct {
+    uint32_t party_id;
+    uint32_t leader_id;
+    uint8_t member_count;
+    PartyMember members[MAX_PARTY_SIZE];
+    int has_party;
+    // Pending invite
+    int has_pending_invite;
+    uint32_t invite_from_id;
+    char invite_from_name[32];
+    float invite_timer;
+} PartyState;
+
+// ============================================================================
 // MAIN GAME STATE
 // ============================================================================
 
@@ -332,7 +450,10 @@ struct GameState {
     int32_t     player_wisdom;
     int32_t     player_defense;
     int32_t     player_evasion;
+    int32_t     player_vitality;
+    int32_t     player_luck;
     float       player_move_speed;      // Server-authoritative speed
+    int32_t     player_weapon_damage;
     uint64_t    player_xp_for_next;     // XP needed for next level
 
     // --- Level-up notification ---
@@ -340,7 +461,34 @@ struct GameState {
     float       level_up_timer;         // Auto-dismiss timer
     int         level_up_new_level;     // The level reached
 
+    // --- Death state ---
+    int         is_dead;                // 1 = player is dead
+    float       death_timer;            // Time since death (for UI)
+
     EnterWorldResponsePacket enter_world_response;
+
+    // --- Nearby Players ---
+    NearbyPlayer nearby_players[MAX_NEARBY_PLAYERS];
+    int nearby_player_count;
+
+    // --- Projectiles ---
+    VisibleProjectile projectiles[MAX_VISIBLE_PROJECTILES];
+    int projectile_count;
+
+    // --- NPC Telegraphs ---
+    VisibleTelegraph telegraphs[MAX_TELEGRAPHS];
+
+    // --- Zones ---
+    VisibleZone zones[MAX_ZONES];
+
+    // --- Ground Loot ---
+    GroundItem ground_items[MAX_GROUND_ITEMS];
+
+    // --- Chat ---
+    ChatState chat;
+
+    // --- Party ---
+    PartyState party;
 };
 
 #endif // GAME_TYPES_H

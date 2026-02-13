@@ -80,4 +80,55 @@ void network_send_ability_cancel(void);
 // Request a full stat refresh from the server (e.g. on reconnect)
 void network_request_player_stats(void);
 
+// ----------------------------------------------------------------------------
+// NPC DIALOGUE
+// ----------------------------------------------------------------------------
+
+// Request to interact with an NPC
+void network_send_npc_interact_request(uint32_t npc_id);
+
+// Send the player's selected dialogue option
+void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, uint8_t current_page, uint8_t option_selected);
+
+// Get the initial dialogue response from the server (returns 1 if ready, 0 if not)
+int network_get_npc_interact_response(NPCInteractResponsePacket* out);
+
+// Get the dialogue update from the server (returns 1 if ready, 0 if not)
+int network_get_dialogue_update(DialogueUpdatePacket* out);
+
+// Get the dialogue close notification from the server (returns 1 if ready, 0 if not)
+int network_get_dialogue_close(DialogueClosePacket* out);
+
+// ----------------------------------------------------------------------------
+// INVENTORY / EQUIPMENT
+// ----------------------------------------------------------------------------
+
+void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t equip_slot);
+void network_send_unequip_item(uint8_t equip_slot);
+void network_send_use_item(uint8_t inventory_slot);
+void network_send_drop_item(uint8_t inventory_slot);
+void network_send_move_item(uint8_t from_slot, uint8_t to_slot);
+
+// ----------------------------------------------------------------------------
+// CHAT
+// ----------------------------------------------------------------------------
+
+void network_send_chat(uint8_t channel, const char* message);
+
+// ----------------------------------------------------------------------------
+// LOOT
+// ----------------------------------------------------------------------------
+
+void network_send_loot_pickup(uint32_t ground_item_id);
+
+// ----------------------------------------------------------------------------
+// PARTY
+// ----------------------------------------------------------------------------
+
+void network_send_party_invite(const char* target_name);
+void network_send_party_accept(void);
+void network_send_party_decline(void);
+void network_send_party_leave(void);
+void network_send_party_kick(uint32_t target_id);
+
 #endif // NETWORK_H

@@ -3,6 +3,7 @@
 
 #include "renderer.h"
 #include <stdio.h>
+#include <math.h>
 
 static int screen_width;
 static int screen_height;
@@ -124,6 +125,40 @@ void renderer_draw_text_centered(float x, float y, float w, float h, const char*
     }
     // Adjust y by roughly half the font height (size/2) to center vertically
     renderer_draw_text(x + (w - tw) / 2.0f, y + (h / 2.0f) + 6.0f, text);
+}
+
+void renderer_draw_circle(float cx, float cy, float radius,
+                          float r, float g, float b, float a, int segments) {
+    glDisable(GL_TEXTURE_2D);
+    glColor4f(r, g, b, a);
+    glBegin(GL_TRIANGLE_FAN);
+    glVertex2f(cx, cy);
+    for (int i = 0; i <= segments; i++) {
+        float angle = 2.0f * 3.14159265f * (float)i / (float)segments;
+        glVertex2f(cx + cosf(angle) * radius, cy + sinf(angle) * radius);
+    }
+    glEnd();
+    glEnable(GL_TEXTURE_2D);
+}
+
+void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
+                        float radius, float angle_deg,
+                        float r, float g, float b, float a, int segments) {
+    glDisable(GL_TEXTURE_2D);
+    glColor4f(r, g, b, a);
+
+    float base_angle = atan2f(dir_y, dir_x);
+    float half_angle = angle_deg * 3.14159265f / 360.0f; // half in radians
+
+    glBegin(GL_TRIANGLE_FAN);
+    glVertex2f(cx, cy);
+    for (int i = 0; i <= segments; i++) {
+        float t = (float)i / (float)segments;
+        float ang = base_angle - half_angle + t * 2.0f * half_angle;
+        glVertex2f(cx + cosf(ang) * radius, cy + sinf(ang) * radius);
+    }
+    glEnd();
+    glEnable(GL_TEXTURE_2D);
 }
 
 void renderer_cleanup(void) {
