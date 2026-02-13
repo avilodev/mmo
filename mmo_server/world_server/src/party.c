@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <math.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -375,10 +376,14 @@ void party_broadcast_update(uint32_t party_id) {
 
     pthread_mutex_unlock(&p->lock);
 
-    // Send to all members
+    // Send only actual data (base + member_count entries)
+    size_t send_size = offsetof(PartyUpdatePacket, members) +
+                       pkt.member_count * sizeof(pkt.members[0]);
+    pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+
     for (int i = 0; i < member_count; i++) {
         pkt.header.player_id = htonl(member_ids[i]);
-        send_to_character(member_ids[i], &pkt, sizeof(pkt));
+        send_to_character(member_ids[i], &pkt, send_size);
     }
 }
 

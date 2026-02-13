@@ -24,7 +24,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     
     double time_delta = (now.tv_sec - player->last_move_tv.tv_sec) + 
                         (now.tv_usec - player->last_move_tv.tv_usec) / 1000000.0;
-    
+     
     if (time_delta < 0.001 || time_delta > 5.0) time_delta = 0.1;
     
     float dx = client_x - player->pos_x;
@@ -44,6 +44,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
         PlayerMoveAckPacket correction;
         memset(&correction, 0, sizeof(correction));
         correction.header.type = PACKET_PLAYER_MOVE_ACK;
+        correction.header.payload_size = htons(sizeof(PlayerMoveAckPacket) - sizeof(PacketHeader)); 
         correction.pos_x = player->pos_x;
         correction.pos_y = player->pos_y;
         
@@ -88,6 +89,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
         response.header.player_id = htonl(character_id);
+        response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader)); 
         response.success = 0;
         strncpy(response.message, "Item not in inventory", sizeof(response.message) - 1);
         send(client_fd, &response, sizeof(response), 0);
@@ -103,6 +105,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
         response.header.player_id = htonl(character_id);
+        response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader)); 
         response.success = 0;
         strncpy(response.message, "Invalid item", sizeof(response.message) - 1);
         send(client_fd, &response, sizeof(response), 0);
@@ -368,6 +371,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     UseItemResponsePacket response = {0};
     response.header.type = PACKET_USE_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
+    response.header.payload_size = htons(sizeof(UseItemResponsePacket) - sizeof(PacketHeader)); 
 
     pthread_mutex_lock(&player->lock);
 
@@ -503,6 +507,7 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     DropItemResponsePacket response = {0};
     response.header.type = PACKET_DROP_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
+    response.header.payload_size = htons(sizeof(DropItemResponsePacket) - sizeof(PacketHeader)); 
     response.success = 1;
     response.dropped_item = htonl(item_id);
     send(client_fd, &response, sizeof(response), 0);
@@ -536,6 +541,7 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     MoveItemResponsePacket response = {0};
     response.header.type = PACKET_MOVE_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
+    response.header.payload_size = htons(sizeof(MoveItemResponsePacket) - sizeof(PacketHeader)); 
     response.success = 1;
     response.from_slot = from_slot;
     response.to_slot = to_slot;
@@ -572,6 +578,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     ChatMessagePacket msg = {0};
     msg.header.type = PACKET_CHAT_MESSAGE;
     msg.header.player_id = htonl(character_id);
+    msg.header.payload_size = htons(sizeof(ChatMessagePacket) - sizeof(PacketHeader));
     msg.sender_id = htonl(character_id);
     msg.channel = channel;
 

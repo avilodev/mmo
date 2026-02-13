@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <hiredis/hiredis.h>
+#include <stddef.h>
 
 // Generate cryptographically random ticket
 static void generate_secure_ticket(char* ticket_out, size_t size) {
@@ -44,8 +45,10 @@ void world_send_list(int client_fd, uint32_t account_id) {
         WorldInfo* world = &response.worlds[i];
         
         world->world_id = htonl(i + 1);
-        strncpy(world->name, ws->name, 63);
-        world->name[63] = '\0';
+        
+        // FIX: Properly handle all string fields
+        strncpy(world->name, ws->name, sizeof(world->name) - 1);
+        world->name[sizeof(world->name) - 1] = '\0';
         
         world->population = htons(ws->player_count);
         world->capacity = htons(ws->max_players);
@@ -59,18 +62,25 @@ void world_send_list(int client_fd, uint32_t account_id) {
             world->status = 1; // online
         }
         
-        strncpy(world->ip, ws->host, 15);
-        world->ip[15] = '\0';
+        strncpy(world->ip, ws->host, sizeof(world->ip) - 1);
+        world->ip[sizeof(world->ip) - 1] = '\0';
+        
         world->port = htons(ws->port);
         
-        strncpy(world->region, "Unknown", 31);
-        world->region[31] = '\0';
+        strncpy(world->region, "Unknown", sizeof(world->region) - 1);
+        world->region[sizeof(world->region) - 1] = '\0';
     }
     
+    int world_count = response.count;
     pthread_mutex_unlock(&g_server.world_servers_lock);
     
-    send(client_fd, &response, sizeof(response), 0);
-    printf("Sent world list with %d worlds to account %u\n", response.count, account_id);
+    // FIXED: Calculate actual packet size based on world count
+    size_t base_size = offsetof(WorldListResponsePacket, worlds);
+    size_t actual_size = base_size + (world_count * sizeof(WorldInfo));
+    
+    send(client_fd, &response, actual_size, 0);
+    printf("Sent world list with %d worlds (%zu bytes) to account %u\n", 
+           world_count, actual_size, account_id);
 }
 
 void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {
@@ -91,7 +101,8 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
         response.header.type = PACKET_ENTER_WORLD_RESPONSE;
         response.header.player_id = htonl(account_id);
         response.success = 0;
-        strncpy(response.message, "Character does not belong to account", 127);
+        strncpy(response.message, "Character does not belong to account", sizeof(response.message) - 1);
+        response.message[sizeof(response.message) - 1] = '\0';
         send(client_fd, &response, sizeof(response), 0);
         printf("SECURITY: Account %u tried to access character %u (not owned)\n", 
                account_id, character_id);
@@ -116,7 +127,8 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     if (!selected_world) {
         pthread_mutex_unlock(&g_server.world_servers_lock);
         response.success = 0;
-        strncpy(response.message, "World not found", 127);
+        strncpy(response.message, "World not found", sizeof(response.message) - 1);
+        response.message[sizeof(response.message) - 1] = '\0';
         send(client_fd, &response, sizeof(response), 0);
         printf("Error: World %u not found\n", requested_world_id);
         return;
@@ -125,7 +137,8 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     if (!selected_world->online) {
         pthread_mutex_unlock(&g_server.world_servers_lock);
         response.success = 0;
-        strncpy(response.message, "World is offline", 127);
+        strncpy(response.message, "World is offline", sizeof(response.message) - 1);
+        response.message[sizeof(response.message) - 1] = '\0';
         send(client_fd, &response, sizeof(response), 0);
         printf("Error: World %u is offline\n", requested_world_id);
         return;
@@ -147,17 +160,21 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     if (!store_game_ticket_in_redis(ticket_key, ticket_value, 60)) {
         pthread_mutex_unlock(&g_server.world_servers_lock);
         response.success = 0;
-        strncpy(response.message, "Failed to generate ticket", 127);
+        strncpy(response.message, "Failed to generate ticket", sizeof(response.message) - 1);
+        response.message[sizeof(response.message) - 1] = '\0';
         send(client_fd, &response, sizeof(response), 0);
         printf("Error: Failed to store game ticket in Redis\n");
         return;
     }
     
     response.success = 1;
-    strncpy(response.game_ticket, game_ticket, 63);
-    strncpy(response.world_ip, selected_world->host, 15);
+    strncpy(response.game_ticket, game_ticket, sizeof(response.game_ticket) - 1);
+    response.game_ticket[sizeof(response.game_ticket) - 1] = '\0';
+    strncpy(response.world_ip, selected_world->host, sizeof(response.world_ip) - 1);
+    response.world_ip[sizeof(response.world_ip) - 1] = '\0';
     response.world_port = htons(selected_world->port);
-    snprintf(response.message, 127, "Connecting to %s...", selected_world->name);
+    snprintf(response.message, sizeof(response.message), "Connecting to %s...", selected_world->name);
+    response.message[sizeof(response.message) - 1] = '\0';
     
     pthread_mutex_unlock(&g_server.world_servers_lock);
     

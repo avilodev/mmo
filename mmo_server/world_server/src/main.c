@@ -22,9 +22,10 @@
 
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <signal.h> 
+#include <signal.h>
 #include <errno.h>
 #include <poll.h>
+#include <stddef.h>
 
 #define DATA_PATH "/home/avilo/mmo_server/world_server/data/items.json"
 #define ABILITIES_PATH "/home/avilo/mmo_server/world_server/data/abilities.json"
@@ -537,8 +538,13 @@ void* player_broadcast_thread(void* arg) {
                 pkt.count++;
             }
 
-            // Always send (even if count=0, so client knows no one is nearby)
-            send(snapshots[i].client_fd, &pkt, sizeof(pkt), 0);
+            // Only send if there are nearby players
+            if (pkt.count > 0) {
+                size_t send_size = offsetof(PlayerPositionBroadcastPacket, players) +
+                                   pkt.count * sizeof(NearbyPlayerData);
+                pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+                send(snapshots[i].client_fd, &pkt, send_size, 0);
+            }
         }
 
         // Broadcast party updates (HP/mana) for players in parties
@@ -622,7 +628,7 @@ void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPC
         float dy = npc->pos_y - py;
         float dist_sq = dx*dx + dy*dy;
         
-        if (dist_sq <= 500.0f * 500.0f) {
+        if (dist_sq <= 2000.0f * 2000.0f) {
             NPCPositionData* data = &pkt.npcs[pkt.npc_count];
             data->npc_id = htonl(npc->id);
             data->pos_x = npc->pos_x;
@@ -639,9 +645,12 @@ void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPC
 
     pthread_mutex_unlock(&world->lock);
 
-    // Only send if there are NPCs
+    // Only send if there are NPCs — send only actual data
     if (pkt.npc_count > 0) {
-        send(client_fd, &pkt, sizeof(pkt), 0);
+        size_t send_size = offsetof(NPCPositionPacket, npcs) +
+                           pkt.npc_count * sizeof(NPCPositionData);
+        pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+        send(client_fd, &pkt, send_size, 0);
     }
 }
 
@@ -712,7 +721,7 @@ void* npc_broadcast_thread(void* arg) {
                 float dy = npc->pos_y - py;
                 float dist_sq = dx*dx + dy*dy;
                 
-                if (dist_sq <= 500.0f * 500.0f) {
+                if (dist_sq <= 2000.0f * 2000.0f) {
                     NPCPositionData* data = &pkt.npcs[pkt.npc_count];
                     data->npc_id = htonl(npc->id);
                     data->pos_x = npc->pos_x;
@@ -729,7 +738,10 @@ void* npc_broadcast_thread(void* arg) {
             pthread_mutex_unlock(&g_npc_world.lock);
             
             if (pkt.npc_count > 0) {
-                send(players_snapshot[i].client_fd, &pkt, sizeof(pkt), 0);
+                size_t send_size = offsetof(NPCPositionPacket, npcs) +
+                                   pkt.npc_count * sizeof(NPCPositionData);
+                pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+                send(players_snapshot[i].client_fd, &pkt, send_size, 0);
             }
         }
         

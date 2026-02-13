@@ -115,15 +115,17 @@ typedef struct {
     char message[128];
 } RealmConnectAckPacket;
 
-// World list
+// World list - PADDING FIXED
 typedef struct {
     char name[64];
     uint32_t world_id;
     uint16_t population;
     int16_t capacity;
     uint8_t status; // 0=offline, 1=online, 2=full
+    uint8_t padding1[3];    // EXPLICIT PADDING ADDED
     char ip[16];
     uint16_t port; 
+    uint8_t padding2[2];    // EXPLICIT PADDING ADDED
     char region[32];
 } WorldInfo;
 
@@ -134,6 +136,7 @@ typedef struct {
 typedef struct {
     PacketHeader header;
     uint8_t count;
+    uint8_t padding[3];
     WorldInfo worlds[MAX_WORLDS];
 } WorldListResponsePacket;
 
@@ -147,6 +150,7 @@ typedef struct {
     PacketHeader header;
     uint32_t world_id;
     uint8_t count;
+    uint8_t padding[3]; 
     struct {
         uint32_t character_id;
         char name[32];

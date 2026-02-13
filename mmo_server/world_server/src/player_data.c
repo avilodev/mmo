@@ -367,8 +367,8 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
 
     strncpy(response->name, player->username, sizeof(response->name) - 1);
     response->name[sizeof(response->name) - 1] = '\0';
-    response->player_class = htonl(player->player_class);
-    response->player_race  = htonl(player->player_race);
+    response->player_class = htonl(player->player_class);  // Cast enum to uint32_t
+    response->player_race  = htonl(player->player_race);   // Cast enum to uint32_t
     
     // Equipment
     response->helmet = htonl(player->helmet);

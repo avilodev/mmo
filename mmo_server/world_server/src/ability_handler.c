@@ -99,23 +99,27 @@ static int player_has_ability(ActivePlayer* player, uint16_t ability_id, int* ou
 // Send helpers (unchanged)
 // ---------------------------------------------------------------------------
 
+// send_ability_cast_cancel - MISSING payload_size
 static void send_ability_cast_cancel(int client_fd, uint32_t caster_id,
                                      uint16_t ability_id, uint8_t reason) {
     AbilityCastCancelPacket pkt = {0};
     pkt.header.type      = PACKET_ABILITY_CAST_CANCEL;
     pkt.header.player_id = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(AbilityCastCancelPacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
     pkt.reason           = reason;
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
 
+// send_ability_cast_start - MISSING payload_size
 static void send_ability_cast_start(int client_fd, uint32_t caster_id,
                                     uint16_t ability_id, float cast_time,
                                     float ox, float oy, float ax, float ay) {
     AbilityCastStartPacket pkt = {0};
     pkt.header.type      = PACKET_ABILITY_CAST_START;
     pkt.header.player_id = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(AbilityCastStartPacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
     pkt.cast_time        = cast_time;
@@ -126,12 +130,14 @@ static void send_ability_cast_start(int client_fd, uint32_t caster_id,
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
 
+// send_ability_effect - MISSING payload_size
 static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t target_id,
                                 uint16_t ability_id, int damage, int healing,
                                 int target_new_hp, uint8_t is_kill) {
     AbilityEffectPacket pkt = {0};
     pkt.header.type         = PACKET_ABILITY_EFFECT;
     pkt.header.player_id    = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(AbilityEffectPacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.caster_id           = htonl(caster_id);
     pkt.target_id           = htonl(target_id);
     pkt.ability_id          = htons(ability_id);
@@ -142,12 +148,14 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
 
+// send_status_effect_apply - MISSING payload_size
 static void send_status_effect_apply(int client_fd, uint32_t target_id,
                                      uint8_t effect_type, int value,
                                      float duration, uint32_t source_id) {
     StatusEffectApplyPacket pkt = {0};
     pkt.header.type      = PACKET_STATUS_EFFECT_APPLY;
     pkt.header.player_id = htonl(target_id);
+    pkt.header.payload_size = htons(sizeof(StatusEffectApplyPacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.target_id        = htonl(target_id);
     pkt.effect_type      = effect_type;
     pkt.value            = htonl((uint32_t)value);
@@ -156,22 +164,26 @@ static void send_status_effect_apply(int client_fd, uint32_t target_id,
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
 
+// send_mana_update - MISSING payload_size
 static void send_mana_update(int client_fd, uint32_t player_id,
                              int32_t mana, int32_t max_mana) {
     ManaUpdatePacket pkt = {0};
     pkt.header.type      = PACKET_MANA_UPDATE;
     pkt.header.player_id = htonl(player_id);
+    pkt.header.payload_size = htons(sizeof(ManaUpdatePacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.mana             = htonl((uint32_t)mana);
     pkt.max_mana         = htonl((uint32_t)max_mana);
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
 
+// send_spawn_zone - MISSING payload_size
 static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
                             uint16_t ability_id, float px, float py,
                             float duration, float radius, uint8_t has_collision) {
     SpawnZonePacket pkt = {0};
     pkt.header.type      = PACKET_SPAWN_ZONE;
     pkt.header.player_id = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(SpawnZonePacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.zone_id          = htonl(zone_id);
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
@@ -183,10 +195,12 @@ static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
 
+// send_remove_zone - MISSING payload_size
 static void send_remove_zone(int client_fd, uint32_t zone_id) {
     RemoveZonePacket pkt = {0};
     pkt.header.type      = PACKET_REMOVE_ZONE;
     pkt.header.player_id = 0;
+    pkt.header.payload_size = htons(sizeof(RemoveZonePacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.zone_id          = htonl(zone_id);
     send(client_fd, &pkt, sizeof(pkt), 0);
 }
@@ -901,6 +915,7 @@ void ability_tick(NPCWorld* world, double delta_time) {
                 StatusEffectRemovePacket pkt = {0};
                 pkt.header.type      = PACKET_STATUS_EFFECT_REMOVE;
                 pkt.header.player_id = htonl(active_players[i].character_id);
+                pkt.header.payload_size = htons(sizeof(StatusEffectRemovePacket) - sizeof(PacketHeader));
                 pkt.target_id        = htonl(active_players[i].character_id);
                 pkt.effect_type      = active_players[i].active_effects[e].effect_type;
                 send(active_players[i].client_fd, &pkt, sizeof(pkt), 0);
