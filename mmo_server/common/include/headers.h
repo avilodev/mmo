@@ -274,6 +274,7 @@ typedef struct {
     float       attack_cooldown;    // Seconds remaining before next attack allowed
 
     int is_loaded;
+    int is_ready;           // 1 = initial handshake complete, safe to broadcast
     int is_dirty;
     time_t last_save;
     time_t last_activity;

@@ -367,8 +367,8 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
 
     strncpy(response->name, player->username, sizeof(response->name) - 1);
     response->name[sizeof(response->name) - 1] = '\0';
-    response->player_class = htonl(player->player_class);  // Cast enum to uint32_t
-    response->player_race  = htonl(player->player_race);   // Cast enum to uint32_t
+    response->player_class = htonl(player->player_class);
+    response->player_race  = htonl(player->player_race);
     
     // Equipment
     response->helmet = htonl(player->helmet);
@@ -391,10 +391,6 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     send(client_fd, response, sizeof(CharacterInfo), 0);
     free(response);
 
-    // NOTE: player_send_stats() acquires player->lock internally,
-    // so we MUST call it AFTER unlocking above to avoid deadlock.
-    player_send_stats(client_fd, player);
-    
     printf("Sent player data for character %u\n", character_id);
 }
 

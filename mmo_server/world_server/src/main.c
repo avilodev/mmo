@@ -130,8 +130,15 @@ void* client_handler_thread(void* arg) {
                                 
                                 send(client_fd, &response, sizeof(response), 0);
                                 player_send_data_response(client_fd, character_id);
-                                
-                                printf("Account %u, Character %u entered world\n", 
+
+                                // Send stats once explicitly (no longer hidden inside data response)
+                                ActivePlayer* p = player_find_active(character_id);
+                                if (p) {
+                                    player_send_stats(client_fd, p);
+                                    p->is_ready = 1;  // Handshake complete, allow broadcasts
+                                }
+
+                                printf("Account %u, Character %u entered world\n",
                                     account_id, character_id);
                                 
                                 // Authentication packet consumed, reset buffer
@@ -682,7 +689,7 @@ void* npc_broadcast_thread(void* arg) {
         // Take a snapshot of active players
         pthread_mutex_lock(&active_players_lock);
         for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (active_players[i].is_loaded) {
+            if (active_players[i].is_loaded && active_players[i].is_ready) {
                 players_snapshot[i].valid = 1;
                 players_snapshot[i].client_fd = active_players[i].client_fd;
                 players_snapshot[i].character_id = active_players[i].character_id;
