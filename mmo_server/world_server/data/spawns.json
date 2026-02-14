@@ -25,6 +25,7 @@
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
       "xp_reward": 25,
+      "gold_reward": 10,
       "defense": 0,
       "evasion": 0
     },
@@ -37,7 +38,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     },
     {
       "name": "Training Dummy",
@@ -48,7 +50,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     },
     {
       "name": "Training Dummy",
@@ -59,7 +62,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     },
     {
       "name": "Training Dummy",
@@ -70,7 +74,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     },
     {
       "name": "Training Dummy",
@@ -81,7 +86,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     },
     {
       "name": "Training Dummy",
@@ -92,7 +98,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     },
     {
       "name": "Training Dummy",
@@ -103,7 +110,8 @@
       "health": 100,
       "hitbox_radius": 16.0,
       "respawn_time": 10.0,
-      "xp_reward": 25
+      "xp_reward": 25,
+      "gold_reward": 10
     }
   ]
 }

@@ -70,6 +70,7 @@ typedef struct {
     int         defense;           // Damage reduction stat
     int         evasion;           // Dodge chance stat
     uint32_t    xp_reward;         // XP granted to killer
+    uint32_t    gold_reward;       // Gold granted to killer
 
     uint8_t     is_alive;          // 0 = dead, 1 = alive
     uint8_t     category;          // NPCCategory — passive/hostile/quest

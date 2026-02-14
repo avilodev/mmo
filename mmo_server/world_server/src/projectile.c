@@ -71,6 +71,8 @@ typedef struct {
         struct {
             uint32_t killer_id;
             uint64_t xp;
+            uint32_t gold;
+            int      client_fd;
         } xp;
         struct {
             uint16_t npc_type_id;
@@ -183,7 +185,19 @@ static void dq_flush(DeferredQueue* q) {
                                     ds->effect.is_kill);
                 break;
             case DSEND_XP_AWARD: {
-                party_award_xp(ds->xp.killer_id, ds->xp.xp);
+                if (ds->xp.xp > 0) {
+                    party_award_xp(ds->xp.killer_id, ds->xp.xp);
+                }
+                ActivePlayer* killer = player_find_active(ds->xp.killer_id);
+                if (killer) {
+                    if (ds->xp.gold > 0) {
+                        player_award_gold(killer, ds->xp.gold);
+                    }
+                    if (ds->xp.xp > 0 || ds->xp.gold > 0) {
+                        player_send_kill_reward(ds->xp.client_fd, killer,
+                            (uint32_t)ds->xp.xp, ds->xp.gold);
+                    }
+                }
                 break;
             }
             case DSEND_LOOT_ROLL:
@@ -516,11 +530,13 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                     }
 
                     if (is_kill) {
-                        if (npc->xp_reward > 0) {
+                        if (npc->xp_reward > 0 || npc->gold_reward > 0) {
                             DeferredSend ds = {0};
                             ds.type = DSEND_XP_AWARD;
                             ds.xp.killer_id = proj->owner_id;
                             ds.xp.xp = npc->xp_reward;
+                            ds.xp.gold = npc->gold_reward;
+                            ds.xp.client_fd = owner_fd;
                             dq_push(&q, &ds);
                         }
                         {

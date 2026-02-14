@@ -716,6 +716,15 @@ typedef struct {
     uint64_t     xp_for_next_level; // So client can show XP bar
 } LevelUpPacket;
 
+// Server -> Client: XP + gold gained on kill
+typedef struct {
+    PacketHeader header;
+    uint32_t     xp_gained;
+    uint32_t     gold_gained;
+    uint64_t     total_xp;       // Player's new total XP (for bar update)
+    uint32_t     total_gold;     // Player's new total gold
+} KillRewardPacket;
+
 // Server -> Client: Full stat snapshot (sent on login)
 typedef struct {
     PacketHeader header;

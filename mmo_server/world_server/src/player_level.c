@@ -160,6 +160,34 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
     }
 }
 
+void player_award_gold(ActivePlayer* player, uint32_t amount) {
+    if (!player || amount == 0) return;
+
+    pthread_mutex_lock(&player->lock);
+    player->gold += amount;
+    player->is_dirty = 1;
+    pthread_mutex_unlock(&player->lock);
+}
+
+void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
+    if (!player) return;
+
+    pthread_mutex_lock(&player->lock);
+
+    KillRewardPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type         = PACKET_KILL_REWARD;
+    pkt.header.player_id    = htonl(player->character_id);
+    pkt.header.payload_size = htons(sizeof(KillRewardPacket) - sizeof(PacketHeader));
+    pkt.xp_gained           = htonl(xp);
+    pkt.gold_gained         = htonl(gold);
+    pkt.total_xp            = htonll(player->experience);
+    pkt.total_gold          = htonl(player->gold);
+
+    pthread_mutex_unlock(&player->lock);
+    send(client_fd, &pkt, sizeof(pkt), 0);
+}
+
 void player_send_stats(int client_fd, ActivePlayer* player) {
     if (!player) return;
 

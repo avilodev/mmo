@@ -8,6 +8,7 @@
 #include "combat.h"
 #include "combat_stats.h"
 #include "player_level.h"
+#include "player_data.h"
 #include "projectile.h"
 #include "party.h"
 #include "loot.h"
@@ -705,6 +706,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             uint8_t  is_kill;
             uint8_t  evaded;
             uint64_t xp_reward;
+            uint32_t gold_reward;
             uint16_t npc_type_id;
             float    npc_x, npc_y;
         } AbilityHitResult;
@@ -801,6 +803,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             hits[hit_count].is_kill    = is_kill;
             hits[hit_count].evaded      = 0;
             hits[hit_count].xp_reward   = is_kill ? npc->xp_reward : 0;
+            hits[hit_count].gold_reward = is_kill ? npc->gold_reward : 0;
             hits[hit_count].npc_type_id = npc->npc_type_id;
             hits[hit_count].npc_x       = npc->pos_x;
             hits[hit_count].npc_y       = npc->pos_y;
@@ -827,10 +830,23 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                        hits[h].new_health, hits[h].is_kill ? " — KILLED" : "");
             }
 
-            if (hits[h].xp_reward > 0) {
-                party_award_xp(caster_id, hits[h].xp_reward);
-            }
             if (hits[h].is_kill) {
+                if (hits[h].xp_reward > 0) {
+                    party_award_xp(caster_id, hits[h].xp_reward);
+                }
+                if (hits[h].gold_reward > 0) {
+                    ActivePlayer* killer = player_find_active(caster_id);
+                    if (killer) {
+                        player_award_gold(killer, hits[h].gold_reward);
+                    }
+                }
+                if (hits[h].xp_reward > 0 || hits[h].gold_reward > 0) {
+                    ActivePlayer* killer = player_find_active(caster_id);
+                    if (killer) {
+                        player_send_kill_reward(client_fd, killer,
+                            (uint32_t)hits[h].xp_reward, hits[h].gold_reward);
+                    }
+                }
                 loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, caster_id);
             }
         }

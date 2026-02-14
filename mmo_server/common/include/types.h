@@ -136,6 +136,9 @@ typedef enum {
     PACKET_PARTY_UPDATE        = 186,      // Server -> Client: full party state
     PACKET_PARTY_DISBAND       = 187,      // Server -> Client: party dissolved
 
+    // REWARDS
+    PACKET_KILL_REWARD         = 190,      // Server -> Client: XP + gold gained on kill
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,

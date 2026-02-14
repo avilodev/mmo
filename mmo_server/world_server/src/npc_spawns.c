@@ -139,6 +139,7 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
         uint8_t interactable = (uint8_t)json_get_int(obj, "is_interactable", 0);
         float respawn = json_get_float(obj, "respawn_time", 0.0f);
         int xp = json_get_int(obj, "xp_reward", -1);
+        int gold = json_get_int(obj, "gold_reward", 0);
         int defense = json_get_int(obj, "defense", 0);
         int evasion = json_get_int(obj, "evasion", 0);
 
@@ -152,6 +153,7 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
             NPCEntity* npc = combat_npc_find(world, npc_id);
             if (npc) {
                 if (xp >= 0) npc->xp_reward = (uint32_t)xp;
+                if (gold > 0) npc->gold_reward = (uint32_t)gold;
                 npc->defense = defense;
                 npc->evasion = evasion;
             }
