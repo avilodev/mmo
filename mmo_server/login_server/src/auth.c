@@ -60,6 +60,7 @@ void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
     memset(&response, 0, sizeof(response));
     response.header.type = PACKET_START_GAME_RESPONSE;
     response.header.player_id = htonl(player_id);
+    response.header.payload_size = htons(sizeof(StartGameResponsePacket) - sizeof(AuthPacketHeader));
     
     // Create session in Redis
     char session_key[SESSION_KEY_LENGTH];
