@@ -22,6 +22,7 @@ typedef struct WorldState WorldState;  // Fully defined in world.h (included bel
 // ============================================================================
 #define MAX_VISIBLE_NPCS        64
 #define MAX_DAMAGE_NUMBERS      10
+#define MAX_REWARD_POPUPS       5
 #define MAX_WORLDS              10
 #define MAX_VISIBLE_PROJECTILES 64
 #define MAX_TELEGRAPHS          16
@@ -183,6 +184,11 @@ typedef struct {
     uint32_t npc_id;
     float pos_x;
     float pos_y;
+    float target_x;          // Server target position for interpolation
+    float target_y;
+    float prev_x;            // Previous position for interpolation
+    float prev_y;
+    float interp_t;          // Interpolation progress (0.0 to 1.0)
     uint32_t health;
     uint32_t max_health;
     uint8_t is_alive;
@@ -307,6 +313,7 @@ typedef struct {
     int32_t health, max_health;
     uint8_t player_class;
     uint8_t is_dead;
+    char name[32];
 } NearbyPlayer;
 
 // ============================================================================
@@ -407,6 +414,17 @@ typedef struct {
 } PartyState;
 
 // ============================================================================
+// REWARD NOTIFICATIONS
+// ============================================================================
+
+typedef struct {
+    uint32_t xp_gained;
+    uint32_t gold_gained;
+    float age;              // Seconds since notification
+    int active;
+} RewardNotification;
+
+// ============================================================================
 // MAIN GAME STATE
 // ============================================================================
 
@@ -465,6 +483,9 @@ struct GameState {
     int         is_dead;                // 1 = player is dead
     float       death_timer;            // Time since death (for UI)
 
+    // --- Pause state ---
+    int         is_paused;              // 1 = game is paused (overlay shown)
+
     EnterWorldResponsePacket enter_world_response;
 
     // --- Nearby Players ---
@@ -489,6 +510,9 @@ struct GameState {
 
     // --- Party ---
     PartyState party;
+
+    // --- Reward Notifications ---
+    RewardNotification reward_notifications[MAX_REWARD_POPUPS];
 };
 
 #endif // GAME_TYPES_H

@@ -141,29 +141,6 @@ void game_handle_input(GameState* game, GLFWwindow* window, float delta_time) {
 }
 
 void game_update(GameState* game, float delta_time) {
-    // Check for state changes (mode might have changed in input/render)
-    static GameMode last_mode = (GameMode)-1;
-    if (game->mode != last_mode) {
-        printf("[GAME] State change: %d -> %d\n", last_mode, game->mode);
-        GameMode old_mode = last_mode;
-        GameMode new_mode = game->mode;
-        last_mode = new_mode;
-        
-        // Exit old state
-        if (old_mode != (GameMode)-1) {
-            const StateHandler* old_handler = state_handler_get(old_mode);
-            if (old_handler && old_handler->exit) {
-                old_handler->exit(game);
-            }
-        }
-        
-        // Enter new state
-        const StateHandler* new_handler = state_handler_get(new_mode);
-        if (new_handler && new_handler->enter) {
-            new_handler->enter(game);
-        }
-    }
-    
     // Update world chunks based on player position (critical for chunked loading!)
     world_update_chunks(&game->world, game->player.x, game->player.y);
     

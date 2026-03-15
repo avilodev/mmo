@@ -95,28 +95,75 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
 }
 
 void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
-    float x = hud->minimap_x;
-    float y = hud->minimap_y;
+    float x    = hud->minimap_x;
+    float y    = hud->minimap_y;
     float size = hud->minimap_size;
-    
+
     // Background
-    renderer_draw_rect(x, y, size, size, 0.1f, 0.1f, 0.15f, 0.9f);
-    
-    // Border
-    renderer_draw_rect(x, y, size, 2, 0.6f, 0.6f, 0.6f, 1.0f);
-    renderer_draw_rect(x, y + size - 2, size, 2, 0.6f, 0.6f, 0.6f, 1.0f);
-    renderer_draw_rect(x, y, 2, size, 0.6f, 0.6f, 0.6f, 1.0f);
-    renderer_draw_rect(x + size - 2, y, 2, size, 0.6f, 0.6f, 0.6f, 1.0f);
-    
-    // Player dot (center)
-    float center_x = x + size / 2.0f;
-    float center_y = y + size / 2.0f;
-    renderer_draw_rect(center_x - 3, center_y - 3, 6, 6, 0.2f, 1.0f, 0.2f, 1.0f);
-    
+    renderer_draw_rect(x, y, size, size, 0.06f, 0.06f, 0.10f, 0.92f);
+
+    // Player world position — everything is drawn relative to this
+    float px = game->player.x;
+    float py = game->player.y;
+
+    // View radius: how many world units are shown to each edge of the minimap
+    float view_radius = 350.0f;
+    float scale       = (size * 0.5f) / view_radius;
+    float cx          = x + size * 0.5f;
+    float cy          = y + size * 0.5f;
+
+    // Helper: world position -> minimap pixel (returns 0 if off-map)
+    // We'll inline it below.
+
+    // --- NPC dots ---
+    for (int i = 0; i < game->visible_npc_count; i++) {
+        const VisibleNPC* npc = &game->visible_npcs[i];
+        if (!npc->is_alive) continue;
+
+        float dx = (npc->pos_x - px) * scale;
+        float dy = (npc->pos_y - py) * scale;
+        float dot_x = cx + dx - 2.5f;
+        float dot_y = cy + dy - 2.5f;
+        if (dot_x < x || dot_x > x + size - 5 ||
+            dot_y < y || dot_y > y + size - 5) continue;
+
+        float dr, dg, db;
+        switch (npc->category) {
+            case 1:  dr=0.90f; dg=0.20f; db=0.20f; break; // hostile  - red
+            case 2:  dr=0.90f; dg=0.78f; db=0.10f; break; // quest    - gold
+            default: dr=0.20f; dg=0.55f; db=0.90f; break; // passive  - blue
+        }
+        renderer_draw_rect(dot_x, dot_y, 5.0f, 5.0f, dr, dg, db, 0.95f);
+    }
+
+    // --- Nearby player dots ---
+    for (int i = 0; i < game->nearby_player_count; i++) {
+        const NearbyPlayer* p = &game->nearby_players[i];
+        if (p->is_dead) continue;
+
+        float dx = (p->pos_x - px) * scale;
+        float dy = (p->pos_y - py) * scale;
+        float dot_x = cx + dx - 3.0f;
+        float dot_y = cy + dy - 3.0f;
+        if (dot_x < x || dot_x > x + size - 6 ||
+            dot_y < y || dot_y > y + size - 6) continue;
+
+        renderer_draw_rect(dot_x, dot_y, 6.0f, 6.0f, 0.25f, 0.90f, 0.45f, 1.0f);
+    }
+
+    // --- Player dot (always at center, drawn last so it's on top) ---
+    renderer_draw_rect(cx - 5.0f, cy - 5.0f, 10.0f, 10.0f, 1.0f, 1.0f, 0.25f, 1.0f);
+
+    // Border (drawn on top of dots so the edges look clean)
+    renderer_draw_rect(x,            y,            size, 2.0f, 0.55f, 0.55f, 0.65f, 1.0f);
+    renderer_draw_rect(x,            y + size - 2, size, 2.0f, 0.55f, 0.55f, 0.65f, 1.0f);
+    renderer_draw_rect(x,            y,            2.0f, size, 0.55f, 0.55f, 0.65f, 1.0f);
+    renderer_draw_rect(x + size - 2, y,            2.0f, size, 0.55f, 0.55f, 0.65f, 1.0f);
+
     // Coordinates below minimap
     char coords[64];
-    snprintf(coords, sizeof(coords), "X: %.0f  Y: %.0f", game->player.x, game->player.y);
-    renderer_draw_text(x + 10, y + size + 5, coords);
+    snprintf(coords, sizeof(coords), "X: %.0f  Y: %.0f", px, py);
+    renderer_draw_text(x + 10, y + size + 18, coords);
 }
 
 void hud_render_health_bar(const HUDLayout* hud, const GameState* game) {
@@ -209,16 +256,15 @@ void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     float width = hud->exp_bar_width;
     float height = hud->exp_bar_height;
     
-    // For now, use a placeholder exp calculation
     uint64_t current_exp = game->player.info.experience;
-    uint64_t level = game->player.info.level;
-    
-    // Simple exp calculation: each level needs level * 1000 exp
-    uint64_t exp_for_level = level * 1000;
-    uint64_t exp_in_level = current_exp % exp_for_level;
-    
-    float exp_percent = (float)exp_in_level / (float)exp_for_level;
+    uint64_t exp_for_next = game->player_xp_for_next;
+
+    // Use server-provided XP threshold; fallback if not yet received
+    if (exp_for_next == 0) exp_for_next = 1000;
+
+    float exp_percent = (float)((double)current_exp / (double)exp_for_next);
     if (exp_percent > 1.0f) exp_percent = 1.0f;
+    if (exp_percent < 0.0f) exp_percent = 0.0f;
     
     // Background
     renderer_draw_rect(x - 2, y - 2, width + 4, height + 4, 0.0f, 0.0f, 0.0f, 0.8f);
@@ -235,8 +281,8 @@ void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     
     // XP Text
     char exp_text[64];
-    snprintf(exp_text, sizeof(exp_text), "XP: %llu / %llu", 
-             (unsigned long long)exp_in_level, (unsigned long long)exp_for_level);
+    snprintf(exp_text, sizeof(exp_text), "XP: %llu / %llu",
+             (unsigned long long)current_exp, (unsigned long long)exp_for_next);
     renderer_draw_text(x + 10, y + height - 3, exp_text);
 }
 

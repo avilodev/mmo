@@ -49,7 +49,7 @@ typedef struct {
     
     // Cooldown tracking
     float       cooldown_remaining;
-    int         cooldown_total;
+    float       cooldown_total;
     
 } CombatState;
 

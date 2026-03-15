@@ -38,7 +38,14 @@ int player_update_movement(PlayerState* player, const InputState* input,
         player->vel_y = 0.0f;
         return 0;
     }
-    
+
+    // Normalize diagonal movement so it's not faster than cardinal
+    if (move_x != 0.0f && move_y != 0.0f) {
+        float inv_sqrt2 = 0.70710678f; // 1/sqrt(2)
+        move_x *= inv_sqrt2;
+        move_y *= inv_sqrt2;
+    }
+
     // Player is 2 tiles wide
     float half_size = world->tile_size * 1.0f;
     

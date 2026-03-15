@@ -64,14 +64,14 @@ void camera_apply(const Camera* camera) {
     glLoadIdentity();
 }
 
-void camera_screen_to_world(const Camera* camera, float screen_x, float screen_y, 
+void camera_screen_to_world(const Camera* camera, float screen_x, float screen_y,
                             float* world_x, float* world_y) {
-    *world_x = screen_x + camera->x;
-    *world_y = screen_y + camera->y;
+    *world_x = (screen_x - camera->viewport_width / 2.0f) / camera->zoom + camera->x;
+    *world_y = (screen_y - camera->viewport_height / 2.0f) / camera->zoom + camera->y;
 }
 
 void camera_world_to_screen(const Camera* camera, float world_x, float world_y,
                             float* screen_x, float* screen_y) {
-    *screen_x = world_x - camera->x;
-    *screen_y = world_y - camera->y;
+    *screen_x = (world_x - camera->x) * camera->zoom + camera->viewport_width / 2.0f;
+    *screen_y = (world_y - camera->y) * camera->zoom + camera->viewport_height / 2.0f;
 }

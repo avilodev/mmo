@@ -1,4 +1,5 @@
 #include "state_handler.h"
+#include "game.h"
 #include "renderer.h"
 #include "input/input.h"
 #include "network/network.h"
@@ -103,8 +104,8 @@ static void char_select_update(GameState* game, float delta_time) {
                                                     response.game_ticket, char_id)) {
                             game->network_connected = 1;
                             game->player.info_loaded = 0;
-                            game->mode = GAME_MODE_PLAYING;
-                            
+                            game_change_state(game, GAME_MODE_PLAYING);
+
                             uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
                             network_request_character_data(char_id, world_id);
                             network_set_character_id(char_id);

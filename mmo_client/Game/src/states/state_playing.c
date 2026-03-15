@@ -1,4 +1,5 @@
 #include "game_types.h"
+#include "game.h"
 #include "state_handler.h"
 #include "renderer.h"
 #include "input.h"
@@ -139,14 +140,17 @@ static void playing_update(GameState* game, float delta_time) {
         CharacterInfo info;
         if (network_get_character_data(&info)) {
             player_load_info(&game->player, &info);
-            
+
+            // Sync initial mana to ability bar
+            ability_bar_on_mana_update(&game->ability_bar,
+                                       (int32_t)info.mana, (int32_t)info.max_mana);
+
+            // Request full stats from server (includes move speed, xp_for_next, etc.)
+            network_request_player_stats();
+
             if (game->inventory) {
                 inventory_load_from_server(game->inventory, info.inventory);
-                inventory_add_item(game->inventory, 1, 5);
-                inventory_add_item(game->inventory, 2, 3);
-                inventory_add_item(game->inventory, 3, 1);
-                inventory_add_item(game->inventory, 4, 1);
-                printf("[GAME] Inventory loaded with test items\n");
+                printf("[GAME] Inventory loaded from server\n");
             }
         }
     }
@@ -155,21 +159,21 @@ static void playing_update(GameState* game, float delta_time) {
     if (game->player.info_loaded && game->ability_bar.slot_count == 0) {
         if (!s_ability_setup_attempted) {
             s_ability_setup_attempted = 1;
-            
+
+            // Try raw value first, then network byte order conversion
             int raw_class = (int)game->player.info.player_class;
             uint8_t resolved_class = 0;
-            
+
             if (raw_class >= 1 && raw_class <= 4) {
                 resolved_class = (uint8_t)raw_class;
-            }
-            
-            if (resolved_class == 0) {
+            } else {
                 uint32_t converted = ntohl((uint32_t)raw_class);
                 if (converted >= 1 && converted <= 4) {
                     resolved_class = (uint8_t)converted;
                 }
             }
-            
+
+            // Fallback to character select list
             if (resolved_class == 0) {
                 int idx = game->char_select.selected_index;
                 if (idx >= 0 && idx < (int)game->char_select.list.count) {
@@ -179,16 +183,14 @@ static void playing_update(GameState* game, float delta_time) {
                     }
                 }
             }
-            
-            if (resolved_class == 0 && game->char_select.selected_class >= 1 
-                                    && game->char_select.selected_class <= 4) {
-                resolved_class = (uint8_t)game->char_select.selected_class;
-            }
-            
+
             if (resolved_class >= 1 && resolved_class <= 4) {
                 setup_ability_bar_for_class(&game->ability_bar,
                                             resolved_class,
                                             (int)game->player.info.level);
+            } else {
+                printf("[ABILITY_BAR] Could not resolve class (raw=%d), retrying next frame\n", raw_class);
+                s_ability_setup_attempted = 0; // Allow retry
             }
         }
     }
@@ -222,8 +224,6 @@ static void playing_update(GameState* game, float delta_time) {
     }
     
     camera_update(&game->camera, game->player.x, game->player.y, delta_time);
-    //printf("[DEBUG] About to update chunks: player at %.0f, %.0f\n", game->player.x, game->player.y);
-    world_update_chunks(&game->world, game->player.x, game->player.y); 
     combat_update(&game->combat, delta_time);
     
     // Update inventory
@@ -273,6 +273,18 @@ static void playing_update(GameState* game, float delta_time) {
     // Update dialogue
     dialogue_update_state(delta_time);
 
+    // Interpolate NPC positions for smooth movement
+    for (int i = 0; i < game->visible_npc_count && i < MAX_VISIBLE_NPCS; i++) {
+        VisibleNPC* npc = &game->visible_npcs[i];
+        if (npc->interp_t < 1.0f) {
+            // Interpolate over ~200ms (typical server tick interval)
+            npc->interp_t += delta_time * 5.0f;
+            if (npc->interp_t > 1.0f) npc->interp_t = 1.0f;
+            npc->pos_x = npc->prev_x + (npc->target_x - npc->prev_x) * npc->interp_t;
+            npc->pos_y = npc->prev_y + (npc->target_y - npc->prev_y) * npc->interp_t;
+        }
+    }
+
     // Update telegraph timers
     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
         if (game->telegraphs[i].active) {
@@ -309,6 +321,16 @@ static void playing_update(GameState* game, float delta_time) {
         game->level_up_timer -= delta_time;
         if (game->level_up_timer <= 0.0f) {
             game->show_level_up = 0;
+        }
+    }
+
+    // Update reward notifications
+    for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
+        if (game->reward_notifications[i].active) {
+            game->reward_notifications[i].age += delta_time;
+            if (game->reward_notifications[i].age > 2.5f) {
+                game->reward_notifications[i].active = 0;
+            }
         }
     }
 
@@ -455,14 +477,24 @@ static void render_ground_items(GameState* game) {
     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
         if (!game->ground_items[i].active) continue;
         GroundItem* item = &game->ground_items[i];
-        // Gold/yellow square
-        renderer_draw_rect(item->pos_x - 6, item->pos_y - 6,
-                          12.0f, 12.0f, 0.9f, 0.8f, 0.1f, 1.0f);
-        // Small sparkle border
+        // Sparkle border (drawn first, behind item)
         renderer_draw_rect(item->pos_x - 7, item->pos_y - 7,
                           14.0f, 14.0f, 1.0f, 0.9f, 0.3f, 0.4f);
+        // Gold/yellow square (on top)
+        renderer_draw_rect(item->pos_x - 6, item->pos_y - 6,
+                          12.0f, 12.0f, 0.9f, 0.8f, 0.1f, 1.0f);
     }
 }
+
+// ============================================================================
+// CONTEXT MENU STATE (party invite via right-click on nearby player)
+// ============================================================================
+
+static int    s_ctx_active       = 0;
+static uint32_t s_ctx_player_id  = 0;
+static char   s_ctx_player_name[32] = "";
+static float  s_ctx_x = 0.0f;
+static float  s_ctx_y = 0.0f;
 
 // ============================================================================
 // SCREEN-SPACE RENDER HELPERS
@@ -470,39 +502,88 @@ static void render_ground_items(GameState* game) {
 
 static void render_chat(GameState* game) {
     ChatState* chat = &game->chat;
-    float chat_x = 10.0f;
-    float chat_y = (float)game->camera.viewport_height - 220.0f;
-    float chat_w = 400.0f;
-    float chat_h = 200.0f;
 
-    // Chat background
-    renderer_draw_rect(chat_x, chat_y, chat_w, chat_h, 0.0f, 0.0f, 0.0f, 0.4f);
+    // Layout constants
+    static const float CHAT_X    = 14.0f;
+    static const float CHAT_W    = 420.0f;
+    static const float LINE_H    = 20.0f;
+    static const int   MAX_LINES = 8;
+    static const float PAD       = 8.0f;
+    static const float INBOX_H   = 30.0f;
 
-    // Show last 8 messages
-    int start = chat->line_count - 8;
-    if (start < 0) start = 0;
-    for (int i = start; i < chat->line_count; i++) {
-        char line[320];
-        const char* ch_prefix = "";
-        switch (chat->lines[i].channel) {
-            case 0: ch_prefix = "[L] "; break;
-            case 1: ch_prefix = "[G] "; break;
-            case 2: ch_prefix = "[W] "; break;
-            case 3: ch_prefix = "[P] "; break;
-        }
-        snprintf(line, sizeof(line), "%s%s: %s",
-                ch_prefix, chat->lines[i].sender, chat->lines[i].text);
-        float line_y = chat_y + 10.0f + (float)(i - start) * 22.0f;
-        renderer_draw_text(chat_x + 8.0f, line_y + 16.0f, line);
+    float chat_h  = (float)MAX_LINES * LINE_H + PAD * 2.0f;
+    float chat_y  = (float)game->camera.viewport_height - chat_h - INBOX_H - 20.0f;
+
+    // Only draw the message panel if there are messages or we're typing
+    int has_messages = (chat->line_count > 0);
+    int show_panel   = has_messages || chat->is_typing;
+
+    if (show_panel) {
+        // Slightly darker, more opaque when typing
+        float bg_alpha = chat->is_typing ? 0.65f : 0.35f;
+        renderer_draw_rect(CHAT_X, chat_y, CHAT_W, chat_h, 0.04f, 0.04f, 0.08f, bg_alpha);
+
+        // Top border line
+        renderer_draw_rect(CHAT_X, chat_y, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
+        // Left border
+        renderer_draw_rect(CHAT_X, chat_y, 1.5f, chat_h, 0.4f, 0.5f, 0.7f, 0.6f);
     }
 
-    // Input line
+    // Messages (newest at the bottom)
+    int start = chat->line_count - MAX_LINES;
+    if (start < 0) start = 0;
+    for (int i = start; i < chat->line_count; i++) {
+        const ChatLine* ln = &chat->lines[i];
+
+        // Channel prefix text and accent color
+        const char* prefix = "";
+        float pr = 1.0f, pg = 1.0f, pb = 1.0f; // default white
+        switch (ln->channel) {
+            case 0: prefix = "[L] "; pr=0.85f; pg=0.85f; pb=0.85f; break; // local  - off-white
+            case 1: prefix = "[G] "; pr=1.0f;  pg=0.85f; pb=0.20f; break; // global - gold
+            case 2: prefix = "[W] "; pr=0.85f; pg=0.40f; pb=0.85f; break; // whisper- purple
+            case 3: prefix = "[P] "; pr=0.30f; pg=0.90f; pb=0.45f; break; // party  - green
+        }
+        (void)pr; (void)pg; (void)pb; // suppress unused warning (used later if colored renderer added)
+
+        char line[320];
+        snprintf(line, sizeof(line), "%s%s: %s", prefix, ln->sender, ln->text);
+
+        float line_y = chat_y + PAD + (float)(i - start) * LINE_H + LINE_H;
+        renderer_draw_text(CHAT_X + PAD, line_y, line);
+    }
+
+    // Input box (always visible when typing, or shown as hint when has messages)
+    float input_y = chat_y + chat_h;
+
     if (chat->is_typing) {
-        float input_y = chat_y + chat_h;
-        renderer_draw_rect(chat_x, input_y, chat_w, 28.0f, 0.1f, 0.1f, 0.1f, 0.7f);
+        // Channel names and their accent colors
+        static const char* ch_names[] = {"Local", "Global", "Whisper", "Party"};
+        int ch = (int)chat->active_channel;
+        if (ch < 0 || ch > 3) ch = 0;
+
+        // Input box background
+        renderer_draw_rect(CHAT_X, input_y, CHAT_W, INBOX_H, 0.08f, 0.08f, 0.14f, 0.90f);
+        // Bottom border
+        renderer_draw_rect(CHAT_X, input_y + INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
+        // Left border
+        renderer_draw_rect(CHAT_X, input_y, 1.5f, INBOX_H, 0.4f, 0.5f, 0.7f, 0.6f);
+
+        // Channel badge  e.g. "[Local]"
+        char badge[16];
+        snprintf(badge, sizeof(badge), "[%s] ", ch_names[ch]);
+        renderer_draw_text(CHAT_X + PAD, input_y + INBOX_H - 8.0f, badge);
+
+        // Typed text with blinking cursor
         char input_display[270];
-        snprintf(input_display, sizeof(input_display), "> %s_", chat->input_buf);
-        renderer_draw_text(chat_x + 8.0f, input_y + 20.0f, input_display);
+        snprintf(input_display, sizeof(input_display), "%s_", chat->input_buf);
+        renderer_draw_text(CHAT_X + PAD + 72.0f, input_y + INBOX_H - 8.0f, input_display);
+    } else if (has_messages) {
+        // Subtle hint when idle
+        renderer_draw_rect(CHAT_X, input_y, CHAT_W, INBOX_H, 0.04f, 0.04f, 0.08f, 0.25f);
+        renderer_draw_rect(CHAT_X, input_y + INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.3f);
+        renderer_draw_rect(CHAT_X, input_y, 1.5f, INBOX_H, 0.4f, 0.5f, 0.7f, 0.3f);
+        renderer_draw_text(CHAT_X + PAD, input_y + INBOX_H - 8.0f, "Press Enter to chat");
     }
 }
 
@@ -599,6 +680,123 @@ static void render_level_up(GameState* game) {
     renderer_draw_text(cx - 140, 126, msg);
 }
 
+static void render_reward_notifications(GameState* game) {
+    // Notifications stack upward from center-right
+    float base_x = (float)game->camera.viewport_width * 0.5f + 60.0f;
+    float base_y = (float)game->camera.viewport_height * 0.5f - 60.0f;
+
+    for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
+        RewardNotification* notif = &game->reward_notifications[i];
+        if (!notif->active) continue;
+
+        float t     = notif->age / 2.5f;          // 0..1 over lifetime
+        float alpha = 1.0f - t;
+        if (alpha < 0.0f) alpha = 0.0f;
+
+        // Float up 80 px over lifetime
+        float y = base_y - notif->age * 32.0f + (float)i * 44.0f;
+        float x = base_x;
+
+        // Panel background with slight border
+        float pw = 190.0f, ph = 36.0f;
+        renderer_draw_rect(x - 2, y - 2, pw + 4, ph + 4,
+                           0.6f, 0.5f, 0.1f, alpha * 0.4f);      // gold glow border
+        renderer_draw_rect(x, y, pw, ph,
+                           0.06f, 0.05f, 0.10f, alpha * 0.82f);  // dark bg
+
+        float text_y = y + ph - 8.0f;
+
+        // XP pill
+        if (notif->xp_gained > 0) {
+            renderer_draw_rect(x + 6, y + 8, 14, 14, 0.35f, 0.55f, 1.0f, alpha);
+            char xp_text[32];
+            snprintf(xp_text, sizeof(xp_text), "+%u XP", notif->xp_gained);
+            renderer_draw_text(x + 24, text_y, xp_text);
+        }
+
+        // Gold pill
+        if (notif->gold_gained > 0) {
+            renderer_draw_rect(x + 100, y + 8, 14, 14, 1.0f, 0.80f, 0.05f, alpha);
+            char gold_text[32];
+            snprintf(gold_text, sizeof(gold_text), "+%u g", notif->gold_gained);
+            renderer_draw_text(x + 118, text_y, gold_text);
+        }
+    }
+}
+
+static void render_pause_overlay(GameState* game) {
+    if (!game->is_paused) return;
+
+    float vw = (float)game->camera.viewport_width;
+    float vh = (float)game->camera.viewport_height;
+
+    // Dim the world
+    renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.55f);
+
+    // Panel dimensions
+    float pw = 340.0f, ph = 230.0f;
+    float px = (vw - pw) * 0.5f;
+    float py = (vh - ph) * 0.5f;
+
+    // Panel background
+    renderer_draw_rect(px, py, pw, ph, 0.07f, 0.07f, 0.12f, 0.96f);
+
+    // Panel border (top/bottom/left/right)
+    renderer_draw_rect(px,          py,          pw,   2.0f, 0.45f, 0.45f, 0.75f, 1.0f);
+    renderer_draw_rect(px,          py + ph - 2, pw,   2.0f, 0.45f, 0.45f, 0.75f, 1.0f);
+    renderer_draw_rect(px,          py,          2.0f, ph,   0.45f, 0.45f, 0.75f, 1.0f);
+    renderer_draw_rect(px + pw - 2, py,          2.0f, ph,   0.45f, 0.45f, 0.75f, 1.0f);
+
+    // Title
+    renderer_draw_text(px + pw * 0.5f - 32.0f, py + 36.0f, "PAUSED");
+
+    // Divider below title
+    renderer_draw_rect(px + 20, py + 48, pw - 40, 1.5f, 0.35f, 0.35f, 0.55f, 0.8f);
+
+    // Button layout
+    float bw = 220.0f, bh = 38.0f;
+    float bx = px + (pw - bw) * 0.5f;
+
+    // Resume
+    renderer_draw_rect(bx, py + 66,  bw, bh, 0.12f, 0.38f, 0.12f, 0.92f);
+    renderer_draw_text(bx + bw * 0.5f - 28.0f, py + 91, "Resume");
+
+    // Settings (placeholder)
+    renderer_draw_rect(bx, py + 116, bw, bh, 0.18f, 0.18f, 0.32f, 0.92f);
+    renderer_draw_text(bx + bw * 0.5f - 32.0f, py + 141, "Settings");
+
+    // Quit to Menu
+    renderer_draw_rect(bx, py + 166, bw, bh, 0.32f, 0.08f, 0.08f, 0.92f);
+    renderer_draw_text(bx + bw * 0.5f - 50.0f, py + 191, "Quit to Menu");
+}
+
+static void render_party_context_menu(GameState* game) {
+    if (!s_ctx_active) return;
+
+    float mw = 180.0f, mh = 56.0f;
+    float mx = s_ctx_x;
+    float my = s_ctx_y;
+
+    // Clamp to viewport
+    if (mx + mw > (float)game->camera.viewport_width)
+        mx = (float)game->camera.viewport_width - mw;
+    if (my + mh > (float)game->camera.viewport_height)
+        my = (float)game->camera.viewport_height - mh;
+
+    // Background + border
+    renderer_draw_rect(mx, my, mw, mh, 0.07f, 0.07f, 0.12f, 0.95f);
+    renderer_draw_rect(mx, my, mw, 1.5f, 0.45f, 0.45f, 0.75f, 1.0f);
+    renderer_draw_rect(mx, my + mh - 1.5f, mw, 1.5f, 0.45f, 0.45f, 0.75f, 1.0f);
+    renderer_draw_rect(mx, my, 1.5f, mh, 0.45f, 0.45f, 0.75f, 1.0f);
+    renderer_draw_rect(mx + mw - 1.5f, my, 1.5f, mh, 0.45f, 0.45f, 0.75f, 1.0f);
+
+    // Invite button
+    renderer_draw_rect(mx + 6, my + 10, mw - 12, 36, 0.12f, 0.32f, 0.12f, 0.9f);
+    char label[48];
+    snprintf(label, sizeof(label), "Invite %s", s_ctx_player_name);
+    renderer_draw_text(mx + 12, my + 34, label);
+}
+
 // RENDER
 static void playing_render(GameState* game) {
     renderer_begin_2d();
@@ -629,7 +827,9 @@ static void playing_render(GameState* game) {
     ability_bar_render_cast_bar(&game->ability_bar,
                                 (float)game->camera.viewport_width,
                                 (float)game->camera.viewport_height);
-    combat_render_cast_bar(&game->combat, 800.0f, 600.0f);
+    combat_render_cast_bar(&game->combat,
+                            (float)game->camera.viewport_width,
+                            (float)game->camera.viewport_height);
 
     // Render inventory and character screen (on top of everything)
     if (game->inventory) {
@@ -649,6 +849,11 @@ static void playing_render(GameState* game) {
     render_party_invite(game);
     render_death_screen(game);
     render_level_up(game);
+    render_reward_notifications(game);
+    render_party_context_menu(game);
+
+    // Pause overlay (always last so it sits on top of everything)
+    render_pause_overlay(game);
 
     char debug[128];
     snprintf(debug, sizeof(debug), "Pos: %.0f, %.0f  Mana: %d/%d",
@@ -659,6 +864,41 @@ static void playing_render(GameState* game) {
 
 // INPUT
 static void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
+
+    // -------------------------------------------------------------------------
+    // PAUSE MENU  (handle first — blocks everything else)
+    // -------------------------------------------------------------------------
+    if (game->is_paused) {
+        // ESC or R unpause
+        if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE) ||
+            input_key_just_pressed(&game->input, GLFW_KEY_R)) {
+            game->is_paused = 0;
+            return;
+        }
+        if (game->input.mouse_left_clicked) {
+            float vw   = (float)game->camera.viewport_width;
+            float vh   = (float)game->camera.viewport_height;
+            float pw   = 340.0f, ph = 230.0f;
+            float px   = (vw - pw) * 0.5f;
+            float py   = (vh - ph) * 0.5f;
+            float bw   = 220.0f, bh = 38.0f;
+            float bx   = px + (pw - bw) * 0.5f;
+            float mx   = game->input.mouse_x;
+            float my   = game->input.mouse_y;
+
+            // Resume button
+            if (mx >= bx && mx <= bx + bw && my >= py + 66 && my <= py + 66 + bh) {
+                game->is_paused = 0;
+            }
+            // Quit to Menu button
+            if (mx >= bx && mx <= bx + bw && my >= py + 166 && my <= py + 166 + bh) {
+                game->is_paused = 0;
+                game_change_state(game, GAME_MODE_MAIN_MENU);
+            }
+        }
+        return; // Block all gameplay input while paused
+    }
+
     // Toggle inventory with 'I' key
     if (input_key_just_pressed(&game->input, GLFW_KEY_I)) {
         if (game->inventory) {
@@ -727,13 +967,47 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
+    // Dismiss context menu on left-click anywhere
+    if (s_ctx_active && game->input.mouse_left_clicked) {
+        float mw = 180.0f, mh = 56.0f;
+        float mx = s_ctx_x, my = s_ctx_y;
+        if (mx + mw > (float)game->camera.viewport_width)  mx = (float)game->camera.viewport_width  - mw;
+        if (my + mh > (float)game->camera.viewport_height) my = (float)game->camera.viewport_height - mh;
+
+        if (game->input.mouse_x >= mx + 6 && game->input.mouse_x <= mx + mw - 6 &&
+            game->input.mouse_y >= my + 10 && game->input.mouse_y <= my + 46) {
+            // Clicked the Invite button
+            network_send_party_invite(s_ctx_player_name);
+            s_ctx_active = 0;
+            return;
+        }
+        s_ctx_active = 0; // clicked outside — just dismiss
+    }
+
     // NPC interaction with right-click
     if (game->input.mouse_right_clicked && !dialogue_is_active()) {
-        // Convert mouse position to world coordinates
-        float world_x = game->input.mouse_x + game->camera.x
-                        - game->camera.viewport_width / 2.0f;
-        float world_y = game->input.mouse_y + game->camera.y
-                        - game->camera.viewport_height / 2.0f;
+        s_ctx_active = 0; // dismiss any open context menu
+
+        // Convert mouse position to world coordinates (zoom-aware)
+        float world_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
+        float world_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
+
+        // Check if right-clicked a nearby player first (party invite)
+        for (int i = 0; i < game->nearby_player_count; i++) {
+            NearbyPlayer* p = &game->nearby_players[i];
+            if (p->is_dead) continue;
+            float dx = world_x - p->pos_x;
+            float dy = world_y - p->pos_y;
+            if (dx*dx + dy*dy < 32.0f * 32.0f) {
+                s_ctx_active    = 1;
+                s_ctx_player_id = p->player_id;
+                strncpy(s_ctx_player_name, p->name, 31);
+                s_ctx_player_name[31] = '\0';
+                s_ctx_x = game->input.mouse_x;
+                s_ctx_y = game->input.mouse_y;
+                return;
+            }
+        }
 
         // Check if clicked on an NPC
         for (int i = 0; i < game->visible_npc_count; i++) {
@@ -778,11 +1052,30 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             game->chat.input_len = 0;
             game->chat.input_buf[0] = '\0';
         }
-        // Backspace
-        if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
-            if (game->chat.input_len > 0) {
-                game->chat.input_len--;
-                game->chat.input_buf[game->chat.input_len] = '\0';
+        // Backspace (use held state for key repeat)
+        if (input_key_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
+            static float backspace_timer = 0.0f;
+            static int backspace_first = 1;
+            if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
+                // First press - delete immediately
+                if (game->chat.input_len > 0) {
+                    game->chat.input_len--;
+                    game->chat.input_buf[game->chat.input_len] = '\0';
+                }
+                backspace_timer = 0.0f;
+                backspace_first = 1;
+            } else {
+                // Held - repeat after initial delay, then faster
+                backspace_timer += delta_time;
+                float threshold = backspace_first ? 0.4f : 0.05f;
+                if (backspace_timer >= threshold) {
+                    backspace_timer = 0.0f;
+                    backspace_first = 0;
+                    if (game->chat.input_len > 0) {
+                        game->chat.input_len--;
+                        game->chat.input_buf[game->chat.input_len] = '\0';
+                    }
+                }
             }
         }
         // Tab to cycle channels
@@ -825,10 +1118,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
     // Ground item pickup with left click
     if (game->input.mouse_left_clicked) {
-        float world_x = game->input.mouse_x + game->camera.x
-                        - game->camera.viewport_width / 2.0f;
-        float world_y = game->input.mouse_y + game->camera.y
-                        - game->camera.viewport_height / 2.0f;
+        float world_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
+        float world_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
 
         for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
             if (!game->ground_items[i].active) continue;
@@ -861,10 +1152,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                                            game->player.info.player_class);
 
     if (ability_to_cast > 0) {
-        float aim_x = game->input.mouse_x + game->camera.x
-                      - game->camera.viewport_width / 2.0f;
-        float aim_y = game->input.mouse_y + game->camera.y
-                      - game->camera.viewport_height / 2.0f;
+        float aim_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
+        float aim_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
 
         network_send_ability_cast(ability_to_cast, aim_x, aim_y, 0);
     }
@@ -881,7 +1170,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         ability_bar_on_cast_cancel(&game->ability_bar);
     }
     
-    // ESC to close windows or quit
+    // ESC — close open windows, or open pause menu
     if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
         if (dialogue_is_active()) {
             dialogue_close();
@@ -889,10 +1178,13 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             character_screen_toggle(game->character_screen);
         } else if (game->inventory && game->inventory->is_open) {
             inventory_toggle(game->inventory);
+        } else if (s_ctx_active) {
+            s_ctx_active = 0;
         } else {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
+            game->is_paused = 1;
         }
     }
+    (void)window;
 }
 
 const StateHandler g_state_playing = {

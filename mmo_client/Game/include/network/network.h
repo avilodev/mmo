@@ -80,6 +80,9 @@ void network_send_ability_cancel(void);
 // Request a full stat refresh from the server (e.g. on reconnect)
 void network_request_player_stats(void);
 
+// Request full character data refresh (updates XP, gold, inventory)
+void network_request_player_data_refresh(void);
+
 // ----------------------------------------------------------------------------
 // NPC DIALOGUE
 // ----------------------------------------------------------------------------

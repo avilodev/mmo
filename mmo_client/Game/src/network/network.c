@@ -8,8 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
-#include <time.h>
 #include <math.h>
+#include <GLFW/glfw3.h>
 
 // ============================================================================
 // INTERNAL STATE
@@ -74,7 +74,7 @@ extern GameState* g_current_game;
 // ============================================================================
 
 static double get_time(void) {
-    return (double)clock() / CLOCKS_PER_SEC;
+    return glfwGetTime();
 }
 
 // ============================================================================
@@ -224,6 +224,13 @@ static void process_packet(const char* data, int length) {
                 memcpy(&g_char_data, data, sizeof(CharacterInfo));
                 g_char_data.name[31] = '\0';
                 g_char_data_ready = TRUE;
+
+                // If game is already running, update live XP and gold immediately
+                if (g_current_game && g_current_game->player.info_loaded) {
+                    g_current_game->player.info.experience = ntohll(g_char_data.experience);
+                    g_current_game->player.info.gold = ntohl(g_char_data.gold);
+                }
+
                 printf("[NET] Character data received\n");
             }
             break;
@@ -271,14 +278,23 @@ static void process_packet(const char* data, int length) {
                 DamageV2Packet* pkt = (DamageV2Packet*)data;
                 uint32_t target = ntohl(pkt->target_id);
                 uint32_t damage = ntohl(pkt->damage);
+                uint32_t new_health = ntohl(pkt->target_new_health);
 
                 if (g_current_game) {
                     float tx = 0, ty = 0;
-                    for (int i = 0; i < g_current_game->visible_npc_count; i++) {
-                        if (g_current_game->visible_npcs[i].npc_id == target) {
-                            tx = g_current_game->visible_npcs[i].pos_x;
-                            ty = g_current_game->visible_npcs[i].pos_y;
-                            break;
+
+                    if (target == g_character_id) {
+                        // Player is the target — update health bar
+                        g_current_game->player.info.health = new_health;
+                        tx = g_current_game->player.x;
+                        ty = g_current_game->player.y;
+                    } else {
+                        for (int i = 0; i < g_current_game->visible_npc_count; i++) {
+                            if (g_current_game->visible_npcs[i].npc_id == target) {
+                                tx = g_current_game->visible_npcs[i].pos_x;
+                                ty = g_current_game->visible_npcs[i].pos_y;
+                                break;
+                            }
                         }
                     }
 
@@ -289,10 +305,15 @@ static void process_packet(const char* data, int length) {
                         combat_on_damage(&g_current_game->combat,
                                          target, (int)damage, 0, pkt->is_kill, tx, ty);
                     }
+
+                    if (pkt->is_kill) {
+                        network_request_player_stats();
+                        network_request_player_data_refresh();
+                    }
                 }
             }
             break;
-            
+
         case PACKET_CAST_CANCEL:
             if (length >= (int)sizeof(CastCancelPacket)) {
                 if (g_current_game) {
@@ -322,15 +343,26 @@ static void process_packet(const char* data, int length) {
                     uint32_t target = ntohl(pkt->target_id);
                     int32_t damage = (int32_t)ntohl(pkt->damage);
                     int32_t healing = (int32_t)ntohl(pkt->healing);
+                    int32_t new_health = (int32_t)ntohl(pkt->target_new_health);
 
                     ability_bar_on_cast_resolve(&g_current_game->ability_bar, ability_id);
 
                     float tx = 0, ty = 0;
-                    for (int i = 0; i < g_current_game->visible_npc_count; i++) {
-                        if (g_current_game->visible_npcs[i].npc_id == target) {
-                            tx = g_current_game->visible_npcs[i].pos_x;
-                            ty = g_current_game->visible_npcs[i].pos_y;
-                            break;
+
+                    if (target == g_character_id) {
+                        // Player is the target — update health bar
+                        if (new_health >= 0) {
+                            g_current_game->player.info.health = (uint32_t)new_health;
+                        }
+                        tx = g_current_game->player.x;
+                        ty = g_current_game->player.y;
+                    } else {
+                        for (int i = 0; i < g_current_game->visible_npc_count; i++) {
+                            if (g_current_game->visible_npcs[i].npc_id == target) {
+                                tx = g_current_game->visible_npcs[i].pos_x;
+                                ty = g_current_game->visible_npcs[i].pos_y;
+                                break;
+                            }
                         }
                     }
 
@@ -340,6 +372,11 @@ static void process_packet(const char* data, int length) {
                     } else if (damage > 0) {
                         combat_on_damage(&g_current_game->combat,
                                          target, damage, 0, pkt->is_kill, tx, ty);
+                    }
+
+                    if (pkt->is_kill) {
+                        network_request_player_stats();
+                        network_request_player_data_refresh();
                     }
 
                     printf("[NET] Ability effect: id=%u target=%u dmg=%d heal=%d\n",
@@ -459,21 +496,52 @@ static void process_packet(const char* data, int length) {
             printf("[NET] NPC positions received: %d NPCs\n", claimed_count);
             
             if (g_current_game) {
+                int old_count = g_current_game->visible_npc_count;
                 g_current_game->visible_npc_count = claimed_count;
-                
+
                 for (int i = 0; i < claimed_count && i < MAX_VISIBLE_NPCS; i++) {
                     NPCPositionData* src = &pkt->npcs[i];
-                    g_current_game->visible_npcs[i].npc_id = ntohl(src->npc_id);
-                    g_current_game->visible_npcs[i].pos_x = src->pos_x;
-                    g_current_game->visible_npcs[i].pos_y = src->pos_y;
+                    uint32_t npc_id = ntohl(src->npc_id);
+                    float new_x = src->pos_x;
+                    float new_y = src->pos_y;
+
+                    // Check if this NPC existed before to interpolate
+                    int found = 0;
+                    for (int j = 0; j < old_count && j < MAX_VISIBLE_NPCS; j++) {
+                        if (g_current_game->visible_npcs[j].npc_id == npc_id) {
+                            // Existing NPC: set up interpolation from current to new
+                            g_current_game->visible_npcs[i].prev_x = g_current_game->visible_npcs[j].pos_x;
+                            g_current_game->visible_npcs[i].prev_y = g_current_game->visible_npcs[j].pos_y;
+                            found = 1;
+                            break;
+                        }
+                    }
+
+                    g_current_game->visible_npcs[i].npc_id = npc_id;
+                    g_current_game->visible_npcs[i].target_x = new_x;
+                    g_current_game->visible_npcs[i].target_y = new_y;
+
+                    if (!found) {
+                        // New NPC: snap to position immediately
+                        g_current_game->visible_npcs[i].pos_x = new_x;
+                        g_current_game->visible_npcs[i].pos_y = new_y;
+                        g_current_game->visible_npcs[i].prev_x = new_x;
+                        g_current_game->visible_npcs[i].prev_y = new_y;
+                        g_current_game->visible_npcs[i].interp_t = 1.0f;
+                    } else {
+                        // Reset interpolation timer for smooth movement
+                        g_current_game->visible_npcs[i].interp_t = 0.0f;
+                    }
+
                     g_current_game->visible_npcs[i].health = ntohl(src->health);
                     g_current_game->visible_npcs[i].max_health = ntohl(src->max_health);
                     g_current_game->visible_npcs[i].is_alive = src->is_alive;
                     g_current_game->visible_npcs[i].category = src->category;
                     g_current_game->visible_npcs[i].is_interactable = src->is_interactable;
                     g_current_game->visible_npcs[i].npc_type_id = src->npc_type_id;
-                    snprintf(g_current_game->visible_npcs[i].name, 32, "NPC_%u",
-                            g_current_game->visible_npcs[i].npc_id);
+                    if (!found) {
+                        snprintf(g_current_game->visible_npcs[i].name, 32, "NPC_%u", npc_id);
+                    }
                 }
             }
             break;
@@ -575,6 +643,37 @@ static void process_packet(const char* data, int length) {
             }
             break;
 
+        case PACKET_KILL_REWARD:
+            if (length >= (int)sizeof(KillRewardPacket)) {
+                KillRewardPacket* pkt = (KillRewardPacket*)data;
+                if (g_current_game) {
+                    uint32_t xp_gained    = ntohl(pkt->xp_gained);
+                    uint32_t gold_gained  = ntohl(pkt->gold_gained);
+                    uint64_t total_xp     = ntohll(pkt->total_xp);
+                    uint32_t total_gold   = ntohl(pkt->total_gold);
+
+                    // Update player's gold and XP
+                    g_current_game->player.info.gold       = total_gold;
+                    g_current_game->player.info.experience = total_xp;
+
+                    // Find an empty reward notification slot and spawn the notification
+                    for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
+                        if (!g_current_game->reward_notifications[i].active) {
+                            g_current_game->reward_notifications[i].xp_gained   = xp_gained;
+                            g_current_game->reward_notifications[i].gold_gained = gold_gained;
+                            g_current_game->reward_notifications[i].age         = 0.0f;
+                            g_current_game->reward_notifications[i].active      = 1;
+                            break;
+                        }
+                    }
+
+                    printf("[NET] Kill Reward: +%u XP, +%u Gold (Total: %llu XP, %u Gold)\n",
+                           xp_gained, gold_gained,
+                           (unsigned long long)total_xp, total_gold);
+                }
+            }
+            break;
+
         case PACKET_NPC_INTERACT_RESPONSE:
             if (length >= (int)sizeof(NPCInteractResponsePacket)) {
                 memcpy(&g_npc_interact_response, data, sizeof(NPCInteractResponsePacket));
@@ -655,6 +754,16 @@ static void process_packet(const char* data, int length) {
                                                     new_mana,
                                                     g_current_game->ability_bar.max_mana);
                     }
+                    // Remove consumed item from inventory
+                    if (g_current_game->inventory) {
+                        uint32_t used_item = ntohl(pkt->item_id);
+                        for (int i = 0; i < INVENTORY_SIZE; i++) {
+                            if (g_current_game->inventory->slots[i].template_id == used_item) {
+                                inventory_remove_item(g_current_game->inventory, i, 1);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             break;
@@ -703,6 +812,8 @@ static void process_packet(const char* data, int length) {
                     g_current_game->nearby_players[i].max_health = (int32_t)ntohl(src->max_health);
                     g_current_game->nearby_players[i].player_class = src->player_class;
                     g_current_game->nearby_players[i].is_dead = src->is_dead;
+                    snprintf(g_current_game->nearby_players[i].name, 32,
+                             "Player_%u", ntohl(src->player_id));
                 }
             }
             break;
@@ -977,7 +1088,8 @@ static void process_packet(const char* data, int length) {
             PartyUpdatePacket* pkt = (PartyUpdatePacket*)data;
             uint8_t claimed_count = pkt->member_count;
             
-            size_t expected_size = base_size + (claimed_count * 56);
+            size_t member_size = sizeof(pkt->members[0]);
+            size_t expected_size = base_size + (claimed_count * member_size);
             
             if (length < (int)expected_size) {
                 return;
@@ -1150,6 +1262,9 @@ static int get_packet_size(uint8_t type) {
         case PACKET_LEVEL_UP:                   return (int)sizeof(LevelUpPacket);
         case PACKET_PLAYER_STATS:               return (int)sizeof(PlayerStatsPacket);
         case PACKET_REQUEST_PLAYER_STATS:       return (int)sizeof(RequestPlayerStatsPacket);
+
+        // Rewards
+        case PACKET_KILL_REWARD:                return (int)sizeof(KillRewardPacket);
 
         // Position broadcasts - variable length, handled in network_update()
         // case PACKET_PLAYER_POSITIONS:
@@ -1886,6 +2001,21 @@ void network_request_player_stats(void) {
 
     send(g_socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Requested player stats refresh\n");
+}
+
+void network_request_player_data_refresh(void) {
+    if (!g_connected || g_character_id == 0) return;
+
+    WorldPlayerDataRequest pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_REQUEST_PLAYER_DATA;
+    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(WorldPlayerDataRequest) - sizeof(PacketHeader));
+    pkt.character_id = htonl(g_character_id);
+    pkt.world_id = 0;
+
+    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    printf("[NET] Requested player data refresh (XP/gold)\n");
 }
 
 // ============================================================================

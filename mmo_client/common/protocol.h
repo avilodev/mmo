@@ -127,6 +127,9 @@ typedef enum {
     PACKET_PARTY_UPDATE        = 186,
     PACKET_PARTY_DISBAND       = 187,
 
+    // Rewards
+    PACKET_KILL_REWARD         = 190,      // Server -> Client: XP + gold gained on kill
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,
@@ -1060,6 +1063,19 @@ typedef struct {
 typedef struct {
     PacketHeader header;
 } PartyDisbandPacket;
+
+// ============================================================================
+// REWARD PACKETS
+// ============================================================================
+
+// Server -> Client: XP and gold gained from a kill
+typedef struct {
+    PacketHeader header;
+    uint32_t     xp_gained;
+    uint32_t     gold_gained;
+    uint64_t     total_xp;       // Player's new total XP (for bar update)
+    uint32_t     total_gold;     // Player's new total gold
+} KillRewardPacket;
 
 // Network byte order conversion for 64-bit values
 #define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))

@@ -111,7 +111,7 @@ void combat_on_damage(CombatState* combat,
 void combat_on_attack_result(CombatState* combat, uint8_t result_code, float cooldown) {
     if (result_code == 0) {  // ATTACK_RESULT_OK
         combat->cooldown_remaining = cooldown;
-        combat->cooldown_total = (int)cooldown;
+        combat->cooldown_total = cooldown;
     }
 }
 
@@ -141,11 +141,11 @@ int combat_is_on_cooldown(const CombatState* combat) {
 }
 
 float combat_get_cooldown_progress(const CombatState* combat) {
-    if (combat->cooldown_total <= 0) {
+    if (combat->cooldown_total <= 0.0f) {
         return 0.0f;
     }
-    
-    float progress = combat->cooldown_remaining / (float)combat->cooldown_total;
+
+    float progress = combat->cooldown_remaining / combat->cooldown_total;
     
     if (progress < 0.0f) return 0.0f;
     if (progress > 1.0f) return 1.0f;

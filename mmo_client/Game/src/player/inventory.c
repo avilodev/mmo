@@ -752,9 +752,7 @@ void inventory_use_item(InventoryState* inv, int si) {
     if (item->type == ITEM_TYPE_CONSUMABLE) {
         printf("[INVENTORY] Using %s (sending to server)\n", item->name);
         network_send_use_item((uint8_t)si);
-        // Remove locally immediately for responsiveness;
-        // server will confirm or we could revert on failure
-        inventory_remove_item(inv, si, 1);
+        // Server will confirm via USE_ITEM_RESPONSE; removal handled there
     } else if (item->type == ITEM_TYPE_EQUIPMENT && item->equip_slot != EQUIP_SLOT_NONE) {
         // Map client EquipSlot to server EquipSlotId
         uint8_t server_slot = 0;

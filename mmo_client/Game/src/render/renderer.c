@@ -81,8 +81,20 @@ void renderer_font_init(const char* path, float size) {
     unsigned char* ttf_buffer = malloc(1<<20);
     unsigned char* temp_bitmap = malloc(512*512);
 
+    if (!ttf_buffer || !temp_bitmap) {
+        printf("Font allocation failed\n");
+        free(ttf_buffer);
+        free(temp_bitmap);
+        return;
+    }
+
     FILE* f = fopen(path, "rb");
-    if (!f) { printf("Font not found: %s\n", path); return; }
+    if (!f) {
+        printf("Font not found: %s\n", path);
+        free(ttf_buffer);
+        free(temp_bitmap);
+        return;
+    }
     fread(ttf_buffer, 1, 1<<20, f);
     fclose(f);
 
@@ -92,7 +104,7 @@ void renderer_font_init(const char* path, float size) {
     glBindTexture(GL_TEXTURE_2D, font_texture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, 512, 512, 0, GL_ALPHA, GL_UNSIGNED_BYTE, temp_bitmap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    
+
     free(ttf_buffer);
     free(temp_bitmap);
 }
@@ -162,5 +174,9 @@ void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
 }
 
 void renderer_cleanup(void) {
+    if (font_texture) {
+        glDeleteTextures(1, &font_texture);
+        font_texture = 0;
+    }
     printf("Renderer cleaned up\n");
 }
