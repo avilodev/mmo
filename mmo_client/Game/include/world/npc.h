@@ -18,7 +18,11 @@ void npc_render(const VisibleNPC* npc, int tile_size);
 const VisibleNPC* npc_find_by_id(const VisibleNPC* npcs, int count, uint32_t npc_id);
 
 // Get NPC position by ID, returns 0 if not found
-int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id, 
+int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id,
                      float* out_x, float* out_y);
+
+// Draw a selection indicator under the targeted NPC (world-space)
+void npc_render_target_indicator(const VisibleNPC* npcs, int count, int tile_size,
+                                  uint32_t target_npc_id);
 
 #endif // NPC_H

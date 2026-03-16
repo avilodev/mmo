@@ -84,3 +84,33 @@ int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id,
     }
     return 0;
 }
+
+void npc_render_target_indicator(const VisibleNPC* npcs, int count, int tile_size,
+                                  uint32_t target_npc_id) {
+    if (target_npc_id == 0) return;
+
+    const VisibleNPC* npc = npc_find_by_id(npcs, count, target_npc_id);
+    if (!npc || !npc->is_alive) return;
+
+    float half = (float)(tile_size * 2) / 2.0f;
+    float x    = npc->pos_x;
+    float y    = npc->pos_y;
+    float t    = 2.5f; // bracket thickness
+
+    // Draw four corner brackets in yellow as a selection indicator
+    float bsize = half + 6.0f; // slightly larger than NPC body
+    float blen  = 8.0f;        // length of each bracket arm
+
+    // Top-left
+    renderer_draw_rect(x - bsize,        y - bsize,        blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
+    renderer_draw_rect(x - bsize,        y - bsize,        t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
+    // Top-right
+    renderer_draw_rect(x + bsize - blen, y - bsize,        blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
+    renderer_draw_rect(x + bsize - t,    y - bsize,        t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
+    // Bottom-left
+    renderer_draw_rect(x - bsize,        y + bsize - t,    blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
+    renderer_draw_rect(x - bsize,        y + bsize - blen, t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
+    // Bottom-right
+    renderer_draw_rect(x + bsize - blen, y + bsize - t,    blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
+    renderer_draw_rect(x + bsize - t,    y + bsize - blen, t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
+}

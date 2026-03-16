@@ -42,7 +42,11 @@ typedef struct {
     float       cast_time;              // For cast bar display
     int         mana_cost;
 
-    // Visual hints
+    // Icon
+    char        image[32];              // Filename, e.g. "cleave.png"
+    unsigned int texture_id;           // OpenGL texture (0 = not loaded yet)
+
+    // Visual hints (fallback color when no icon)
     float       color_r, color_g, color_b, color_a;
 } AbilitySlot;
 
@@ -92,6 +96,9 @@ typedef struct {
 
     // Input state
     int         hovered_slot;           // -1 = none
+
+    // Rejection flash (set when server cancels a cast before it started)
+    float       reject_flash[MAX_ABILITY_SLOTS];  // >0 = flash red, ticks to 0
 } AbilityBarState;
 
 // ============================================================================
@@ -109,6 +116,7 @@ void ability_bar_set_abilities(AbilityBarState* bar,
                                float* cooldowns,
                                float* cast_times,
                                int* mana_costs,
+                               const char** images,
                                int count);
 
 // Update per frame (tick cooldowns, check input)
@@ -122,8 +130,8 @@ void ability_bar_on_cast_start(AbilityBarState* bar, uint16_t ability_id, float 
 // Server told us the cast resolved (damage/heal applied)
 void ability_bar_on_cast_resolve(AbilityBarState* bar, uint16_t ability_id);
 
-// Server told us the cast was cancelled
-void ability_bar_on_cast_cancel(AbilityBarState* bar);
+// Server told us the cast was cancelled (ability_id=0 if unknown)
+void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id);
 
 // Server told us a cooldown started for this ability
 void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown);

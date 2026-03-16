@@ -3,7 +3,8 @@
 // ============================================================================
 
 #include "ability_bar.h"
-#include "renderer.h"
+#include "render/renderer.h"
+#include "texture/texture.h"
 #include "core/keybinds.h"
 
 #include <string.h>
@@ -57,12 +58,19 @@ void ability_bar_set_abilities(AbilityBarState* bar,
                                float* cooldowns,
                                float* cast_times,
                                int* mana_costs,
+                               const char** images,
                                int count) {
     bar->slot_count = count;
     if (bar->slot_count > MAX_ABILITY_SLOTS)
         bar->slot_count = MAX_ABILITY_SLOTS;
 
     for (int i = 0; i < bar->slot_count; i++) {
+        // Unload old texture if slot is being replaced
+        if (bar->slots[i].texture_id) {
+            texture_unload(bar->slots[i].texture_id);
+            bar->slots[i].texture_id = 0;
+        }
+
         bar->slots[i].id = ability_ids[i];
         strncpy(bar->slots[i].name, ability_names[i], MAX_ABILITY_NAME - 1);
         bar->slots[i].cooldown_total     = cooldowns[i];
@@ -70,7 +78,18 @@ void ability_bar_set_abilities(AbilityBarState* bar,
         bar->slots[i].cast_time          = cast_times[i];
         bar->slots[i].mana_cost          = mana_costs[i];
 
-        // Default color
+        // Store icon path and load texture
+        bar->slots[i].image[0] = '\0';
+        if (images && images[i] && images[i][0]) {
+            strncpy(bar->slots[i].image, images[i], 31);
+            bar->slots[i].image[31] = '\0';
+
+            char path[128];
+            snprintf(path, sizeof(path), "Game/Sprites/Abilities/%s", bar->slots[i].image);
+            bar->slots[i].texture_id = texture_load(path);
+        }
+
+        // Fallback color (shown when no icon)
         get_class_color_for_slot(i, count,
             &bar->slots[i].color_r, &bar->slots[i].color_g,
             &bar->slots[i].color_b, &bar->slots[i].color_a);
@@ -90,6 +109,7 @@ void ability_bar_set_abilities(AbilityBarState* bar,
 
 uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
                             const int* keys_just_pressed, uint32_t player_class) {
+    (void)player_class;
     // Tick cooldowns
     for (int i = 0; i < bar->slot_count; i++) {
         if (bar->slots[i].cooldown_remaining > 0.0f) {
@@ -99,20 +119,12 @@ uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
         }
     }
 
-    // ENERGY REGENERATION for Ninja (class 2)
-    if (player_class == 2) { // NINJA
-        // Regenerate energy at 30 per second
-        int32_t regen_amount = (int32_t)(50.0f * delta_time);
-        bar->mana += regen_amount;
-        if (bar->mana > bar->max_mana) {
-            bar->mana = bar->max_mana;
-        }
-    } else { // OTHER CLASSES - Slower mana regen
-        // Gladiator, Landweaver, Spirit - slower mana regeneration
-        int32_t regen_amount = (int32_t)(25.0f * delta_time); // 5 mana/sec
-        bar->mana += regen_amount;
-        if (bar->mana > bar->max_mana) {
-            bar->mana = bar->max_mana;
+    // Tick reject flash
+    for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
+        if (bar->reject_flash[i] > 0.0f) {
+            bar->reject_flash[i] -= delta_time;
+            if (bar->reject_flash[i] < 0.0f)
+                bar->reject_flash[i] = 0.0f;
         }
     }
 
@@ -205,9 +217,19 @@ void ability_bar_on_cast_resolve(AbilityBarState* bar, uint16_t ability_id) {
     }
 }
 
-void ability_bar_on_cast_cancel(AbilityBarState* bar) {
+void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id) {
     bar->is_casting = 0;
     bar->cast_elapsed = 0.0f;
+
+    // Flash the rejected slot red so the player knows why the cast failed
+    if (ability_id > 0) {
+        for (int i = 0; i < bar->slot_count; i++) {
+            if (bar->slots[i].id == ability_id) {
+                bar->reject_flash[i] = 0.3f;
+                break;
+            }
+        }
+    }
 }
 
 void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown) {
@@ -288,12 +310,18 @@ void ability_bar_render(const AbilityBarState* bar) {
         if (has_ability) {
             renderer_draw_rect(sx, sy, size, size, 0.15f, 0.15f, 0.25f, 1.0f);
 
-            // Ability color fill
-            renderer_draw_rect(sx + 2, sy + 2, size - 4, size - 4,
-                               bar->slots[i].color_r,
-                               bar->slots[i].color_g,
-                               bar->slots[i].color_b,
-                               0.4f);
+            if (bar->slots[i].texture_id) {
+                // Draw icon
+                renderer_draw_sprite(sx + 2, sy + 2, size - 4, size - 4,
+                                     bar->slots[i].texture_id);
+            } else {
+                // Fallback: colored fill
+                renderer_draw_rect(sx + 2, sy + 2, size - 4, size - 4,
+                                   bar->slots[i].color_r,
+                                   bar->slots[i].color_g,
+                                   bar->slots[i].color_b,
+                                   0.4f);
+            }
         } else {
             renderer_draw_rect(sx, sy, size, size, 0.1f, 0.1f, 0.15f, 0.6f);
         }
@@ -327,6 +355,12 @@ void ability_bar_render(const AbilityBarState* bar) {
         if (has_ability && bar->slots[i].mana_cost > bar->mana &&
             bar->slots[i].mana_cost > 0) {
             renderer_draw_rect(sx, sy, size, size, 0.0f, 0.0f, 0.3f, 0.4f);
+        }
+
+        // Rejection flash
+        if (bar->reject_flash[i] > 0.0f) {
+            float alpha = bar->reject_flash[i] / 0.3f;  // fade out
+            renderer_draw_rect(sx, sy, size, size, 0.9f, 0.1f, 0.1f, alpha * 0.6f);
         }
 
         // Keybind number (top-left)

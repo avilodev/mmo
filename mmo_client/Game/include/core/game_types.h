@@ -460,6 +460,7 @@ struct GameState {
 
     VisibleNPC visible_npcs[MAX_VISIBLE_NPCS];
     int visible_npc_count;
+    uint32_t target_npc_id;     // 0 = no target
 
     GameTextures textures;
     int background_width;

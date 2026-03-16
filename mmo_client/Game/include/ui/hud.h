@@ -27,4 +27,7 @@ void hud_render_inventory_button(const HUDLayout* hud, const GameState* game);
 void hud_render_character_button(const HUDLayout* hud, const GameState* game);
 void hud_render_currencies(const HUDLayout* hud, const GameState* game);
 
+// Render target health bar at top-center of screen
+void hud_render_target_bar(const GameState* game, float screen_width);
+
 #endif // HUD_H

@@ -35,13 +35,14 @@ void combat_on_cast_start(CombatState* combat,
 // Handle PACKET_CAST_CANCEL from server
 void combat_on_cast_cancel(CombatState* combat);
 
-// Handle PACKET_DAMAGE_V2 from server
+// Handle PACKET_DAMAGE_V2 / PACKET_ABILITY_EFFECT from server
 void combat_on_damage(CombatState* combat,
                       uint32_t target_id,
                       int damage,
                       int is_crit,
                       int is_kill,
-                      float target_x, 
+                      int is_heal,
+                      float target_x,
                       float target_y);
 
 // Handle PACKET_ATTACK_RESULT from server (for cooldown tracking)

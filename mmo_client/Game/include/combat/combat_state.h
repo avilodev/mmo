@@ -14,9 +14,10 @@ typedef struct {
     float    world_y;
     int      amount;
     int      is_kill;
+    int      is_crit;
+    int      is_heal;
     float    age;           // Seconds since event
     int      active;
-    int      is_crit;
 } DamageEvent;
 
 // Main combat state

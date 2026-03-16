@@ -330,14 +330,17 @@ void combat_render_damage_numbers(CombatState* combat) {
         // Color based on event type
         float r, g, b;
         if (evt->amount < 0) {
-            // MISS — gray text
-            r = 0.7f; g = 0.7f; b = 0.7f;
+            r = 0.7f; g = 0.7f; b = 0.7f;  // Gray  — MISS
+        } else if (evt->is_heal && evt->is_crit) {
+            r = 0.0f; g = 1.0f; b = 0.4f;  // Bright green — crit heal
+        } else if (evt->is_heal) {
+            r = 0.2f; g = 0.85f; b = 0.2f; // Green — normal heal
         } else if (evt->is_kill) {
-            r = 1.0f; g = 0.8f; b = 0.0f;  // Gold for kills
+            r = 1.0f; g = 0.8f; b = 0.0f;  // Gold  — kill
         } else if (evt->is_crit) {
-            r = 1.0f; g = 0.5f; b = 0.0f;  // Orange for crits
+            r = 1.0f; g = 0.5f; b = 0.0f;  // Orange — crit damage
         } else {
-            r = 1.0f; g = 0.3f; b = 0.3f;  // Red for normal
+            r = 1.0f; g = 0.3f; b = 0.3f;  // Red   — normal damage
         }
         
         // Background shadow
@@ -352,6 +355,8 @@ void combat_render_damage_numbers(CombatState* combat) {
         char buf[16];
         if (evt->amount < 0) {
             snprintf(buf, sizeof(buf), "MISS");
+        } else if (evt->is_heal) {
+            snprintf(buf, sizeof(buf), "+%d", evt->amount);
         } else {
             snprintf(buf, sizeof(buf), "%d", evt->amount);
         }

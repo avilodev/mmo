@@ -1,6 +1,7 @@
 #include "hud.h"
 #include "renderer.h"
 #include "core/game_types.h"
+#include "world/npc.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -92,6 +93,7 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     hud_render_inventory_button(hud, game);
     hud_render_character_button(hud, game);
     hud_render_currencies(hud, game);
+    hud_render_target_bar(game, (float)hud->screen_width);
 }
 
 void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
@@ -372,6 +374,57 @@ void hud_render_character_button(const HUDLayout* hud, const GameState* game) {
     // Legs
     renderer_draw_rect(icon_x - 5, icon_y + 20, 2, 8, 0.3f, 0.8f, 0.3f, 1.0f);
     renderer_draw_rect(icon_x + 3, icon_y + 20, 2, 8, 0.3f, 0.8f, 0.3f, 1.0f);
+}
+
+void hud_render_target_bar(const GameState* game, float screen_width) {
+    if (game->target_npc_id == 0) return;
+
+    const VisibleNPC* npc = npc_find_by_id(game->visible_npcs, game->visible_npc_count,
+                                            game->target_npc_id);
+    if (!npc || !npc->is_alive) return;
+
+    float bar_width  = 300.0f;
+    float bar_height = 22.0f;
+    float x = screen_width / 2.0f - bar_width / 2.0f;
+    float y = 16.0f;
+
+    // Background panel
+    renderer_draw_rect(x - 4, y - 20, bar_width + 8, bar_height + 28, 0.05f, 0.05f, 0.08f, 0.88f);
+
+    // Panel border
+    renderer_draw_rect(x - 4,              y - 20,                 bar_width + 8, 1.5f, 0.5f, 0.5f, 0.6f, 1.0f);
+    renderer_draw_rect(x - 4,              y - 20 + bar_height + 28 - 1.5f, bar_width + 8, 1.5f, 0.5f, 0.5f, 0.6f, 1.0f);
+    renderer_draw_rect(x - 4,              y - 20,                 1.5f, bar_height + 28, 0.5f, 0.5f, 0.6f, 1.0f);
+    renderer_draw_rect(x - 4 + bar_width + 8 - 1.5f, y - 20,      1.5f, bar_height + 28, 0.5f, 0.5f, 0.6f, 1.0f);
+
+    // NPC name above bar
+    if (npc->name[0] != '\0') {
+        renderer_draw_text(x + bar_width / 2.0f - 20.0f, y - 4.0f, npc->name);
+    }
+
+    // Health bar background
+    renderer_draw_rect(x, y, bar_width, bar_height, 0.15f, 0.05f, 0.05f, 1.0f);
+
+    // Health fill (red -> yellow -> green)
+    if (npc->max_health > 0) {
+        float pct = (float)npc->health / (float)npc->max_health;
+        if (pct > 1.0f) pct = 1.0f;
+        if (pct < 0.0f) pct = 0.0f;
+        float hr = (pct < 0.5f) ? 1.0f : (2.0f - pct * 2.0f);
+        float hg = (pct > 0.5f) ? 1.0f : (pct * 2.0f);
+        renderer_draw_rect(x, y, bar_width * pct, bar_height, hr, hg, 0.05f, 1.0f);
+    }
+
+    // Bar border
+    renderer_draw_rect(x, y, bar_width, 1.5f, 0.6f, 0.6f, 0.6f, 1.0f);
+    renderer_draw_rect(x, y + bar_height - 1.5f, bar_width, 1.5f, 0.6f, 0.6f, 0.6f, 1.0f);
+    renderer_draw_rect(x, y, 1.5f, bar_height, 0.6f, 0.6f, 0.6f, 1.0f);
+    renderer_draw_rect(x + bar_width - 1.5f, y, 1.5f, bar_height, 0.6f, 0.6f, 0.6f, 1.0f);
+
+    // HP numbers
+    char hp_text[32];
+    snprintf(hp_text, sizeof(hp_text), "%d / %d", npc->health, npc->max_health);
+    renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
 }
 
 void hud_render_currencies(const HUDLayout* hud, const GameState* game) {

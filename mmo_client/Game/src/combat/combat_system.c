@@ -87,25 +87,27 @@ void combat_on_damage(CombatState* combat,
                       int damage,
                       int is_crit,
                       int is_kill,
-                      float target_x, 
+                      int is_heal,
+                      float target_x,
                       float target_y) {
-    
+
     for (int i = 0; i < MAX_DAMAGE_EVENTS; i++) {
         DamageEvent* evt = &combat->damage_events[i];
         if (evt->active) continue;
-        
-        evt->active = 1;
+
+        evt->active    = 1;
         evt->target_id = target_id;
-        evt->amount = damage; 
-        evt->is_kill = is_kill;
-        evt->is_crit = is_crit;
-        evt->world_x = target_x;
-        evt->world_y = target_y;
-        evt->age = 0.0f;
+        evt->amount    = damage;
+        evt->is_kill   = is_kill;
+        evt->is_crit   = is_crit;
+        evt->is_heal   = is_heal;
+        evt->world_x   = target_x;
+        evt->world_y   = target_y;
+        evt->age       = 0.0f;
         break;
     }
-    
-    combat->is_casting = 0;
+
+    if (!is_heal) combat->is_casting = 0;
 }
 
 void combat_on_attack_result(CombatState* combat, uint8_t result_code, float cooldown) {

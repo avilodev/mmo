@@ -160,19 +160,21 @@ static void process_packet(const char* data, int length) {
             
             CharacterListResponsePacket* pkt = (CharacterListResponsePacket*)data;
             uint8_t claimed_count = pkt->count;
-            
-            if (length < (int)sizeof(CharacterListResponsePacket)) {
-                printf("[NET] CHAR_LIST incomplete: have %d bytes, need %zu\n",
-                       length, sizeof(CharacterListResponsePacket));
-                return;
-            }
 
             if (claimed_count > 10) {
                 printf("[NET] Server claims %d characters, clamping to 10\n", claimed_count);
                 claimed_count = 10;
             }
 
-            memcpy(&g_char_list, data, sizeof(CharacterListResponsePacket));
+            size_t needed = base_size + (size_t)claimed_count * sizeof(pkt->characters[0]);
+            if (length < (int)needed) {
+                printf("[NET] CHAR_LIST incomplete: have %d bytes, need %zu\n",
+                       length, needed);
+                return;
+            }
+
+            memset(&g_char_list, 0, sizeof(g_char_list));
+            memcpy(&g_char_list, data, needed);
             g_char_list.count = claimed_count;
             
             // Null-terminate character names
@@ -303,10 +305,10 @@ static void process_packet(const char* data, int length) {
 
                     if (damage == 0 && !pkt->is_kill) {
                         combat_on_damage(&g_current_game->combat,
-                                         target, -1, 0, 0, tx, ty);
+                                         target, -1, 0, 0, 0, tx, ty);
                     } else {
                         combat_on_damage(&g_current_game->combat,
-                                         target, (int)damage, 0, pkt->is_kill, tx, ty);
+                                         target, (int)damage, pkt->is_crit, pkt->is_kill, 0, tx, ty);
                     }
 
                     if (pkt->is_kill) {
@@ -371,10 +373,13 @@ static void process_packet(const char* data, int length) {
 
                     if (damage == 0 && healing == 0 && !pkt->is_kill) {
                         combat_on_damage(&g_current_game->combat,
-                                         target, -1, 0, 0, tx, ty);
+                                         target, -1, 0, 0, 0, tx, ty);
                     } else if (damage > 0) {
                         combat_on_damage(&g_current_game->combat,
-                                         target, damage, 0, pkt->is_kill, tx, ty);
+                                         target, damage, pkt->is_crit, pkt->is_kill, 0, tx, ty);
+                    } else if (healing > 0) {
+                        combat_on_damage(&g_current_game->combat,
+                                         target, healing, pkt->is_crit, 0, 1, tx, ty);
                     }
 
                     if (pkt->is_kill) {
@@ -390,9 +395,12 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_ABILITY_CAST_CANCEL:
             if (length >= (int)sizeof(AbilityCastCancelPacket)) {
+                AbilityCastCancelPacket* pkt = (AbilityCastCancelPacket*)data;
                 if (g_current_game) {
-                    ability_bar_on_cast_cancel(&g_current_game->ability_bar);
-                    printf("[NET] Ability cast cancelled\n");
+                    uint16_t ability_id = ntohs(pkt->ability_id);
+                    ability_bar_on_cast_cancel(&g_current_game->ability_bar, ability_id);
+                    printf("[NET] Ability cast cancelled (id=%u reason=%u)\n",
+                           ability_id, pkt->reason);
                 }
             }
             break;
@@ -405,6 +413,40 @@ static void process_packet(const char* data, int length) {
                     int32_t max_mana = (int32_t)ntohl(pkt->max_mana);
                     ability_bar_on_mana_update(&g_current_game->ability_bar, mana, max_mana);
                 }
+            }
+            break;
+
+        case PACKET_ABILITY_DATA:
+            if (length >= (int)sizeof(AbilityDataPacket) && g_current_game) {
+                AbilityDataPacket* pkt = (AbilityDataPacket*)data;
+                uint8_t count = pkt->count;
+                if (count > MAX_ABILITY_SLOTS) count = MAX_ABILITY_SLOTS;
+
+                uint16_t  ids[MAX_ABILITY_SLOTS]       = {0};
+                const char* names[MAX_ABILITY_SLOTS]   = {"","","","",""};
+                float     cooldowns[MAX_ABILITY_SLOTS] = {0};
+                float     cast_times[MAX_ABILITY_SLOTS]= {0};
+                int       costs[MAX_ABILITY_SLOTS]     = {0};
+                const char* images[MAX_ABILITY_SLOTS]  = {"","","","",""};
+
+                static char name_bufs[MAX_ABILITY_SLOTS][24];
+                static char image_bufs[MAX_ABILITY_SLOTS][32];
+                for (int i = 0; i < count; i++) {
+                    ids[i]        = ntohs(pkt->slots[i].id);
+                    memcpy(name_bufs[i], pkt->slots[i].name, 23);
+                    name_bufs[i][23] = '\0';
+                    names[i]      = name_bufs[i];
+                    cooldowns[i]  = pkt->slots[i].cooldown;
+                    cast_times[i] = pkt->slots[i].cast_time;
+                    costs[i]      = (int)pkt->slots[i].mana_cost;
+                    memcpy(image_bufs[i], pkt->slots[i].image, 31);
+                    image_bufs[i][31] = '\0';
+                    images[i]     = image_bufs[i];
+                }
+
+                ability_bar_set_abilities(&g_current_game->ability_bar,
+                                          ids, names, cooldowns, cast_times, costs, images, count);
+                printf("[NET] Ability data received: %d slots\n", count);
             }
             break;
 
@@ -1268,6 +1310,7 @@ static int get_packet_size(uint8_t type) {
         case PACKET_SPAWN_ZONE:                 return (int)sizeof(SpawnZonePacket);
         case PACKET_REMOVE_ZONE:                return (int)sizeof(RemoveZonePacket);
         case PACKET_MANA_UPDATE:                return (int)sizeof(ManaUpdatePacket);
+        case PACKET_ABILITY_DATA:               return (int)sizeof(AbilityDataPacket);
 
         // Level & Stats
         case PACKET_LEVEL_UP:                   return (int)sizeof(LevelUpPacket);

@@ -35,85 +35,12 @@ static double s_last_any_send = 0.0;
 static float s_last_sent_x = 0.0f;
 static float s_last_sent_y = 0.0f;
 static int s_move_state_init = 0;
-static int s_ability_setup_attempted = 0;
-
-// Ability bar setup (hardcoded per-class ability data)
-static void setup_ability_bar_for_class(AbilityBarState* bar, uint8_t player_class, int level) {
-    uint16_t ids[5] = {0};
-    const char* names[5] = {"", "", "", "", ""};
-    float cds[5] = {0};
-    float casts[5] = {0};
-    int costs[5] = {0};
-    int count = 0;
-
-    switch (player_class) {
-        case 1: // Gladiator
-            ids[0]=1; names[0]="Cleave";       cds[0]=3;  casts[0]=0.5f; costs[0]=0;
-            ids[1]=2; names[1]="Rage";         cds[1]=8;  casts[1]=0;    costs[1]=0;
-            ids[2]=3; names[2]="Shield Bash";  cds[2]=10; casts[2]=0;    costs[2]=0;
-            ids[3]=4; names[3]="Slam";         cds[3]=16; casts[3]=0.5f; costs[3]=0;
-            ids[4]=5; names[4]="War Cry";      cds[4]=20; casts[4]=0;    costs[4]=0;
-            count = 5;
-            if (level < 7) count = 4;
-            if (level < 5) count = 3;
-            if (level < 3) count = 2;
-            if (level < 2) count = 1;
-            break;
-
-        case 2: // Ninja
-            ids[0]=16; names[0]="Dash Strike";   cds[0]=6;  casts[0]=0;    costs[0]=20;
-            ids[1]=17; names[1]="Smoke Bomb";    cds[1]=14; casts[1]=0;    costs[1]=30;
-            ids[2]=18; names[2]="Shuriken";      cds[2]=2;  casts[2]=0;    costs[2]=15;
-            ids[3]=19; names[3]="Shadow Clone";  cds[3]=20; casts[3]=0;    costs[3]=45;
-            ids[4]=20; names[4]="Execute";       cds[4]=16; casts[4]=0;    costs[4]=50;
-            count = 5;
-            if (level < 7) count = 4;
-            if (level < 5) count = 3;
-            if (level < 3) count = 2;
-            if (level < 2) count = 1;
-            break;
-
-        case 3: // Landweaver
-            ids[0]=6;  names[0]="Shake";       cds[0]=5;  casts[0]=1.0f; costs[0]=60;
-            ids[1]=7;  names[1]="Stone Spike"; cds[1]=4;  casts[1]=0.6f; costs[1]=35;
-            ids[2]=8;  names[2]="Rock Wall";   cds[2]=16; casts[2]=1.5f; costs[2]=60;
-            ids[3]=9;  names[3]="Mud Pit";     cds[3]=14; casts[3]=1.0f; costs[3]=50;
-            ids[4]=10; names[4]="Eruption";    cds[4]=22; casts[4]=2.0f; costs[4]=80;
-            count = 5;
-            if (level < 7) count = 4;
-            if (level < 5) count = 3;
-            if (level < 3) count = 2;
-            if (level < 2) count = 1;
-            break;
-
-        case 4: // Spirit
-            ids[0]=11; names[0]="Heal Pulse";   cds[0]=5;  casts[0]=0.8f; costs[0]=30;
-            ids[1]=12; names[1]="Cleanse";      cds[1]=10; casts[1]=0;    costs[1]=25;
-            ids[2]=13; names[2]="Sanctuary";    cds[2]=18; casts[2]=1.0f; costs[2]=50;
-            ids[3]=14; names[3]="Spirit Link";  cds[3]=20; casts[3]=0.5f; costs[3]=40;
-            ids[4]=15; names[4]="Revitalize";   cds[4]=30; casts[4]=1.5f; costs[4]=70;
-            count = 5;
-            if (level < 7) count = 4;
-            if (level < 5) count = 3;
-            if (level < 3) count = 2;
-            if (level < 2) count = 1;
-            break;
-
-        default:
-            printf("[ABILITY_BAR] Unknown class %u, no abilities assigned\n", player_class);
-            break;
-    }
-
-    ability_bar_set_abilities(bar, ids, names, cds, casts, costs, count);
-    printf("[ABILITY_BAR] Class %u level %d: %d abilities set up\n",
-           player_class, level, count);
-}
+// Ability bar is now populated by PACKET_ABILITY_DATA from the server (network.c)
 
 // ENTER / EXIT
 static void playing_enter(GameState* game) {
     printf("[STATE] Entering gameplay\n");
     s_move_state_init = 0;
-    s_ability_setup_attempted = 0;
     combat_init(&game->combat);
     
     ability_bar_init(&game->ability_bar,
@@ -156,46 +83,6 @@ static void playing_update(GameState* game, float delta_time) {
             if (game->inventory) {
                 inventory_load_from_server(game->inventory, info.inventory);
                 printf("[GAME] Inventory loaded from server\n");
-            }
-        }
-    }
-    
-    // Set up ability bar if player is loaded but abilities aren't populated yet
-    if (game->player.info_loaded && game->ability_bar.slot_count == 0) {
-        if (!s_ability_setup_attempted) {
-            s_ability_setup_attempted = 1;
-
-            // Try raw value first, then network byte order conversion
-            int raw_class = (int)game->player.info.player_class;
-            uint8_t resolved_class = 0;
-
-            if (raw_class >= 1 && raw_class <= 4) {
-                resolved_class = (uint8_t)raw_class;
-            } else {
-                uint32_t converted = ntohl((uint32_t)raw_class);
-                if (converted >= 1 && converted <= 4) {
-                    resolved_class = (uint8_t)converted;
-                }
-            }
-
-            // Fallback to character select list
-            if (resolved_class == 0) {
-                int idx = game->char_select.selected_index;
-                if (idx >= 0 && idx < (int)game->char_select.list.count) {
-                    uint32_t list_class = ntohl(game->char_select.list.characters[idx].class_id);
-                    if (list_class >= 1 && list_class <= 4) {
-                        resolved_class = (uint8_t)list_class;
-                    }
-                }
-            }
-
-            if (resolved_class >= 1 && resolved_class <= 4) {
-                setup_ability_bar_for_class(&game->ability_bar,
-                                            resolved_class,
-                                            (int)game->player.info.level);
-            } else {
-                printf("[ABILITY_BAR] Could not resolve class (raw=%d), retrying next frame\n", raw_class);
-                s_ability_setup_attempted = 0; // Allow retry
             }
         }
     }
@@ -287,6 +174,15 @@ static void playing_update(GameState* game, float delta_time) {
             if (npc->interp_t > 1.0f) npc->interp_t = 1.0f;
             npc->pos_x = npc->prev_x + (npc->target_x - npc->prev_x) * npc->interp_t;
             npc->pos_y = npc->prev_y + (npc->target_y - npc->prev_y) * npc->interp_t;
+        }
+    }
+
+    // Clear target if targeted NPC has died
+    if (game->target_npc_id != 0) {
+        const VisibleNPC* t = npc_find_by_id(game->visible_npcs, game->visible_npc_count,
+                                              game->target_npc_id);
+        if (!t || !t->is_alive) {
+            game->target_npc_id = 0;
         }
     }
 
@@ -885,6 +781,8 @@ static void playing_render(GameState* game) {
     render_telegraphs(game);
     render_ground_items(game);
     npc_render_all(game->visible_npcs, game->visible_npc_count, game->world.tile_size);
+    npc_render_target_indicator(game->visible_npcs, game->visible_npc_count,
+                                 game->world.tile_size, game->target_npc_id);
     render_nearby_players(game);
     render_projectiles(game);
     combat_render_indicator(&game->combat);
@@ -1120,7 +1018,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // NPC interaction with right-click
+    // NPC interaction/attack with right-click
     if (game->input.mouse_right_clicked && !dialogue_is_active()) {
         // Convert mouse position to world coordinates (zoom-aware)
         float world_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
@@ -1130,17 +1028,25 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         for (int i = 0; i < game->visible_npc_count; i++) {
             VisibleNPC* npc = &game->visible_npcs[i];
             if (!npc->is_alive) continue;
-            if (!npc->is_interactable) continue;
 
-            // Simple distance check (within 32 pixels / 1 tile)
             float dx = world_x - npc->pos_x;
             float dy = world_y - npc->pos_y;
-            float dist_sq = dx * dx + dy * dy;
 
-            if (dist_sq < 32.0f * 32.0f) {  // 32 pixel radius
-                printf("[INPUT] Clicked on NPC %u at (%.1f, %.1f)\n",
-                       npc->npc_id, npc->pos_x, npc->pos_y);
-                network_send_npc_interact_request(npc->npc_id);
+            if (dx * dx + dy * dy < 32.0f * 32.0f) {
+                if (npc->category == 1) {
+                    // Hostile NPC: target + basic attack
+                    game->target_npc_id = npc->npc_id;
+                    printf("[INPUT] Attacking NPC %u at (%.1f, %.1f)\n",
+                           npc->npc_id, npc->pos_x, npc->pos_y);
+                    network_update_facing_direction(npc->pos_x - game->player.x,
+                                                   npc->pos_y - game->player.y);
+                    network_send_attack_intent(npc->pos_x, npc->pos_y);
+                } else if (npc->is_interactable) {
+                    // Quest/passive NPC: interact as before
+                    printf("[INPUT] Clicked on NPC %u at (%.1f, %.1f)\n",
+                           npc->npc_id, npc->pos_x, npc->pos_y);
+                    network_send_npc_interact_request(npc->npc_id);
+                }
                 return;  // Don't process other clicks
             }
         }
@@ -1240,18 +1146,37 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // Ground item pickup with left click
+    // Left click: NPC targeting, then ground item pickup
     if (game->input.mouse_left_clicked) {
         float world_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
         float world_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
 
+        // Check if clicked on an NPC to target it
+        int hit_npc = 0;
+        for (int i = 0; i < game->visible_npc_count; i++) {
+            VisibleNPC* npc = &game->visible_npcs[i];
+            if (!npc->is_alive) continue;
+            float dx = world_x - npc->pos_x;
+            float dy = world_y - npc->pos_y;
+            if (dx * dx + dy * dy < 32.0f * 32.0f) {
+                game->target_npc_id = npc->npc_id;
+                hit_npc = 1;
+                break;
+            }
+        }
+
+        // Click on empty space clears target
+        if (!hit_npc) {
+            game->target_npc_id = 0;
+        }
+
+        // Ground item pickup
         for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
             if (!game->ground_items[i].active) continue;
             GroundItem* item = &game->ground_items[i];
             float dx = world_x - item->pos_x;
             float dy = world_y - item->pos_y;
             if (dx*dx + dy*dy < 20.0f * 20.0f) {
-                // Check player is close enough
                 float pdx = game->player.x - item->pos_x;
                 float pdy = game->player.y - item->pos_y;
                 if (pdx*pdx + pdy*pdy < 80.0f * 80.0f) {
@@ -1284,17 +1209,31 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
     // Basic attack
     if (input_key_just_pressed(&game->input, g_keybinds.basic_attack)) {
-        network_update_facing_direction(game->player.vel_x, game->player.vel_y);
-        network_send_attack_intent(game->player.x, game->player.y);
+        float aim_x = game->player.x;
+        float aim_y = game->player.y;
+        if (game->target_npc_id != 0) {
+            float tx, ty;
+            if (npc_get_position(game->visible_npcs, game->visible_npc_count,
+                                 game->target_npc_id, &tx, &ty)) {
+                aim_x = tx;
+                aim_y = ty;
+                network_update_facing_direction(tx - game->player.x, ty - game->player.y);
+            } else {
+                network_update_facing_direction(game->player.vel_x, game->player.vel_y);
+            }
+        } else {
+            network_update_facing_direction(game->player.vel_x, game->player.vel_y);
+        }
+        network_send_attack_intent(aim_x, aim_y);
     }
     
     // Cancel ability cast with right-click
     if (game->input.mouse_right_clicked && game->ability_bar.is_casting) {
         network_send_ability_cancel();
-        ability_bar_on_cast_cancel(&game->ability_bar);
+        ability_bar_on_cast_cancel(&game->ability_bar, game->ability_bar.casting_ability_id);
     }
     
-    // ESC — close open windows, or open pause menu
+    // ESC — close open windows, clear target, or open pause menu
     if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
         if (dialogue_is_active()) {
             dialogue_close();
@@ -1302,6 +1241,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             character_screen_toggle(game->character_screen);
         } else if (game->inventory && game->inventory->is_open) {
             inventory_toggle(game->inventory);
+        } else if (game->target_npc_id != 0) {
+            game->target_npc_id = 0;
         } else {
             game->is_paused = 1;
         }
