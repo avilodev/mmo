@@ -11,6 +11,8 @@
 #include <errno.h>
 #include <poll.h>
 #include <netinet/tcp.h>
+#include <unistd.h>
+#include <libgen.h>
  
 ServerConfig g_server;
 SSL_CTX* g_tls_ctx = NULL;
@@ -132,6 +134,18 @@ void* accept_thread_func(void* arg) {
 }
 
 int main(int argc, char** argv) {
+    // chdir to the directory containing the binary so all relative paths work
+    // regardless of where the server is launched from
+    {
+        char exe_path[4096];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+            chdir(dirname(exe_path));
+            chdir(".."); // bin/ -> login_server/
+        }
+    }
+
     printf("=== LOGIN SERVER (Two-Stage Auth) ===\n");
     printf("PID: %d\n", getpid());
     

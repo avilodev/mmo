@@ -3,7 +3,7 @@
 
 #include "headers.h"
 
-#define USERS_DB "database/databases/users_data/users.db"
+#define USERS_DB "../database/databases/users_data/users.db"
 
 #define MIN_HEADER_SIZE 7 
 #define AUTH_REGISTER_SIZE 215
