@@ -12,6 +12,7 @@ void playerdata_close(void);
 int playerdata_load(uint32_t character_id, ActivePlayer* player);
 int playerdata_save(ActivePlayer* player);
 int player_add_active(uint32_t character_id, int client_fd);
+ActivePlayer* player_find_active(uint32_t character_id);
 // Returns a LOCKED ActivePlayer* that is guaranteed to still be loaded and
 // match the given character_id. Caller MUST call player_release() when done.
 // Returns NULL if the player is not found or was removed between lookup and lock.

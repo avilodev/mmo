@@ -303,6 +303,35 @@ ActivePlayer* player_find_active(uint32_t character_id) {
     return NULL;
 }
 
+ActivePlayer* player_acquire(uint32_t character_id) {
+    pthread_mutex_lock(&active_players_lock);
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (active_players[i].is_loaded &&
+            active_players[i].character_id == character_id) {
+            pthread_mutex_lock(&active_players[i].lock);
+            // Re-check after acquiring the per-player lock
+            if (!active_players[i].is_loaded ||
+                active_players[i].character_id != character_id) {
+                pthread_mutex_unlock(&active_players[i].lock);
+                pthread_mutex_unlock(&active_players_lock);
+                return NULL;
+            }
+            pthread_mutex_unlock(&active_players_lock);
+            return &active_players[i];
+        }
+    }
+
+    pthread_mutex_unlock(&active_players_lock);
+    return NULL;
+}
+
+void player_release(ActivePlayer* player) {
+    if (player) {
+        pthread_mutex_unlock(&player->lock);
+    }
+}
+
 void player_remove_active(uint32_t character_id) {
     pthread_mutex_lock(&active_players_lock);
     

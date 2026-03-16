@@ -3,7 +3,7 @@ CFLAGS = -Wall -Wextra -g -pthread
 LDFLAGS = -pthread -lsqlite3 -lhiredis -lpq -lm
 
 # OpenSSL — used by the login server only
-LOGIN_LDFLAGS = -lssl -lcrypto
+LOGIN_LDFLAGS = -lssl -lcrypto -lsodium
 
 # PostgreSQL include path
 PG_INCLUDE = -I/usr/include/postgresql
@@ -61,7 +61,7 @@ $(LOGIN_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(LOGIN_OBJS)
 # Realm server (needs PostgreSQL for player_data and character operations)
 $(REALM_EXEC): $(COMMON_OBJS) $(REALM_OBJS) $(DB_OBJS)
 	@mkdir -p $(REALM_BIN)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
 	@echo "Built realm_server -> $@"
 
 # World server (needs PostgreSQL and Redis for game state) - FIXED: Added $(DB_OBJS)
@@ -69,7 +69,7 @@ $(WORLD_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(WORLD_OBJS)
 	@mkdir -p $(WORLD_BIN)
 	@mkdir -p $(WORLD_BIN)/data
 	@cp world_server/data/items.json $(WORLD_BIN)/data/
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
 	@echo "Built world_server -> $@"
 
 # Common object files
