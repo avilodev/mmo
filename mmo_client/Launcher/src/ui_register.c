@@ -530,6 +530,7 @@ void HandleRegisterCommand(HWND hwnd, WORD controlId) {
 }
 
 HBRUSH HandleRegisterEditControlColor(HWND hwnd, HDC hdc) {
+    (void)hwnd;
     SetTextColor(hdc, RGB(255, 255, 255));
     SetBkColor(hdc, RGB(60, 60, 65));
     return g_hRegEditBrush;

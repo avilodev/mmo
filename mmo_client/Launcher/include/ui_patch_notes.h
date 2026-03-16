@@ -9,10 +9,10 @@
 #include "ui_header.h"
 #include "ui_login.h"
 
-// Control IDs
-#define ID_PATCH_NOTES_PANEL 2001
-#define ID_PATCH_NOTES_TEXT 2002
-#define ID_BACK_BUTTON 2003
+// Control IDs (3001-3003 — 2001-2003 are reserved by ui_register.h)
+#define ID_PATCH_NOTES_PANEL 3001
+#define ID_PATCH_NOTES_TEXT  3002
+#define ID_BACK_BUTTON       3003
 
 // Function declarations
 void CreatePatchNotesPanel(HWND hwndParent);

@@ -27,6 +27,14 @@ void game_cleanup(GameState* game);
 // Change game state (handles enter/exit callbacks)
 void game_change_state(GameState* game, GameMode new_mode);
 
+#define SETTINGS_PATH "Game/data/settings.cfg"
+
+// Settings persistence
+void game_settings_save(const GameSettings* s, const char* path);
+void game_settings_load(GameSettings* s, const char* path);
+// Apply settings values to subsystems (audio volumes etc.)
+void game_settings_apply(const GameSettings* s);
+
 void network_send_ability_cast(uint16_t ability_id, float aim_x, float aim_y, uint32_t target_id);
 
 void network_send_ability_cancel(void);

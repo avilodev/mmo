@@ -14,6 +14,7 @@ static int g_hoveredIndex = -1;
 static BOOL g_closeButtonHovered = FALSE;
 
 void CreateHeader(HWND hwndParent) {
+    (void)hwndParent;
     // Initialize menu items (removed Play Guide and Online Store)
     const char* menus[] = {"Home", "Community", "Patch Notes"};
     int startX = 350;
@@ -61,24 +62,32 @@ void PaintHeader(HDC hdc) {
     RECT headerRect = {0, 0, WINDOW_WIDTH, HEADER_HEIGHT};
     FillRect(hdc, &headerRect, headerBrush);
     DeleteObject(headerBrush);
-    
+
     // Draw logo text
     SetTextColor(hdc, RGB(255, 255, 255));
     SetBkMode(hdc, TRANSPARENT);
-    
-    HFONT hLogoFont = CreateFont(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                                 CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                                 DEFAULT_PITCH | FF_DONTCARE, "Arial");
+
+    // Cache fonts — create once, reuse on every WM_PAINT (#13)
+    static HFONT hLogoFont = NULL;
+    static HFONT hMenuFont = NULL;
+    if (!hLogoFont) {
+        hLogoFont = CreateFont(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                               CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                               DEFAULT_PITCH | FF_DONTCARE, "Arial");
+    }
+    if (!hMenuFont) {
+        hMenuFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                               CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                               DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    }
+
     HFONT hOldFont = (HFONT)SelectObject(hdc, hLogoFont);
-    
+
     TextOut(hdc, 20, 20, "Multiverse MMO", 14);
-    
+
     // Draw menu items with hover gradient fade
-    HFONT hMenuFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                                 CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                                 DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
     SelectObject(hdc, hMenuFont);
     
     for (int i = 0; i < g_menuCount; i++) {
@@ -178,8 +187,7 @@ void PaintHeader(HDC hdc) {
     DeleteObject(closePen);
     
     SelectObject(hdc, hOldFont);
-    DeleteObject(hLogoFont);
-    DeleteObject(hMenuFont);
+    // hLogoFont and hMenuFont are static — do not delete them here
 }
 
 void HandleHeaderClick(HWND hwnd, POINT pt) {

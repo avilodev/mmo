@@ -8,6 +8,7 @@
 #include "ability_bar.h"
 #include "camera.h"
 #include "combat_state.h"
+#include "ui/quest_log.h"
 // world.h moved below - needs GameTextures to be defined first
 
 // ============================================================================
@@ -385,6 +386,8 @@ typedef struct {
     char input_buf[MAX_CHAT_INPUT_LEN];
     int input_len;
     uint8_t active_channel;
+    float backspace_timer;
+    int   backspace_first;
 } ChatState;
 
 // ============================================================================
@@ -412,6 +415,17 @@ typedef struct {
     char invite_from_name[32];
     float invite_timer;
 } PartyState;
+
+// ============================================================================
+// SETTINGS
+// ============================================================================
+
+typedef struct {
+    float master_volume;   // 0.0 - 1.0
+    float music_volume;    // 0.0 - 1.0
+    float sfx_volume;      // 0.0 - 1.0
+    int   show_fps;        // 0 = off, 1 = on
+} GameSettings;
 
 // ============================================================================
 // REWARD NOTIFICATIONS
@@ -513,6 +527,13 @@ struct GameState {
 
     // --- Reward Notifications ---
     RewardNotification reward_notifications[MAX_REWARD_POPUPS];
+
+    // --- Settings ---
+    GameSettings settings;
+    int          show_settings;  // 1 = in-game settings overlay visible
+
+    // --- Quest Log ---
+    QuestLogState quest_log;
 };
 
 #endif // GAME_TYPES_H

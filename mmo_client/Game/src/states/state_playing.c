@@ -14,8 +14,12 @@
 #include "inventory.h"
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
+#include "ui/quest_log.h"
+#include "ui/settings_panel.h"
+#include "audio/audio.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <math.h>
 #include <GLFW/glfw3.h>
 
@@ -487,16 +491,6 @@ static void render_ground_items(GameState* game) {
 }
 
 // ============================================================================
-// CONTEXT MENU STATE (party invite via right-click on nearby player)
-// ============================================================================
-
-static int    s_ctx_active       = 0;
-static uint32_t s_ctx_player_id  = 0;
-static char   s_ctx_player_name[32] = "";
-static float  s_ctx_x = 0.0f;
-static float  s_ctx_y = 0.0f;
-
-// ============================================================================
 // SCREEN-SPACE RENDER HELPERS
 // ============================================================================
 
@@ -659,15 +653,32 @@ static void render_party_invite(GameState* game) {
 static void render_death_screen(GameState* game) {
     if (!game->is_dead) return;
 
-    // Dark overlay
-    renderer_draw_rect(0, 0, (float)game->camera.viewport_width,
-                      (float)game->camera.viewport_height,
-                      0.0f, 0.0f, 0.0f, 0.5f);
+    float vw = (float)game->camera.viewport_width;
+    float vh = (float)game->camera.viewport_height;
 
-    float cx = (float)game->camera.viewport_width / 2.0f;
-    float cy = (float)game->camera.viewport_height / 2.0f;
-    renderer_draw_text(cx - 50, cy, "YOU DIED");
-    renderer_draw_text(cx - 80, cy + 30, "Press R to respawn");
+    // Dark red-tinted overlay
+    renderer_draw_rect(0, 0, vw, vh, 0.15f, 0.0f, 0.0f, 0.72f);
+
+    float cx = vw / 2.0f;
+    float cy = vh / 2.0f;
+
+    // Panel
+    float pw = 260.0f, ph = 90.0f;
+    float px = cx - pw * 0.5f, py = cy - ph * 0.5f;
+    renderer_draw_rect(px, py, pw, ph, 0.08f, 0.05f, 0.05f, 0.95f);
+    // Dark red border
+    renderer_draw_rect(px,          py,          pw,   2.0f, 0.6f, 0.1f, 0.1f, 1.0f);
+    renderer_draw_rect(px,          py + ph - 2, pw,   2.0f, 0.6f, 0.1f, 0.1f, 1.0f);
+    renderer_draw_rect(px,          py,          2.0f, ph,   0.6f, 0.1f, 0.1f, 1.0f);
+    renderer_draw_rect(px + pw - 2, py,          2.0f, ph,   0.6f, 0.1f, 0.1f, 1.0f);
+
+    // "YOU DIED" title
+    renderer_draw_text(cx - 38, py + 16, "YOU DIED");
+
+    // Animated "Respawning..." dots based on death_timer
+    int dots = (int)(game->death_timer * 2.0f) % 4;
+    static const char* dot_labels[] = { "Respawning", "Respawning.", "Respawning..", "Respawning..." };
+    renderer_draw_text(cx - 52, py + 52, dot_labels[dots]);
 }
 
 static void render_level_up(GameState* game) {
@@ -724,6 +735,81 @@ static void render_reward_notifications(GameState* game) {
     }
 }
 
+// Hovered buff icon index (-1 = none), updated each input frame
+static int s_hovered_effect = -1;
+
+static void render_buff_tooltip(const GameState* game) {
+    if (s_hovered_effect < 0 || s_hovered_effect >= MAX_CLIENT_EFFECTS) return;
+    const ClientStatusEffect* e = &game->ability_bar.effects[s_hovered_effect];
+    if (!e->active) return;
+
+    static const char* effect_names[] = {
+        "Unknown", "Damage Over Time", "Heal Over Time", "Stunned",
+        "Slowed", "Buff", "Stealth", "Knock Up", "Linked", "Cleanse"
+    };
+    const char* name = (e->effect_type < 10) ? effect_names[e->effect_type] : "Unknown";
+
+    float tw = 170.0f, th = 54.0f;
+    float tx = game->input.mouse_x + 12.0f;
+    float ty = game->input.mouse_y - th - 4.0f;
+    if (tx + tw > (float)game->camera.viewport_width)  tx = game->input.mouse_x - tw - 4.0f;
+    if (ty < 0) ty = game->input.mouse_y + 12.0f;
+
+    renderer_draw_rect(tx, ty, tw, th, 0.06f, 0.06f, 0.12f, 0.96f);
+    renderer_draw_rect(tx, ty, tw, 1.5f, 0.45f,0.45f,0.75f,1.0f);
+    renderer_draw_rect(tx, ty+th-1.5f, tw, 1.5f, 0.45f,0.45f,0.75f,1.0f);
+    renderer_draw_rect(tx, ty, 1.5f, th, 0.45f,0.45f,0.75f,1.0f);
+    renderer_draw_rect(tx+tw-1.5f, ty, 1.5f, th, 0.45f,0.45f,0.75f,1.0f);
+
+    renderer_draw_text(tx + 8.0f, ty + 18.0f, name);
+
+    char line2[48];
+    snprintf(line2, sizeof(line2), "%.1fs remaining", e->duration_remaining);
+    renderer_draw_text(tx + 8.0f, ty + 36.0f, line2);
+
+    if (e->value != 0) {
+        char line3[32];
+        snprintf(line3, sizeof(line3), "Value: %d", e->value);
+        renderer_draw_text(tx + 8.0f, ty + 48.0f, line3);
+    }
+}
+
+static void render_settings_overlay(GameState* game) {
+    if (!game->show_settings) return;
+
+    float vw = (float)game->camera.viewport_width;
+    float vh = (float)game->camera.viewport_height;
+
+    // Semi-transparent dim (lighter than pause so world is visible)
+    renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.40f);
+
+    float px = (vw - SP_PW) * 0.5f;
+    float py = (vh - SP_PH) * 0.5f;
+
+    // Panel background
+    renderer_draw_rect(px, py, SP_PW, SP_PH, 0.10f, 0.10f, 0.16f, 0.97f);
+    // Panel border
+    renderer_draw_rect(px,          py,          SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(px,          py+SP_PH-2,  SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(px,          py,          2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(px+SP_PW-2,  py,          2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
+
+    sp_draw_content(px, py, &game->settings);
+
+    // Close button
+    float btn_w = 140.0f, btn_h = 36.0f;
+    float btn_x = px + (SP_PW - btn_w) * 0.5f;
+    float btn_y = py + SP_PH - 54.0f;
+    int hov = input_mouse_in_rect(&game->input, btn_x, btn_y, btn_w, btn_h);
+    float bc = hov ? 0.30f : 0.18f;
+    renderer_draw_rect(btn_x, btn_y, btn_w, btn_h, bc, bc, bc+0.12f, 0.95f);
+    renderer_draw_rect(btn_x, btn_y,         btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x, btn_y+btn_h-1.5f, btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x, btn_y,         1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x+btn_w-1.5f, btn_y, 1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_text(btn_x + btn_w*0.5f - 22.0f, btn_y+btn_h-10.0f, "Close");
+}
+
 static void render_pause_overlay(GameState* game) {
     if (!game->is_paused) return;
 
@@ -770,32 +856,6 @@ static void render_pause_overlay(GameState* game) {
     renderer_draw_text(bx + bw * 0.5f - 50.0f, py + 191, "Quit to Menu");
 }
 
-static void render_party_context_menu(GameState* game) {
-    if (!s_ctx_active) return;
-
-    float mw = 180.0f, mh = 56.0f;
-    float mx = s_ctx_x;
-    float my = s_ctx_y;
-
-    // Clamp to viewport
-    if (mx + mw > (float)game->camera.viewport_width)
-        mx = (float)game->camera.viewport_width - mw;
-    if (my + mh > (float)game->camera.viewport_height)
-        my = (float)game->camera.viewport_height - mh;
-
-    // Background + border
-    renderer_draw_rect(mx, my, mw, mh, 0.07f, 0.07f, 0.12f, 0.95f);
-    renderer_draw_rect(mx, my, mw, 1.5f, 0.45f, 0.45f, 0.75f, 1.0f);
-    renderer_draw_rect(mx, my + mh - 1.5f, mw, 1.5f, 0.45f, 0.45f, 0.75f, 1.0f);
-    renderer_draw_rect(mx, my, 1.5f, mh, 0.45f, 0.45f, 0.75f, 1.0f);
-    renderer_draw_rect(mx + mw - 1.5f, my, 1.5f, mh, 0.45f, 0.45f, 0.75f, 1.0f);
-
-    // Invite button
-    renderer_draw_rect(mx + 6, my + 10, mw - 12, 36, 0.12f, 0.32f, 0.12f, 0.9f);
-    char label[48];
-    snprintf(label, sizeof(label), "Invite %s", s_ctx_player_name);
-    renderer_draw_text(mx + 12, my + 34, label);
-}
 
 // RENDER
 static void playing_render(GameState* game) {
@@ -850,10 +910,20 @@ static void playing_render(GameState* game) {
     render_death_screen(game);
     render_level_up(game);
     render_reward_notifications(game);
-    render_party_context_menu(game);
 
-    // Pause overlay (always last so it sits on top of everything)
+    // Quest log panel (before overlays)
+    quest_log_render(&game->quest_log,
+                     game->camera.viewport_width,
+                     game->camera.viewport_height);
+
+    // Buff icon tooltip (before pause/settings overlays)
+    render_buff_tooltip(game);
+
+    // Pause overlay
     render_pause_overlay(game);
+
+    // In-game settings overlay (on top of pause if both somehow active)
+    render_settings_overlay(game);
 
     char debug[128];
     snprintf(debug, sizeof(debug), "Pos: %.0f, %.0f  Mana: %d/%d",
@@ -890,6 +960,11 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             if (mx >= bx && mx <= bx + bw && my >= py + 66 && my <= py + 66 + bh) {
                 game->is_paused = 0;
             }
+            // Settings button — open in-game overlay, unpause so world keeps running
+            if (mx >= bx && mx <= bx + bw && my >= py + 116 && my <= py + 116 + bh) {
+                game->is_paused = 0;
+                game->show_settings = 1;
+            }
             // Quit to Menu button
             if (mx >= bx && mx <= bx + bw && my >= py + 166 && my <= py + 166 + bh) {
                 game->is_paused = 0;
@@ -898,6 +973,64 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
         return; // Block all gameplay input while paused
     }
+
+    // -------------------------------------------------------------------------
+    // SETTINGS OVERLAY  (gameplay continues, but input routed to settings)
+    // -------------------------------------------------------------------------
+    if (game->show_settings) {
+        if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
+            game->show_settings = 0;
+            return;
+        }
+        float vw = (float)game->camera.viewport_width;
+        float vh = (float)game->camera.viewport_height;
+        float px = (vw - SP_PW) * 0.5f;
+        float py = (vh - SP_PH) * 0.5f;
+        float btn_y = py + SP_PH - 54.0f;
+        int closed = sp_handle_mouse(px, py,
+                                     game->input.mouse_x, game->input.mouse_y,
+                                     game->input.mouse_left_clicked,
+                                     game->input.mouse_left_down,
+                                     &game->settings, btn_y);
+        if (closed) {
+            game->show_settings = 0;
+            game_settings_save(&game->settings, "Game/data/settings.cfg");
+            game_settings_apply(&game->settings);
+        }
+        return;
+    }
+
+    // -------------------------------------------------------------------------
+    // BUFF ICON HOVER  (update each frame before gameplay input)
+    // -------------------------------------------------------------------------
+    {
+        float eff_x = game->ability_bar.bar_x;
+        float eff_y = game->ability_bar.bar_y - 40.0f;
+        float icon_size = 28.0f, icon_pad = 4.0f;
+        float mx = game->input.mouse_x, my = game->input.mouse_y;
+        s_hovered_effect = -1;
+        int drawn = 0;
+        for (int i = 0; i < MAX_CLIENT_EFFECTS; i++) {
+            if (!game->ability_bar.effects[i].active) continue;
+            float ix = eff_x + drawn * (icon_size + icon_pad);
+            if (mx >= ix && mx <= ix + icon_size &&
+                my >= eff_y && my <= eff_y + icon_size) {
+                s_hovered_effect = i;
+                break;
+            }
+            drawn++;
+        }
+    }
+
+    // Quest log (J key)
+    quest_log_handle_input_full(&game->quest_log,
+                                 game->input.mouse_x, game->input.mouse_y,
+                                 game->input.mouse_left_clicked,
+                                 input_key_just_pressed(&game->input, GLFW_KEY_J),
+                                 input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
+                                 game->camera.viewport_width,
+                                 game->camera.viewport_height);
+    if (game->quest_log.is_open) return; // Block gameplay input while quest log open
 
     // Toggle inventory with 'I' key
     if (input_key_just_pressed(&game->input, GLFW_KEY_I)) {
@@ -967,47 +1100,11 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // Dismiss context menu on left-click anywhere
-    if (s_ctx_active && game->input.mouse_left_clicked) {
-        float mw = 180.0f, mh = 56.0f;
-        float mx = s_ctx_x, my = s_ctx_y;
-        if (mx + mw > (float)game->camera.viewport_width)  mx = (float)game->camera.viewport_width  - mw;
-        if (my + mh > (float)game->camera.viewport_height) my = (float)game->camera.viewport_height - mh;
-
-        if (game->input.mouse_x >= mx + 6 && game->input.mouse_x <= mx + mw - 6 &&
-            game->input.mouse_y >= my + 10 && game->input.mouse_y <= my + 46) {
-            // Clicked the Invite button
-            network_send_party_invite(s_ctx_player_name);
-            s_ctx_active = 0;
-            return;
-        }
-        s_ctx_active = 0; // clicked outside — just dismiss
-    }
-
     // NPC interaction with right-click
     if (game->input.mouse_right_clicked && !dialogue_is_active()) {
-        s_ctx_active = 0; // dismiss any open context menu
-
         // Convert mouse position to world coordinates (zoom-aware)
         float world_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
         float world_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
-
-        // Check if right-clicked a nearby player first (party invite)
-        for (int i = 0; i < game->nearby_player_count; i++) {
-            NearbyPlayer* p = &game->nearby_players[i];
-            if (p->is_dead) continue;
-            float dx = world_x - p->pos_x;
-            float dy = world_y - p->pos_y;
-            if (dx*dx + dy*dy < 32.0f * 32.0f) {
-                s_ctx_active    = 1;
-                s_ctx_player_id = p->player_id;
-                strncpy(s_ctx_player_name, p->name, 31);
-                s_ctx_player_name[31] = '\0';
-                s_ctx_x = game->input.mouse_x;
-                s_ctx_y = game->input.mouse_y;
-                return;
-            }
-        }
 
         // Check if clicked on an NPC
         for (int i = 0; i < game->visible_npc_count; i++) {
@@ -1032,9 +1129,26 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     // Chat input - Enter key toggles typing mode
     if (input_key_just_pressed(&game->input, GLFW_KEY_ENTER)) {
         if (game->chat.is_typing) {
-            // Send message
+            // Send message or handle slash commands
             if (game->chat.input_len > 0) {
-                network_send_chat(game->chat.active_channel, game->chat.input_buf);
+                const char* msg = game->chat.input_buf;
+                if (msg[0] == '/') {
+                    // Slash command parsing
+                    if (strncmp(msg, "/invite ", 8) == 0 && msg[8] != '\0') {
+                        network_send_party_invite(msg + 8);
+                    } else if (strcmp(msg, "/leave") == 0) {
+                        network_send_party_leave();
+                    } else if (strncmp(msg, "/g ", 3) == 0 && msg[3] != '\0') {
+                        network_send_chat(1, msg + 3); // channel 1 = global
+                    } else if (strncmp(msg, "/p ", 3) == 0 && msg[3] != '\0') {
+                        network_send_chat(3, msg + 3); // channel 3 = party
+                    } else if (strncmp(msg, "/w ", 3) == 0 && msg[3] != '\0') {
+                        network_send_chat(2, msg + 3); // channel 2 = whisper
+                    }
+                    // Unknown commands are silently dropped (no server echo)
+                } else {
+                    network_send_chat(game->chat.active_channel, msg);
+                }
             }
             game->chat.is_typing = 0;
             game->chat.input_len = 0;
@@ -1054,23 +1168,19 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
         // Backspace (use held state for key repeat)
         if (input_key_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
-            static float backspace_timer = 0.0f;
-            static int backspace_first = 1;
             if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
-                // First press - delete immediately
                 if (game->chat.input_len > 0) {
                     game->chat.input_len--;
                     game->chat.input_buf[game->chat.input_len] = '\0';
                 }
-                backspace_timer = 0.0f;
-                backspace_first = 1;
+                game->chat.backspace_timer = 0.0f;
+                game->chat.backspace_first = 1;
             } else {
-                // Held - repeat after initial delay, then faster
-                backspace_timer += delta_time;
-                float threshold = backspace_first ? 0.4f : 0.05f;
-                if (backspace_timer >= threshold) {
-                    backspace_timer = 0.0f;
-                    backspace_first = 0;
+                game->chat.backspace_timer += delta_time;
+                float threshold = game->chat.backspace_first ? 0.4f : 0.05f;
+                if (game->chat.backspace_timer >= threshold) {
+                    game->chat.backspace_timer = 0.0f;
+                    game->chat.backspace_first = 0;
                     if (game->chat.input_len > 0) {
                         game->chat.input_len--;
                         game->chat.input_buf[game->chat.input_len] = '\0';
@@ -1085,14 +1195,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         return; // Don't process other input while typing
     }
 
-    // Respawn when dead
-    if (game->is_dead) {
-        if (input_key_just_pressed(&game->input, GLFW_KEY_R)) {
-            // Request respawn (server handles via death timer)
-            network_send_ping(); // Server auto-respawns; ping to keep connection alive
-        }
-        return; // Don't process other input while dead
-    }
+    // Block gameplay input while dead (server auto-respawns)
+    if (game->is_dead) return;
 
     // Party invite accept/decline clicks
     if (game->party.has_pending_invite && game->input.mouse_left_clicked) {
@@ -1178,8 +1282,6 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             character_screen_toggle(game->character_screen);
         } else if (game->inventory && game->inventory->is_open) {
             inventory_toggle(game->inventory);
-        } else if (s_ctx_active) {
-            s_ctx_active = 0;
         } else {
             game->is_paused = 1;
         }

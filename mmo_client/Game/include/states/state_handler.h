@@ -25,6 +25,7 @@ extern const StateHandler g_state_main_menu;
 extern const StateHandler g_state_server_list;
 extern const StateHandler g_state_character_select;
 extern const StateHandler g_state_playing;
+extern const StateHandler g_state_settings;
 
 extern GameState* g_current_game;
 

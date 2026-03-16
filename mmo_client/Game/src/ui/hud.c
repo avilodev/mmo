@@ -377,29 +377,15 @@ void hud_render_character_button(const HUDLayout* hud, const GameState* game) {
 void hud_render_currencies(const HUDLayout* hud, const GameState* game) {
     float x = hud->currency_x;
     float y = hud->currency_y;
-    float spacing = hud->currency_spacing;
-    
-    // Gold
+
+    // Gold — received from server via KILL_REWARD / PLAYER_DATA
     char gold_text[64];
     snprintf(gold_text, sizeof(gold_text), "Gold: %u", game->player.info.gold);
-    renderer_draw_rect(x - 5, y - 15, 180, 25, 0.1f, 0.1f, 0.1f, 0.8f);
+    float tw = 130.0f, th = 22.0f;
+    renderer_draw_rect(x - 6, y - 16, tw, th, 0.10f, 0.09f, 0.04f, 0.85f);
+    renderer_draw_rect(x - 6, y - 16, tw, 1.5f, 0.70f, 0.55f, 0.10f, 0.8f);
+    renderer_draw_rect(x - 6, y - 16 + th - 1.5f, tw, 1.5f, 0.70f, 0.55f, 0.10f, 0.8f);
+    renderer_draw_rect(x - 6, y - 16, 1.5f, th, 0.70f, 0.55f, 0.10f, 0.8f);
+    renderer_draw_rect(x - 6 + tw - 1.5f, y - 16, 1.5f, th, 0.70f, 0.55f, 0.10f, 0.8f);
     renderer_draw_text(x, y, gold_text);
-    
-    // Currency 1 (placeholder)
-    char curr1_text[64];
-    snprintf(curr1_text, sizeof(curr1_text), "Gems: 0");
-    renderer_draw_rect(x - 5, y + spacing - 15, 180, 25, 0.1f, 0.1f, 0.1f, 0.8f);
-    renderer_draw_text(x, y + spacing, curr1_text);
-    
-    // Currency 2 (placeholder)
-    char curr2_text[64];
-    snprintf(curr2_text, sizeof(curr2_text), "Tokens: 0");
-    renderer_draw_rect(x - 5, y + spacing * 2 - 15, 180, 25, 0.1f, 0.1f, 0.1f, 0.8f);
-    renderer_draw_text(x, y + spacing * 2, curr2_text);
-    
-    // Currency 3 (placeholder)
-    char curr3_text[64];
-    snprintf(curr3_text, sizeof(curr3_text), "Credits: 0");
-    renderer_draw_rect(x - 5, y + spacing * 3 - 15, 180, 25, 0.1f, 0.1f, 0.1f, 0.8f);
-    renderer_draw_text(x, y + spacing * 3, curr3_text);
 }

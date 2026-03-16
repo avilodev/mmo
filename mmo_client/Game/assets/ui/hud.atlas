@@ -1,0 +1,46 @@
+# HUD atlas definition
+# Format: name  x  y  width  height
+# All coordinates are in pixels, origin at top-left of the PNG.
+#
+# Atlas PNG: hud.png (512x512, RGBA)
+# Create this in Aseprite at 512x512 and export as hud.png alongside this file.
+
+512 512
+
+# ── Health / Mana bars ───────────────────────────────────────────────────────
+# Background track (the dark empty bar)
+health_bar_bg        0    0  220   22
+# Filled portion (draw clipped to current HP ratio using w parameter)
+health_bar_fill      0   24  216   14
+# Mana bar equivalents
+mana_bar_bg          0   40  220   22
+mana_bar_fill        0   64  216   14
+
+# ── Action bar ───────────────────────────────────────────────────────────────
+# One slot background (tiled 10x for the action bar)
+action_slot_bg       0   80   48   48
+# Slot highlight when hovered
+action_slot_hover    50  80   48   48
+# Slot highlight when key is held (active)
+action_slot_active  100  80   48   48
+# Cooldown overlay (full darkened slot, draw at partial height to show CD)
+action_slot_cd      150  80   48   48
+
+# ── Minimap ──────────────────────────────────────────────────────────────────
+minimap_frame        0  130  160  160
+minimap_player_dot   0  292    8    8
+minimap_npc_dot     10  292    8    8
+minimap_enemy_dot   20  292    8    8
+
+# ── Inventory panel ──────────────────────────────────────────────────────────
+# Outer panel background (9-slice the corners yourself or draw as one piece)
+inv_panel_bg         0  302  300  260
+# Single inventory slot
+inv_slot_bg          0  564   40   40
+inv_slot_hover      42  564   40   40
+inv_slot_selected   84  564   40   40
+
+# ── Misc HUD icons ───────────────────────────────────────────────────────────
+icon_skull          302    0   24   24   # death indicator
+icon_buff_up        328    0   24   24   # positive buff
+icon_debuff         354    0   24   24   # negative buff / debuff

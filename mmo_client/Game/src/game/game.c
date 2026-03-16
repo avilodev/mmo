@@ -4,16 +4,19 @@
 #include "camera.h"
 #include "input.h"
 #include "world.h"
+#include "npc_types.h"
 #include "ability_bar.h"
 #include "player.h"
 #include "state_handler.h"
 #include "combat_system.h"
 #include "inventory.h"
 #include "character_screen.h"
+#include "audio/audio.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <direct.h>   // _mkdir
 
 void game_init(GameState* game, int viewport_width, int viewport_height) {
     memset(game, 0, sizeof(GameState));
@@ -21,6 +24,12 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     game->is_running = 1;
     game->mode = GAME_MODE_MAIN_MENU;
     game->net_state = NET_STATE_IDLE;
+
+    // Default settings
+    game->settings.master_volume = 0.7f;
+    game->settings.music_volume  = 0.5f;
+    game->settings.sfx_volume    = 0.8f;
+    game->settings.show_fps      = 0;
     
     // Initialize subsystems
     input_init(&game->input);
@@ -48,6 +57,19 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
         fprintf(stderr, "[GAME] Failed to allocate character screen!\n");
     }
     
+    // Ensure data directory exists before any file reads/writes
+    _mkdir("Game/data");
+
+    // Load NPC type name table
+    npc_types_init("Game/data/npc_types.json");
+
+    // Load saved settings (overrides defaults if file exists)
+    game_settings_load(&game->settings, SETTINGS_PATH);
+
+    // Initialize audio and apply loaded settings
+    audio_init();
+    game_settings_apply(&game->settings);
+
     // Initialize world with CHUNKED LOADING from binary file
     if (!world_init(&game->world, "Game/bin/world.dat", 16)) {
         fprintf(stderr, "[GAME] Failed to initialize world!\n");
@@ -183,6 +205,9 @@ void game_cleanup(GameState* game) {
         game->inventory = NULL;
     }
     
+    // Free NPC type table
+    npc_types_cleanup();
+
     // Free world (closes file, frees chunks)
     world_cleanup(&game->world);
     
@@ -196,5 +221,50 @@ void game_cleanup(GameState* game) {
     if (game->textures.tree1) texture_unload(game->textures.tree1);
     if (game->textures.shrub1) texture_unload(game->textures.shrub1);
     
+    // Save settings and shut down audio
+    game_settings_save(&game->settings, SETTINGS_PATH);
+    audio_cleanup();
+
     printf("[GAME] Cleaned up\n");
+}
+
+void game_settings_save(const GameSettings* s, const char* path) {
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        printf("[GAME] Warning: could not save settings to %s\n", path);
+        return;
+    }
+    fprintf(f, "master_volume=%.4f\n", s->master_volume);
+    fprintf(f, "music_volume=%.4f\n",  s->music_volume);
+    fprintf(f, "sfx_volume=%.4f\n",    s->sfx_volume);
+    fprintf(f, "show_fps=%d\n",        s->show_fps);
+    fclose(f);
+    printf("[GAME] Settings saved to %s\n", path);
+}
+
+void game_settings_load(GameSettings* s, const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) return;  // No file yet — keep defaults
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        char key[64]; float fval; int ival;
+        if (sscanf(line, "master_volume=%f", &fval) == 1) {
+            s->master_volume = (fval < 0.0f) ? 0.0f : (fval > 1.0f) ? 1.0f : fval;
+        } else if (sscanf(line, "music_volume=%f", &fval) == 1) {
+            s->music_volume  = (fval < 0.0f) ? 0.0f : (fval > 1.0f) ? 1.0f : fval;
+        } else if (sscanf(line, "sfx_volume=%f", &fval) == 1) {
+            s->sfx_volume    = (fval < 0.0f) ? 0.0f : (fval > 1.0f) ? 1.0f : fval;
+        } else if (sscanf(line, "show_fps=%d", &ival) == 1) {
+            s->show_fps = ival ? 1 : 0;
+        }
+        (void)key;
+    }
+    fclose(f);
+    printf("[GAME] Settings loaded from %s\n", path);
+}
+
+void game_settings_apply(const GameSettings* s) {
+    audio_set_master_volume(s->master_volume);
+    audio_set_music_volume(s->music_volume);
+    audio_set_sfx_volume(s->sfx_volume);
 }

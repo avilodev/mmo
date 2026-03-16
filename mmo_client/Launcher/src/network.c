@@ -1,4 +1,5 @@
 #include "network.h"
+#include "tls_client.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -6,19 +7,23 @@ static BOOL g_networkInitialized = FALSE;
 
 BOOL NetworkInit(void) {
     if (g_networkInitialized) return TRUE;
-    
+
     WSADATA wsaData;
-    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (result != 0) {
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        return FALSE;
+
+    if (!tls_client_init()) {
+        WSACleanup();
         return FALSE;
     }
-    
-    g_networkInitialized = TRUE; 
+
+    g_networkInitialized = TRUE;
     return TRUE;
 }
 
 void NetworkCleanup(void) {
     if (g_networkInitialized) {
+        tls_client_cleanup();
         WSACleanup();
         g_networkInitialized = FALSE;
     }
@@ -46,9 +51,9 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
     // Setup server address
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_port = htons((u_short)g_login_server_port);
     
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, g_login_server_ip, &server_addr.sin_addr) <= 0) {
         snprintf(errorMsg, errorMsgSize, "Invalid server IP address");
         closesocket(sock);
         return FALSE;
@@ -60,7 +65,15 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
         closesocket(sock);
         return FALSE;
     }
-    
+
+    // TLS handshake
+    SSL* ssl = tls_client_connect(sock);
+    if (!ssl) {
+        snprintf(errorMsg, errorMsgSize, "TLS handshake failed");
+        closesocket(sock);
+        return FALSE;
+    }
+
     // Prepare login packet (just validation, no session)
     memset(&loginPacket, 0, sizeof(AuthLoginPacket));
     loginPacket.header.type = PACKET_AUTH_LOGIN;
@@ -77,18 +90,19 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
     printf("[LOGIN] Packet size: %zu bytes\n", sizeof(AuthLoginPacket));
     
     // Send login request
-    int sent = send(sock, (char*)&loginPacket, sizeof(AuthLoginPacket), 0);
+    int sent = tls_client_send(ssl, (char*)&loginPacket, sizeof(AuthLoginPacket));
     if (sent != sizeof(AuthLoginPacket)) {
         snprintf(errorMsg, errorMsgSize, "Failed to send login packet (sent %d of %zu)", sent, sizeof(AuthLoginPacket));
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     printf("[LOGIN] Sent %d bytes, waiting for response...\n", sent);
-    
+
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = recv(sock, (char*)response_buffer, sizeof(response_buffer), 0);
+    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
 
     // ADD THIS:
     printf("[LOGIN] Raw response bytes:\n");
@@ -102,16 +116,19 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
     
     if (received <= 0) {
         snprintf(errorMsg, errorMsgSize, "No response from server (recv returned %d, WSA error: %d)", received, WSAGetLastError());
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     if (received < 12) {  // Minimum: header(7) + success(1) + player_id(4) = 12 bytes
         snprintf(errorMsg, errorMsgSize, "Invalid response from server (got %d bytes, expected at least 12)", received);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
+    tls_client_close(ssl);
     closesocket(sock);
     
     // Parse response manually byte-by-byte to avoid struct packing issues
@@ -199,9 +216,9 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_se
     // Setup server address
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_port = htons((u_short)g_login_server_port);
     
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, g_login_server_ip, &server_addr.sin_addr) <= 0) {
         snprintf(errorMsg, errorMsgSize, "Invalid server IP address");
         closesocket(sock);
         return FALSE;
@@ -213,7 +230,15 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_se
         closesocket(sock);
         return FALSE;
     }
-    
+
+    // TLS handshake
+    SSL* ssl = tls_client_connect(sock);
+    if (!ssl) {
+        snprintf(errorMsg, errorMsgSize, "TLS handshake failed");
+        closesocket(sock);
+        return FALSE;
+    }
+
     // Prepare start game request
     memset(&request, 0, sizeof(StartGameRequestPacket));
     request.header.type = PACKET_START_GAME_REQUEST;
@@ -226,38 +251,42 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_se
     printf("[START GAME] Requesting session creation for player %u...\n", player_id);
     
     // Send request
-    int sent = send(sock, (char*)&request, sizeof(StartGameRequestPacket), 0);
+    int sent = tls_client_send(ssl, (char*)&request, sizeof(StartGameRequestPacket));
     if (sent != sizeof(StartGameRequestPacket)) {
         snprintf(errorMsg, errorMsgSize, "Failed to send start game request");
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = recv(sock, (char*)response_buffer, sizeof(response_buffer), 0);
-    
+    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
+
     printf("[START GAME] Received %d bytes from server\n", received);
-    
+
     if (received <= 0) {
         snprintf(errorMsg, errorMsgSize, "Failed to receive response from server");
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     if (received < 40) {  // Minimum: AuthPacketHeader(39) + success(1) = 40 bytes
         snprintf(errorMsg, errorMsgSize, "Invalid response size (got %d bytes)", received);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
+    tls_client_close(ssl);
     closesocket(sock);
     
     // Parse response manually
     int offset = 0;
     
     // AuthPacketHeader: type(1) + player_id(4) + payload_size(2) + session_key(32) = 39 bytes
-    uint8_t response_type = response_buffer[offset++];
+    offset++; // skip type
     offset += 4; // skip player_id
     offset += 2; // skip payload_size
     
@@ -330,9 +359,9 @@ BOOL SendRegisterRequest(const char* username, const char* password, const char*
     // Setup server address
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_PORT);
+    server_addr.sin_port = htons((u_short)g_login_server_port);
     
-    if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, g_login_server_ip, &server_addr.sin_addr) <= 0) {
         snprintf(errorMsg, errorMsgSize, "Invalid server IP address");
         closesocket(sock);
         return FALSE;
@@ -344,7 +373,15 @@ BOOL SendRegisterRequest(const char* username, const char* password, const char*
         closesocket(sock);
         return FALSE;
     }
-    
+
+    // TLS handshake
+    SSL* ssl = tls_client_connect(sock);
+    if (!ssl) {
+        snprintf(errorMsg, errorMsgSize, "TLS handshake failed");
+        closesocket(sock);
+        return FALSE;
+    }
+
     // Build registration packet manually
     int offset = 0;
     
@@ -400,63 +437,62 @@ BOOL SendRegisterRequest(const char* username, const char* password, const char*
     printf("[REGISTER] Packet size: %d bytes\n", packet_size);
     
     // Send registration request
-    int sent = send(sock, (char*)request_buffer, packet_size, 0);
+    int sent = tls_client_send(ssl, (char*)request_buffer, packet_size);
     if (sent != packet_size) {
         snprintf(errorMsg, errorMsgSize, "Failed to send registration packet (sent %d of %d)", sent, packet_size);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     printf("[REGISTER] Sent %d bytes, waiting for response...\n", sent);
-    
+
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = recv(sock, (char*)response_buffer, sizeof(response_buffer), 0);
-    
+    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
+
     printf("[REGISTER] Received %d bytes from server\n", received);
-    
+
     if (received <= 0) {
-        snprintf(errorMsg, errorMsgSize, "No response from server (recv returned %d, WSA error: %d)", 
+        snprintf(errorMsg, errorMsgSize, "No response from server (recv returned %d, WSA error: %d)",
                  received, WSAGetLastError());
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
-    if (received < 40) {
+
+    if (received < 12) {  // PacketHeader(7) + success(1) + player_id(4) = 12
         snprintf(errorMsg, errorMsgSize, "Invalid response from server (got %d bytes)", received);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
+    tls_client_close(ssl);
     closesocket(sock);
-    
+
     // Parse response - AuthRegisterResponsePacket
+    // Layout: PacketHeader(7) + success(1) + player_id(4) + message(128) = 140 bytes
     offset = 0;
-    
-    // AuthPacketHeader: type(1) + player_id(4) + payload_size(2) + session_key(32) = 39
-    uint8_t response_type = response_buffer[offset++];
-    
+
+    // PacketHeader: type(1) + player_id(4) + payload_size(2) = 7 bytes
+    offset++; // skip type
+
     uint32_t header_player_id_net;
     memcpy(&header_player_id_net, &response_buffer[offset], 4);
     offset += 4;
     uint32_t player_id = ntohl(header_player_id_net);
-    
+
     offset += 2;  // skip payload_size
-    
-    // Session key (32 bytes)
-    char session_key[32] = {0};
-    memcpy(session_key, &response_buffer[offset], 32);
-    offset += 32;
-    printf("[REGISTER] Received session key\n");
-    
-    // Response fields
+
+    // Response fields start at offset 7
     uint8_t success = response_buffer[offset++];
-    
-    // Player ID in payload (duplicate, we already have it from header)
+
+    // Player ID in payload
     uint32_t payload_player_id_net;
     memcpy(&payload_player_id_net, &response_buffer[offset], 4);
     offset += 4;
-    
+
     // Message (rest of packet)
     char message[256] = {0};
     int message_len = received - offset;

@@ -6,6 +6,7 @@
 #include "ui_patch_notes.h"
 #include "network.h"
 #include "ui_register.h"
+#include "launcher_config.h"
 
 static HWND g_hwndMain = NULL;
 static HINSTANCE g_hInstance = NULL;
@@ -13,11 +14,12 @@ static HINSTANCE g_hInstance = NULL;
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_CREATE:
+            launcher_config_load();
             CreateHeader(hwnd);
             CreateLoginPanel(hwnd);
             CreateStatusBar(hwnd);
             NetworkInit();  // Initialize Winsock for auth server only
-            return 0; 
+            return 0;
         
         case WM_CTLCOLOREDIT: {
             HDC hdc = (HDC)wParam;

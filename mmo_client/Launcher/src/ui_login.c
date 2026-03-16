@@ -4,6 +4,7 @@
 #include "window.h"
 
 #include <stdio.h>
+#include <ctype.h>
 
 static HWND g_hwndUsername = NULL;
 static HWND g_hwndPassword = NULL;
@@ -360,8 +361,11 @@ void HandleLoginCommand(HWND hwnd, WORD controlId) {
         // Show result
         if (success) {
             printf("Login validation successful! Player ID: %u\n", playerId);
-            printf("DEBUG: g_playerId set to: %u\n", g_playerId); 
-            
+            printf("DEBUG: g_playerId set to: %u\n", g_playerId);
+
+            // Wipe password from memory — no longer needed (#20)
+            SecureZeroMemory(g_actualPassword, sizeof(g_actualPassword));
+
             // Store player ID and username for START GAME
             g_playerId = playerId;
             strncpy(g_storedUsername, username, sizeof(g_storedUsername) - 1);
@@ -415,7 +419,25 @@ void HandleLoginCommand(HWND hwnd, WORD controlId) {
 }
 
 void StartGame(HWND hwnd) {
-    const char* gameExePath = "C:\\Users\\adamo\\mmo_client\\Game\\bin\\Game.exe";
+    // Validate username contains only safe characters before inserting into
+    // the CreateProcess command line (#8 — prevent argument injection)
+    for (int i = 0; g_storedUsername[i] != '\0'; i++) {
+        char c = g_storedUsername[i];
+        if (!isalnum((unsigned char)c) && c != '_' && c != ' ' && c != '-') {
+            MessageBox(hwnd, "Invalid username characters detected.", "Launch Error", MB_OK | MB_ICONERROR);
+            return;
+        }
+    }
+
+    // Build path to Game.exe relative to this launcher's location.
+    // Launcher is at <root>\Launcher\bin\Launcher.exe, so strip 3 components.
+    char gameExePath[MAX_PATH];
+    GetModuleFileNameA(NULL, gameExePath, MAX_PATH);
+    for (int strip = 0; strip < 3; strip++) {
+        char* last = strrchr(gameExePath, '\\');
+        if (last) *last = '\0';
+    }
+    strncat(gameExePath, "\\Game\\bin\\Game.exe", MAX_PATH - strlen(gameExePath) - 1);
     
     // Convert session key to hex string
     char sessionHex[65];
@@ -427,12 +449,12 @@ void StartGame(HWND hwnd) {
     char commandLine[2048];
     snprintf(commandLine, sizeof(commandLine), 
              "\"%s\" --session=%s --playerid=%u --username=\"%s\" --server=%s:%d",
-             gameExePath, 
+             gameExePath,
              sessionHex,
-             g_playerId, 
+             g_playerId,
              g_storedUsername,
-             GAME_SERVER_IP,
-             GAME_SERVER_PORT);
+             g_game_server_ip,
+             g_game_server_port);
     
     printf("Launching game with console: %s\n", commandLine);
     fflush(stdout);
@@ -486,11 +508,11 @@ void GetUsername(char* buffer, int bufferSize) {
 
 void GetPassword(char* buffer, int bufferSize) {
     // Return the actual password, not the bullets
-    strncpy(buffer, g_actualPassword, bufferSize - 1);
-    buffer[bufferSize - 1] = '\0';
+    snprintf(buffer, bufferSize, "%s", g_actualPassword);
 }
 
 HBRUSH HandleEditControlColor(HWND hwnd, HDC hdc) {
+    (void)hwnd;
     // Set text color to white
     SetTextColor(hdc, RGB(255, 255, 255));
     // Set background color to match the brush

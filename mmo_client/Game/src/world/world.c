@@ -151,8 +151,6 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     
     // Calculate file offset for this chunk
     size_t header_size = sizeof(int) * 3;
-    size_t tiles_per_chunk = CHUNK_SIZE * CHUNK_SIZE;
-    
     // We need to read the chunk's tiles from the file
     // The file stores tiles sequentially by row, so we need to read
     // CHUNK_SIZE rows, each containing CHUNK_SIZE tiles
@@ -222,7 +220,6 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     }
     
     // Read decoration data
-    size_t total_chunks = world->world_width_chunks * world->world_height_chunks;
     size_t decorations_base = header_size + 
                              (total_tiles * sizeof(uint16_t)) + 
                              (total_tiles * sizeof(uint8_t));

@@ -19,9 +19,21 @@ void renderer_end_2d(void);
 void renderer_draw_rect(float x, float y, float width, float height,
                         float r, float g, float b, float a);
 
-// Draw a textured sprite
+// Draw a textured sprite (full texture)
 void renderer_draw_sprite(float x, float y, float width, float height,
                           unsigned int texture_id);
+
+// Draw a sub-region of a texture using normalized UV coordinates [0..1]
+// u0,v0 = top-left of region; u1,v1 = bottom-right of region
+void renderer_draw_sprite_uv(float x, float y, float width, float height,
+                             unsigned int texture_id,
+                             float u0, float v0, float u1, float v1);
+
+// Same but with a tint color / alpha (pass 1,1,1,1 for no tint)
+void renderer_draw_sprite_uv_tinted(float x, float y, float width, float height,
+                                    unsigned int texture_id,
+                                    float u0, float v0, float u1, float v1,
+                                    float r, float g, float b, float a);
 
 void renderer_draw_text_primitive(float x, float y, const char* text, float r, float g, float b);
 

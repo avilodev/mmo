@@ -36,7 +36,7 @@ static void char_select_update(GameState* game, float delta_time) {
         game->char_select.pending_create = 0;
         
         if (strlen(game->char_select.new_name) < 3) {
-            strcpy(game->char_select.error_message, "Name must be at least 3 characters");
+            snprintf(game->char_select.error_message, sizeof(game->char_select.error_message), "Name must be at least 3 characters");
         } else if (game->net_state == NET_STATE_IDLE) {
             uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
             
@@ -79,6 +79,7 @@ static void char_select_update(GameState* game, float delta_time) {
                         memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
                     } else {
                         strncpy(game->char_select.error_message, response.message, 127);
+                        game->char_select.error_message[127] = '\0';
                     }
                 }
             }

@@ -1,5 +1,6 @@
 #include "ui_patch_notes.h"
 #include "network.h"
+#include "tls_client.h"
 #include "protocol.h"
 #include <stdio.h>
 #include <string.h>
@@ -7,8 +8,8 @@
 static HWND g_hwndPatchNotesPanel = NULL;
 static HWND g_hwndPatchNotesText = NULL;
 static BOOL g_patchNotesVisible = FALSE;
+static BOOL g_patchNotesFetched = FALSE;
 static char g_patchNotesContent[4096] = "Loading patch notes...";
-static char cached_notes[4096];
 
 // Function to send patch notes request to server
 static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
@@ -39,28 +40,37 @@ static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
     // Setup server address
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(7776);  // Login server port
-    
-    if (inet_pton(AF_INET, "192.168.1.2", &server_addr.sin_addr) <= 0) {
+    server_addr.sin_port = htons((u_short)g_login_server_port);
+
+    if (inet_pton(AF_INET, g_login_server_ip, &server_addr.sin_addr) <= 0) {
         printf("[PATCH NOTES] Invalid IP address format\n");
         snprintf(buffer, bufferSize, "Invalid server IP address");
         closesocket(sock);
         return FALSE;
     }
-    
-    printf("[PATCH NOTES] Connecting to 192.168.1.2:7776...\n");
-    
+
+    printf("[PATCH NOTES] Connecting to %s:%d...\n", g_login_server_ip, g_login_server_port);
+
     // Connect to server
     if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         wsaError = WSAGetLastError();
         printf("[PATCH NOTES] Connection failed: %d\n", wsaError);
-        snprintf(buffer, bufferSize, "Cannot connect to server at 192.168.1.2:7776\nError: %d", wsaError);
+        snprintf(buffer, bufferSize, "Cannot connect to server at %s:%d\nError: %d",
+                 g_login_server_ip, g_login_server_port, wsaError);
         closesocket(sock);
         return FALSE;
     }
-    
+
     printf("[PATCH NOTES] Connected successfully!\n");
-    
+
+    // TLS handshake
+    SSL* ssl = tls_client_connect(sock);
+    if (!ssl) {
+        snprintf(buffer, bufferSize, "TLS handshake failed");
+        closesocket(sock);
+        return FALSE;
+    }
+
     // Small delay to ensure server is ready
     Sleep(100);
     
@@ -95,41 +105,45 @@ static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
     printf("[PATCH NOTES] Packet breakdown: header(7) + start(2) + end(2) = %d bytes\n", packet_size);
     
     // Send request
-    int sent = send(sock, (char*)request_buffer, packet_size, 0);
+    int sent = tls_client_send(ssl, (char*)request_buffer, packet_size);
     if (sent != packet_size) {
         wsaError = WSAGetLastError();
-        printf("[PATCH NOTES] Send failed: sent=%d, expected=%d, error=%d\n", 
+        printf("[PATCH NOTES] Send failed: sent=%d, expected=%d, error=%d\n",
                sent, packet_size, wsaError);
-        snprintf(buffer, bufferSize, "Failed to send patch notes request\nSent: %d bytes (expected %d)\nError: %d", 
+        snprintf(buffer, bufferSize, "Failed to send patch notes request\nSent: %d bytes (expected %d)\nError: %d",
                  sent, packet_size, wsaError);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     printf("[PATCH NOTES] Request sent successfully (%d bytes)\n", sent);
     printf("[PATCH NOTES] Waiting for response...\n");
-    
-    // Receive response header first to know total size
+
+    // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = recv(sock, (char*)response_buffer, sizeof(response_buffer), 0);
+    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
     printf("[PATCH NOTES] Received %d bytes\n", received);
-    
+
     if (received <= 0) {
         wsaError = WSAGetLastError();
         printf("[PATCH NOTES] Receive failed: received=%d, error=%d\n", received, wsaError);
-        snprintf(buffer, bufferSize, "Failed to receive response from server\nReceived: %d bytes\nError: %d", 
+        snprintf(buffer, bufferSize, "Failed to receive response from server\nReceived: %d bytes\nError: %d",
                  received, wsaError);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
     if (received < 7) {  // Minimum header size
         printf("[PATCH NOTES] Response too small: %d bytes\n", received);
         snprintf(buffer, bufferSize, "Invalid response size: %d bytes", received);
+        tls_client_close(ssl);
         closesocket(sock);
         return FALSE;
     }
-    
+
+    tls_client_close(ssl);
     closesocket(sock);
     
     // Parse response manually
@@ -223,6 +237,14 @@ void ShowPatchNotes(HWND hwndParent) {
     // Hide the welcome label and start game button too
     HideStartGameButton();
     
+    // Only fetch from server once per launcher session
+    if (g_patchNotesFetched) {
+        SetWindowText(g_hwndPatchNotesText, g_patchNotesContent);
+        ShowWindow(g_hwndPatchNotesPanel, SW_SHOW);
+        g_patchNotesVisible = TRUE;
+        return;
+    }
+
     // Fetch patch notes from server
     char buffer[4096];
     if (FetchPatchNotes(buffer, sizeof(buffer))) {
@@ -231,7 +253,7 @@ void ShowPatchNotes(HWND hwndParent) {
         char processed[4096];
         int j = 0;
         
-        for (int i = 0; buffer[i] != '\0' && j < sizeof(processed) - 2; i++) {
+        for (int i = 0; buffer[i] != '\0' && j < (int)(sizeof(processed) - 2); i++) {
             if (buffer[i] == '\n') {
                 // Convert standalone \n to \r\n for Windows edit control
                 processed[j++] = '\r';
@@ -248,6 +270,7 @@ void ShowPatchNotes(HWND hwndParent) {
         processed[j] = '\0';
         
         strcpy(g_patchNotesContent, processed);
+        g_patchNotesFetched = TRUE;
     } else {
         snprintf(g_patchNotesContent, sizeof(g_patchNotesContent), 
                 "Failed to load patch notes:\r\n\r\n%s", buffer);
@@ -276,6 +299,7 @@ BOOL IsPatchNotesVisible(void) {
 }
 
 void HandlePatchNotesCommand(HWND hwnd, int controlId) {
+    (void)hwnd;
+    (void)controlId;
     // No buttons to handle anymore - use Home tab to go back
-    return;
 }

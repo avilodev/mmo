@@ -63,7 +63,7 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
     game->account_id = 0;
     game->realm_port = 7777;
     game->network_connected = 0;
-    strcpy(game->network_status, "Not connected");
+    snprintf(game->network_status, sizeof(game->network_status), "Not connected");
     
     printf("[ARGS] Parsing %d arguments\n", argc);
     
@@ -73,7 +73,9 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
             game->session_key[64] = '\0';
         }
         else if (strncmp(argv[i], "--playerid=", 11) == 0) {
-            game->account_id = atoi(argv[i] + 11);
+            char* end = NULL;
+            long id = strtol(argv[i] + 11, &end, 10);
+            game->account_id = (end != argv[i] + 11 && id > 0) ? (uint32_t)id : 0;
         }
         else if (strncmp(argv[i], "--username=", 11) == 0) {
             const char* start = argv[i] + 11;
@@ -98,9 +100,12 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
                 *colon = '\0';
                 strncpy(game->realm_ip, server, 15);
                 game->realm_ip[15] = '\0';
-                game->realm_port = atoi(colon + 1);
+                char* end2 = NULL;
+                long port = strtol(colon + 1, &end2, 10);
+                game->realm_port = (end2 != colon + 1 && port >= 1 && port <= 65535) ? (int)port : 7777;
             } else {
                 strncpy(game->realm_ip, server, 15);
+                game->realm_ip[15] = '\0';
             }
         }
     }
@@ -129,7 +134,7 @@ static void hex_to_binary(const char* hex, char* bin, size_t bin_size) {
 static void connect_to_realm(GameState* game) {
     if (game->session_key[0] == '\0' || game->account_id == 0 || game->realm_ip[0] == '\0') {
         printf("[NETWORK] Missing connection parameters\n");
-        strcpy(game->network_status, "Missing parameters");
+        snprintf(game->network_status, sizeof(game->network_status), "Missing parameters");
         return;
     }
     
@@ -143,7 +148,7 @@ static void connect_to_realm(GameState* game) {
                 "Connected to %s:%d", game->realm_ip, game->realm_port);
     } else {
         game->network_connected = 0;
-        strcpy(game->network_status, "Connection failed");
+        snprintf(game->network_status, sizeof(game->network_status), "Connection failed");
     }
 }
 
@@ -215,7 +220,7 @@ int main(int argc, char* argv[]) {
     printf("[NETWORK] Initializing...\n");
     if (!network_init(game.account_id)) {
         fprintf(stderr, "[NETWORK] Init failed\n");
-        strcpy(game.network_status, "Network init failed");
+        snprintf(game.network_status, sizeof(game.network_status), "Network init failed");
     } else {
         connect_to_realm(&game);
     }
@@ -250,7 +255,7 @@ int main(int argc, char* argv[]) {
             
             if (!network_is_connected()) {
                 game.network_connected = 0;
-                strcpy(game.network_status, "Disconnected");
+                snprintf(game.network_status, sizeof(game.network_status), "Disconnected");
                 printf("[NETWORK] Lost connection\n");
             }
         } else if (game.mode == GAME_MODE_MAIN_MENU || 

@@ -1,4 +1,5 @@
 #include "state_handler.h"
+#include "game.h"
 #include "renderer.h"
 #include "input/input.h"
 #include <stdio.h>
@@ -78,7 +79,7 @@ static void main_menu_render(GameState* game) {
                     game->mode = GAME_MODE_SERVER_LIST;
                     break;
                 case 1: // Settings
-                    game->mode = GAME_MODE_SETTINGS;
+                    game_change_state(game, GAME_MODE_SETTINGS);
                     break;
                 case 2: // Quit
                     game->is_running = 0;

@@ -1,0 +1,19 @@
+# Build output
+Launcher/bin/
+Launcher/obj/
+Game/bin/
+Game/obj/
+
+# Compiled server binary (built separately)
+mmo_server
+
+# Config file — contains server IP, keep off repo
+Launcher/bin/server.conf
+server.conf
+
+# Windows executables and object files
+*.exe
+*.o
+
+# Logs
+*.log

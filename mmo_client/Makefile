@@ -1,8 +1,24 @@
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -O2
-LAUNCHER_LDFLAGS = -lws2_32 -lgdi32 -lmsimg32
-GAME_LDFLAGS = -lglfw3 -lopengl32 -lgdi32 -lws2_32 -lm
+
+# OpenSSL for the Launcher (login server TLS).
+# MSYS2/MinGW64: pacman -S mingw-w64-x86_64-openssl
+# OpenSSL — statically linked so the .exe runs on any Windows PC
+# without needing OpenSSL DLLs installed.
+# Requires: pacman -S mingw-w64-x86_64-openssl (MSYS2/MinGW64)
+# Verify static libs exist: ls /mingw64/lib/libssl.a /mingw64/lib/libcrypto.a
+OPENSSL_INCLUDE = -I/mingw64/include
+OPENSSL_LIB     = -L/mingw64/lib
+# -Wl,-Bstatic  : link ssl+crypto from .a archives (baked into .exe)
+# -Wl,-Bdynamic : switch back to dynamic for everything after this
+# -lcrypt32     : Windows cert store API required by OpenSSL static build
+# Static OpenSSL block must come first; ws2_32/gdi32/crypt32 come after so
+# the linker can resolve OpenSSL's Winsock references when it processes them.
+OPENSSL_LDFLAGS = -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic
+
+LAUNCHER_LDFLAGS = $(OPENSSL_LDFLAGS) -lws2_32 -lgdi32 -lmsimg32 -lcrypt32
+GAME_LDFLAGS = -lglfw3 -lopengl32 -lgdi32 -lws2_32 -lwinmm -lm
 
 COMMON_DIR = common
 
@@ -37,6 +53,7 @@ LAUNCHER_SOURCES = $(wildcard $(LAUNCHER_SRC_DIR)/*.c)
 GAME_SOURCES = \
     $(wildcard $(GAME_SRC_DIR)/*.c) \
     $(wildcard $(GAME_SRC_DIR)/camera/*.c) \
+    $(wildcard $(GAME_SRC_DIR)/audio/*.c) \
     $(wildcard $(GAME_SRC_DIR)/combat/*.c) \
     $(wildcard $(GAME_SRC_DIR)/core/*.c) \
     $(wildcard $(GAME_SRC_DIR)/game/*.c) \
@@ -61,6 +78,7 @@ LAUNCHER_OBJECTS = $(patsubst $(LAUNCHER_SRC_DIR)/%.c,$(LAUNCHER_OBJ_DIR)/%.o,$(
 # Game objects - flatten subdirectory structure into obj/ with prefixes
 GAME_OBJECTS = \
     $(patsubst $(GAME_SRC_DIR)/%.c,$(GAME_OBJ_DIR)/%.o,$(wildcard $(GAME_SRC_DIR)/*.c)) \
+    $(patsubst $(GAME_SRC_DIR)/audio/%.c,$(GAME_OBJ_DIR)/audio_%.o,$(wildcard $(GAME_SRC_DIR)/audio/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/camera/%.c,$(GAME_OBJ_DIR)/camera_%.o,$(wildcard $(GAME_SRC_DIR)/camera/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/combat/%.c,$(GAME_OBJ_DIR)/combat_%.o,$(wildcard $(GAME_SRC_DIR)/combat/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/game/%.c,$(GAME_OBJ_DIR)/game_%.o,$(wildcard $(GAME_SRC_DIR)/game/*.c)) \
@@ -80,6 +98,7 @@ GAME_OBJECTS = \
 
 GAME_INCLUDES = \
     -I$(GAME_INCLUDE_DIR) \
+    -I$(GAME_INCLUDE_DIR)/audio \
     -I$(GAME_INCLUDE_DIR)/camera \
     -I$(GAME_INCLUDE_DIR)/combat \
     -I$(GAME_INCLUDE_DIR)/core \
@@ -118,7 +137,7 @@ dirs:
 
 # Link Launcher (include common objects)
 $(LAUNCHER_TARGET): $(LAUNCHER_OBJECTS) $(COMMON_LAUNCHER_OBJECTS)
-	$(CC) $^ -o $@ $(LAUNCHER_LDFLAGS)
+	$(CC) $^ -o $@ $(OPENSSL_LIB) $(LAUNCHER_LDFLAGS)
 	@echo Launcher build complete: $(LAUNCHER_TARGET)
 
 # Link Game (include common objects)
@@ -132,7 +151,7 @@ $(GAME_TARGET): $(GAME_OBJECTS) $(COMMON_GAME_OBJECTS)
 
 # Compile Launcher objects
 $(LAUNCHER_OBJ_DIR)/%.o: $(LAUNCHER_SRC_DIR)/%.c
-	$(CC) $(CFLAGS) -I$(LAUNCHER_INCLUDE_DIR) -I$(COMMON_DIR) -c $< -o $@
+	$(CC) $(CFLAGS) $(OPENSSL_INCLUDE) -I$(LAUNCHER_INCLUDE_DIR) -I$(COMMON_DIR) -c $< -o $@
 
 # Compile common objects for Launcher
 $(LAUNCHER_OBJ_DIR)/common_%.o: $(COMMON_DIR)/%.c
@@ -144,6 +163,10 @@ $(LAUNCHER_OBJ_DIR)/common_%.o: $(COMMON_DIR)/%.c
 
 # Root src files
 $(GAME_OBJ_DIR)/%.o: $(GAME_SRC_DIR)/%.c
+	$(CC) $(CFLAGS) $(GAME_INCLUDES) -c $< -o $@
+
+# Audio module
+$(GAME_OBJ_DIR)/audio_%.o: $(GAME_SRC_DIR)/audio/%.c
 	$(CC) $(CFLAGS) $(GAME_INCLUDES) -c $< -o $@
 
 # Camera module

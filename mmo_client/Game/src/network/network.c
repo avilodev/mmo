@@ -4,12 +4,22 @@
 #include "combat_system.h"
 #include "combat_render.h"
 #include "inventory.h"
+#include "npc_types.h"
+#include "audio/audio.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
 #include <math.h>
 #include <GLFW/glfw3.h>
+
+// Set to 1 to enable verbose per-packet logging (very noisy — disable in production)
+#define NET_DEBUG 0
+#if NET_DEBUG
+#define NET_LOG(...) printf(__VA_ARGS__)
+#else
+#define NET_LOG(...) ((void)0)
+#endif
 
 // ============================================================================
 // INTERNAL STATE
@@ -105,24 +115,20 @@ static void process_packet(const char* data, int length) {
             WorldListResponsePacket* pkt = (WorldListResponsePacket*)data;
             uint8_t claimed_count = pkt->count;
             
-            // Calculate expected size based on count
-            size_t expected_size = base_size + (claimed_count * sizeof(WorldInfo));
-            
-            if (length < (int)expected_size) {
-                printf("[NET] ❌ WORLD_LIST incomplete: have %d bytes, need %zu for %d worlds\n",
-                       length, expected_size, claimed_count);
+            if (length < (int)sizeof(WorldListResponsePacket)) {
+                printf("[NET] WORLD_LIST incomplete: have %d bytes, need %zu\n",
+                       length, sizeof(WorldListResponsePacket));
                 return;
             }
-            
+
             // Validate count is reasonable
             if (claimed_count > MAX_WORLDS) {
-                printf("[NET] ⚠️ Server claims %d worlds, clamping to MAX_WORLDS=%d\n",
+                printf("[NET] Server claims %d worlds, clamping to MAX_WORLDS=%d\n",
                        claimed_count, MAX_WORLDS);
                 claimed_count = MAX_WORLDS;
             }
-            
-            // Copy only the valid portion
-            memcpy(&g_world_list, data, expected_size);
+
+            memcpy(&g_world_list, data, sizeof(WorldListResponsePacket));
             g_world_list.count = claimed_count;
             
             for (int i = 0; i < claimed_count; i++) {
@@ -155,21 +161,18 @@ static void process_packet(const char* data, int length) {
             CharacterListResponsePacket* pkt = (CharacterListResponsePacket*)data;
             uint8_t claimed_count = pkt->count;
             
-            // Each character is 48 bytes
-            size_t expected_size = base_size + (claimed_count * 48);
-            
-            if (length < (int)expected_size) {
-                printf("[NET] ❌ CHAR_LIST incomplete: have %d bytes, need %zu for %d chars\n",
-                       length, expected_size, claimed_count);
+            if (length < (int)sizeof(CharacterListResponsePacket)) {
+                printf("[NET] CHAR_LIST incomplete: have %d bytes, need %zu\n",
+                       length, sizeof(CharacterListResponsePacket));
                 return;
             }
-            
+
             if (claimed_count > 10) {
-                printf("[NET] ⚠️ Server claims %d characters, clamping to 10\n", claimed_count);
+                printf("[NET] Server claims %d characters, clamping to 10\n", claimed_count);
                 claimed_count = 10;
             }
-            
-            memcpy(&g_char_list, data, expected_size);
+
+            memcpy(&g_char_list, data, sizeof(CharacterListResponsePacket));
             g_char_list.count = claimed_count;
             
             // Null-terminate character names
@@ -540,7 +543,12 @@ static void process_packet(const char* data, int length) {
                     g_current_game->visible_npcs[i].is_interactable = src->is_interactable;
                     g_current_game->visible_npcs[i].npc_type_id = src->npc_type_id;
                     if (!found) {
-                        snprintf(g_current_game->visible_npcs[i].name, 32, "NPC_%u", npc_id);
+                        const char* type_name = npc_type_get_name(src->npc_type_id);
+                        if (type_name) {
+                            snprintf(g_current_game->visible_npcs[i].name, 32, "%s", type_name);
+                        } else {
+                            snprintf(g_current_game->visible_npcs[i].name, 32, "NPC_%u", npc_id);
+                        }
                     }
                 }
             }
@@ -577,6 +585,7 @@ static void process_packet(const char* data, int length) {
                     g_current_game->show_level_up      = 1;
                     g_current_game->level_up_timer      = 3.0f;
                     g_current_game->level_up_new_level  = (int)new_level;
+                    audio_event_level_up();
 
                     printf("[NET] LEVEL UP! Now level %u (HP=%u/%u, Mana=%u/%u)\n",
                            new_level, new_hp, new_max_hp, new_mana, new_max_mana);
@@ -680,8 +689,8 @@ static void process_packet(const char* data, int length) {
                 g_npc_interact_response.npc_name[31] = '\0';
                 g_npc_interact_response_ready = TRUE;
                 printf("[NET] NPC Interact Response: NPC %u, Dialogue %u, Page %u\n",
-                       ntohl(g_npc_interact_response.npc_id),
-                       ntohl(g_npc_interact_response.dialogue_id),
+                       (uint32_t)ntohl(g_npc_interact_response.npc_id),
+                       (uint32_t)ntohl(g_npc_interact_response.dialogue_id),
                        g_npc_interact_response.page_num);
             }
             break;
@@ -691,7 +700,7 @@ static void process_packet(const char* data, int length) {
                 memcpy(&g_dialogue_update, data, sizeof(DialogueUpdatePacket));
                 g_dialogue_update_ready = TRUE;
                 printf("[NET] Dialogue Update: Dialogue %u, Page %u\n",
-                       ntohl(g_dialogue_update.dialogue_id),
+                       (uint32_t)ntohl(g_dialogue_update.dialogue_id),
                        g_dialogue_update.page_num);
             }
             break;
@@ -701,7 +710,7 @@ static void process_packet(const char* data, int length) {
                 memcpy(&g_dialogue_close, data, sizeof(DialogueClosePacket));
                 g_dialogue_close_ready = TRUE;
                 printf("[NET] Dialogue Close: NPC %u\n",
-                       ntohl(g_dialogue_close.npc_id));
+                       (uint32_t)ntohl(g_dialogue_close.npc_id));
             }
             break;
 
@@ -813,7 +822,7 @@ static void process_packet(const char* data, int length) {
                     g_current_game->nearby_players[i].player_class = src->player_class;
                     g_current_game->nearby_players[i].is_dead = src->is_dead;
                     snprintf(g_current_game->nearby_players[i].name, 32,
-                             "Player_%u", ntohl(src->player_id));
+                             "Player_%u", (uint32_t)ntohl(src->player_id));
                 }
             }
             break;
@@ -896,11 +905,12 @@ static void process_packet(const char* data, int length) {
                 PlayerDeathPacket* pkt = (PlayerDeathPacket*)data;
                 uint32_t dead_id = ntohl(pkt->dead_player_id);
                 printf("[NET] Player %u died (killer: %u)\n",
-                       dead_id, ntohl(pkt->killer_id));
+                       dead_id, (uint32_t)ntohl(pkt->killer_id));
                 if (g_current_game && dead_id == g_character_id) {
                     g_current_game->is_dead = 1;
                     g_current_game->death_timer = 0.0f;
                     g_current_game->player.info.health = 0;
+                    audio_event_death();
                 }
             }
             break;
@@ -930,7 +940,7 @@ static void process_packet(const char* data, int length) {
             if (length >= (int)sizeof(LootDropPacket)) {
                 LootDropPacket* pkt = (LootDropPacket*)data;
                 printf("[NET] Loot drop: ground_id=%u item=%u qty=%u at (%.1f, %.1f)\n",
-                       ntohl(pkt->ground_item_id), ntohl(pkt->item_id),
+                       (uint32_t)ntohl(pkt->ground_item_id), (uint32_t)ntohl(pkt->item_id),
                        pkt->quantity, pkt->pos_x, pkt->pos_y);
                 if (g_current_game) {
                     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
@@ -955,6 +965,7 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Loot pickup: %s - %s\n",
                        pkt->success ? "OK" : "FAIL", pkt->message);
                 if (pkt->success && g_current_game) {
+                    audio_event_pickup();
                     uint32_t gid = ntohl(pkt->ground_item_id);
                     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
                         if (g_current_game->ground_items[i].active &&
@@ -996,7 +1007,7 @@ static void process_packet(const char* data, int length) {
             if (length >= (int)sizeof(NPCTelegraphStartPacket)) {
                 NPCTelegraphStartPacket* pkt = (NPCTelegraphStartPacket*)data;
                 printf("[NET] Telegraph start: npc %u, shape %u, cast %.1fs\n",
-                       ntohl(pkt->npc_id), pkt->shape, pkt->cast_time);
+                       (uint32_t)ntohl(pkt->npc_id), pkt->shape, pkt->cast_time);
                 if (g_current_game) {
                     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
                         if (!g_current_game->telegraphs[i].active) {
@@ -1054,9 +1065,9 @@ static void process_packet(const char* data, int length) {
                     } else {
                         chat->line_count++;
                     }
-                    strncpy(chat->lines[idx].sender, pkt->sender_name, 31);
+                    memcpy(chat->lines[idx].sender, pkt->sender_name, 31);
                     chat->lines[idx].sender[31] = '\0';
-                    strncpy(chat->lines[idx].text, pkt->message, 255);
+                    memcpy(chat->lines[idx].text, pkt->message, 255);
                     chat->lines[idx].text[255] = '\0';
                     chat->lines[idx].channel = pkt->channel;
                 }
@@ -1346,7 +1357,7 @@ void network_update(void) {
         
         if (bytes > 0) {
             g_recv_len += bytes;
-            printf("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_recv_len);
+            NET_LOG("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_recv_len);
         } else if (bytes == 0) {
             printf("[NET] Server closed connection\n");
             g_connected = FALSE;
@@ -1373,7 +1384,7 @@ void network_update(void) {
         
         // Need at least a header
         if (remaining < (int)sizeof(PacketHeader)) {
-            printf("[NET] Not enough bytes for header (have %d, need %zu)\n", 
+            NET_LOG("[NET] Not enough bytes for header (have %d, need %zu)\n",
                    remaining, sizeof(PacketHeader));
             break;
         }
@@ -1381,7 +1392,7 @@ void network_update(void) {
         uint8_t pkt_type = (uint8_t)g_recv_buf[offset];
         int pkt_size = 0;
         
-        printf("[NET] Processing packet type %d (0x%02X) at offset %d, %d bytes remaining\n",
+        NET_LOG("[NET] Processing packet type %d (0x%02X) at offset %d, %d bytes remaining\n",
                pkt_type, pkt_type, offset, remaining);
         
         // Handle variable-length packets
@@ -1390,17 +1401,17 @@ void network_update(void) {
                 size_t base_size = offsetof(CharacterListResponsePacket, characters);
                 
                 if (remaining < (int)base_size) {
-                    printf("[NET] Waiting for complete CHAR_LIST header (%d < %zu)\n", 
+                    NET_LOG("[NET] Waiting for complete CHAR_LIST header (%d < %zu)\n",
                            remaining, base_size);
                     goto wait_for_more_data;
                 }
-                
+
                 CharacterListResponsePacket* pkt_ptr = (CharacterListResponsePacket*)(g_recv_buf + offset);
                 uint8_t count = pkt_ptr->count;
                 if (count > 10) count = 10;
-                
+
                 pkt_size = (int)base_size + (count * 48);
-                printf("[NET] CHAR_LIST: %d chars, %d bytes\n", count, pkt_size);
+                NET_LOG("[NET] CHAR_LIST: %d chars, %d bytes\n", count, pkt_size);
                 break;
             }
             
@@ -1408,17 +1419,17 @@ void network_update(void) {
                 size_t base_size = offsetof(WorldListResponsePacket, worlds);
                 
                 if (remaining < (int)base_size) {
-                    printf("[NET] Waiting for complete WORLD_LIST header (%d < %zu)\n", 
+                    NET_LOG("[NET] Waiting for complete WORLD_LIST header (%d < %zu)\n",
                            remaining, base_size);
                     goto wait_for_more_data;
                 }
-                
+
                 WorldListResponsePacket* pkt_ptr = (WorldListResponsePacket*)(g_recv_buf + offset);
                 uint8_t count = pkt_ptr->count;
                 if (count > MAX_WORLDS) count = MAX_WORLDS;
-                
+
                 pkt_size = (int)base_size + (count * sizeof(WorldInfo));
-                printf("[NET] WORLD_LIST: %d worlds, %d bytes (base=%zu, WorldInfo=%zu)\n", 
+                NET_LOG("[NET] WORLD_LIST: %d worlds, %d bytes (base=%zu, WorldInfo=%zu)\n",
                        count, pkt_size, base_size, sizeof(WorldInfo));
                 break;
             }
@@ -1500,26 +1511,26 @@ void network_update(void) {
                     continue;
                 }
                 
-                printf("[NET] Fixed-size packet: %d bytes\n", pkt_size);
+                NET_LOG("[NET] Fixed-size packet: %d bytes\n", pkt_size);
                 break;
         }
         
         // Check if we have the complete packet
         if (remaining < pkt_size) {
-            printf("[NET] Waiting for complete packet (have %d, need %d)\n", 
+            NET_LOG("[NET] Waiting for complete packet (have %d, need %d)\n",
                    remaining, pkt_size);
             break;
         }
-        
+
         // Process the complete packet
-        printf("[NET] ✓ Processing complete packet (%d bytes)\n", pkt_size);
+        NET_LOG("[NET] Processing complete packet (%d bytes)\n", pkt_size);
         process_packet(g_recv_buf + offset, pkt_size);
         offset += pkt_size;
         continue;
         
     wait_for_more_data:
         // Need more bytes for variable-length packet header
-        printf("[NET] Waiting for more data (variable-length header incomplete)\n");
+        NET_LOG("[NET] Waiting for more data (variable-length header incomplete)\n");
         break;
     }
     
@@ -1527,7 +1538,7 @@ void network_update(void) {
     if (offset > 0) {
         if (offset < g_recv_len) {
             int leftover = g_recv_len - offset;
-            printf("[NET] Shifting %d leftover bytes to start of buffer\n", leftover);
+            NET_LOG("[NET] Shifting %d leftover bytes to start of buffer\n", leftover);
             memmove(g_recv_buf, g_recv_buf + offset, leftover);
             g_recv_len = leftover;
         } else {
@@ -1600,6 +1611,7 @@ int network_connect_to_realm(const char* ip, uint16_t port,
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_REALM_CONNECT;
     pkt.header.player_id = htonl(account_id);
+    pkt.header.payload_size = 0;
     memcpy(pkt.header.session_key, session_key, 32);
     
     if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) != sizeof(pkt)) {
@@ -1654,6 +1666,7 @@ int network_request_world_list(void) {
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_WORLD_LIST_REQUEST;
     pkt.header.player_id = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(WorldListRequestPacket) - sizeof(PacketHeader));
     
     return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
@@ -1675,6 +1688,7 @@ int network_request_character_list(uint32_t world_id) {
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_CHARACTER_LIST_REQUEST;
     pkt.header.player_id = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(CharacterListRequestPacket) - sizeof(PacketHeader));
     pkt.world_id = htonl(world_id);
     
     return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
@@ -1698,6 +1712,7 @@ int network_create_character(uint32_t world_id, const char* name,
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_CHARACTER_CREATE_REQUEST;
     pkt.header.player_id = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(CharacterCreateRequestPacket) - sizeof(PacketHeader));
     pkt.world_id = htonl(world_id);
     strncpy(pkt.name, name, 31);
     pkt.class_id = htonl(class_id);
@@ -1723,6 +1738,7 @@ int network_request_enter_world(uint32_t character_id, uint32_t world_id) {
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_ENTER_WORLD;
     pkt.header.player_id = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(EnterWorldPacket) - sizeof(PacketHeader));
     pkt.character_id = htonl(character_id);
     pkt.world_id = htonl(world_id);
     
