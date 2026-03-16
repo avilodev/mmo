@@ -10,6 +10,13 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
+// Reject obviously bad float coordinates from clients (#18)
+static int valid_coord(float x, float y) {
+    return isfinite(x) && isfinite(y) &&
+           x > -100000.0f && x < 100000.0f &&
+           y > -100000.0f && y < 100000.0f;
+}
+
 extern NPCWorld g_npc_world;
 
 int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t* buffer) {
@@ -86,9 +93,15 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                     break;
                 }
                 
+                if (!valid_coord(intent->aim_x, intent->aim_y)) {
+                    printf("[ATTACK] Rejected: invalid aim coords from character %u\n",
+                           character_id);
+                    break;
+                }
+
                 printf("[ATTACK] Character %u attacking at (%.1f, %.1f)\n",
                        character_id, intent->aim_x, intent->aim_y);
-                
+
                 combat_handle_attack_intent(&g_npc_world,
                                            client_fd,
                                            character_id,
@@ -113,6 +126,12 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 if (packet_char_id != character_id) {
                     printf("[ABILITY] Character ID mismatch: packet=%u, session=%u\n",
                            packet_char_id, character_id);
+                    break;
+                }
+
+                if (!valid_coord(intent->aim_x, intent->aim_y)) {
+                    printf("[ABILITY] Rejected: invalid aim coords from character %u\n",
+                           character_id);
                     break;
                 }
 

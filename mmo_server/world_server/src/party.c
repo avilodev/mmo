@@ -346,19 +346,23 @@ void party_broadcast_update(uint32_t party_id) {
     pkt.leader_id = htonl(p->leader_id);
     pkt.member_count = p->member_count;
 
-    // Build member list
+    // Build member list — collect fd and character_id in one pass to avoid
+    // a second player_find_active scan in the send loop.
     int idx = 0;
     uint32_t member_ids[MAX_PARTY_SIZE];
+    int      member_fds[MAX_PARTY_SIZE];
     int member_count = 0;
 
     for (int i = 0; i < MAX_PARTY_SIZE && idx < MAX_PARTY_SIZE; i++) {
         if (p->members[i] == 0) continue;
         uint32_t mid = p->members[i];
-        member_ids[member_count++] = mid;
 
         ActivePlayer* mp = player_find_active(mid);
         if (mp) {
             pthread_mutex_lock(&mp->lock);
+            member_ids[member_count] = mid;
+            member_fds[member_count] = mp->client_fd;
+            member_count++;
             pkt.members[idx].character_id = htonl(mp->character_id);
             strncpy(pkt.members[idx].name, mp->username, 31);
             pkt.members[idx].level = (uint8_t)mp->level;
@@ -369,6 +373,9 @@ void party_broadcast_update(uint32_t party_id) {
             pkt.members[idx].max_mana = htonl(mp->max_mana);
             pthread_mutex_unlock(&mp->lock);
         } else {
+            member_ids[member_count] = mid;
+            member_fds[member_count] = -1;
+            member_count++;
             pkt.members[idx].character_id = htonl(mid);
         }
         idx++;
@@ -382,8 +389,9 @@ void party_broadcast_update(uint32_t party_id) {
     pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
 
     for (int i = 0; i < member_count; i++) {
+        if (member_fds[i] < 0) continue;
         pkt.header.player_id = htonl(member_ids[i]);
-        send_to_character(member_ids[i], &pkt, send_size);
+        send(member_fds[i], &pkt, send_size, 0);
     }
 }
 

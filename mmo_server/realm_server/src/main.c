@@ -24,35 +24,41 @@ void* client_handler_thread(void* arg) {
     printf("Realm client connected: fd %d\n", client_fd);
     
     uint8_t buffer[MAX_PACKET_SIZE];
+    ssize_t buf_len = 0;
     struct pollfd pfd = {.fd = client_fd, .events = POLLIN};
-    
+
     int authenticated = 0;
-    uint32_t account_id = 0; 
-    
+    uint32_t account_id = 0;
+
     while (g_server.running) {
         int ret = poll(&pfd, 1, 1000);
-        
+
         if (ret < 0) {
             if (errno == EINTR) continue;
             printf("Client fd %d: poll error %d\n", client_fd, errno);
             break;
         }
         if (ret == 0) continue;
-        
+
         if (pfd.revents & POLLIN) {
-            ssize_t bytes = recv(client_fd, buffer, sizeof(buffer), 0);
+            ssize_t bytes = recv(client_fd, buffer + buf_len,
+                                 sizeof(buffer) - (size_t)buf_len, 0);
 
             if (bytes <= 0) {
                 printf("Client fd %d disconnected (recv returned %zd)\n", client_fd, bytes);
                 break;
             }
-            
-            //printf("Client fd %d: Received %zd bytes\n", client_fd, bytes);
-            
+            buf_len += bytes;
+
             if (!authenticated) {
-                printf("Client fd %d: Not authenticated yet, checking first packet\n", client_fd);
-                
-                if (bytes >= (ssize_t)sizeof(RealmConnectPacket)) {
+                printf("Client fd %d: Not authenticated yet, have %zd/%zu bytes\n",
+                       client_fd, buf_len, sizeof(RealmConnectPacket));
+
+                if (buf_len < (ssize_t)sizeof(RealmConnectPacket)) {
+                    continue;  // Wait for rest of packet
+                }
+
+                {
                     RealmConnectPacket* pkt = (RealmConnectPacket*)buffer;
                     
                     printf("Client fd %d: Packet type: %d (expected PACKET_REALM_CONNECT=%d)\n", 
@@ -68,17 +74,21 @@ void* client_handler_thread(void* arg) {
                         
                         if (session_validate(account_id, pkt->header.session_key)) {
                             authenticated = 1;
-                            
+                            buf_len = 0;  // Reset buffer for post-auth packets
+
                             printf("Client fd %d: Session validation SUCCESS!\n", client_fd);
-                            
+
                             RealmConnectAckPacket response = {0};
                             response.header.type = PACKET_REALM_CONNECT_ACK;
                             response.header.player_id = htonl(account_id);
                             response.success = 1;
                             strncpy(response.message, "Welcome to Realm Server", 127);
-                            
-                            int sent = send(client_fd, &response, sizeof(response), 0);
-                            printf("Client fd %d: Sent ack packet (%d bytes)\n", client_fd, sent);
+
+                            ssize_t sent = send(client_fd, &response, sizeof(response), 0);
+                            if (sent != (ssize_t)sizeof(response))
+                                printf("Client fd %d: Warning: partial/failed auth ack send\n", client_fd);
+                            else
+                                printf("Client fd %d: Sent ack packet (%zd bytes)\n", client_fd, sent);
                             printf("Account %u authenticated on realm server\n", account_id);
                             continue;
                         } else {
@@ -87,24 +97,24 @@ void* client_handler_thread(void* arg) {
                     } else {
                         printf("Client fd %d: Wrong packet type received\n", client_fd);
                     }
-                } else {
-                    printf("Client fd %d: Packet too small for RealmConnectPacket\n", client_fd);
                 }
-                 
+
                 // Authentication failed
                 printf("Client fd %d: Sending authentication failure response\n", client_fd);
                 RealmConnectAckPacket response = {0};
                 response.header.type = PACKET_REALM_CONNECT_ACK;
                 response.success = 0;
                 strncpy(response.message, "Invalid session", 127);
-                send(client_fd, &response, sizeof(response), 0);
+                if (send(client_fd, &response, sizeof(response), 0) != (ssize_t)sizeof(response))
+                    printf("Client fd %d: Warning: partial/failed auth failure send\n", client_fd);
                 printf("Client fd %d: Breaking connection due to auth failure\n", client_fd);
                 break;
             }
             
             // Handle realm packets
-            printf("Client fd %d: Processing authenticated packet\n", client_fd);
-            process_packet(client_fd, account_id, buffer, bytes);
+            printf("Client fd %d: Processing authenticated packet (%zd bytes)\n", client_fd, buf_len);
+            process_packet(client_fd, account_id, buffer, buf_len);
+            buf_len = 0;
         }
         
         if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {

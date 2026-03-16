@@ -36,13 +36,8 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
         response.characters[i].race_id = htonl(characters[i].player_race);
     }
     
-    // FIXED: Calculate actual packet size based on character count
-    size_t base_size = offsetof(CharacterListResponsePacket, characters);
-    size_t actual_size = base_size + (count * 48);  // 48 bytes per character
-    
-    send(client_fd, &response, actual_size, 0);
-    printf("Sent %d characters (%zu bytes) to account %u for world %u\n", 
-           count, actual_size, account_id, world_id);
+    send(client_fd, &response, sizeof(CharacterListResponsePacket), 0);
+    printf("Sent %d characters to account %u for world %u\n", count, account_id, world_id);
 }
 
 void handle_character_create_request(int client_fd, uint32_t account_id, 

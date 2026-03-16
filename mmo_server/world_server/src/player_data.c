@@ -183,7 +183,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     player->is_dirty = player->is_dirty ? 1 : 0;  // Keep dirty flag if we set spawn
     player->last_save = time(NULL);
     player->last_activity = time(NULL);
-    gettimeofday(&player->last_move_tv, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &player->last_move_tv);
     
     printf("Loaded character %u: %s (level %d) at pos=(%.2f, %.2f)\n", 
            character_id, player->username, player->level, player->pos_x, player->pos_y);

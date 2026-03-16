@@ -278,7 +278,7 @@ typedef struct {
     int is_dirty;
     time_t last_save;
     time_t last_activity;
-    struct timeval last_move_tv;
+    struct timespec last_move_tv;  // monotonic clock — no NTP drift (#16)
 
     // Ability system
     float       ability_cooldowns[5];   // Remaining CD per slot (index = slot 0-4)

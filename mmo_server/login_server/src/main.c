@@ -4,6 +4,8 @@
 #include "users_database.h"
 #include "config.h"
 #include "routes.h"
+#include "patch_notes.h"
+#include "tls.h"
 
 #include <stdlib.h>
 #include <errno.h>
@@ -11,34 +13,61 @@
 #include <netinet/tcp.h>
  
 ServerConfig g_server;
+SSL_CTX* g_tls_ctx = NULL;
 
 void* client_handler_thread(void* arg) {
     int client_fd = *(int*)arg;
     free(arg);
 
     printf("Login client connected: fd %d\n", client_fd);
-    
-    // Read packet header first to determine type
-    uint8_t buffer[4096]; 
-    ssize_t bytes = recv(client_fd, buffer, sizeof(buffer), 0);
-    
-    if (bytes > 0) {
-        printf("Received %zd bytes from client\n", bytes);
-        
-        // Route based on packet type
-        if (bytes >= MIN_HEADER_SIZE) {
-            PacketHeader* header = (PacketHeader*)buffer;
-            printf("Packet type: %d\n", header->type);
-            
-            // Route to appropriate handler
-            route_packet(client_fd, buffer, bytes);
-        } else {
-            printf("Packet too small: %zd bytes\n", bytes);
-        }
-    } else {
-        printf("recv failed or connection closed: %zd\n", bytes);
+
+    // 30-second recv timeout — applies to both the TLS handshake and
+    // subsequent reads via the underlying socket (#6)
+    struct timeval tv = {.tv_sec = 30, .tv_usec = 0};
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // TLS handshake
+    SSL* ssl = tls_accept(g_tls_ctx, client_fd);
+    if (!ssl) {
+        close(client_fd);
+        return NULL;
     }
-    
+    tls_set_conn(ssl);
+
+    // Reassembly buffer: accumulate until we have a full packet (#4)
+    uint8_t buffer[4096];
+    ssize_t buf_len = 0;
+
+    while (1) {
+        ssize_t bytes = tls_recv(client_fd, buffer + buf_len,
+                                 sizeof(buffer) - (size_t)buf_len, 0);
+        if (bytes <= 0) {
+            if (bytes == 0)
+                printf("Login client fd %d disconnected\n", client_fd);
+            else
+                printf("Login client fd %d recv error/timeout\n", client_fd);
+            break;
+        }
+        buf_len += bytes;
+
+        // Wait until we have at least the fixed header
+        if (buf_len < MIN_HEADER_SIZE)
+            continue;
+
+        PacketHeader* header = (PacketHeader*)buffer;
+        ssize_t expected = MIN_HEADER_SIZE + (ssize_t)ntohs(header->payload_size);
+
+        if (buf_len < expected)
+            continue;  // Wait for the rest of the payload
+
+        printf("Received %zd bytes from login client fd %d, packet type %d\n",
+               buf_len, client_fd, header->type);
+
+        route_packet(client_fd, buffer, expected);
+        break;  // Login server handles exactly one packet per connection
+    }
+
+    tls_close(ssl);
     close(client_fd);
     printf("Login client disconnected: fd %d\n", client_fd);
     return NULL;
@@ -106,6 +135,19 @@ int main(int argc, char** argv) {
     printf("=== LOGIN SERVER (Two-Stage Auth) ===\n");
     printf("PID: %d\n", getpid());
     
+    patch_notes_init();
+
+    // Initialize TLS — cert/key relative to server working directory
+    g_tls_ctx = tls_server_init("./certs/server.crt", "./certs/server.key");
+    if (!g_tls_ctx) {
+        printf("Failed to initialize TLS context.\n");
+        printf("Generate a self-signed cert with:\n");
+        printf("  mkdir -p certs && openssl req -x509 -newkey rsa:2048 \\\n");
+        printf("    -keyout certs/server.key -out certs/server.crt \\\n");
+        printf("    -days 3650 -nodes -subj \"/CN=mmo-login\"\n");
+        return 1;
+    }
+
     // Initialize database
     if (!db_init(USERS_DB)) {
         printf("Failed to initialize database\n");
@@ -164,7 +206,8 @@ int main(int argc, char** argv) {
     
     session_close();
     db_close();
+    tls_server_cleanup(g_tls_ctx);
     printf("Login Server stopped\n");
-    
+
     return 0;
 }

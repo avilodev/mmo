@@ -23,6 +23,7 @@ int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t 
         
         case PACKET_CHARACTER_CREATE_REQUEST: {
             CharacterCreateRequestPacket* req = (CharacterCreateRequestPacket*)buffer;
+            req->name[sizeof(req->name) - 1] = '\0';  // ensure null-term before strlen (#17)
             handle_character_create_request(client_fd, account_id, ntohl(req->world_id), req->name, ntohl(req->class_id), ntohl(req->race_id));
             break;
         }

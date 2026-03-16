@@ -27,11 +27,32 @@
 #include <poll.h>
 #include <stddef.h>
 
-#define DATA_PATH "/home/avilo/mmo_server/world_server/data/items.json"
-#define ABILITIES_PATH "/home/avilo/mmo_server/world_server/data/abilities.json"
-#define DIALOGUES_PATH "/home/avilo/mmo_server/world_server/data/dialogues.json"
-#define NPC_TYPES_PATH "/home/avilo/mmo_server/world_server/data/npc_types.json"
-#define SPAWNS_PATH "/home/avilo/mmo_server/world_server/data/spawns.json"
+// Data paths — computed at startup relative to the server binary (#11)
+static char DATA_PATH[512];
+static char ABILITIES_PATH[512];
+static char DIALOGUES_PATH[512];
+static char NPC_TYPES_PATH[512];
+static char SPAWNS_PATH[512];
+
+static void init_data_paths(void) {
+    char exe[512] = {0};
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (len > 0) {
+        exe[len] = '\0';
+        char* slash = strrchr(exe, '/');
+        if (slash) *slash = '\0';
+    } else {
+        // fallback: use current working directory
+        exe[0] = '.';
+        exe[1] = '\0';
+    }
+    snprintf(DATA_PATH,      sizeof(DATA_PATH),      "%s/data/items.json",     exe);
+    snprintf(ABILITIES_PATH, sizeof(ABILITIES_PATH), "%s/data/abilities.json", exe);
+    snprintf(DIALOGUES_PATH, sizeof(DIALOGUES_PATH), "%s/data/dialogues.json", exe);
+    snprintf(NPC_TYPES_PATH, sizeof(NPC_TYPES_PATH), "%s/data/npc_types.json", exe);
+    snprintf(SPAWNS_PATH,    sizeof(SPAWNS_PATH),    "%s/data/spawns.json",    exe);
+    printf("[PATHS] Data directory: %s/data/\n", exe);
+}
 
 static pthread_t g_combat_thread;
 static pthread_t g_player_broadcast_thread;
@@ -820,10 +841,12 @@ void signal_handler(int signum) {
 
 int main(int argc, char** argv) {
     (void)argc;
-    
+
     printf("=== WORLD SERVER ===\n");
     printf("PID: %d\n", getpid());
-    
+
+    init_data_paths();
+
     g_server_start_time = time(NULL);
     session_init();
     session_registry_init();

@@ -2,6 +2,9 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -pthread
 LDFLAGS = -pthread -lsqlite3 -lhiredis -lpq -lm
 
+# OpenSSL — used by the login server only
+LOGIN_LDFLAGS = -lssl -lcrypto
+
 # PostgreSQL include path
 PG_INCLUDE = -I/usr/include/postgresql
 
@@ -48,11 +51,11 @@ WORLD_EXEC = $(WORLD_BIN)/world_server
 # Build everything
 all: $(LOGIN_EXEC) $(REALM_EXEC) $(WORLD_EXEC)
 
-# Login server (needs database)
+# Login server (needs database + OpenSSL for TLS)
 $(LOGIN_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(LOGIN_OBJS)
 	@mkdir -p $(LOGIN_BIN)
 	@mkdir -p database
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
 	@echo "Built login_server -> $@"
 
 # Realm server (needs PostgreSQL for player_data and character operations)

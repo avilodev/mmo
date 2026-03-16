@@ -1,0 +1,23 @@
+# Build output
+login_server/bin/
+login_server/obj/
+realm_server/bin/
+realm_server/obj/
+world_server/bin/
+world_server/obj/
+common/bin/
+common/obj/
+database/bin/
+database/obj/
+
+# TLS certificate and private key — generate locally, never commit
+login_server/certs/
+
+# SQLite databases
+database/databases/
+
+# Object files
+*.o
+
+# Logs
+*.log

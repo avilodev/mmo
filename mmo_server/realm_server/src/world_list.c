@@ -74,13 +74,8 @@ void world_send_list(int client_fd, uint32_t account_id) {
     int world_count = response.count;
     pthread_mutex_unlock(&g_server.world_servers_lock);
     
-    // FIXED: Calculate actual packet size based on world count
-    size_t base_size = offsetof(WorldListResponsePacket, worlds);
-    size_t actual_size = base_size + (world_count * sizeof(WorldInfo));
-    
-    send(client_fd, &response, actual_size, 0);
-    printf("Sent world list with %d worlds (%zu bytes) to account %u\n", 
-           world_count, actual_size, account_id);
+    send(client_fd, &response, sizeof(WorldListResponsePacket), 0);
+    printf("Sent world list with %d worlds to account %u\n", world_count, account_id);
 }
 
 void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {

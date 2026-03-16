@@ -2,6 +2,7 @@
 #include "users_database.h"
 #include "session.h"
 #include "utils.h"
+#include "tls.h"
 
 #include <stdio.h>
 #include <string.h> 
@@ -45,8 +46,12 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
     }
     printf("\n");
     
-    ssize_t sent = send(client_fd, &response, sizeof(response), 0);
-    printf("[STAGE 1] Sent validation response: %zd bytes\n", sent);
+    ssize_t sent = tls_send(client_fd, &response, sizeof(response), 0);
+    if (sent != (ssize_t)sizeof(response))
+        printf("[STAGE 1] Warning: partial/failed send (%zd/%zu bytes)\n",
+               sent, sizeof(response));
+    else
+        printf("[STAGE 1] Sent validation response: %zd bytes\n", sent);
 }
 
 
@@ -77,16 +82,22 @@ void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
         }
         printf("\n");
         
-        ssize_t sent = send(client_fd, &response, sizeof(response), 0);
-        printf("[STAGE 2] Sent session response: %zd bytes\n", sent);
+        ssize_t sent = tls_send(client_fd, &response, sizeof(response), 0);
+        if (sent != (ssize_t)sizeof(response))
+            printf("[STAGE 2] Warning: partial/failed send (%zd/%zu bytes)\n",
+                   sent, sizeof(response));
+        else
+            printf("[STAGE 2] Sent session response: %zd bytes\n", sent);
     } else {
         // FAILURE: Session creation failed
         response.success = 0;
         strncpy(response.message, "Failed to create session", 127);
-        
+
         printf("[STAGE 2] FAILED: session creation error for player_id=%u\n", player_id);
-        
-        send(client_fd, &response, sizeof(response), 0);
+
+        ssize_t sent = tls_send(client_fd, &response, sizeof(response), 0);
+        if (sent != (ssize_t)sizeof(response))
+            printf("[STAGE 2] Warning: partial/failed send on failure response\n");
     }
 } 
 
@@ -102,7 +113,7 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     if (!validate_username(packet->username)) {
         response.success = 0;
         strncpy(response.message, "Username is required", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
     
@@ -110,7 +121,7 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     if (!validate_password(packet->password)) {
         response.success = 0;
         strncpy(response.message, "Password must be at least 6 characters", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
     
@@ -118,7 +129,7 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     if (!validate_email(packet->email)) {
         response.success = 0;
         strncpy(response.message, "Invalid email format", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
     
@@ -126,7 +137,7 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     if (!validate_birthday(packet->birthday)) {
         response.success = 0;
         strncpy(response.message, "Invalid birthday format (use YYYY-MM-DD)", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
     

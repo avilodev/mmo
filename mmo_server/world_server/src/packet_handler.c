@@ -15,15 +15,16 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     if (!player) return;
 
     pthread_mutex_lock(&player->lock);
+    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
 
     float client_x = pkt->pos_x;
     float client_y = pkt->pos_y;
 
-    struct timeval now;
-    gettimeofday(&now, NULL);
-    
-    double time_delta = (now.tv_sec - player->last_move_tv.tv_sec) + 
-                        (now.tv_usec - player->last_move_tv.tv_usec) / 1000000.0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    double time_delta = (now.tv_sec  - player->last_move_tv.tv_sec) +
+                        (now.tv_nsec - player->last_move_tv.tv_nsec) / 1e9;
      
     if (time_delta < 0.001 || time_delta > 5.0) time_delta = 0.1;
     
@@ -79,7 +80,8 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     }
     
     pthread_mutex_lock(&player->lock);
-    
+    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+
     // Verify item is in inventory
     if (inventory_slot >= 150 || player->inventory[inventory_slot] != item_id) {
         printf("Item %u not in inventory slot %u\n", item_id, inventory_slot);
@@ -265,7 +267,8 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     if (!player) return;
     
     pthread_mutex_lock(&player->lock);
-    
+    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+
     // Find empty inventory slot
     int inventory_slot = -1;
     for (int i = 0; i < 150; i++) {
@@ -374,6 +377,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     response.header.payload_size = htons(sizeof(UseItemResponsePacket) - sizeof(PacketHeader)); 
 
     pthread_mutex_lock(&player->lock);
+    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
 
     // Validate slot
     if (inventory_slot >= 150 || player->inventory[inventory_slot] == 0) {
@@ -486,12 +490,13 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     if (!player) return;
     
     pthread_mutex_lock(&player->lock);
-    
+    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+
     if (inventory_slot >= 150 || player->inventory[inventory_slot] == 0) {
         pthread_mutex_unlock(&player->lock);
         return;
     }
-    
+
     uint32_t item_id = player->inventory[inventory_slot];
     float drop_x = player->pos_x;
     float drop_y = player->pos_y;
@@ -529,7 +534,8 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     if (!player) return;
     
     pthread_mutex_lock(&player->lock);
-    
+    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+
     // Swap items
     uint32_t temp = player->inventory[from_slot];
     player->inventory[from_slot] = player->inventory[to_slot];
