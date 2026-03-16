@@ -21,6 +21,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include "utils.h"
 
 // ---------------------------------------------------------------------------
 // Extern references
@@ -126,6 +127,10 @@ static int parse_npc_types(const char* json) {
 
     int arr_len = (int)(arr_end - arr_start + 1);
     char* arr_json = malloc(arr_len + 1);
+    if (!arr_json) {
+        fprintf(stderr, "[NPC_AI] malloc failed while parsing npc_types\n");
+        return 0;
+    }
     memcpy(arr_json, arr_start, arr_len);
     arr_json[arr_len] = '\0';
 
@@ -140,6 +145,11 @@ static int parse_npc_types(const char* json) {
 
         int obj_len = (int)(obj_end - pos + 1);
         char* obj = malloc(obj_len + 1);
+        if (!obj) {
+            fprintf(stderr, "[NPC_AI] malloc failed while parsing NPC type object\n");
+            free(arr_json);
+            return 0;
+        }
         memcpy(obj, pos, obj_len);
         obj[obj_len] = '\0';
 
@@ -193,6 +203,12 @@ static int parse_npc_types(const char* json) {
 
                         int ae_len = (int)(ae - ap + 1);
                         char* ab_obj = malloc(ae_len + 1);
+                        if (!ab_obj) {
+                            fprintf(stderr, "[NPC_AI] malloc failed while parsing ability object\n");
+                            free(obj);
+                            free(arr_json);
+                            return 0;
+                        }
                         memcpy(ab_obj, ap, ae_len);
                         ab_obj[ae_len] = '\0';
 
@@ -477,7 +493,7 @@ static void dq_flush(DeferredQueue* q) {
                     float pd = dist2d(d->tstart.npc_x, d->tstart.npc_y,
                                       active_players[p].pos_x, active_players[p].pos_y);
                     if (pd <= 500.0f) {
-                        send(active_players[p].client_fd, &pkt, sizeof(pkt), 0);
+                        server_send(active_players[p].client_fd, &pkt, sizeof(pkt));
                     }
                 }
                 pthread_mutex_unlock(&active_players_lock);
@@ -501,7 +517,7 @@ static void dq_flush(DeferredQueue* q) {
                     float pd = dist2d(d->tresolve.npc_x, d->tresolve.npc_y,
                                       active_players[p].pos_x, active_players[p].pos_y);
                     if (pd <= 500.0f) {
-                        send(active_players[p].client_fd, &rpkt, sizeof(rpkt), 0);
+                        server_send(active_players[p].client_fd, &rpkt, sizeof(rpkt));
                     }
 
                     // Check if player is inside the telegraph shape
@@ -548,7 +564,7 @@ static void dq_flush(DeferredQueue* q) {
                     epkt.healing           = 0;
                     epkt.target_new_health = htonl((uint32_t)new_hp);
                     epkt.is_kill           = is_kill;
-                    send(client_fd, &epkt, sizeof(epkt), 0);
+                    server_send(client_fd, &epkt, sizeof(epkt));
 
                     printf("[NPC_AI] Telegraph hit player %u for %d dmg (hp=%d)%s\n",
                            char_id, damage, new_hp, is_kill ? " — KILLED" : "");

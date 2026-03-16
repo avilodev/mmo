@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <time.h>
+#include "utils.h"
 
 const ClassAttackProfile g_class_profiles[5] = {
     // [0] — unused (classes are 1-indexed)
@@ -281,39 +282,40 @@ void combat_handle_attack_intent(NPCWorld* world,
                                  AttackIntentPacket* pkt) {
     extern ActivePlayer active_players[];
 
-    ActivePlayer* attacker = player_find_active(attacker_id);
+    ActivePlayer* attacker = player_acquire(attacker_id);
     if (!attacker) {
         printf("[COMBAT] Attack intent from unknown attacker %u\n", attacker_id);
         return;
     }
 
     int player_slot = combat_find_player_slot(attacker_id);
-    if (player_slot < 0) return;
-
-    pthread_mutex_lock(&attacker->lock);
+    if (player_slot < 0) {
+        player_release(attacker);
+        return;
+    }
 
     double now = combat_get_time();
     if (now - attacker->last_attack_time < attacker->attack_cooldown) {
-        pthread_mutex_unlock(&attacker->lock);
+        player_release(attacker);
 
         AttackResultPacket result = {0};
         result.header.type       = PACKET_ATTACK_RESULT;
         result.header.player_id  = htonl(attacker_id);
         result.result_code       = ATTACK_RESULT_ON_COOLDOWN;
-        send(client_fd, &result, sizeof(result), 0);
+        server_send(client_fd, &result, sizeof(result));
         return;
     }
 
     pthread_mutex_lock(&g_pending_casts_lock);
     if (g_pending_casts[player_slot].is_active) {
         pthread_mutex_unlock(&g_pending_casts_lock);
-        pthread_mutex_unlock(&attacker->lock);
+        player_release(attacker);
 
         AttackResultPacket result = {0};
         result.header.type       = PACKET_ATTACK_RESULT;
         result.header.player_id  = htonl(attacker_id);
         result.result_code       = ATTACK_RESULT_ALREADY_CASTING;
-        send(client_fd, &result, sizeof(result), 0);
+        server_send(client_fd, &result, sizeof(result));
         return;
     }
 
@@ -329,7 +331,7 @@ void combat_handle_attack_intent(NPCWorld* world,
     // Mark combat timestamp for HP regen suppression
     attacker->last_combat_time = now;
 
-    pthread_mutex_unlock(&attacker->lock);
+    player_release(attacker);
 
     // --- Resolve targets ---
     uint32_t hit_targets[MAX_CAST_TARGETS];
@@ -429,7 +431,7 @@ void combat_handle_attack_intent(NPCWorld* world,
         result.header.type       = PACKET_ATTACK_RESULT;
         result.header.player_id  = htonl(attacker_id);
         result.result_code       = ATTACK_RESULT_NO_TARGETS;
-        send(client_fd, &result, sizeof(result), 0);
+        server_send(client_fd, &result, sizeof(result));
         return;
     }
 
@@ -468,7 +470,7 @@ void combat_handle_attack_intent(NPCWorld* world,
         cast_pkt.target_ids[i] = htonl(hit_targets[i]);
     }
 
-    send(client_fd, &cast_pkt, sizeof(cast_pkt), 0);
+    server_send(client_fd, &cast_pkt, sizeof(cast_pkt));
 
     printf("[COMBAT] Player %u cast started: type=%d, targets=%d, cast_time=%.2fs\n",
            attacker_id, profile->attack_type, hit_count, profile->cast_time);
@@ -493,7 +495,7 @@ void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
         cancel.caster_id        = htonl(attacker_id);
         cancel.reason           = 0;
 
-        send(client_fd, &cancel, sizeof(cancel), 0);
+        server_send(client_fd, &cancel, sizeof(cancel));
         printf("[COMBAT] Player %u cancelled cast\n", attacker_id);
     }
     pthread_mutex_unlock(&g_pending_casts_lock);
@@ -638,23 +640,20 @@ void combat_tick(NPCWorld* world) {
                 dmg.damage              = htonl(hits[h].damage);
                 dmg.target_new_health   = htonl(hits[h].new_health);
                 dmg.is_kill             = hits[h].is_kill;
-                send(client_fd, &dmg, sizeof(dmg), 0);
+                server_send(client_fd, &dmg, sizeof(dmg));
 
                 if (hits[h].is_kill) {
                     if (hits[h].xp_reward > 0) {
                         party_award_xp(attacker_id, hits[h].xp_reward);
                     }
-                    if (hits[h].gold_reward > 0) {
-                        ActivePlayer* killer = player_find_active(attacker_id);
+                    if (hits[h].gold_reward > 0 || hits[h].xp_reward > 0) {
+                        ActivePlayer* killer = player_acquire(attacker_id);
                         if (killer) {
-                            player_award_gold(killer, hits[h].gold_reward);
-                        }
-                    }
-                    if (hits[h].xp_reward > 0 || hits[h].gold_reward > 0) {
-                        ActivePlayer* killer = player_find_active(attacker_id);
-                        if (killer) {
-                            player_send_kill_reward(client_fd, killer,
+                            if (hits[h].gold_reward > 0)
+                                player_award_gold_locked(killer, hits[h].gold_reward);
+                            player_send_kill_reward_locked(client_fd, killer,
                                 (uint32_t)hits[h].xp_reward, hits[h].gold_reward);
+                            player_release(killer);
                         }
                     }
                     loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, attacker_id);
@@ -773,23 +772,20 @@ void combat_tick(NPCWorld* world) {
             dmg.damage              = htonl(hits[h].damage);
             dmg.target_new_health   = htonl(hits[h].new_health);
             dmg.is_kill             = hits[h].is_kill;
-            send(client_fd, &dmg, sizeof(dmg), 0);
+            server_send(client_fd, &dmg, sizeof(dmg));
 
             if (hits[h].is_kill) {
                 if (hits[h].xp_reward > 0) {
                     party_award_xp(attacker_id, hits[h].xp_reward);
                 }
-                if (hits[h].gold_reward > 0) {
-                    ActivePlayer* killer = player_find_active(attacker_id);
+                if (hits[h].gold_reward > 0 || hits[h].xp_reward > 0) {
+                    ActivePlayer* killer = player_acquire(attacker_id);
                     if (killer) {
-                        player_award_gold(killer, hits[h].gold_reward);
-                    }
-                }
-                if (hits[h].xp_reward > 0 || hits[h].gold_reward > 0) {
-                    ActivePlayer* killer = player_find_active(attacker_id);
-                    if (killer) {
-                        player_send_kill_reward(client_fd, killer,
+                        if (hits[h].gold_reward > 0)
+                            player_award_gold_locked(killer, hits[h].gold_reward);
+                        player_send_kill_reward_locked(client_fd, killer,
                             (uint32_t)hits[h].xp_reward, hits[h].gold_reward);
+                        player_release(killer);
                     }
                 }
                 loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, attacker_id);
@@ -885,7 +881,7 @@ void combat_tick(NPCWorld* world) {
             pkt.dead_player_id = htonl(deaths[d].player_id);
             pkt.killer_id = 0;
             pkt.killer_type = 0;
-            send(deaths[d].client_fd, &pkt, sizeof(pkt), 0);
+            server_send(deaths[d].client_fd, &pkt, sizeof(pkt));
         }
     }
 
@@ -954,7 +950,7 @@ void combat_tick(NPCWorld* world) {
             pkt.max_health = htonl((uint32_t)respawns[r].max_health);
             pkt.mana = htonl((uint32_t)respawns[r].mana);
             pkt.max_mana = htonl((uint32_t)respawns[r].max_mana);
-            send(respawns[r].client_fd, &pkt, sizeof(pkt), 0);
+            server_send(respawns[r].client_fd, &pkt, sizeof(pkt));
         }
     }
 

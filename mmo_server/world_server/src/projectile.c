@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <time.h>
+#include "utils.h"
 
 // ---------------------------------------------------------------------------
 // Extern references
@@ -132,7 +133,7 @@ static void send_projectile_spawn_pkt(int client_fd, uint32_t projectile_id,
     pkt.dir_x            = dx;
     pkt.dir_y            = dy;
     pkt.speed            = speed;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 static void send_projectile_destroy(int client_fd, uint32_t projectile_id,
@@ -142,7 +143,7 @@ static void send_projectile_destroy(int client_fd, uint32_t projectile_id,
     pkt.header.player_id = 0;
     pkt.projectile_id    = htonl(projectile_id);
     pkt.reason           = reason;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t target_id,
@@ -158,7 +159,7 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     pkt.healing             = htonl((uint32_t)healing);
     pkt.target_new_health   = htonl((uint32_t)target_new_hp);
     pkt.is_kill             = is_kill;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // ---------------------------------------------------------------------------
@@ -188,14 +189,14 @@ static void dq_flush(DeferredQueue* q) {
                 if (ds->xp.xp > 0) {
                     party_award_xp(ds->xp.killer_id, ds->xp.xp);
                 }
-                ActivePlayer* killer = player_find_active(ds->xp.killer_id);
-                if (killer) {
-                    if (ds->xp.gold > 0) {
-                        player_award_gold(killer, ds->xp.gold);
-                    }
-                    if (ds->xp.xp > 0 || ds->xp.gold > 0) {
-                        player_send_kill_reward(ds->xp.client_fd, killer,
+                if (ds->xp.gold > 0 || ds->xp.xp > 0) {
+                    ActivePlayer* killer = player_acquire(ds->xp.killer_id);
+                    if (killer) {
+                        if (ds->xp.gold > 0)
+                            player_award_gold_locked(killer, ds->xp.gold);
+                        player_send_kill_reward_locked(ds->xp.client_fd, killer,
                             (uint32_t)ds->xp.xp, ds->xp.gold);
+                        player_release(killer);
                     }
                 }
                 break;
@@ -473,9 +474,7 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                 float hit_range = (proj->width / 2.0f) + npc->hitbox_radius;
 
                 if (d <= hit_range) {
-                    // Look up owner fresh
-                    ActivePlayer* owner = player_find_active(proj->owner_id);
-                    int owner_fd = owner ? owner->client_fd : -1;
+                    int owner_fd = proj->owner_fd;
 
                     // Evasion check
                     if (combat_check_evasion(npc->evasion)) {
@@ -717,7 +716,7 @@ void projectile_broadcast(void) {
             size_t send_size = sizeof(PacketHeader) + 4 +
                                pkt.count * sizeof(ProjectilePositionData);
             pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-            send(snapshots[s].client_fd, &pkt, send_size, 0);
+            server_send(snapshots[s].client_fd, &pkt, send_size);
         }
     }
 }

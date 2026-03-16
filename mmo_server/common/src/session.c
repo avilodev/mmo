@@ -156,11 +156,6 @@ int session_validate(uint32_t account_id, const char* session_key) {
         int valid = (stored_len == SESSION_KEY_LENGTH && 
                      memcmp(reply->str, session_key, SESSION_KEY_LENGTH) == 0);
         
-        //printf("Session validate: Simple GET comparison result: %d (stored_len=%zu, expected=%d)\n",
-        //       valid, stored_len, SESSION_KEY_LENGTH);
-        //printf("Session validate: Stored key: %.32s\n", reply->str);
-        //printf("Session validate: Provided key: %.32s\n", session_key);
-        
         freeReplyObject(reply);
         pthread_mutex_unlock(&g_redis_lock);
         
@@ -173,18 +168,7 @@ int session_validate(uint32_t account_id, const char* session_key) {
     
     // Hash format validation
     size_t stored_len = reply->len;
-    printf("Session validate: Retrieved hash value, length=%zu, comparing...\n", stored_len);
-    printf("Session validate: Stored key: ");
-    for (size_t i = 0; i < (stored_len < 32 ? stored_len : 32); i++) {
-        printf("%c", reply->str[i]);
-    }
-    printf("\n");
-    printf("Session validate: Provided key: ");
-    for (size_t i = 0; i < 32; i++) {
-        printf("%c", session_key[i]);
-    }
-    printf("\n");
-    
+
     // Compare exactly 32 bytes (SESSION_KEY_LENGTH)
     int valid = (stored_len >= SESSION_KEY_LENGTH && 
                  memcmp(reply->str, session_key, SESSION_KEY_LENGTH) == 0);
@@ -213,11 +197,12 @@ int session_validate(uint32_t account_id, const char* session_key) {
     time_t now = time(NULL);
     if (now > expires_at) {
         printf("Session validate: Session expired (now=%ld, expires=%ld)\n", now, expires_at);
-        redisCommand(g_redis, "DEL %s", redis_key);
+        redisReply* del_reply = redisCommand(g_redis, "DEL %s", redis_key);
+        if (del_reply) freeReplyObject(del_reply);
         pthread_mutex_unlock(&g_redis_lock);
         return 0;
     }
-    
+
     // Refresh expiry
     reply = redisCommand(g_redis, "EXPIRE %s %d", redis_key, SESSION_EXPIRY_SECONDS);
     if (reply) freeReplyObject(reply);
@@ -275,7 +260,8 @@ void session_cleanup_expired(void) {
             time_t expires_at = atol(exp_reply->str);
             
             if (now > expires_at) {
-                redisCommand(g_redis, "DEL %s", key);
+                redisReply* del_r = redisCommand(g_redis, "DEL %s", key);
+                if (del_r) freeReplyObject(del_r);
                 expired_count++;
             }
         }
@@ -437,6 +423,59 @@ int store_game_ticket_in_redis(const char* key, const char* value, int expiry_se
     pthread_mutex_unlock(&g_redis_lock);
     return success;
 }
+
+// ---------------------------------------------------------------------------
+// Stage 1 → Stage 2 auth token management
+// ---------------------------------------------------------------------------
+
+int auth_token_store(const char* token, uint32_t player_id) {
+    if (!g_redis || !token) return 0;
+
+    char key[80];
+    snprintf(key, sizeof(key), "auth_token:%.32s", token);
+
+    char value[32];
+    snprintf(value, sizeof(value), "%u", player_id);
+
+    pthread_mutex_lock(&g_redis_lock);
+    redisReply* reply = redisCommand(g_redis, "SETEX %s 60 %s", key, value);
+    int ok = (reply && reply->type == REDIS_REPLY_STATUS &&
+              strcmp(reply->str, "OK") == 0);
+    if (reply) freeReplyObject(reply);
+    pthread_mutex_unlock(&g_redis_lock);
+
+    return ok;
+}
+
+uint32_t auth_token_consume(const char* token) {
+    if (!g_redis || !token) return 0;
+
+    char key[80];
+    snprintf(key, sizeof(key), "auth_token:%.32s", token);
+
+    pthread_mutex_lock(&g_redis_lock);
+
+    // Fetch the player_id stored under this token
+    redisReply* reply = redisCommand(g_redis, "GET %s", key);
+    if (!reply || reply->type != REDIS_REPLY_STRING) {
+        if (reply) freeReplyObject(reply);
+        pthread_mutex_unlock(&g_redis_lock);
+        return 0;
+    }
+
+    uint32_t player_id = (uint32_t)strtoul(reply->str, NULL, 10);
+    freeReplyObject(reply);
+
+    // Delete immediately — single-use token
+    reply = redisCommand(g_redis, "DEL %s", key);
+    if (reply) freeReplyObject(reply);
+
+    pthread_mutex_unlock(&g_redis_lock);
+
+    return player_id;
+}
+
+// ---------------------------------------------------------------------------
 
 int validate_game_ticket(const char* ticket, uint32_t* out_account_id, uint32_t* out_character_id, uint32_t* out_world_id) {
     if (!g_redis || !ticket) return 0;

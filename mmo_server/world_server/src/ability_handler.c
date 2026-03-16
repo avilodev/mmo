@@ -20,6 +20,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <time.h>
+#include "utils.h"
 
 // ---------------------------------------------------------------------------
 // Extern references
@@ -110,7 +111,7 @@ static void send_ability_cast_cancel(int client_fd, uint32_t caster_id,
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
     pkt.reason           = reason;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // send_ability_cast_start - MISSING payload_size
@@ -128,7 +129,7 @@ static void send_ability_cast_start(int client_fd, uint32_t caster_id,
     pkt.origin_y         = oy;
     pkt.aim_x            = ax;
     pkt.aim_y            = ay;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // send_ability_effect - MISSING payload_size
@@ -146,7 +147,7 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     pkt.healing             = htonl((uint32_t)healing);
     pkt.target_new_health   = htonl((uint32_t)target_new_hp);
     pkt.is_kill             = is_kill;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // send_status_effect_apply - MISSING payload_size
@@ -162,7 +163,7 @@ static void send_status_effect_apply(int client_fd, uint32_t target_id,
     pkt.value            = htonl((uint32_t)value);
     pkt.duration         = duration;
     pkt.source_id        = htonl(source_id);
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // send_mana_update - MISSING payload_size
@@ -174,7 +175,7 @@ static void send_mana_update(int client_fd, uint32_t player_id,
     pkt.header.payload_size = htons(sizeof(ManaUpdatePacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.mana             = htonl((uint32_t)mana);
     pkt.max_mana         = htonl((uint32_t)max_mana);
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // send_spawn_zone - MISSING payload_size
@@ -193,7 +194,7 @@ static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
     pkt.duration         = duration;
     pkt.radius           = radius;
     pkt.has_collision     = has_collision;
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // send_remove_zone - MISSING payload_size
@@ -203,7 +204,7 @@ static void send_remove_zone(int client_fd, uint32_t zone_id) {
     pkt.header.player_id = 0;
     pkt.header.payload_size = htons(sizeof(RemoveZonePacket) - sizeof(PacketHeader)); // ADD THIS
     pkt.zone_id          = htonl(zone_id);
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 // ---------------------------------------------------------------------------
@@ -317,16 +318,15 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
     info.bonus_damage = ability->bonus_damage;
 
     // Snapshot caster stats
-    ActivePlayer* caster = player_find_active(caster_id);
+    ActivePlayer* caster = player_acquire(caster_id);
     if (caster) {
-        pthread_mutex_lock(&caster->lock);
         info.caster_strength     = caster->strength;
         info.caster_agility      = caster->agility;
         info.caster_intelligence = caster->intelligence;
         info.caster_wisdom       = caster->wisdom;
         info.caster_class        = caster->player_class;
         info.damage             += caster->weapon_damage;
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
     }
 
     info.effect_count = ability->effect_count;
@@ -409,35 +409,36 @@ void ability_handle_cast_intent(NPCWorld* world,
         return;
     }
 
-    ActivePlayer* caster = player_find_active(caster_id);
+    ActivePlayer* caster = player_acquire(caster_id);
     if (!caster) return;
 
     int player_slot = find_player_slot(caster_id);
-    if (player_slot < 0) return;
-
-    pthread_mutex_lock(&caster->lock);
+    if (player_slot < 0) {
+        player_release(caster);
+        return;
+    }
 
     if (ability->class_id != caster->player_class) {
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
     }
 
     if (caster->level < ability->unlock_level) {
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
     }
 
     int ability_slot = -1;
     if (!player_has_ability(caster, ability_id, &ability_slot)) {
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
     }
 
     if (caster->ability_cooldowns[ability_slot] > 0.0f) {
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
     }
@@ -445,14 +446,14 @@ void ability_handle_cast_intent(NPCWorld* world,
     pthread_mutex_lock(&g_ability_casts_lock);
     if (g_ability_casts[player_slot].is_active) {
         pthread_mutex_unlock(&g_ability_casts_lock);
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 2);
         return;
     }
 
     if (ability->mana_cost > 0 && caster->mana < ability->mana_cost) {
         pthread_mutex_unlock(&g_ability_casts_lock);
-        pthread_mutex_unlock(&caster->lock);
+        player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
     }
@@ -468,7 +469,7 @@ void ability_handle_cast_intent(NPCWorld* world,
     // Mark combat time for HP regen suppression
     caster->last_combat_time = get_time();
 
-    pthread_mutex_unlock(&caster->lock);
+    player_release(caster);
 
     PendingAbilityCast* cast = &g_ability_casts[player_slot];
     cast->is_active       = 1;
@@ -509,13 +510,12 @@ void ability_handle_cast_cancel(int client_fd, uint32_t caster_id) {
 
         const AbilityDef* ability = ability_get(ability_id);
         if (ability && ability->mana_cost > 0) {
-            ActivePlayer* caster = player_find_active(caster_id);
+            ActivePlayer* caster = player_acquire(caster_id);
             if (caster) {
-                pthread_mutex_lock(&caster->lock);
                 caster->mana += ability->mana_cost;
                 if (caster->mana > caster->max_mana) caster->mana = caster->max_mana;
                 send_mana_update(client_fd, caster_id, caster->mana, caster->max_mana);
-                pthread_mutex_unlock(&caster->lock);
+                player_release(caster);
             }
         }
 
@@ -546,47 +546,48 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     // Snapshot caster stats
     int c_str = 0, c_agi = 0, c_int = 0, c_wis = 0, c_wpn = 0;
     uint8_t c_class = 1;
-
-    ActivePlayer* caster = player_find_active(caster_id);
-    if (caster) {
-        pthread_mutex_lock(&caster->lock);
-        int ability_slot = -1;
-        if (player_has_ability(caster, cast->ability_id, &ability_slot)) {
-            caster->ability_cooldowns[ability_slot] = ability->cooldown;
-        }
-        c_str   = caster->strength;
-        c_agi   = caster->agility;
-        c_int   = caster->intelligence;
-        c_wis   = caster->wisdom;
-        c_wpn   = caster->weapon_damage;
-        c_class = caster->player_class;
-        caster->last_combat_time = get_time();
-        pthread_mutex_unlock(&caster->lock);
-    }
+    int caster_found = 0;
 
     // --- Movement abilities ---
     float dash_start_x = origin_x;
     float dash_start_y = origin_y;
     int had_movement = 0;
 
-    if (ability->movement.type != MOVEMENT_NONE && caster) {
-        pthread_mutex_lock(&caster->lock);
-        float dx = aim_x - caster->pos_x;
-        float dy = aim_y - caster->pos_y;
-        float len = sqrtf(dx * dx + dy * dy);
-        if (len > 0.001f) {
-            float move_dist = ability->movement.distance;
-            if (len < move_dist) move_dist = len;
-            dash_start_x = caster->pos_x;
-            dash_start_y = caster->pos_y;
-            caster->pos_x += (dx / len) * move_dist;
-            caster->pos_y += (dy / len) * move_dist;
-            caster->is_dirty = 1;
-            origin_x = caster->pos_x;
-            origin_y = caster->pos_y;
-            had_movement = 1;
+    {
+        ActivePlayer* caster = player_acquire(caster_id);
+        if (caster) {
+            caster_found = 1;
+            int ability_slot = -1;
+            if (player_has_ability(caster, cast->ability_id, &ability_slot)) {
+                caster->ability_cooldowns[ability_slot] = ability->cooldown;
+            }
+            c_str   = caster->strength;
+            c_agi   = caster->agility;
+            c_int   = caster->intelligence;
+            c_wis   = caster->wisdom;
+            c_wpn   = caster->weapon_damage;
+            c_class = caster->player_class;
+            caster->last_combat_time = get_time();
+
+            if (ability->movement.type != MOVEMENT_NONE) {
+                float dx = aim_x - caster->pos_x;
+                float dy = aim_y - caster->pos_y;
+                float len = sqrtf(dx * dx + dy * dy);
+                if (len > 0.001f) {
+                    float move_dist = ability->movement.distance;
+                    if (len < move_dist) move_dist = len;
+                    dash_start_x = caster->pos_x;
+                    dash_start_y = caster->pos_y;
+                    caster->pos_x += (dx / len) * move_dist;
+                    caster->pos_y += (dy / len) * move_dist;
+                    caster->is_dirty = 1;
+                    origin_x = caster->pos_x;
+                    origin_y = caster->pos_y;
+                    had_movement = 1;
+                }
+            }
+            player_release(caster);
         }
-        pthread_mutex_unlock(&caster->lock);
     }
 
     // --- Projectile abilities ---
@@ -607,17 +608,19 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     // --- Self-buff abilities ---
     if (ability->range == 0.0f && ability->damage == 0 &&
         ability->effect_count > 0 && ability->spawn.type == SPAWN_NONE) {
-        if (caster) {
-            pthread_mutex_lock(&caster->lock);
-            for (int e = 0; e < ability->effect_count; e++) {
-                apply_effect_to_player(caster, &ability->effects[e], caster_id);
-                send_status_effect_apply(client_fd, caster_id,
-                                         (uint8_t)ability->effects[e].type,
-                                         ability->effects[e].value,
-                                         ability->effects[e].duration,
-                                         caster_id);
+        if (caster_found) {
+            ActivePlayer* p = player_acquire(caster_id);
+            if (p) {
+                for (int e = 0; e < ability->effect_count; e++) {
+                    apply_effect_to_player(p, &ability->effects[e], caster_id);
+                    send_status_effect_apply(client_fd, caster_id,
+                                             (uint8_t)ability->effects[e].type,
+                                             ability->effects[e].value,
+                                             ability->effects[e].duration,
+                                             caster_id);
+                }
+                player_release(p);
             }
-            pthread_mutex_unlock(&caster->lock);
         }
         cast->is_active = 0;
         return;
@@ -626,9 +629,8 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     // --- Ally healing (unchanged) ---
     if (ability->target_type == ABILITY_TARGET_ALLY && ability->healing > 0) {
         if (cast->target_id != 0) {
-            ActivePlayer* target = player_find_active(cast->target_id);
+            ActivePlayer* target = player_acquire(cast->target_id);
             if (target) {
-                pthread_mutex_lock(&target->lock);
                 float d = dist2d(origin_x, origin_y, target->pos_x, target->pos_y);
                 if (d <= ability->range || ability->range == 0.0f) {
                     // Healing scales with wisdom
@@ -652,7 +654,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                                                  caster_id);
                     }
                 }
-                pthread_mutex_unlock(&target->lock);
+                player_release(target);
             }
         } else if (ability->aoe.shape != ABILITY_AOE_NONE) {
             int heal_bonus = c_wis / 3;
@@ -834,17 +836,14 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                 if (hits[h].xp_reward > 0) {
                     party_award_xp(caster_id, hits[h].xp_reward);
                 }
-                if (hits[h].gold_reward > 0) {
-                    ActivePlayer* killer = player_find_active(caster_id);
+                if (hits[h].gold_reward > 0 || hits[h].xp_reward > 0) {
+                    ActivePlayer* killer = player_acquire(caster_id);
                     if (killer) {
-                        player_award_gold(killer, hits[h].gold_reward);
-                    }
-                }
-                if (hits[h].xp_reward > 0 || hits[h].gold_reward > 0) {
-                    ActivePlayer* killer = player_find_active(caster_id);
-                    if (killer) {
-                        player_send_kill_reward(client_fd, killer,
+                        if (hits[h].gold_reward > 0)
+                            player_award_gold_locked(killer, hits[h].gold_reward);
+                        player_send_kill_reward_locked(client_fd, killer,
                             (uint32_t)hits[h].xp_reward, hits[h].gold_reward);
+                        player_release(killer);
                     }
                 }
                 loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, caster_id);
@@ -855,11 +854,11 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     // --- Self-buff on damage abilities ---
     if (ability->aoe.shape != ABILITY_AOE_NONE && ability->effect_count > 0 &&
         ability->target_type == ABILITY_TARGET_ENEMY) {
-        if (caster) {
-            pthread_mutex_lock(&caster->lock);
+        ActivePlayer* p = player_acquire(caster_id);
+        if (p) {
             for (int e = 0; e < ability->effect_count; e++) {
                 if (ability->effects[e].type == EFFECT_BUFF) {
-                    apply_effect_to_player(caster, &ability->effects[e], caster_id);
+                    apply_effect_to_player(p, &ability->effects[e], caster_id);
                     send_status_effect_apply(client_fd, caster_id,
                                              (uint8_t)ability->effects[e].type,
                                              ability->effects[e].value,
@@ -867,7 +866,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                                              caster_id);
                 }
             }
-            pthread_mutex_unlock(&caster->lock);
+            player_release(p);
         }
     }
 
@@ -934,7 +933,7 @@ void ability_tick(NPCWorld* world, double delta_time) {
                 pkt.header.payload_size = htons(sizeof(StatusEffectRemovePacket) - sizeof(PacketHeader));
                 pkt.target_id        = htonl(active_players[i].character_id);
                 pkt.effect_type      = active_players[i].active_effects[e].effect_type;
-                send(active_players[i].client_fd, &pkt, sizeof(pkt), 0);
+                server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
                 continue;
             }
 

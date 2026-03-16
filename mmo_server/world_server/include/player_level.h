@@ -10,4 +10,10 @@ void player_award_gold(ActivePlayer* player, uint32_t amount);
 void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold);
 void player_send_stats(int client_fd, ActivePlayer* player);
 
+// _locked variants: caller already holds player->lock
+void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount);
+void player_award_gold_locked(ActivePlayer* player, uint32_t amount);
+void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold);
+void player_send_stats_locked(int client_fd, ActivePlayer* player);
+
 #endif

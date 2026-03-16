@@ -16,6 +16,7 @@
 #include <math.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include "utils.h"
 
 // External references
 extern NPCWorld g_npc_world;
@@ -31,24 +32,42 @@ static float dist2d(float x1, float y1, float x2, float y2) {
     return sqrtf(dx * dx + dy * dy);
 }
 
-// Find NPC by ID
-static NPCEntity* find_npc(uint32_t npc_id) {
+// Snapshot of NPC data copied under the world lock — avoids holding the lock
+// after the function returns and prevents use-after-free of NPC array entries.
+typedef struct {
+    uint32_t id;
+    float    pos_x, pos_y;
+    uint32_t dialogue_id;
+    uint8_t  is_interactable;
+    char     name[32];
+} NPCSnapshot;
+
+// Returns 1 and populates *out if the NPC is found and alive; 0 otherwise.
+static int find_npc_snapshot(uint32_t npc_id, NPCSnapshot* out) {
     pthread_mutex_lock(&g_npc_world.lock);
 
     for (int i = 0; i < MAX_NPCS; i++) {
-        if (g_npc_world.npcs[i].id == npc_id && g_npc_world.npcs[i].is_alive) {
+        const NPCEntity* npc = &g_npc_world.npcs[i];
+        if (npc->id == npc_id && npc->is_alive) {
+            out->id             = npc->id;
+            out->pos_x          = npc->pos_x;
+            out->pos_y          = npc->pos_y;
+            out->dialogue_id    = npc->dialogue_id;
+            out->is_interactable = npc->is_interactable;
+            strncpy(out->name, npc->name, sizeof(out->name) - 1);
+            out->name[sizeof(out->name) - 1] = '\0';
             pthread_mutex_unlock(&g_npc_world.lock);
-            return &g_npc_world.npcs[i];
+            return 1;
         }
     }
 
     pthread_mutex_unlock(&g_npc_world.lock);
-    return NULL;
+    return 0;
 }
 
 // Send packet helper
 static void send_packet(int client_fd, void* packet, size_t size) {
-    send(client_fd, packet, size, 0);
+    server_send(client_fd, packet, size);
 }
 
 // ---------------------------------------------------------------------------
@@ -67,28 +86,34 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
 
     printf("[DIALOGUE] Player %u interacting with NPC %u\n", character_id, npc_id);
 
-    // Find player
-    ActivePlayer* player = player_find_active(character_id);
-    if (!player) {
-        printf("[DIALOGUE] Player %u not found\n", character_id);
-        return;
+    // Find player — snapshot position under lock
+    float player_x = 0, player_y = 0;
+    {
+        ActivePlayer* player = player_acquire(character_id);
+        if (!player) {
+            printf("[DIALOGUE] Player %u not found\n", character_id);
+            return;
+        }
+        player_x = player->pos_x;
+        player_y = player->pos_y;
+        player_release(player);
     }
 
-    // Find NPC
-    NPCEntity* npc = find_npc(npc_id);
-    if (!npc) {
+    // Snapshot NPC data under world lock — safe to use after the call
+    NPCSnapshot npc;
+    if (!find_npc_snapshot(npc_id, &npc)) {
         printf("[DIALOGUE] NPC %u not found\n", npc_id);
         return;
     }
 
     // Validate NPC has dialogue
-    if (npc->dialogue_id == 0 || !npc->is_interactable) {
+    if (npc.dialogue_id == 0 || !npc.is_interactable) {
         printf("[DIALOGUE] NPC %u is not interactable\n", npc_id);
         return;
     }
 
     // Calculate distance
-    float distance = dist2d(player->pos_x, player->pos_y, npc->pos_x, npc->pos_y);
+    float distance = dist2d(player_x, player_y, npc.pos_x, npc.pos_y);
     if (distance > 100.0f) {
         printf("[DIALOGUE] Player %u too far from NPC %u (%.1f units)\n",
                character_id, npc_id, distance);
@@ -96,19 +121,19 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
     }
 
     // Get dialogue definition
-    const DialogueDef* dialogue = dialogue_get(npc->dialogue_id);
+    const DialogueDef* dialogue = dialogue_get(npc.dialogue_id);
     if (!dialogue) {
-        printf("[DIALOGUE] Dialogue %u not found\n", npc->dialogue_id);
+        printf("[DIALOGUE] Dialogue %u not found\n", npc.dialogue_id);
         return;
     }
 
     if (dialogue->page_count == 0) {
-        printf("[DIALOGUE] Dialogue %u has no pages\n", npc->dialogue_id);
+        printf("[DIALOGUE] Dialogue %u has no pages\n", npc.dialogue_id);
         return;
     }
 
     // Create dialogue session
-    DialogueSession* session = dialogue_session_create(character_id, npc_id, npc->dialogue_id);
+    DialogueSession* session = dialogue_session_create(character_id, npc_id, npc.dialogue_id);
     if (!session) {
         printf("[DIALOGUE] Failed to create session\n");
         return;
@@ -126,11 +151,11 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
     response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
 
     response.npc_id = htonl(npc_id);
-    response.dialogue_id = htonl(npc->dialogue_id);
+    response.dialogue_id = htonl(npc.dialogue_id);
     response.page_num = 0;
     response.option_count = page->option_count;
 
-    strncpy(response.npc_name, npc->name, sizeof(response.npc_name) - 1);
+    strncpy(response.npc_name, npc.name, sizeof(response.npc_name) - 1);
 
     // Send only option IDs - client looks up text locally
     for (int i = 0; i < page->option_count && i < MAX_DIALOGUE_OPTIONS; i++) {
@@ -140,7 +165,7 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
     send_packet(client_fd, &response, sizeof(response));
 
     printf("[DIALOGUE] Sent dialogue response to player %u (dialogue %u, page 0)\n",
-           character_id, npc->dialogue_id);
+           character_id, npc.dialogue_id);
 }
 
 void handle_dialogue_option_select(int client_fd, uint32_t character_id,
@@ -173,17 +198,27 @@ void handle_dialogue_option_select(int client_fd, uint32_t character_id,
         return;
     }
 
-    // Find player and NPC for distance check
-    ActivePlayer* player = player_find_active(character_id);
-    NPCEntity* npc = find_npc(npc_id);
+    // Find player and NPC for distance check — snapshot position under lock
+    float player_x = 0, player_y = 0;
+    {
+        ActivePlayer* player = player_acquire(character_id);
+        if (!player) {
+            dialogue_session_close(character_id);
+            return;
+        }
+        player_x = player->pos_x;
+        player_y = player->pos_y;
+        player_release(player);
+    }
 
-    if (!player || !npc) {
+    NPCSnapshot npc;
+    if (!find_npc_snapshot(npc_id, &npc)) {
         dialogue_session_close(character_id);
         return;
     }
 
     // Re-check distance (anti-exploit)
-    float distance = dist2d(player->pos_x, player->pos_y, npc->pos_x, npc->pos_y);
+    float distance = dist2d(player_x, player_y, npc.pos_x, npc.pos_y);
     if (distance > 100.0f) {
         printf("[DIALOGUE] Player %u moved too far from NPC %u\n", character_id, npc_id);
         dialogue_session_close(character_id);

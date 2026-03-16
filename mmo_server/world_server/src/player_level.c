@@ -3,6 +3,7 @@
 #include "class_stats.h"
 #include "ability_def.h"
 #include "items_database.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -154,9 +155,75 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
         pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
 
         pthread_mutex_unlock(&player->lock);
-        send(fd, &pkt, sizeof(pkt), 0);
+        server_send(fd, &pkt, sizeof(pkt));
     } else {
         pthread_mutex_unlock(&player->lock);
+    }
+}
+
+void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
+    if (!player || xp_amount == 0) return;
+
+    int old_level = player->level;
+    player->experience += xp_amount;
+    player->is_dirty = 1;
+
+    int new_level = class_stats_check_level(player->level, player->experience);
+
+    if (new_level > old_level) {
+        player->level = new_level;
+        player_apply_equipment_bonuses(player);
+
+        player->health = player->max_health;
+        player->mana   = player->max_mana;
+
+        printf("[LEVEL] Player %u (%s) leveled up: %d -> %d (HP=%d, Mana=%d)\n",
+               player->character_id, player->username,
+               old_level, new_level,
+               player->max_health, player->max_mana);
+
+        {
+            uint16_t class_abilities[10];
+            int total = ability_get_class_abilities(player->player_class,
+                                                     class_abilities, 10);
+            player->ability_count = 0;
+            memset(player->ability_cooldowns, 0, sizeof(player->ability_cooldowns));
+            for (int a = 0; a < total && player->ability_count < 5; a++) {
+                const AbilityDef* ab = ability_get(class_abilities[a]);
+                if (ab && player->level >= ab->unlock_level) {
+                    player->ability_slots[player->ability_count] = ab->id;
+                    player->ability_cooldowns[player->ability_count] = 0.0f;
+                    player->ability_count++;
+                }
+            }
+            printf("[LEVEL] Player %u abilities reassigned: %d abilities at level %d\n",
+                   player->character_id, player->ability_count, player->level);
+        }
+
+        int fd = player->client_fd;
+
+        LevelUpPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type         = PACKET_LEVEL_UP;
+        pkt.header.player_id    = htonl(player->character_id);
+        pkt.header.payload_size = htons(sizeof(LevelUpPacket) - sizeof(PacketHeader));
+        pkt.new_level           = htonl(player->level);
+        pkt.new_max_health      = htonl(player->max_health);
+        pkt.new_max_mana        = htonl(player->max_mana);
+        pkt.new_health          = htonl(player->health);
+        pkt.new_mana            = htonl(player->mana);
+        pkt.strength            = htonl(player->strength);
+        pkt.agility             = htonl(player->agility);
+        pkt.intelligence        = htonl(player->intelligence);
+        pkt.wisdom              = htonl(player->wisdom);
+        pkt.defense             = htonl(player->defense);
+        pkt.evasion             = htonl(player->evasion);
+        pkt.vitality            = htonl(player->vitality);
+        pkt.luck                = htonl(player->luck);
+        pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
+
+        // Lock still held by caller — send while holding is fine (non-blocking MSG_NOSIGNAL)
+        server_send(fd, &pkt, sizeof(pkt));
     }
 }
 
@@ -167,6 +234,12 @@ void player_award_gold(ActivePlayer* player, uint32_t amount) {
     player->gold += amount;
     player->is_dirty = 1;
     pthread_mutex_unlock(&player->lock);
+}
+
+void player_award_gold_locked(ActivePlayer* player, uint32_t amount) {
+    if (!player || amount == 0) return;
+    player->gold += amount;
+    player->is_dirty = 1;
 }
 
 void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
@@ -185,7 +258,23 @@ void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, u
     pkt.total_gold          = htonl(player->gold);
 
     pthread_mutex_unlock(&player->lock);
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
+}
+
+void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
+    if (!player) return;
+
+    KillRewardPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type         = PACKET_KILL_REWARD;
+    pkt.header.player_id    = htonl(player->character_id);
+    pkt.header.payload_size = htons(sizeof(KillRewardPacket) - sizeof(PacketHeader));
+    pkt.xp_gained           = htonl(xp);
+    pkt.gold_gained         = htonl(gold);
+    pkt.total_xp            = htonll(player->experience);
+    pkt.total_gold          = htonl(player->gold);
+
+    server_send(client_fd, &pkt, sizeof(pkt));
 }
 
 void player_send_stats(int client_fd, ActivePlayer* player) {
@@ -216,5 +305,32 @@ void player_send_stats(int client_fd, ActivePlayer* player) {
 
     pthread_mutex_unlock(&player->lock);
 
-    send(client_fd, &pkt, sizeof(pkt), 0);
+    server_send(client_fd, &pkt, sizeof(pkt));
+}
+
+void player_send_stats_locked(int client_fd, ActivePlayer* player) {
+    if (!player) return;
+
+    PlayerStatsPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type         = PACKET_PLAYER_STATS;
+    pkt.header.player_id    = htonl(player->character_id);
+    pkt.header.payload_size = htons(sizeof(PlayerStatsPacket) - sizeof(PacketHeader));
+    pkt.strength            = htonl(player->strength);
+    pkt.agility             = htonl(player->agility);
+    pkt.intelligence        = htonl(player->intelligence);
+    pkt.wisdom              = htonl(player->wisdom);
+    pkt.defense             = htonl(player->defense);
+    pkt.evasion             = htonl(player->evasion);
+    pkt.vitality            = htonl(player->vitality);
+    pkt.luck                = htonl(player->luck);
+    pkt.max_health          = htonl(player->max_health);
+    pkt.max_mana            = htonl(player->max_mana);
+    pkt.current_health      = htonl(player->health);
+    pkt.current_mana        = htonl(player->mana);
+    pkt.move_speed          = player->move_speed;
+    pkt.weapon_damage       = htonl(player->weapon_damage);
+    pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
+
+    server_send(client_fd, &pkt, sizeof(pkt));
 }

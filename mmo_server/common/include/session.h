@@ -51,4 +51,9 @@ void session_clear_cached_state(uint32_t player_id);
 int store_game_ticket_in_redis(const char* key, const char* value, int expiry_seconds);
 int validate_game_ticket(const char* game_ticket, uint32_t* out_account_id, uint32_t* out_character_id, uint32_t* out_world_id);
 
+// Stage 1 → Stage 2 auth token (one-time, 60s TTL)
+// token must be a null-terminated 32-char alphanumeric string (from generate_session_key)
+int     auth_token_store(const char* token, uint32_t player_id);
+uint32_t auth_token_consume(const char* token);
+
 #endif

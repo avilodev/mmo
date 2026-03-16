@@ -15,6 +15,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include "utils.h"
 
 // ---------------------------------------------------------------------------
 // Extern references
@@ -116,6 +117,10 @@ static int parse_loot_tables(const char* json) {
     // Extract the array content
     int arr_len = (int)(arr_end - arr_start + 1);
     char* arr_json = malloc(arr_len + 1);
+    if (!arr_json) {
+        fprintf(stderr, "[LOOT] malloc failed while parsing loot_tables\n");
+        return 0;
+    }
     memcpy(arr_json, arr_start, arr_len);
     arr_json[arr_len] = '\0';
 
@@ -131,6 +136,11 @@ static int parse_loot_tables(const char* json) {
 
         int obj_len = (int)(obj_end - pos + 1);
         char* obj = malloc(obj_len + 1);
+        if (!obj) {
+            fprintf(stderr, "[LOOT] malloc failed while parsing loot table object\n");
+            free(arr_json);
+            return 0;
+        }
         memcpy(obj, pos, obj_len);
         obj[obj_len] = '\0';
 
@@ -161,6 +171,12 @@ static int parse_loot_tables(const char* json) {
 
                         int de_len = (int)(de - dp + 1);
                         char* drop_obj = malloc(de_len + 1);
+                        if (!drop_obj) {
+                            fprintf(stderr, "[LOOT] malloc failed while parsing drop entry\n");
+                            free(obj);
+                            free(arr_json);
+                            return 0;
+                        }
                         memcpy(drop_obj, dp, de_len);
                         drop_obj[de_len] = '\0';
 
@@ -346,7 +362,7 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
             pkt.pos_y = pending[p].pos_y;
 
             for (int f = 0; f < fd_count; f++) {
-                send(fds[f].fd, &pkt, sizeof(pkt), 0);
+                server_send(fds[f].fd, &pkt, sizeof(pkt));
             }
         }
     }
@@ -404,7 +420,7 @@ uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, ui
         float dx = active_players[i].pos_x - x;
         float dy = active_players[i].pos_y - y;
         if (dx * dx + dy * dy <= 500.0f * 500.0f) {
-            send(active_players[i].client_fd, &pkt, sizeof(pkt), 0);
+            server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
         }
     }
     pthread_mutex_unlock(&active_players_lock);
@@ -457,7 +473,7 @@ int loot_try_pickup(uint32_t ground_item_id, uint32_t player_id,
         pthread_mutex_lock(&active_players_lock);
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (!active_players[i].is_loaded) continue;
-            send(active_players[i].client_fd, &pkt, sizeof(pkt), 0);
+            server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
         }
         pthread_mutex_unlock(&active_players_lock);
     }
@@ -499,7 +515,7 @@ void loot_tick(void) {
 
             for (int i = 0; i < MAX_PLAYERS; i++) {
                 if (!active_players[i].is_loaded) continue;
-                send(active_players[i].client_fd, &pkt, sizeof(pkt), 0);
+                server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
             }
         }
         pthread_mutex_unlock(&active_players_lock);
