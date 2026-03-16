@@ -153,6 +153,7 @@ int character_screen_check_close_button(const CharacterScreenState* char_screen,
 
 void character_screen_update(CharacterScreenState* char_screen, float mouse_x, float mouse_y,
                             int mouse_clicked, int mouse_down, int right_clicked) {
+    (void)right_clicked;
     if (!char_screen->is_open) {
         char_screen->hovered_slot = -1;
         char_screen->tooltip_visible = 0;

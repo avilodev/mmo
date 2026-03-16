@@ -49,7 +49,14 @@ void sp_draw_content(float px, float py, const GameSettings* s) {
     renderer_draw_text(px + 20.0f, ry + 14.0f, "DISPLAY");
     renderer_draw_rect(px + 95.0f, ry + 8.0f, pw - 115.0f, 1.0f, 0.25f, 0.35f, 0.50f, 0.6f);
     ry += SP_ROW;
-    sp_draw_checkbox(px, ry, "Show FPS", s->show_fps);
+    sp_draw_checkbox(px, ry, "Show FPS",   s->show_fps);    ry += SP_ROW;
+    sp_draw_checkbox(px, ry, "Fullscreen", s->fullscreen);  ry += SP_ROW;
+    sp_draw_slider(px, ry, "UI Scale", (s->ui_scale - 0.75f) / 0.75f,
+                   0.60f, 0.75f, 0.40f);
+    // Show the actual scale value next to the percentage label
+    char scl[16];
+    snprintf(scl, sizeof(scl), " (%.2fx)", s->ui_scale);
+    renderer_draw_text(px + SP_SX + SP_SW + 46.0f, ry + SP_ROW - 10.0f, scl);
 }
 
 int sp_handle_mouse(float px, float py, float mx, float my,
@@ -71,12 +78,34 @@ int sp_handle_mouse(float px, float py, float mx, float my,
         }
     }
 
+    // Display section top row (Show FPS)
+    float disp_row = audio_start + SP_ROW * 3.0f + 18.0f + SP_ROW;
+
+    if (held) {
+        // UI Scale slider (disp_row + SP_ROW * 2)
+        float uiry = disp_row + SP_ROW * 2.0f;
+        float sy = uiry + (SP_ROW - SP_SH) * 0.5f;
+        if (mx >= sx && mx <= sx + SP_SW && my >= sy && my <= sy + SP_SH) {
+            float v = (mx - sx) / SP_SW;
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            s->ui_scale = 0.75f + v * 0.75f;
+        }
+    }
+
     if (clicked) {
-        float disp_row = audio_start + SP_ROW * 3.0f + 18.0f + SP_ROW;
+        // Show FPS checkbox
         float bx = px + SP_SX, by = disp_row + (SP_ROW - 18.0f) * 0.5f;
         if (mx >= bx && mx <= bx + 18.0f && my >= by && my <= by + 18.0f)
             s->show_fps = !s->show_fps;
 
+        // Fullscreen checkbox (disp_row + SP_ROW)
+        float fry = disp_row + SP_ROW;
+        float fbx = px + SP_SX, fby = fry + (SP_ROW - 18.0f) * 0.5f;
+        if (mx >= fbx && mx <= fbx + 18.0f && my >= fby && my <= fby + 18.0f)
+            s->fullscreen = !s->fullscreen;
+
+        // Close/Back button
         float bw = 140.0f, bh = 36.0f;
         float bx2 = px + (SP_PW - bw) * 0.5f;
         if (mx >= bx2 && mx <= bx2 + bw && my >= btn_y && my <= btn_y + bh)

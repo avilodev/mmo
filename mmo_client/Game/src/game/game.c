@@ -12,6 +12,7 @@
 #include "inventory.h"
 #include "character_screen.h"
 #include "audio/audio.h"
+#include "core/keybinds.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,8 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     game->settings.music_volume  = 0.5f;
     game->settings.sfx_volume    = 0.8f;
     game->settings.show_fps      = 0;
+    game->settings.fullscreen    = 0;
+    game->settings.ui_scale      = 1.0f;
     
     // Initialize subsystems
     input_init(&game->input);
@@ -65,6 +68,9 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
 
     // Load saved settings (overrides defaults if file exists)
     game_settings_load(&game->settings, SETTINGS_PATH);
+
+    // Load keybinds (overrides defaults if file exists)
+    keybinds_load("Game/data/keybinds.cfg");
 
     // Initialize audio and apply loaded settings
     audio_init();
@@ -238,6 +244,8 @@ void game_settings_save(const GameSettings* s, const char* path) {
     fprintf(f, "music_volume=%.4f\n",  s->music_volume);
     fprintf(f, "sfx_volume=%.4f\n",    s->sfx_volume);
     fprintf(f, "show_fps=%d\n",        s->show_fps);
+    fprintf(f, "fullscreen=%d\n",      s->fullscreen);
+    fprintf(f, "ui_scale=%.4f\n",      s->ui_scale);
     fclose(f);
     printf("[GAME] Settings saved to %s\n", path);
 }
@@ -256,6 +264,10 @@ void game_settings_load(GameSettings* s, const char* path) {
             s->sfx_volume    = (fval < 0.0f) ? 0.0f : (fval > 1.0f) ? 1.0f : fval;
         } else if (sscanf(line, "show_fps=%d", &ival) == 1) {
             s->show_fps = ival ? 1 : 0;
+        } else if (sscanf(line, "fullscreen=%d", &ival) == 1) {
+            s->fullscreen = ival ? 1 : 0;
+        } else if (sscanf(line, "ui_scale=%f", &fval) == 1) {
+            s->ui_scale = (fval < 0.75f) ? 0.75f : (fval > 1.5f) ? 1.5f : fval;
         }
         (void)key;
     }
@@ -263,8 +275,33 @@ void game_settings_load(GameSettings* s, const char* path) {
     printf("[GAME] Settings loaded from %s\n", path);
 }
 
+// Global window handle — defined here, declared extern in game.h
+GLFWwindow* g_window = NULL;
+
+// Saved windowed-mode geometry for restoring after fullscreen exit
+static int s_win_x = 100, s_win_y = 100, s_win_w = 1728, s_win_h = 972;
+
 void game_settings_apply(const GameSettings* s) {
     audio_set_master_volume(s->master_volume);
     audio_set_music_volume(s->music_volume);
     audio_set_sfx_volume(s->sfx_volume);
+
+    if (g_window) {
+        static int prev_fullscreen = -1;
+        if (s->fullscreen != prev_fullscreen) {
+            prev_fullscreen = s->fullscreen;
+            if (s->fullscreen) {
+                // Save current windowed geometry before going fullscreen
+                glfwGetWindowPos(g_window,  &s_win_x, &s_win_y);
+                glfwGetWindowSize(g_window, &s_win_w, &s_win_h);
+                GLFWmonitor* mon = glfwGetPrimaryMonitor();
+                const GLFWvidmode* vm = glfwGetVideoMode(mon);
+                glfwSetWindowMonitor(g_window, mon, 0, 0,
+                                     vm->width, vm->height, vm->refreshRate);
+            } else {
+                glfwSetWindowMonitor(g_window, NULL,
+                                     s_win_x, s_win_y, s_win_w, s_win_h, 0);
+            }
+        }
+    }
 }

@@ -199,6 +199,7 @@ int main(int argc, char* argv[]) {
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(0);  // Disable VSync
+    g_window = window;
     
     // Initialize renderer with CONSTANT viewport (1920x1080)
     renderer_init(GAME_VIEW_WIDTH, GAME_VIEW_HEIGHT);
@@ -278,6 +279,16 @@ int main(int argc, char* argv[]) {
             last_fps_print = glfwGetTime();
         }
         
+        // F11 — toggle fullscreen (global shortcut, any state)
+        static int prev_f11 = 0;
+        int cur_f11 = glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS;
+        if (cur_f11 && !prev_f11) {
+            game.settings.fullscreen = !game.settings.fullscreen;
+            game_settings_apply(&game.settings);
+            game_settings_save(&game.settings, SETTINGS_PATH);
+        }
+        prev_f11 = cur_f11;
+
         // === GAME LOOP ===
         game_handle_input(&game, window, delta_time);
         game_update(&game, delta_time);

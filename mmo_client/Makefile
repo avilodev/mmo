@@ -80,6 +80,7 @@ GAME_OBJECTS = \
     $(patsubst $(GAME_SRC_DIR)/%.c,$(GAME_OBJ_DIR)/%.o,$(wildcard $(GAME_SRC_DIR)/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/audio/%.c,$(GAME_OBJ_DIR)/audio_%.o,$(wildcard $(GAME_SRC_DIR)/audio/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/camera/%.c,$(GAME_OBJ_DIR)/camera_%.o,$(wildcard $(GAME_SRC_DIR)/camera/*.c)) \
+    $(patsubst $(GAME_SRC_DIR)/core/%.c,$(GAME_OBJ_DIR)/core_%.o,$(wildcard $(GAME_SRC_DIR)/core/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/combat/%.c,$(GAME_OBJ_DIR)/combat_%.o,$(wildcard $(GAME_SRC_DIR)/combat/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/game/%.c,$(GAME_OBJ_DIR)/game_%.o,$(wildcard $(GAME_SRC_DIR)/game/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/input/%.c,$(GAME_OBJ_DIR)/input_%.o,$(wildcard $(GAME_SRC_DIR)/input/*.c)) \

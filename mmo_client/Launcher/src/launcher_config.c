@@ -24,7 +24,7 @@ void launcher_config_load(void) {
     if (!slash) return;
     *slash = '\0';
 
-    char confPath[MAX_PATH];
+    char confPath[MAX_PATH + 16];   // +16 to safely append "\\server.conf"
     snprintf(confPath, sizeof(confPath), "%s\\server.conf", exePath);
 
     FILE* f = fopen(confPath, "r");

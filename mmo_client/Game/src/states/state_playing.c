@@ -17,6 +17,7 @@
 #include "ui/quest_log.h"
 #include "ui/settings_panel.h"
 #include "audio/audio.h"
+#include "core/keybinds.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -783,31 +784,45 @@ static void render_settings_overlay(GameState* game) {
     // Semi-transparent dim (lighter than pause so world is visible)
     renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.40f);
 
-    float px = (vw - SP_PW) * 0.5f;
-    float py = (vh - SP_PH) * 0.5f;
+    float scale = game->settings.ui_scale;
+    float pw = SP_PW * scale;
+    float ph = SP_PH * scale;
+    float px = (vw - pw) * 0.5f;
+    float py = (vh - ph) * 0.5f;
 
-    // Panel background
-    renderer_draw_rect(px, py, SP_PW, SP_PH, 0.10f, 0.10f, 0.16f, 0.97f);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glTranslatef(px, py, 0.0f);
+    glScalef(scale, scale, 1.0f);
+
+    // Panel background (in scaled space at 0,0)
+    renderer_draw_rect(0, 0, SP_PW, SP_PH, 0.10f, 0.10f, 0.16f, 0.97f);
     // Panel border
-    renderer_draw_rect(px,          py,          SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
-    renderer_draw_rect(px,          py+SP_PH-2,  SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
-    renderer_draw_rect(px,          py,          2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
-    renderer_draw_rect(px+SP_PW-2,  py,          2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(0,         0,         SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(0,         SP_PH-2,   SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(0,         0,         2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
+    renderer_draw_rect(SP_PW-2,   0,         2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
 
-    sp_draw_content(px, py, &game->settings);
+    sp_draw_content(0, 0, &game->settings);
 
     // Close button
     float btn_w = 140.0f, btn_h = 36.0f;
-    float btn_x = px + (SP_PW - btn_w) * 0.5f;
-    float btn_y = py + SP_PH - 54.0f;
-    int hov = input_mouse_in_rect(&game->input, btn_x, btn_y, btn_w, btn_h);
+    float btn_x = (SP_PW - btn_w) * 0.5f;
+    float btn_y = SP_PH - 54.0f;
+    // Inverse-transform mouse for hover detection
+    float rel_mx = (game->input.mouse_x - px) / scale;
+    float rel_my = (game->input.mouse_y - py) / scale;
+    int hov = (rel_mx >= btn_x && rel_mx <= btn_x + btn_w &&
+               rel_my >= btn_y && rel_my <= btn_y + btn_h);
     float bc = hov ? 0.30f : 0.18f;
     renderer_draw_rect(btn_x, btn_y, btn_w, btn_h, bc, bc, bc+0.12f, 0.95f);
-    renderer_draw_rect(btn_x, btn_y,         btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_rect(btn_x, btn_y+btn_h-1.5f, btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_rect(btn_x, btn_y,         1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_rect(btn_x+btn_w-1.5f, btn_y, 1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x,            btn_y,             btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x,            btn_y+btn_h-1.5f,  btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x,            btn_y,             1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
+    renderer_draw_rect(btn_x+btn_w-1.5f, btn_y,             1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
     renderer_draw_text(btn_x + btn_w*0.5f - 22.0f, btn_y+btn_h-10.0f, "Close");
+
+    glPopMatrix();
 }
 
 static void render_pause_overlay(GameState* game) {
@@ -984,17 +999,22 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
         float vw = (float)game->camera.viewport_width;
         float vh = (float)game->camera.viewport_height;
-        float px = (vw - SP_PW) * 0.5f;
-        float py = (vh - SP_PH) * 0.5f;
-        float btn_y = py + SP_PH - 54.0f;
-        int closed = sp_handle_mouse(px, py,
-                                     game->input.mouse_x, game->input.mouse_y,
+        float scale = game->settings.ui_scale;
+        float pw = SP_PW * scale;
+        float ph = SP_PH * scale;
+        float px = (vw - pw) * 0.5f;
+        float py = (vh - ph) * 0.5f;
+        float rel_mx = (game->input.mouse_x - px) / scale;
+        float rel_my = (game->input.mouse_y - py) / scale;
+        float btn_y = SP_PH - 54.0f;
+        int closed = sp_handle_mouse(0, 0,
+                                     rel_mx, rel_my,
                                      game->input.mouse_left_clicked,
                                      game->input.mouse_left_down,
                                      &game->settings, btn_y);
         if (closed) {
             game->show_settings = 0;
-            game_settings_save(&game->settings, "Game/data/settings.cfg");
+            game_settings_save(&game->settings, SETTINGS_PATH);
             game_settings_apply(&game->settings);
         }
         return;
@@ -1022,25 +1042,25 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // Quest log (J key)
+    // Quest log
     quest_log_handle_input_full(&game->quest_log,
                                  game->input.mouse_x, game->input.mouse_y,
                                  game->input.mouse_left_clicked,
-                                 input_key_just_pressed(&game->input, GLFW_KEY_J),
+                                 input_key_just_pressed(&game->input, g_keybinds.toggle_quest_log),
                                  input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
                                  game->camera.viewport_width,
                                  game->camera.viewport_height);
     if (game->quest_log.is_open) return; // Block gameplay input while quest log open
 
-    // Toggle inventory with 'I' key
-    if (input_key_just_pressed(&game->input, GLFW_KEY_I)) {
+    // Toggle inventory
+    if (input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {
         if (game->inventory) {
             inventory_toggle(game->inventory);
         }
     }
     
-    // Toggle character screen with 'C' key
-    if (input_key_just_pressed(&game->input, GLFW_KEY_C)) {
+    // Toggle character screen
+    if (input_key_just_pressed(&game->input, g_keybinds.toggle_character)) {
         if (game->character_screen) {
             character_screen_toggle(game->character_screen);
         }
@@ -1242,8 +1262,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // Leave party with P
-    if (input_key_just_pressed(&game->input, GLFW_KEY_P) && game->party.has_party) {
+    // Leave party
+    if (input_key_just_pressed(&game->input, g_keybinds.party_leave) && game->party.has_party) {
         network_send_party_leave();
     }
 
@@ -1262,8 +1282,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         network_send_ability_cast(ability_to_cast, aim_x, aim_y, 0);
     }
 
-    // Legacy basic attack (space bar)
-    if (input_key_just_pressed(&game->input, GLFW_KEY_SPACE)) {
+    // Basic attack
+    if (input_key_just_pressed(&game->input, g_keybinds.basic_attack)) {
         network_update_facing_direction(game->player.vel_x, game->player.vel_y);
         network_send_attack_intent(game->player.x, game->player.y);
     }

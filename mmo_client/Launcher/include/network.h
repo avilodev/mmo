@@ -8,7 +8,9 @@
 #include <ws2tcpip.h>
 #include <stdint.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
+#endif
 
 // Initialize Winsock
 BOOL NetworkInit(void);

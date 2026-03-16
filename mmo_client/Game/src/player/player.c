@@ -2,6 +2,7 @@
 #include "world/world.h"
 #include "input.h"
 #include "renderer.h"
+#include "core/keybinds.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -27,10 +28,10 @@ int player_update_movement(PlayerState* player, const InputState* input,
     float speed = player->speed * delta_time;
     
     // Read movement input
-    if (input_key_pressed(input, GLFW_KEY_W)) move_y -= speed;
-    if (input_key_pressed(input, GLFW_KEY_S)) move_y += speed;
-    if (input_key_pressed(input, GLFW_KEY_A)) move_x -= speed;
-    if (input_key_pressed(input, GLFW_KEY_D)) move_x += speed;
+    if (input_key_pressed(input, g_keybinds.move_up))    move_y -= speed;
+    if (input_key_pressed(input, g_keybinds.move_down))  move_y += speed;
+    if (input_key_pressed(input, g_keybinds.move_left))  move_x -= speed;
+    if (input_key_pressed(input, g_keybinds.move_right)) move_x += speed;
     
     // No movement
     if (move_x == 0.0f && move_y == 0.0f) {

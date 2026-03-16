@@ -4,6 +4,7 @@
 
 #include "ability_bar.h"
 #include "renderer.h"
+#include "core/keybinds.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -132,9 +133,12 @@ uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
         }
     }
 
-    // Check input: keys 1-5 map to ability slots 0-4
+    // Check input: ability keys from keybinds (default 1-5)
     if (!bar->is_casting && bar->slot_count > 0) {
-        int key_map[5] = { GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4, GLFW_KEY_5 };
+        int key_map[5] = {
+            g_keybinds.ability[0], g_keybinds.ability[1], g_keybinds.ability[2],
+            g_keybinds.ability[3], g_keybinds.ability[4]
+        };
 
         for (int i = 0; i < bar->slot_count; i++) {
             if (!keys_just_pressed[key_map[i]]) continue;

@@ -8,7 +8,7 @@
 // ============================================================================
 
 #define SP_PW    420.0f
-#define SP_PH    350.0f
+#define SP_PH    430.0f
 #define SP_SX    150.0f
 #define SP_SW    195.0f
 #define SP_SH    14.0f

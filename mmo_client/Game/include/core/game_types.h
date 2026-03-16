@@ -425,6 +425,8 @@ typedef struct {
     float music_volume;    // 0.0 - 1.0
     float sfx_volume;      // 0.0 - 1.0
     int   show_fps;        // 0 = off, 1 = on
+    int   fullscreen;      // 0 = windowed, 1 = fullscreen
+    float ui_scale;        // 0.75 to 1.5, default 1.0
 } GameSettings;
 
 // ============================================================================
