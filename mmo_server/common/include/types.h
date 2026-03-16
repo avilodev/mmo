@@ -74,6 +74,7 @@ typedef enum {
     PACKET_REMOVE_ZONE          = 87,   // Server -> Client: Zone entity removed
     PACKET_MANA_UPDATE          = 88,   // Server -> Client: Mana changed
 
+    PACKET_ABILITY_DATA      = 90,   // Server -> Client: Ability slot data (id, name, icon, etc.)
     PACKET_LEVEL_UP          = 89,   // Server -> Client: Level up notification
     PACKET_PLAYER_STATS      = 91,   // Server -> Client: Full stat snapshot
     PACKET_REQUEST_PLAYER_STATS = 92,

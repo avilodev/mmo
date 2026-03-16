@@ -586,6 +586,7 @@ typedef struct {
     uint32_t     damage;
     uint32_t     target_new_health;
     uint8_t      is_kill;
+    uint8_t      is_crit;
 } DamageV2Packet;
 
 typedef struct {
@@ -643,6 +644,7 @@ typedef struct {
     int32_t      healing;           // Positive = healing done
     int32_t      target_new_health;
     uint8_t      is_kill;
+    uint8_t      is_crit;
 } AbilityEffectPacket;
 
 // Bidirectional: Cast cancelled
@@ -652,6 +654,22 @@ typedef struct {
     uint16_t     ability_id;
     uint8_t      reason;            // 0=manual, 1=moved, 2=interrupted, 3=no_mana
 } AbilityCastCancelPacket;
+
+// Server -> Client: Ability slot data sent to client on login/respawn
+typedef struct {
+    uint16_t     id;
+    char         name[24];
+    float        cooldown;
+    float        cast_time;
+    int16_t      mana_cost;
+    char         image[32];
+} AbilitySlotInfo;
+
+typedef struct {
+    PacketHeader   header;
+    uint8_t        count;
+    AbilitySlotInfo slots[MAX_ABILITY_SLOTS];
+} AbilityDataPacket;
 
 // Server -> Client: Status effect applied to a target
 typedef struct {
