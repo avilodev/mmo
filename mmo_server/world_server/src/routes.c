@@ -38,11 +38,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
         header->type == PACKET_USE_ITEM ||
         header->type == PACKET_DROP_ITEM ||
         header->type == PACKET_NPC_INTERACT_REQUEST) {
-        ActivePlayer* p = player_find_active(character_id);
+        ActivePlayer* p = player_acquire(character_id);
         if (p) {
-            pthread_mutex_lock(&p->lock);
             int dead = p->is_dead;
-            pthread_mutex_unlock(&p->lock);
+            player_release(p);
             if (dead) return 1; // Silently ignore
         }
     }
@@ -156,9 +155,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
         }
 
        case PACKET_REQUEST_PLAYER_STATS: {
-           ActivePlayer* player = player_find_active(character_id);
+           ActivePlayer* player = player_acquire(character_id);
            if (player) {
                player_send_stats(client_fd, player);
+               player_release(player);
            }
            break;
        }
@@ -218,14 +218,13 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                     break;
                 }
 
-                ActivePlayer* player = player_find_active(character_id);
+                ActivePlayer* player = player_acquire(character_id);
                 if (!player) break;
 
-                pthread_mutex_lock(&player->lock);
                 float dx = player->pos_x - gi->pos_x;
                 float dy = player->pos_y - gi->pos_y;
                 float dist = sqrtf(dx * dx + dy * dy);
-                pthread_mutex_unlock(&player->lock);
+                player_release(player);
 
                 if (dist > LOOT_PICKUP_RANGE) {
                     resp.success = 0;

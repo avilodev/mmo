@@ -11,11 +11,9 @@ void handle_request_player_data(int client_fd, uint32_t character_id) {
 }
 
 void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* pkt) {
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
-
-    pthread_mutex_lock(&player->lock);
-    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+    if (!player->is_loaded) { player_release(player); return; }
 
     float client_x = pkt->pos_x;
     float client_y = pkt->pos_y;
@@ -50,7 +48,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
         correction.pos_y = player->pos_y;
         
         send(client_fd, &correction, sizeof(correction), 0);
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         return;
     }
 
@@ -59,7 +57,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     player->last_move_tv = now;
     player->is_dirty = 1;
 
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
 }
 
 void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
@@ -73,19 +71,17 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     uint8_t inventory_slot = equip->inventory_slot;
     uint8_t equip_slot = equip->equip_slot;
     
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) {
         printf("Player not found for equip\n");
         return;
     }
-    
-    pthread_mutex_lock(&player->lock);
-    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+    if (!player->is_loaded) { player_release(player); return; }
 
     // Verify item is in inventory
     if (inventory_slot >= 150 || player->inventory[inventory_slot] != item_id) {
         printf("Item %u not in inventory slot %u\n", item_id, inventory_slot);
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         
         // Send error response
         EquipItemResponsePacket response = {0};
@@ -102,7 +98,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     const ItemDefinition* item = item_get(item_id);
     if (!item) {
         printf("Item %u does not exist\n", item_id);
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
@@ -117,7 +113,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     // Validate slot
     if (item->slot != equip_slot && !(item->is_two_handed && equip_slot == SLOT_MAIN_HAND)) {
         printf("Item %s cannot be equipped in slot %u\n", item->name, equip_slot);
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
@@ -131,7 +127,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     // Check if player meets requirements
     if (!item_can_equip(item_id, player->level, player->player_class, player->player_race)) {
         printf("Player cannot equip item: %s\n", item->name);
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
@@ -187,7 +183,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
                 }
                 if (offhand_slot == -1) {
                     // No room for off-hand — reject equip
-                    pthread_mutex_unlock(&player->lock);
+                    player_release(player);
                     EquipItemResponsePacket response = {0};
                     response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
                     response.header.player_id = htonl(character_id);
@@ -206,7 +202,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
             if (player->main_hand != 0) {
                 const ItemDefinition* main_hand = item_get(player->main_hand);
                 if (main_hand && main_hand->is_two_handed) {
-                    pthread_mutex_unlock(&player->lock);
+                    player_release(player);
                     
                     EquipItemResponsePacket response = {0};
                     response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
@@ -223,7 +219,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
             break;
             
         default:
-            pthread_mutex_unlock(&player->lock);
+            player_release(player);
             return;
     }
     
@@ -235,7 +231,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     // Recalculate stats with new equipment
     player_apply_equipment_bonuses(player);
 
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
 
     // Send success response
     EquipItemResponsePacket response = {0};
@@ -263,11 +259,9 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     UnequipItemPacket* unequip = (UnequipItemPacket*)buffer;
     uint8_t equip_slot = unequip->equip_slot;
     
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
-    
-    pthread_mutex_lock(&player->lock);
-    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+    if (!player->is_loaded) { player_release(player); return; }
 
     // Find empty inventory slot
     int inventory_slot = -1;
@@ -279,7 +273,7 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     }
     
     if (inventory_slot == -1) {
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         
         // Send error - inventory full
         UnequipItemResponsePacket response = {0};
@@ -324,12 +318,12 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
             player->second_hand = 0;
             break;
         default:
-            pthread_mutex_unlock(&player->lock);
+            player_release(player);
             return;
     }
     
     if (unequipped_item == 0) {
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         return; // Nothing was equipped
     }
     
@@ -340,7 +334,7 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     // Recalculate stats without this equipment
     player_apply_equipment_bonuses(player);
 
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
 
     // Send response
     UnequipItemResponsePacket response = {0};
@@ -368,20 +362,18 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     UseItemPacket* use = (UseItemPacket*)buffer;
     uint8_t inventory_slot = use->inventory_slot;
 
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
+    if (!player->is_loaded) { player_release(player); return; }
 
     UseItemResponsePacket response = {0};
     response.header.type = PACKET_USE_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
-    response.header.payload_size = htons(sizeof(UseItemResponsePacket) - sizeof(PacketHeader)); 
-
-    pthread_mutex_lock(&player->lock);
-    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+    response.header.payload_size = htons(sizeof(UseItemResponsePacket) - sizeof(PacketHeader));
 
     // Validate slot
     if (inventory_slot >= 150 || player->inventory[inventory_slot] == 0) {
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         response.success = 0;
         strncpy(response.message, "No item in that slot", sizeof(response.message) - 1);
         send(client_fd, &response, sizeof(response), 0);
@@ -391,7 +383,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     uint32_t item_id = player->inventory[inventory_slot];
     const ItemDefinition* item = item_get(item_id);
     if (!item) {
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         response.success = 0;
         strncpy(response.message, "Invalid item", sizeof(response.message) - 1);
         send(client_fd, &response, sizeof(response), 0);
@@ -400,7 +392,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
 
     // Must be a consumable
     if (item->type != ITEM_TYPE_CONSUMABLE || item->use_effect == USE_EFFECT_NONE) {
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         response.success = 0;
         strncpy(response.message, "Item is not consumable", sizeof(response.message) - 1);
         send(client_fd, &response, sizeof(response), 0);
@@ -415,7 +407,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     if (item->use_cooldown > 0.0f && player->last_consumable_time > 0.0) {
         double elapsed = now - player->last_consumable_time;
         if (elapsed < (double)item->use_cooldown) {
-            pthread_mutex_unlock(&player->lock);
+            player_release(player);
             response.success = 0;
             snprintf(response.message, sizeof(response.message),
                      "On cooldown (%.1fs)", item->use_cooldown - elapsed);
@@ -469,7 +461,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     response.new_mana = htonl((uint32_t)player->mana);
     response.item_id = htonl(item_id);
 
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
 
     snprintf(response.message, sizeof(response.message), "Used %s", item->name);
     send(client_fd, &response, sizeof(response), 0);
@@ -486,14 +478,12 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     DropItemPacket* drop = (DropItemPacket*)buffer;
     uint8_t inventory_slot = drop->inventory_slot;
     
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
-    
-    pthread_mutex_lock(&player->lock);
-    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+    if (!player->is_loaded) { player_release(player); return; }
 
     if (inventory_slot >= 150 || player->inventory[inventory_slot] == 0) {
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         return;
     }
 
@@ -503,7 +493,7 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     player->inventory[inventory_slot] = 0;
     player->is_dirty = 1;
 
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
 
     // Spawn item on the ground near the player
     loot_drop_item(item_id, 1, drop_x, drop_y, character_id);
@@ -530,11 +520,9 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     
     if (from_slot >= 150 || to_slot >= 150) return;
     
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
-    
-    pthread_mutex_lock(&player->lock);
-    if (!player->is_loaded) { pthread_mutex_unlock(&player->lock); return; }
+    if (!player->is_loaded) { player_release(player); return; }
 
     // Swap items
     uint32_t temp = player->inventory[from_slot];
@@ -542,7 +530,7 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     player->inventory[to_slot] = temp;
     player->is_dirty = 1;
     
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
     
     MoveItemResponsePacket response = {0};
     response.header.type = PACKET_MOVE_ITEM_RESPONSE;
@@ -576,9 +564,16 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
     uint8_t channel = chat->channel;
 
-    // Get sender info
-    ActivePlayer* sender = player_find_active(character_id);
+    // Get sender info — acquire lock, extract needed fields, release immediately
+    ActivePlayer* sender = player_acquire(character_id);
     if (!sender) return;
+    char sender_name[32];
+    strncpy(sender_name, sender->username, sizeof(sender_name) - 1);
+    sender_name[31] = '\0';
+    float sender_x = sender->pos_x;
+    float sender_y = sender->pos_y;
+    uint32_t sender_party = sender->party_id;
+    player_release(sender);
 
     // Build broadcast packet
     ChatMessagePacket msg = {0};
@@ -587,13 +582,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     msg.header.payload_size = htons(sizeof(ChatMessagePacket) - sizeof(PacketHeader));
     msg.sender_id = htonl(character_id);
     msg.channel = channel;
-
-    pthread_mutex_lock(&sender->lock);
-    strncpy(msg.sender_name, sender->username, sizeof(msg.sender_name) - 1);
-    float sender_x = sender->pos_x;
-    float sender_y = sender->pos_y;
-    pthread_mutex_unlock(&sender->lock);
-
+    strncpy(msg.sender_name, sender_name, sizeof(msg.sender_name) - 1);
     strncpy(msg.message, chat->message, sizeof(msg.message) - 1);
 
     printf("[CHAT] %s (ch=%u): %s\n", msg.sender_name, channel, msg.message);
@@ -632,11 +621,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
             int fd = active_players[i].client_fd;
             pthread_mutex_unlock(&active_players[i].lock);
 
-            pthread_mutex_lock(&sender->lock);
-            uint32_t my_party = sender->party_id;
-            pthread_mutex_unlock(&sender->lock);
-
-            if (my_party != 0 && their_party == my_party) {
+            if (sender_party != 0 && their_party == sender_party) {
                 send(fd, &msg, sizeof(msg), 0);
             }
         }
@@ -657,8 +642,14 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     memset(target_name, 0, sizeof(target_name));
     strncpy(target_name, pkt->target_name, 31);
 
-    ActivePlayer* inviter = player_find_active(character_id);
+    // Acquire inviter, extract all needed fields, release immediately
+    ActivePlayer* inviter = player_acquire(character_id);
     if (!inviter) return;
+    uint32_t inviter_party_id = inviter->party_id;
+    char inviter_name[32];
+    strncpy(inviter_name, inviter->username, 31);
+    inviter_name[31] = '\0';
+    player_release(inviter);
 
     // Find target by name
     extern ActivePlayer active_players[];
@@ -696,11 +687,6 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
         return;
     }
 
-    // Check inviter's party status
-    pthread_mutex_lock(&inviter->lock);
-    uint32_t inviter_party_id = inviter->party_id;
-    pthread_mutex_unlock(&inviter->lock);
-
     if (inviter_party_id != 0) {
         // Already in a party — check if leader and if party is full
         Party* p = party_find(inviter_party_id);
@@ -732,16 +718,12 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     notify.header.player_id = htonl(target_id);
     notify.header.payload_size = htons(sizeof(PartyInviteNotifyPacket) - sizeof(PacketHeader));
     notify.from_id = htonl(character_id);
+    strncpy(notify.from_name, inviter_name, 31);
 
-    pthread_mutex_lock(&inviter->lock);
-    strncpy(notify.from_name, inviter->username, 31);
-    pthread_mutex_unlock(&inviter->lock);
-
-    ActivePlayer* target = player_find_active(target_id);
+    ActivePlayer* target = player_acquire(target_id);
     if (target) {
-        pthread_mutex_lock(&target->lock);
         int fd = target->client_fd;
-        pthread_mutex_unlock(&target->lock);
+        player_release(target);
         send(fd, &notify, sizeof(notify), 0);
     }
 

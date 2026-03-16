@@ -153,10 +153,11 @@ void* client_handler_thread(void* arg) {
                                 player_send_data_response(client_fd, character_id);
 
                                 // Send stats once explicitly (no longer hidden inside data response)
-                                ActivePlayer* p = player_find_active(character_id);
+                                ActivePlayer* p = player_acquire(character_id);
                                 if (p) {
                                     player_send_stats(client_fd, p);
                                     p->is_ready = 1;  // Handshake complete, allow broadcasts
+                                    player_release(p);
                                 }
 
                                 printf("Account %u, Character %u entered world\n",
@@ -222,9 +223,10 @@ void* client_handler_thread(void* arg) {
     
     if (authenticated) {
         party_handle_disconnect(character_id);
-        ActivePlayer* player = player_find_active(character_id);
-        if (player && player->is_loaded) {
-            playerdata_save(player);
+        ActivePlayer* player = player_acquire(character_id);
+        if (player) {
+            if (player->is_loaded) playerdata_save(player);
+            player_release(player);
         }
         player_remove_active(character_id);
         session_registry_remove(client_fd);
@@ -584,12 +586,11 @@ void* player_broadcast_thread(void* arg) {
             for (int i = 0; i < MAX_PLAYERS; i++) {
                 if (!snapshots[i].valid) continue;
 
-                ActivePlayer* ap = player_find_active(snapshots[i].character_id);
+                ActivePlayer* ap = player_acquire(snapshots[i].character_id);
                 if (!ap) continue;
 
-                pthread_mutex_lock(&ap->lock);
                 uint32_t pid = ap->party_id;
-                pthread_mutex_unlock(&ap->lock);
+                player_release(ap);
 
                 if (pid == 0) continue;
 
@@ -629,13 +630,13 @@ void* player_broadcast_thread(void* arg) {
 
 void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPCWorld* world) {
     // Find player
-    ActivePlayer* player = player_find_active(character_id);
-    if (!player || !player->is_loaded) return;
-    
-    pthread_mutex_lock(&player->lock);
+    ActivePlayer* player = player_acquire(character_id);
+    if (!player) return;
+    if (!player->is_loaded) { player_release(player); return; }
+
     float px = player->pos_x;
     float py = player->pos_y;
-    pthread_mutex_unlock(&player->lock);
+    player_release(player);
     
     // Build packet with NPCs within 500 units
     NPCPositionPacket pkt;

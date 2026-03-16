@@ -28,11 +28,10 @@ static double get_time_mono(void) {
 }
 
 static void send_to_character(uint32_t character_id, void* packet, size_t size) {
-    ActivePlayer* p = player_find_active(character_id);
+    ActivePlayer* p = player_acquire(character_id);
     if (!p) return;
-    pthread_mutex_lock(&p->lock);
     int fd = p->client_fd;
-    pthread_mutex_unlock(&p->lock);
+    player_release(p);
     if (fd > 0) send(fd, packet, size, 0);
 }
 
@@ -113,11 +112,10 @@ uint32_t party_create(uint32_t leader_id) {
     pthread_mutex_unlock(&g_parties_lock);
 
     // Set party_id on the player
-    ActivePlayer* player = player_find_active(leader_id);
+    ActivePlayer* player = player_acquire(leader_id);
     if (player) {
-        pthread_mutex_lock(&player->lock);
         player->party_id = pid;
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
     }
 
     printf("[PARTY] Party %u created by player %u\n", pid, leader_id);
@@ -148,11 +146,10 @@ int party_add_member(uint32_t party_id, uint32_t character_id) {
             pthread_mutex_unlock(&p->lock);
 
             // Set party_id on the player
-            ActivePlayer* player = player_find_active(character_id);
+            ActivePlayer* player = player_acquire(character_id);
             if (player) {
-                pthread_mutex_lock(&player->lock);
                 player->party_id = party_id;
-                pthread_mutex_unlock(&player->lock);
+                player_release(player);
             }
 
             printf("[PARTY] Player %u joined party %u (%u members)\n",
@@ -187,11 +184,10 @@ void party_remove_member(uint32_t character_id) {
     }
 
     // Clear party_id on the player
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (player) {
-        pthread_mutex_lock(&player->lock);
         player->party_id = 0;
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
     }
 
     printf("[PARTY] Player %u left party %u (%u members remaining)\n",
@@ -211,11 +207,10 @@ void party_remove_member(uint32_t character_id) {
 
         // Clear last member's party_id
         if (last_member) {
-            ActivePlayer* lp = player_find_active(last_member);
+            ActivePlayer* lp = player_acquire(last_member);
             if (lp) {
-                pthread_mutex_lock(&lp->lock);
                 lp->party_id = 0;
-                pthread_mutex_unlock(&lp->lock);
+                player_release(lp);
             }
             // Notify last member that party disbanded
             PartyDisbandPacket disband = {0};
@@ -285,11 +280,10 @@ void party_disband(uint32_t party_id) {
 
     for (int i = 0; i < MAX_PARTY_SIZE; i++) {
         if (p->members[i] != 0) {
-            ActivePlayer* mp = player_find_active(p->members[i]);
+            ActivePlayer* mp = player_acquire(p->members[i]);
             if (mp) {
-                pthread_mutex_lock(&mp->lock);
                 mp->party_id = 0;
-                pthread_mutex_unlock(&mp->lock);
+                player_release(mp);
             }
             disband.header.player_id = htonl(p->members[i]);
             send_to_character(p->members[i], &disband, sizeof(disband));
@@ -357,9 +351,8 @@ void party_broadcast_update(uint32_t party_id) {
         if (p->members[i] == 0) continue;
         uint32_t mid = p->members[i];
 
-        ActivePlayer* mp = player_find_active(mid);
+        ActivePlayer* mp = player_acquire(mid);
         if (mp) {
-            pthread_mutex_lock(&mp->lock);
             member_ids[member_count] = mid;
             member_fds[member_count] = mp->client_fd;
             member_count++;
@@ -371,7 +364,7 @@ void party_broadcast_update(uint32_t party_id) {
             pkt.members[idx].max_health = htonl(mp->max_health);
             pkt.members[idx].mana = htonl(mp->mana);
             pkt.members[idx].max_mana = htonl(mp->max_mana);
-            pthread_mutex_unlock(&mp->lock);
+            player_release(mp);
         } else {
             member_ids[member_count] = mid;
             member_fds[member_count] = -1;
@@ -482,15 +475,14 @@ void party_invite_cleanup_expired(void) {
 void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
     if (xp_amount == 0) return;
 
-    ActivePlayer* killer = player_find_active(killer_id);
+    ActivePlayer* killer = player_acquire(killer_id);
     if (!killer) return;
 
-    // Check if player is in a party
-    pthread_mutex_lock(&killer->lock);
+    // Check if player is in a party — extract fields, then release
     uint32_t pid = killer->party_id;
     float kx = killer->pos_x;
     float ky = killer->pos_y;
-    pthread_mutex_unlock(&killer->lock);
+    player_release(killer);
 
     if (pid == 0) {
         // Not in a party, award full XP to killer
@@ -519,18 +511,17 @@ void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
     for (int i = 0; i < MAX_PARTY_SIZE; i++) {
         if (p->members[i] == 0) continue;
 
-        ActivePlayer* mp = player_find_active(p->members[i]);
+        ActivePlayer* mp = player_acquire(p->members[i]);
         if (!mp) continue;
 
-        pthread_mutex_lock(&mp->lock);
         if (mp->is_dead) {
-            pthread_mutex_unlock(&mp->lock);
+            player_release(mp);
             continue;
         }
         float dx = mp->pos_x - kx;
         float dy = mp->pos_y - ky;
         float dist_sq = dx * dx + dy * dy;
-        pthread_mutex_unlock(&mp->lock);
+        player_release(mp);
 
         if (dist_sq <= range_sq) {
             nearby[nearby_count++] = p->members[i];
@@ -550,8 +541,9 @@ void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
     if (share == 0) share = 1;
 
     for (int i = 0; i < nearby_count; i++) {
-        ActivePlayer* mp = player_find_active(nearby[i]);
+        ActivePlayer* mp = player_acquire(nearby[i]);
         if (mp) {
+            player_release(mp);
             player_award_xp(mp, share);
         }
     }

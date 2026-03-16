@@ -157,5 +157,5 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
         printf("[REGISTER] FAILED: username exists\n");
     }
     
-    send(client_fd, &response, sizeof(response), 0);
+    tls_send(client_fd, &response, sizeof(response), 0);
 }
