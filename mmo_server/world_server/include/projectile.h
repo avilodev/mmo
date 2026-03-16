@@ -69,7 +69,7 @@ typedef struct {
     int         caster_agility;
     int         caster_intelligence;
     int         caster_wisdom;
-    uint8_t     caster_class;
+    int         damage_stat;        // StatType int — which stat scales this projectile's damage
 
     // Status effects to apply on hit
     AbilityEffectDef effects[MAX_ABILITY_EFFECTS];
@@ -105,7 +105,7 @@ typedef struct {
     int         caster_agility;
     int         caster_intelligence;
     int         caster_wisdom;
-    uint8_t     caster_class;
+    int         damage_stat;        // StatType int — which stat scales this projectile's damage
 
     // Effects on hit
     AbilityEffectDef effects[MAX_ABILITY_EFFECTS];

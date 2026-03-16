@@ -240,9 +240,14 @@ static StatusEffectType parse_effect_type(const char* str) {
 }
 
 static StatType parse_stat_type(const char* str) {
-    if (strcmp(str, "damage") == 0)  return STAT_DAMAGE;
-    if (strcmp(str, "defense") == 0) return STAT_DEFENSE;
-    if (strcmp(str, "speed") == 0)   return STAT_SPEED;
+    if (strcmp(str, "damage") == 0)        return STAT_DAMAGE;
+    if (strcmp(str, "defense") == 0)       return STAT_DEFENSE;
+    if (strcmp(str, "speed") == 0)         return STAT_SPEED;
+    if (strcmp(str, "strength") == 0)      return STAT_STRENGTH;
+    if (strcmp(str, "agility") == 0)       return STAT_AGILITY;
+    if (strcmp(str, "intelligence") == 0)  return STAT_INTELLIGENCE;
+    if (strcmp(str, "wisdom") == 0)        return STAT_WISDOM;
+    if (strcmp(str, "reg") == 0)           return STAT_REG;
     return STAT_NONE;
 }
 
@@ -649,6 +654,16 @@ static int parse_abilities_json(const char* json_content) {
             ability->damage_type = parse_damage_type(dtype_str);
         }
 
+        // damageStat — which caster stat scales this ability's damage
+        // e.g. "strength", "agility", "intelligence", "wisdom"
+        // Omit or set to "none" for abilities with no stat scaling
+        const char* dstat_val = find_json_value(ab_json, "damageStat");
+        if (dstat_val) {
+            char dstat_str[32] = {0};
+            parse_json_string(dstat_val, dstat_str, sizeof(dstat_str));
+            ability->damage_stat = parse_stat_type(dstat_str);
+        }
+
         // healing
         const char* heal_val = find_json_value(ab_json, "healing");
         if (heal_val) ability->healing = parse_json_int(heal_val);
@@ -691,6 +706,9 @@ static int parse_abilities_json(const char* json_content) {
 
         const char* vfx_val = find_json_value(ab_json, "vfx");
         if (vfx_val) parse_json_string(vfx_val, ability->vfx, sizeof(ability->vfx));
+
+        const char* img_val = find_json_value(ab_json, "image");
+        if (img_val) parse_json_string(img_val, ability->image, sizeof(ability->image));
 
         // --- Store it ---
         if (ability->id < MAX_ABILITIES) {

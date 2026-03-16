@@ -294,6 +294,7 @@ typedef struct {
     int         evasion;
     int         vitality;
     int         luck;
+    int         reg;            // Regeneration — scales healing output (Spirit primary)
     float       move_speed;
     int         weapon_damage;      // Sum of equipped weapon damage values
     double      last_combat_time;   // For out-of-combat HP regen
@@ -308,6 +309,8 @@ typedef struct {
     struct {
         uint8_t     active;
         uint8_t     effect_type;        // StatusEffectType
+        uint8_t     buff_stat;          // StatType — which stat this BUFF modifies
+        uint8_t     _pad;
         int         value;
         float       duration_remaining;
         float       tick_remaining;     // Time until next DOT/HOT tick

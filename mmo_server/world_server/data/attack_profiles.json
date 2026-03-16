@@ -1,0 +1,52 @@
+{
+    "profiles": [
+        {
+            "class_id": 1,
+            "class_name": "Gladiator",
+            "base_damage": 50,
+            "damage_variance": 20,
+            "cast_time": 1.2,
+            "cooldown": 0.8,
+            "range": 50.0,
+            "attack_type": 0,
+            "cone_half_angle": 0.0,
+            "line_width": 0.0
+        },
+        {
+            "class_id": 2,
+            "class_name": "Ninja",
+            "base_damage": 15,
+            "damage_variance": 15,
+            "cast_time": 0.3,
+            "cooldown": 0.2,
+            "range": 50.0,
+            "attack_type": 2,
+            "cone_half_angle": 30.0,
+            "line_width": 0.0
+        },
+        {
+            "class_id": 3,
+            "class_name": "Landweaver",
+            "base_damage": 35,
+            "damage_variance": 25,
+            "cast_time": 0.8,
+            "cooldown": 1.0,
+            "range": 80.0,
+            "attack_type": 1,
+            "cone_half_angle": 0.0,
+            "line_width": 0.0
+        },
+        {
+            "class_id": 4,
+            "class_name": "Spirit",
+            "base_damage": 20,
+            "damage_variance": 20,
+            "cast_time": 0.6,
+            "cooldown": 0.8,
+            "range": 150.0,
+            "attack_type": 3,
+            "cone_half_angle": 0.0,
+            "line_width": 12.0
+        }
+    ]
+}

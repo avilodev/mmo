@@ -2,7 +2,9 @@
 #include "player_level.h"
 #include "class_stats.h"
 #include "ability_def.h"
+#include "ability_handler.h"
 #include "items_database.h"
+#include "combat_stats.h"
 #include "utils.h"
 
 #include <stdio.h>
@@ -32,6 +34,7 @@ void player_apply_class_stats(ActivePlayer* player) {
     player->evasion      = stats.evasion;
     player->vitality     = stats.vitality;
     player->luck         = stats.luck;
+    player->reg          = 0;   // REG comes only from equipment/buffs
     player->move_speed   = stats.move_speed;
     player->weapon_damage = 0;
 
@@ -81,9 +84,40 @@ void player_apply_equipment_bonuses(ActivePlayer* player) {
     // Vitality increases max HP
     player->max_health += player->vitality * VITALITY_HP_PER_POINT;
 
+    // AGI increases move speed (Ninja primary bonus, but applies to all classes)
+    player->move_speed += (float)player->agility * AGI_SPEED_FACTOR;
+
     // Clamp current values
     if (player->health > player->max_health) player->health = player->max_health;
     if (player->mana > player->max_mana)     player->mana = player->max_mana;
+}
+
+// ---------------------------------------------------------------------------
+// player_reapply_stat_buffs — called when an EFFECT_BUFF expires.
+// Resets stats to base+equipment, then re-adds any still-active buffs.
+// ---------------------------------------------------------------------------
+void player_reapply_stat_buffs(ActivePlayer* player) {
+    player_apply_equipment_bonuses(player);
+
+    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
+        if (!player->active_effects[i].active) continue;
+        if (player->active_effects[i].effect_type != EFFECT_BUFF) continue;
+
+        int val = player->active_effects[i].value;
+        switch ((StatType)player->active_effects[i].buff_stat) {
+            case STAT_STRENGTH:     player->strength     += val; break;
+            case STAT_AGILITY:
+                player->agility      += val;
+                player->move_speed   += (float)val * AGI_SPEED_FACTOR;
+                break;
+            case STAT_INTELLIGENCE: player->intelligence += val; break;
+            case STAT_WISDOM:       player->wisdom       += val; break;
+            case STAT_REG:          player->reg          += val; break;
+            case STAT_DEFENSE:      player->defense      += val; break;
+            case STAT_SPEED:        player->move_speed   += (float)val; break;
+            default: break;
+        }
+    }
 }
 
 void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
@@ -156,6 +190,7 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
 
         pthread_mutex_unlock(&player->lock);
         server_send(fd, &pkt, sizeof(pkt));
+        ability_send_data(fd, player);
     } else {
         pthread_mutex_unlock(&player->lock);
     }
@@ -224,6 +259,7 @@ void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
 
         // Lock still held by caller — send while holding is fine (non-blocking MSG_NOSIGNAL)
         server_send(fd, &pkt, sizeof(pkt));
+        ability_send_data(fd, player);
     }
 }
 

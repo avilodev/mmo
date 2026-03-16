@@ -17,19 +17,28 @@
       "statusEffects": [],
       "animation": "slash_wide",
       "sfx": "sword_sweep",
-      "vfx": "cleave_arc"
+      "vfx": "cleave_arc",
+      "image": "cleave.png"
     },
     "rage": {
       "name": "Rage",
       "class": "gladiator",
       "unlockLevel": 2,
-      "cooldown": 8,
+      "cooldown": 12,
       "castTime": 0,
       "range": 0,
-      "statusEffects": ["Recklessness"],
+      "statusEffects": [
+        {
+          "type": "buff",
+          "stat": "strength",
+          "value": 25,
+          "duration": 8
+        }
+      ],
       "animation": "rage_cast",
       "sfx": "rage_sound",
-      "vfx": "rage_view"
+      "vfx": "rage_view",
+      "image": "rage.png"
     },
     "slam": {
       "name": "Slam",
@@ -48,7 +57,8 @@
       "statusEffects": ["Bleed"],
       "animation": "slam_wide",
       "sfx": "slam_sound",
-      "vfx": "slam_view"
+      "vfx": "slam_view",
+      "image": "slam.png"
     },
     "shield_bash": {
       "name": "Shield Bash",
@@ -67,7 +77,8 @@
       ],
       "animation": "bash_forward",
       "sfx": "shield_clang",
-      "vfx": "bash_impact"
+      "vfx": "bash_impact",
+      "image": "shield_bash.png"
     },
     "war_cry": {
       "name": "War Cry",
@@ -91,7 +102,8 @@
       ],
       "animation": "war_cry_cast",
       "sfx": "war_cry_sound",
-      "vfx": "war_cry_pulse"
+      "vfx": "war_cry_pulse",
+      "image": "war_cry.png"
     },
 
     "shake": {
@@ -112,7 +124,8 @@
       "statusEffects": [],
       "animation": "shake_ground",
       "sfx": "shake_sound",
-      "vfx": "shake_view"
+      "vfx": "shake_view",
+      "image": "shake.png"
     },
     "rock_wall": {
       "name": "Rock Wall",
@@ -138,7 +151,8 @@
       "statusEffects": [],
       "animation": "cast_ground",
       "sfx": "rock_rumble",
-      "vfx": "earth_rise"
+      "vfx": "earth_rise",
+      "image": "rock_wall.png"
     },
     "stone_spike": {
       "name": "Stone Spike",
@@ -158,38 +172,29 @@
       "statusEffects": [],
       "animation": "cast_spike",
       "sfx": "stone_launch",
-      "vfx": "spike_projectile"
+      "vfx": "spike_projectile",
+      "image": "stone_spike.png"
     },
-    "mud_pit": {
-      "name": "Mud Pit",
+    "earthen_focus": {
+      "name": "Earthen Focus",
       "class": "landweaver",
       "unlockLevel": 5,
-      "manaCost": 50,
-      "cooldown": 14,
-      "castTime": 1.0,
-      "range": 600,
-      "damage": 0,
-      "damageType": "earth",
-      "spawnsEntity": {
-        "type": "zone",
-        "duration": 8,
-        "hasCollision": false
-      },
-      "aoe": {
-        "shape": "circle",
-        "radius": 120
-      },
+      "manaCost": 40,
+      "cooldown": 20,
+      "castTime": 0,
+      "range": 0,
       "statusEffects": [
         {
-          "type": "slow",
-          "value": 40,
-          "duration": 2,
-          "reapply": true
+          "type": "buff",
+          "stat": "intelligence",
+          "value": 30,
+          "duration": 8
         }
       ],
-      "animation": "cast_ground",
-      "sfx": "mud_splash",
-      "vfx": "mud_zone"
+      "animation": "cast_focus",
+      "sfx": "earth_hum",
+      "vfx": "stone_aura",
+      "image": "earthen_focus.png"
     },
     "eruption": {
       "name": "Eruption",
@@ -213,7 +218,8 @@
       ],
       "animation": "cast_eruption",
       "sfx": "eruption_boom",
-      "vfx": "eruption_blast"
+      "vfx": "eruption_blast",
+      "image": "eruption.png"
     },
 
     "heal_pulse": {
@@ -237,7 +243,8 @@
       ],
       "animation": "cast_heal",
       "sfx": "spirit_chime",
-      "vfx": "green_pulse"
+      "vfx": "green_pulse",
+      "image": "heal_pulse.png"
     },
     "sanctuary": {
       "name": "Sanctuary",
@@ -269,7 +276,8 @@
       ],
       "animation": "cast_sanctuary",
       "sfx": "sanctuary_hum",
-      "vfx": "sanctuary_glow"
+      "vfx": "sanctuary_glow",
+      "image": "sanctuary.png"
     },
     "cleanse": {
       "name": "Cleanse",
@@ -284,7 +292,8 @@
       "statusEffects": [],
       "animation": "cast_cleanse",
       "sfx": "cleanse_chime",
-      "vfx": "cleanse_shimmer"
+      "vfx": "cleanse_shimmer",
+      "image": "cleanse.png"
     },
     "spirit_link": {
       "name": "Spirit Link",
@@ -305,7 +314,8 @@
       ],
       "animation": "cast_link",
       "sfx": "spirit_link_sound",
-      "vfx": "spirit_tether"
+      "vfx": "spirit_tether",
+      "image": "spirit_link.png"
     },
     "revitalize": {
       "name": "Revitalize",
@@ -331,15 +341,23 @@
         },
         {
           "type": "buff",
-          "stat": "defense",
-          "value": 10,
-          "duration": 6,
-          "target": "all_allies"
+          "stat": "wisdom",
+          "value": 20,
+          "duration": 10,
+          "target": "self"
+        },
+        {
+          "type": "buff",
+          "stat": "reg",
+          "value": 30,
+          "duration": 10,
+          "target": "self"
         }
       ],
       "animation": "cast_revitalize",
       "sfx": "revitalize_burst",
-      "vfx": "revitalize_wave"
+      "vfx": "revitalize_wave",
+      "image": "revitalize.png"
     },
 
     "dash_strike": {
@@ -360,7 +378,8 @@
       "statusEffects": [],
       "animation": "dash_slash",
       "sfx": "whoosh_cut",
-      "vfx": "shadow_trail"
+      "vfx": "shadow_trail",
+      "image": "dash_strike.png"
     },
     "smoke_bomb": {
       "name": "Smoke Bomb",
@@ -395,7 +414,8 @@
       ],
       "animation": "throw_bomb",
       "sfx": "smoke_poof",
-      "vfx": "smoke_cloud"
+      "vfx": "smoke_cloud",
+      "image": "smoke_bomb.png"
     },
     "shuriken": {
       "name": "Shuriken",
@@ -415,28 +435,29 @@
       "statusEffects": [],
       "animation": "throw_star",
       "sfx": "shuriken_throw",
-      "vfx": "shuriken_spin"
+      "vfx": "shuriken_spin",
+      "image": "shuriken.png"
     },
-    "shadow_clone": {
-      "name": "Shadow Clone",
+    "swift_step": {
+      "name": "Swift Step",
       "class": "ninja",
       "unlockLevel": 5,
-      "manaCost": 45,
-      "cooldown": 20,
+      "manaCost": 30,
+      "cooldown": 16,
       "castTime": 0,
       "range": 0,
-      "damage": 0,
-      "spawnsEntity": {
-        "type": "decoy",
-        "duration": 6,
-        "hp": 50,
-        "inheritsAppearance": true,
-        "ai": "mimic"
-      },
-      "statusEffects": [],
-      "animation": "clone_cast",
-      "sfx": "shadow_split",
-      "vfx": "shadow_clone_poof"
+      "statusEffects": [
+        {
+          "type": "buff",
+          "stat": "agility",
+          "value": 30,
+          "duration": 6
+        }
+      ],
+      "animation": "swift_step_cast",
+      "sfx": "whoosh_quick",
+      "vfx": "shadow_blur",
+      "image": "swift_step.png"
     },
     "execute": {
       "name": "Execute",
@@ -456,7 +477,8 @@
       "statusEffects": [],
       "animation": "execute_slash",
       "sfx": "fatal_cut",
-      "vfx": "execute_mark"
+      "vfx": "execute_mark",
+      "image": "execute.png"
     }
   }
 }

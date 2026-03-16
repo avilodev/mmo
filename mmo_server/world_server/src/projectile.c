@@ -237,12 +237,12 @@ static void queue_destroy_broadcast(DeferredQueue* q, float px, float py,
 static int calc_projectile_damage(const Projectile* proj,
                                    int target_health, int target_max_health,
                                    int target_defense) {
-    int stat_bonus = combat_stat_bonus_damage(proj->caster_strength,
-                                               proj->caster_agility,
-                                               proj->caster_intelligence,
-                                               proj->caster_wisdom,
-                                               proj->caster_class);
-    int damage = proj->damage + stat_bonus;
+    float mult = combat_ability_damage_mult(proj->damage_stat,
+                                             proj->caster_strength,
+                                             proj->caster_agility,
+                                             proj->caster_intelligence,
+                                             proj->caster_wisdom);
+    int damage = (int)((float)proj->damage * mult);
 
     // Bonus damage condition (e.g. execute)
     if (proj->bonus_damage.condition == 1 && target_max_health > 0) {
@@ -347,7 +347,7 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     proj->caster_agility      = info->caster_agility;
     proj->caster_intelligence = info->caster_intelligence;
     proj->caster_wisdom       = info->caster_wisdom;
-    proj->caster_class        = info->caster_class;
+    proj->damage_stat         = info->damage_stat;
 
     proj->effect_count = info->effect_count;
     for (int i = 0; i < info->effect_count && i < MAX_ABILITY_EFFECTS; i++) {

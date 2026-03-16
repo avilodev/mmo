@@ -43,7 +43,7 @@ typedef struct {
 //                damages everything in a straight line.
 // ---------------------------------------------------------------------------
 
-extern const ClassAttackProfile g_class_profiles[5];
+extern ClassAttackProfile g_class_profiles[5];
  
 // ---------------------------------------------------------------------------
 // NPC categories — sent to client for nameplate color, cursor, etc.

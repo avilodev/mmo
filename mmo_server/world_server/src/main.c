@@ -33,6 +33,7 @@ static char ABILITIES_PATH[512];
 static char DIALOGUES_PATH[512];
 static char NPC_TYPES_PATH[512];
 static char SPAWNS_PATH[512];
+static char ATTACK_PROFILES_PATH[512];
 
 static void init_data_paths(void) {
     char exe[512] = {0};
@@ -46,11 +47,12 @@ static void init_data_paths(void) {
         exe[0] = '.';
         exe[1] = '\0';
     }
-    snprintf(DATA_PATH,      sizeof(DATA_PATH),      "%s/data/items.json",     exe);
-    snprintf(ABILITIES_PATH, sizeof(ABILITIES_PATH), "%s/data/abilities.json", exe);
-    snprintf(DIALOGUES_PATH, sizeof(DIALOGUES_PATH), "%s/data/dialogues.json", exe);
-    snprintf(NPC_TYPES_PATH, sizeof(NPC_TYPES_PATH), "%s/data/npc_types.json", exe);
-    snprintf(SPAWNS_PATH,    sizeof(SPAWNS_PATH),    "%s/data/spawns.json",    exe);
+    snprintf(DATA_PATH,             sizeof(DATA_PATH),             "%s/data/items.json",            exe);
+    snprintf(ABILITIES_PATH,        sizeof(ABILITIES_PATH),        "%s/data/abilities.json",        exe);
+    snprintf(DIALOGUES_PATH,        sizeof(DIALOGUES_PATH),        "%s/data/dialogues.json",        exe);
+    snprintf(NPC_TYPES_PATH,        sizeof(NPC_TYPES_PATH),        "%s/data/npc_types.json",        exe);
+    snprintf(SPAWNS_PATH,           sizeof(SPAWNS_PATH),           "%s/data/spawns.json",           exe);
+    snprintf(ATTACK_PROFILES_PATH,  sizeof(ATTACK_PROFILES_PATH),  "%s/data/attack_profiles.json",  exe);
     printf("[PATHS] Data directory: %s/data/\n", exe);
 }
 
@@ -156,6 +158,7 @@ void* client_handler_thread(void* arg) {
                                 ActivePlayer* p = player_acquire(character_id);
                                 if (p) {
                                     player_send_stats(client_fd, p);
+                                    ability_send_data(client_fd, p);
                                     p->is_ready = 1;  // Handshake complete, allow broadcasts
                                     player_release(p);
                                 }
@@ -948,6 +951,7 @@ int main(int argc, char** argv) {
     printf("Database connection string: %s\n", pg_conn_str);
 
     class_stats_init();
+    combat_profiles_load(ATTACK_PROFILES_PATH);
     
     if (!playerdata_init(pg_conn_str)) {
         printf("FAILED - PostgreSQL initialization\n");

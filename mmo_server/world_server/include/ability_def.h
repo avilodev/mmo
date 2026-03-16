@@ -71,9 +71,14 @@ typedef enum {
 
 typedef enum {
     STAT_NONE              = 0,
-    STAT_DAMAGE            = 1,
-    STAT_DEFENSE           = 2,
-    STAT_SPEED             = 3
+    STAT_DAMAGE            = 1,     // Legacy — flat damage bonus
+    STAT_DEFENSE           = 2,     // Flat defense bonus
+    STAT_SPEED             = 3,     // Flat move_speed bonus
+    STAT_STRENGTH          = 4,     // Gladiator primary — melee damage
+    STAT_AGILITY           = 5,     // Ninja primary — move speed + damage
+    STAT_INTELLIGENCE      = 6,     // Landweaver primary — CDR + damage
+    STAT_WISDOM            = 7,     // Spirit — mana regen
+    STAT_REG               = 8      // Spirit — healing rate
 } StatType;
 
 // ============================================================================
@@ -149,6 +154,7 @@ typedef struct {
     // Damage / Healing
     int                 damage;         // Base damage (0 if healing/utility)
     AbilityDamageType   damage_type;
+    StatType            damage_stat;    // Which caster stat scales damage (STAT_NONE = no scaling)
     int                 healing;        // Base healing (0 if damage/utility)
 
     // Optional components — check .type != NONE to see if present
@@ -164,6 +170,7 @@ typedef struct {
     char                animation[32];
     char                sfx[32];
     char                vfx[32];
+    char                image[32];   // Icon filename, e.g. "cleave.png" — served in AbilityDataPacket
 } AbilityDef;
 
 // ============================================================================

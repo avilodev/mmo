@@ -135,11 +135,11 @@ static void send_ability_cast_start(int client_fd, uint32_t caster_id,
 // send_ability_effect - MISSING payload_size
 static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t target_id,
                                 uint16_t ability_id, int damage, int healing,
-                                int target_new_hp, uint8_t is_kill) {
+                                int target_new_hp, uint8_t is_kill, uint8_t is_crit) {
     AbilityEffectPacket pkt = {0};
     pkt.header.type         = PACKET_ABILITY_EFFECT;
     pkt.header.player_id    = htonl(caster_id);
-    pkt.header.payload_size = htons(sizeof(AbilityEffectPacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.payload_size = htons(sizeof(AbilityEffectPacket) - sizeof(PacketHeader));
     pkt.caster_id           = htonl(caster_id);
     pkt.target_id           = htonl(target_id);
     pkt.ability_id          = htons(ability_id);
@@ -147,6 +147,7 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     pkt.healing             = htonl((uint32_t)healing);
     pkt.target_new_health   = htonl((uint32_t)target_new_hp);
     pkt.is_kill             = is_kill;
+    pkt.is_crit             = is_crit;
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
@@ -217,11 +218,30 @@ static void apply_effect_to_player(ActivePlayer* player, const AbilityEffectDef*
         if (!player->active_effects[i].active) {
             player->active_effects[i].active             = 1;
             player->active_effects[i].effect_type        = (uint8_t)effect->type;
+            player->active_effects[i].buff_stat          = (uint8_t)effect->stat;
             player->active_effects[i].value              = effect->value;
             player->active_effects[i].duration_remaining = effect->duration;
             player->active_effects[i].tick_rate          = effect->tick_rate;
             player->active_effects[i].tick_remaining     = effect->tick_rate;
             player->active_effects[i].source_id          = source_id;
+
+            // Immediately apply stat buff to player fields
+            if (effect->type == EFFECT_BUFF) {
+                int val = effect->value;
+                switch (effect->stat) {
+                    case STAT_STRENGTH:     player->strength     += val; break;
+                    case STAT_AGILITY:
+                        player->agility    += val;
+                        player->move_speed += (float)val * AGI_SPEED_FACTOR;
+                        break;
+                    case STAT_INTELLIGENCE: player->intelligence += val; break;
+                    case STAT_WISDOM:       player->wisdom       += val; break;
+                    case STAT_REG:          player->reg          += val; break;
+                    case STAT_DEFENSE:      player->defense      += val; break;
+                    case STAT_SPEED:        player->move_speed   += (float)val; break;
+                    default: break;
+                }
+            }
             return;
         }
     }
@@ -324,10 +344,10 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
         info.caster_agility      = caster->agility;
         info.caster_intelligence = caster->intelligence;
         info.caster_wisdom       = caster->wisdom;
-        info.caster_class        = caster->player_class;
         info.damage             += caster->weapon_damage;
         player_release(caster);
     }
+    info.damage_stat = (int)ability->damage_stat;
 
     info.effect_count = ability->effect_count;
     for (int i = 0; i < ability->effect_count && i < MAX_ABILITY_EFFECTS; i++) {
@@ -346,12 +366,13 @@ static int calc_ability_damage(int base_damage, const AbilityBonusDamageDef* bon
                                int target_defense,
                                int caster_str, int caster_agi,
                                int caster_int, int caster_wis,
-                               uint8_t caster_class) {
-    // 1. Stat bonus
-    int stat_bonus = combat_stat_bonus_damage(caster_str, caster_agi,
-                                               caster_int, caster_wis,
-                                               caster_class);
-    int damage = base_damage + stat_bonus;
+                               int damage_stat) {
+    // 1. Scale base damage by the stat named in the ability definition.
+    //    damage_stat is a StatType int; STAT_NONE (0) means no scaling.
+    float mult = combat_ability_damage_mult(damage_stat,
+                                            caster_str, caster_agi,
+                                            caster_int, caster_wis);
+    int damage = (int)((float)base_damage * mult);
 
     // 2. Bonus damage condition (e.g. execute)
     if (bonus && bonus->condition == 1 && target_max_health > 0) {
@@ -386,6 +407,38 @@ void ability_handler_init(void) {
 
 void ability_handler_cleanup(void) {
     printf("[ABILITY] Handler cleaned up\n");
+}
+
+// ============================================================================
+// SEND ABILITY DATA — tells the client which abilities are slotted
+// ============================================================================
+
+void ability_send_data(int client_fd, ActivePlayer* player) {
+    AbilityDataPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type         = PACKET_ABILITY_DATA;
+    pkt.header.player_id    = htonl(player->character_id);
+    pkt.header.payload_size = htons((uint16_t)(sizeof(AbilityDataPacket) - sizeof(PacketHeader)));
+
+    uint8_t count = (player->ability_count < 5) ? player->ability_count : 5;
+    pkt.count = count;
+
+    for (int i = 0; i < count; i++) {
+        const AbilityDef* ab = ability_get(player->ability_slots[i]);
+        if (!ab) continue;
+        pkt.slots[i].id        = htons(ab->id);
+        strncpy(pkt.slots[i].name, ab->name, 23);
+        pkt.slots[i].name[23]  = '\0';
+        pkt.slots[i].cooldown  = ab->cooldown;
+        pkt.slots[i].cast_time = ab->cast_time;
+        pkt.slots[i].mana_cost = (int16_t)ab->mana_cost;
+        strncpy(pkt.slots[i].image, ab->image, 31);
+        pkt.slots[i].image[31] = '\0';
+    }
+
+    server_send(client_fd, &pkt, sizeof(pkt));
+    printf("[ABILITY] Sent ability data: %d slots to player %u\n",
+           count, player->character_id);
 }
 
 // ============================================================================
@@ -544,8 +597,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     float aim_y        = cast->aim_y;
 
     // Snapshot caster stats
-    int c_str = 0, c_agi = 0, c_int = 0, c_wis = 0, c_wpn = 0;
-    uint8_t c_class = 1;
+    int c_str = 0, c_agi = 0, c_int = 0, c_wis = 0, c_wpn = 0, c_luck = 0, c_reg = 0;
     int caster_found = 0;
 
     // --- Movement abilities ---
@@ -559,14 +611,17 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             caster_found = 1;
             int ability_slot = -1;
             if (player_has_ability(caster, cast->ability_id, &ability_slot)) {
-                caster->ability_cooldowns[ability_slot] = ability->cooldown;
+                float cd = ability->cooldown *
+                           combat_int_cooldown_mult(caster->intelligence);
+                caster->ability_cooldowns[ability_slot] = cd;
             }
-            c_str   = caster->strength;
-            c_agi   = caster->agility;
-            c_int   = caster->intelligence;
-            c_wis   = caster->wisdom;
-            c_wpn   = caster->weapon_damage;
-            c_class = caster->player_class;
+            c_str  = caster->strength;
+            c_agi  = caster->agility;
+            c_int  = caster->intelligence;
+            c_wis  = caster->wisdom;
+            c_wpn  = caster->weapon_damage;
+            c_luck = caster->luck;
+            c_reg  = caster->reg;
             caster->last_combat_time = get_time();
 
             if (ability->movement.type != MOVEMENT_NONE) {
@@ -633,9 +688,11 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             if (target) {
                 float d = dist2d(origin_x, origin_y, target->pos_x, target->pos_y);
                 if (d <= ability->range || ability->range == 0.0f) {
-                    // Healing scales with wisdom
-                    int heal_bonus = c_wis / 3;
-                    int total_heal = ability->healing + heal_bonus;
+                    // Healing scales with REG stat, crits with luck
+                    float reg_mult = combat_reg_heal_mult(c_reg);
+                    int total_heal = (int)((float)ability->healing * reg_mult);
+                    uint8_t heal_crit = (uint8_t)combat_check_crit(c_luck);
+                    if (heal_crit) total_heal = (int)((float)total_heal * CRIT_DAMAGE_MULTIPLIER);
 
                     target->health += total_heal;
                     if (target->health > target->max_health)
@@ -643,7 +700,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
 
                     send_ability_effect(client_fd, caster_id, cast->target_id,
                                         cast->ability_id, 0, total_heal,
-                                        target->health, 0);
+                                        target->health, 0, heal_crit);
 
                     for (int e = 0; e < ability->effect_count; e++) {
                         apply_effect_to_player(target, &ability->effects[e], caster_id);
@@ -657,8 +714,13 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                 player_release(target);
             }
         } else if (ability->aoe.shape != ABILITY_AOE_NONE) {
-            int heal_bonus = c_wis / 3;
-            int total_heal = ability->healing + heal_bonus;
+            // Healing scales with REG stat, crits with luck
+            float reg_mult = combat_reg_heal_mult(c_reg);
+            int base_heal  = (int)((float)ability->healing * reg_mult);
+            // Roll crit once for the whole AoE pulse — same result for all targets
+            uint8_t heal_crit = (uint8_t)combat_check_crit(c_luck);
+            int total_heal = heal_crit ? (int)((float)base_heal * CRIT_DAMAGE_MULTIPLIER)
+                                       : base_heal;
 
             pthread_mutex_lock(&active_players_lock);
             for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -674,7 +736,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                         send_ability_effect(client_fd, caster_id,
                                             active_players[i].character_id,
                                             cast->ability_id, 0, total_heal,
-                                            active_players[i].health, 0);
+                                            active_players[i].health, 0, heal_crit);
                     }
                     for (int e = 0; e < ability->effect_count; e++) {
                         apply_effect_to_player(&active_players[i],
@@ -706,6 +768,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             int      damage;
             int      new_health;
             uint8_t  is_kill;
+            uint8_t  is_crit;
             uint8_t  evaded;
             uint64_t xp_reward;
             uint32_t gold_reward;
@@ -782,7 +845,10 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             int damage = calc_ability_damage(ability->damage + c_wpn, &ability->bonus_damage,
                                               npc->health, npc->max_health,
                                               npc->defense,
-                                              c_str, c_agi, c_int, c_wis, c_class);
+                                              c_str, c_agi, c_int, c_wis,
+                                              (int)ability->damage_stat);
+            uint8_t is_crit = (uint8_t)combat_check_crit(c_luck);
+            if (is_crit) damage = (int)((float)damage * CRIT_DAMAGE_MULTIPLIER);
 
             npc->health -= damage;
             if (npc->health < 0) npc->health = 0;
@@ -803,7 +869,8 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             hits[hit_count].damage     = damage;
             hits[hit_count].new_health = npc->health;
             hits[hit_count].is_kill    = is_kill;
-            hits[hit_count].evaded      = 0;
+            hits[hit_count].is_crit    = is_crit;
+            hits[hit_count].evaded     = 0;
             hits[hit_count].xp_reward   = is_kill ? npc->xp_reward : 0;
             hits[hit_count].gold_reward = is_kill ? npc->gold_reward : 0;
             hits[hit_count].npc_type_id = npc->npc_type_id;
@@ -820,15 +887,16 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
         for (int h = 0; h < hit_count; h++) {
             if (hits[h].evaded) {
                 send_ability_effect(client_fd, caster_id, hits[h].npc_id,
-                                    cast->ability_id, 0, 0, hits[h].new_health, 0);
+                                    cast->ability_id, 0, 0, hits[h].new_health, 0, 0);
                 printf("[ABILITY] '%s' MISSED NPC %u (evasion)\n",
                        ability->name, hits[h].npc_id);
             } else {
                 send_ability_effect(client_fd, caster_id, hits[h].npc_id,
                                     cast->ability_id, hits[h].damage, 0,
-                                    hits[h].new_health, hits[h].is_kill);
-                printf("[ABILITY] '%s' hit NPC %u for %d dmg (hp=%d)%s\n",
+                                    hits[h].new_health, hits[h].is_kill, hits[h].is_crit);
+                printf("[ABILITY] '%s' hit NPC %u for %d dmg%s (hp=%d)%s\n",
                        ability->name, hits[h].npc_id, hits[h].damage,
+                       hits[h].is_crit ? " (CRIT)" : "",
                        hits[h].new_health, hits[h].is_kill ? " — KILLED" : "");
             }
 
@@ -926,6 +994,7 @@ void ability_tick(NPCWorld* world, double delta_time) {
             active_players[i].active_effects[e].duration_remaining -= dt;
 
             if (active_players[i].active_effects[e].duration_remaining <= 0.0f) {
+                uint8_t was_buff = (active_players[i].active_effects[e].effect_type == EFFECT_BUFF);
                 active_players[i].active_effects[e].active = 0;
                 StatusEffectRemovePacket pkt = {0};
                 pkt.header.type      = PACKET_STATUS_EFFECT_REMOVE;
@@ -934,6 +1003,10 @@ void ability_tick(NPCWorld* world, double delta_time) {
                 pkt.target_id        = htonl(active_players[i].character_id);
                 pkt.effect_type      = active_players[i].active_effects[e].effect_type;
                 server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
+                // Recalculate stats after buff expires; re-add any remaining buffs
+                if (was_buff) {
+                    player_reapply_stat_buffs(&active_players[i]);
+                }
                 continue;
             }
 

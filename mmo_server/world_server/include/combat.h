@@ -12,6 +12,10 @@
 #include <stdio.h>
 #include <stdint.h>
 
+// Load per-class attack profiles from JSON (call before accepting clients).
+// Returns the number of profiles loaded, or 0 on failure (compiled defaults remain).
+int combat_profiles_load(const char* path);
+
 // Initialize the NPC world (call once at server startup)
 void combat_npc_init(NPCWorld* world);
 

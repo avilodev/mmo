@@ -18,7 +18,7 @@
 #include <time.h>
 #include "utils.h"
 
-const ClassAttackProfile g_class_profiles[5] = {
+ClassAttackProfile g_class_profiles[5] = {
     // [0] — unused (classes are 1-indexed)
     { .cast_time = 0.0f, .cooldown = 0.0f, .range = 0.0f,
       .base_damage = 0, .damage_variance = 0, .attack_type = 0,
@@ -30,7 +30,7 @@ const ClassAttackProfile g_class_profiles[5] = {
       .range         = 50.0f,
       .base_damage   = 50,
       .damage_variance = 20,
-      .attack_type   = 0,  // ATTACK_TYPE_SINGLE
+      .attack_type   = 0,
       .cone_half_angle = 0.0f,
       .line_width    = 0.0f },
 
@@ -40,7 +40,7 @@ const ClassAttackProfile g_class_profiles[5] = {
       .range         = 50.0f,
       .base_damage   = 15,
       .damage_variance = 15,
-      .attack_type   = 2,  // ATTACK_TYPE_CONE
+      .attack_type   = 2,
       .cone_half_angle = 30.0f,
       .line_width    = 0.0f },
 
@@ -50,7 +50,7 @@ const ClassAttackProfile g_class_profiles[5] = {
       .range         = 80.0f,
       .base_damage   = 35,
       .damage_variance = 25,
-      .attack_type   = 1,  // ATTACK_TYPE_AOE
+      .attack_type   = 1,
       .cone_half_angle = 0.0f,
       .line_width    = 0.0f },
 
@@ -60,10 +60,90 @@ const ClassAttackProfile g_class_profiles[5] = {
       .range         = 150.0f,
       .base_damage   = 20,
       .damage_variance = 20,
-      .attack_type   = 3,  // ATTACK_TYPE_LINE
+      .attack_type   = 3,
       .cone_half_angle = 0.0f,
       .line_width    = 12.0f }
 };
+
+// ---------------------------------------------------------------------------
+// Load attack profiles from JSON. Falls back to compiled-in defaults on error.
+// ---------------------------------------------------------------------------
+static const char* ap_find_value(const char* json, const char* key) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char* pos = strstr(json, search);
+    if (!pos) return NULL;
+    pos = strchr(pos, ':');
+    if (!pos) return NULL;
+    pos++;
+    while (*pos == ' ' || *pos == '\t') pos++;
+    return pos;
+}
+
+int combat_profiles_load(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "[COMBAT] Could not open %s — using compiled defaults\n", path);
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+    char* buf = malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return 0; }
+    fread(buf, 1, (size_t)size, f);
+    buf[size] = '\0';
+    fclose(f);
+
+    int loaded = 0;
+    const char* cur = buf;
+    while ((cur = strstr(cur, "\"class_id\"")) != NULL) {
+        const char* obj_start = cur;
+
+        // Find class_id
+        const char* v = ap_find_value(obj_start, "class_id");
+        if (!v) { cur++; continue; }
+        int class_id = atoi(v);
+        if (class_id < 1 || class_id > 4) { cur++; continue; }
+
+        ClassAttackProfile* p = &g_class_profiles[class_id];
+
+        v = ap_find_value(obj_start, "base_damage");
+        if (v) p->base_damage = atoi(v);
+
+        v = ap_find_value(obj_start, "damage_variance");
+        if (v) p->damage_variance = atoi(v);
+
+        v = ap_find_value(obj_start, "cast_time");
+        if (v) p->cast_time = (float)atof(v);
+
+        v = ap_find_value(obj_start, "cooldown");
+        if (v) p->cooldown = (float)atof(v);
+
+        v = ap_find_value(obj_start, "range");
+        if (v) p->range = (float)atof(v);
+
+        v = ap_find_value(obj_start, "attack_type");
+        if (v) p->attack_type = (uint8_t)atoi(v);
+
+        v = ap_find_value(obj_start, "cone_half_angle");
+        if (v) p->cone_half_angle = (float)atof(v);
+
+        v = ap_find_value(obj_start, "line_width");
+        if (v) p->line_width = (float)atof(v);
+
+        printf("[COMBAT] Loaded attack profile for class %d: "
+               "dmg=%d ±%d%% cast=%.2fs cd=%.2fs range=%.0f\n",
+               class_id, p->base_damage, p->damage_variance,
+               p->cast_time, p->cooldown, p->range);
+        loaded++;
+        cur++;
+    }
+
+    free(buf);
+    printf("[COMBAT] %d attack profile(s) loaded from %s\n", loaded, path);
+    return loaded;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers: time
@@ -253,11 +333,11 @@ static int compute_final_damage(int base_damage, int damage_variance,
                                 int attacker_int, int attacker_wis,
                                 uint8_t attacker_class,
                                 int target_defense) {
-    // 1. Base damage + stat bonus
-    int stat_bonus = combat_stat_bonus_damage(attacker_str, attacker_agi,
-                                               attacker_int, attacker_wis,
-                                               attacker_class);
-    int damage = base_damage + stat_bonus;
+    (void)attacker_agi; (void)attacker_int; (void)attacker_wis; (void)attacker_class;
+    // 1. STR scales basic attack damage for all classes equally.
+    //    Ability damage uses per-class primary stat (in ability_handler.c).
+    float mult = 1.0f + ((float)attacker_str / STAT_DAMAGE_DIVISOR);
+    int damage = (int)((float)base_damage * mult);
 
     // 2. Random variance
     if (damage_variance > 0) {
@@ -537,6 +617,7 @@ void combat_tick(NPCWorld* world) {
         int a_int   = active_players[i].intelligence;
         int a_wis   = active_players[i].wisdom;
         int a_wpn   = active_players[i].weapon_damage;
+        int a_luck  = active_players[i].luck;
         uint8_t a_class = active_players[i].player_class;
         pthread_mutex_unlock(&active_players[i].lock);
 
@@ -562,6 +643,7 @@ void combat_tick(NPCWorld* world) {
             uint32_t damage;
             uint32_t new_health;
             uint8_t  is_kill;
+            uint8_t  is_crit;
             uint64_t xp_reward;
             uint32_t gold_reward;
             uint16_t npc_type_id;   // For loot roll on kill
@@ -602,6 +684,9 @@ void combat_tick(NPCWorld* world) {
                     int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
                                                        a_str, a_agi, a_int, a_wis, a_class,
                                                        best->defense);
+                    uint8_t is_crit = (uint8_t)combat_check_crit(a_luck);
+                    if (is_crit) damage = (int)((float)damage * CRIT_DAMAGE_MULTIPLIER);
+
                     best->health -= damage;
                     if (best->health < 0) best->health = 0;
 
@@ -615,6 +700,7 @@ void combat_tick(NPCWorld* world) {
                     hits[hit_count].damage      = (uint32_t)damage;
                     hits[hit_count].new_health  = (uint32_t)best->health;
                     hits[hit_count].is_kill     = is_kill;
+                    hits[hit_count].is_crit     = is_crit;
                     hits[hit_count].xp_reward   = (is_kill && best->xp_reward > 0) ? best->xp_reward : 0;
                     hits[hit_count].gold_reward = is_kill ? best->gold_reward : 0;
                     hits[hit_count].npc_type_id = best->npc_type_id;
@@ -622,9 +708,10 @@ void combat_tick(NPCWorld* world) {
                     hits[hit_count].npc_y       = best->pos_y;
                     hit_count++;
 
-                    printf("[COMBAT] %u hit NPC %u (%s) for %d dmg (hp=%d)%s\n",
-                           attacker_id, best->id, best->name, damage, best->health,
-                           is_kill ? " — KILLED" : "");
+                    printf("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s\n",
+                           attacker_id, best->id, best->name, damage,
+                           is_crit ? " (CRIT)" : "",
+                           best->health, is_kill ? " — KILLED" : "");
                 }
             }
 
@@ -734,6 +821,8 @@ void combat_tick(NPCWorld* world) {
             int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
                                                a_str, a_agi, a_int, a_wis, a_class,
                                                npc->defense);
+            uint8_t is_crit = (uint8_t)combat_check_crit(a_luck);
+            if (is_crit) damage = (int)((float)damage * CRIT_DAMAGE_MULTIPLIER);
 
             npc->health -= damage;
             if (npc->health < 0) npc->health = 0;
@@ -748,6 +837,7 @@ void combat_tick(NPCWorld* world) {
             hits[hit_count].damage      = (uint32_t)damage;
             hits[hit_count].new_health  = (uint32_t)npc->health;
             hits[hit_count].is_kill     = is_kill;
+            hits[hit_count].is_crit     = is_crit;
             hits[hit_count].xp_reward   = (is_kill && npc->xp_reward > 0) ? npc->xp_reward : 0;
             hits[hit_count].gold_reward = is_kill ? npc->gold_reward : 0;
             hits[hit_count].npc_type_id = npc->npc_type_id;
@@ -755,9 +845,10 @@ void combat_tick(NPCWorld* world) {
             hits[hit_count].npc_y       = npc->pos_y;
             hit_count++;
 
-            printf("[COMBAT] %u hit NPC %u (%s) for %d dmg (hp=%d)%s\n",
-                   attacker_id, npc->id, npc->name, damage, npc->health,
-                   is_kill ? " — KILLED" : "");
+            printf("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s\n",
+                   attacker_id, npc->id, npc->name, damage,
+                   is_crit ? " (CRIT)" : "",
+                   npc->health, is_kill ? " — KILLED" : "");
         }
 
         pthread_mutex_unlock(&world->lock);
@@ -772,6 +863,7 @@ void combat_tick(NPCWorld* world) {
             dmg.damage              = htonl(hits[h].damage);
             dmg.target_new_health   = htonl(hits[h].new_health);
             dmg.is_kill             = hits[h].is_kill;
+            dmg.is_crit             = hits[h].is_crit;
             server_send(client_fd, &dmg, sizeof(dmg));
 
             if (hits[h].is_kill) {
@@ -814,7 +906,7 @@ void combat_tick(NPCWorld* world) {
                 active_players[i].health > 0 &&
                 active_players[i].health < active_players[i].max_health) {
 
-                float regen = combat_hp_regen_rate(active_players[i].max_health) * dt;
+                float regen = combat_hp_regen_rate(active_players[i].max_health) * combat_reg_heal_mult(active_players[i].reg) * dt;
                 hp_accum[i] += regen;
 
                 if (hp_accum[i] >= 1.0f) {

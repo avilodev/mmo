@@ -86,6 +86,10 @@ void ability_handle_cast_cancel(int client_fd, uint32_t caster_id);
 // ticks projectiles, regens mana.
 void ability_tick(NPCWorld* world, double delta_time);
 
+// Send the player's current ability bar data (IDs, names, cooldowns, costs) to client.
+// Call after player_send_stats() on world entry and after level-up.
+void ability_send_data(int client_fd, ActivePlayer* player);
+
 // Cleanup
 void ability_handler_cleanup(void);
 
