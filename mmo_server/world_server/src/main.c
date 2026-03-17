@@ -244,6 +244,11 @@ void* client_handler_thread(void* arg) {
     
 client_done:
     if (authenticated) {
+        // Remove from registry FIRST so a fast reconnect isn't blocked
+        // while the (potentially slow) database save runs below.
+        session_registry_remove(client_fd);
+        g_state.current_players--;
+
         party_handle_disconnect(character_id);
         ActivePlayer* player = player_acquire(character_id);
         if (player) {
@@ -251,8 +256,6 @@ client_done:
             player_release(player);
         }
         player_remove_active(character_id);
-        session_registry_remove(client_fd);
-        g_state.current_players--;
         printf("Account %u, Character %u disconnected\n", account_id, character_id);
     }
 
