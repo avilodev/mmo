@@ -1,0 +1,9 @@
+{
+  "npc_types": [
+    { "id": 0, "name": "Friendly Guard" },
+    { "id": 1, "name": "Training Dummy" },
+    { "id": 2, "name": "Goblin Archer" },
+    { "id": 3, "name": "Skeleton Warrior" },
+    { "id": 4, "name": "Dark Mage" }
+  ]
+}
