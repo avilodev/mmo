@@ -81,6 +81,7 @@ void* client_handler_thread(void* arg) {
                             RealmConnectAckPacket response = {0};
                             response.header.type = PACKET_REALM_CONNECT_ACK;
                             response.header.player_id = htonl(account_id);
+                            response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                             response.success = 1;
                             strncpy(response.message, "Welcome to Realm Server", 127);
 
@@ -103,6 +104,7 @@ void* client_handler_thread(void* arg) {
                 printf("Client fd %d: Sending authentication failure response\n", client_fd);
                 RealmConnectAckPacket response = {0};
                 response.header.type = PACKET_REALM_CONNECT_ACK;
+                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                 response.success = 0;
                 strncpy(response.message, "Invalid session", 127);
                 if (send(client_fd, &response, sizeof(response), 0) != (ssize_t)sizeof(response))
@@ -111,10 +113,32 @@ void* client_handler_thread(void* arg) {
                 break;
             }
             
-            // Handle realm packets
-            printf("Client fd %d: Processing authenticated packet (%zd bytes)\n", client_fd, buf_len);
-            process_packet(client_fd, account_id, buffer, buf_len);
-            buf_len = 0;
+            // Handle realm packets — drain all complete packets from buffer
+            uint8_t* ptr = buffer;
+            ssize_t remaining = buf_len;
+
+            while (remaining >= (ssize_t)sizeof(PacketHeader)) {
+                PacketHeader* hdr = (PacketHeader*)ptr;
+                ssize_t pkt_size = (ssize_t)sizeof(PacketHeader) + (ssize_t)ntohs(hdr->payload_size);
+
+                if (pkt_size > (ssize_t)MAX_PACKET_SIZE) {
+                    printf("Client fd %d: oversized packet (%zd bytes), disconnecting\n", client_fd, pkt_size);
+                    goto disconnect;
+                }
+
+                if (remaining < pkt_size)
+                    break;  // incomplete — wait for more data
+
+                printf("Client fd %d: Processing authenticated packet (%zd bytes)\n", client_fd, pkt_size);
+                process_packet(client_fd, account_id, ptr, pkt_size);
+
+                ptr += pkt_size;
+                remaining -= pkt_size;
+            }
+
+            if (remaining > 0 && ptr != buffer)
+                memmove(buffer, ptr, (size_t)remaining);
+            buf_len = remaining;
         }
         
         if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
@@ -123,6 +147,7 @@ void* client_handler_thread(void* arg) {
         }
     }
     
+disconnect:
     close(client_fd);
     printf("Realm client handler exiting for fd %d\n", client_fd);
     return NULL;

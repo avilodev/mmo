@@ -2,7 +2,7 @@
 
 void handle_ping(int client_fd, uint8_t* buffer) {
     // Echo back the ping packet
-    send(client_fd, buffer, sizeof(PacketHeader), 0);
+    server_send(client_fd, buffer, sizeof(PacketHeader));
 }
 
 void handle_request_player_data(int client_fd, uint32_t character_id) {
@@ -47,7 +47,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
         correction.pos_x = player->pos_x;
         correction.pos_y = player->pos_y;
         
-        send(client_fd, &correction, sizeof(correction), 0);
+        server_send(client_fd, &correction, sizeof(correction));
         player_release(player);
         return;
     }
@@ -90,7 +90,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader)); 
         response.success = 0;
         strncpy(response.message, "Item not in inventory", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
     
@@ -106,7 +106,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader)); 
         response.success = 0;
         strncpy(response.message, "Invalid item", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
     
@@ -120,7 +120,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         response.header.player_id = htonl(character_id);
         response.success = 0;
         strncpy(response.message, "Invalid slot for this item", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
     
@@ -134,7 +134,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         response.header.player_id = htonl(character_id);
         response.success = 0;
         strncpy(response.message, "Requirements not met", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
     
@@ -189,7 +189,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
                     response.header.player_id = htonl(character_id);
                     response.success = 0;
                     strncpy(response.message, "Inventory full (off-hand)", sizeof(response.message) - 1);
-                    send(client_fd, &response, sizeof(response), 0);
+                    server_send(client_fd, &response, sizeof(response));
                     return;
                 }
                 player->inventory[offhand_slot] = player->second_hand;
@@ -209,7 +209,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
                     response.header.player_id = htonl(character_id);
                     response.success = 0;
                     strncpy(response.message, "Cannot equip with two-handed weapon", sizeof(response.message) - 1);
-                    send(client_fd, &response, sizeof(response), 0);
+                    server_send(client_fd, &response, sizeof(response));
                     return;
                 }
             }
@@ -242,7 +242,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     response.returned_item = htonl(old_item);
     snprintf(response.message, sizeof(response.message), "Equipped: %s", item->name);
 
-    send(client_fd, &response, sizeof(response), 0);
+    server_send(client_fd, &response, sizeof(response));
 
     // Send updated stats to client
     player_send_stats(client_fd, player);
@@ -281,7 +281,7 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
         response.header.player_id = htonl(character_id);
         response.success = 0;
         strncpy(response.message, "Inventory full", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
     
@@ -345,7 +345,7 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     response.inventory_slot = inventory_slot;
     strncpy(response.message, "Item unequipped", sizeof(response.message) - 1);
 
-    send(client_fd, &response, sizeof(response), 0);
+    server_send(client_fd, &response, sizeof(response));
 
     // Send updated stats to client
     player_send_stats(client_fd, player);
@@ -376,7 +376,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
         player_release(player);
         response.success = 0;
         strncpy(response.message, "No item in that slot", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
 
@@ -386,7 +386,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
         player_release(player);
         response.success = 0;
         strncpy(response.message, "Invalid item", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
 
@@ -395,7 +395,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
         player_release(player);
         response.success = 0;
         strncpy(response.message, "Item is not consumable", sizeof(response.message) - 1);
-        send(client_fd, &response, sizeof(response), 0);
+        server_send(client_fd, &response, sizeof(response));
         return;
     }
 
@@ -411,7 +411,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
             response.success = 0;
             snprintf(response.message, sizeof(response.message),
                      "On cooldown (%.1fs)", item->use_cooldown - elapsed);
-            send(client_fd, &response, sizeof(response), 0);
+            server_send(client_fd, &response, sizeof(response));
             return;
         }
     }
@@ -464,7 +464,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     player_release(player);
 
     snprintf(response.message, sizeof(response.message), "Used %s", item->name);
-    send(client_fd, &response, sizeof(response), 0);
+    server_send(client_fd, &response, sizeof(response));
     printf("Character %u used %s (HP+%d, MP+%d)\n",
            character_id, item->name, hp_changed, mp_changed);
 }
@@ -505,7 +505,7 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     response.header.payload_size = htons(sizeof(DropItemResponsePacket) - sizeof(PacketHeader)); 
     response.success = 1;
     response.dropped_item = htonl(item_id);
-    send(client_fd, &response, sizeof(response), 0);
+    server_send(client_fd, &response, sizeof(response));
 }
 
 void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
@@ -540,7 +540,7 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     response.from_slot = from_slot;
     response.to_slot = to_slot;
     
-    send(client_fd, &response, sizeof(response), 0);
+    server_send(client_fd, &response, sizeof(response));
     printf("Character %u moved item from slot %u to %u\n", character_id, from_slot, to_slot);
 }
 
@@ -607,13 +607,13 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
             pthread_mutex_unlock(&active_players[i].lock);
 
             if (in_range) {
-                send(fd, &msg, sizeof(msg), 0);
+                server_send(fd, &msg, sizeof(msg));
             }
         } else if (channel == CHAT_CHANNEL_GLOBAL) {
             pthread_mutex_lock(&active_players[i].lock);
             int fd = active_players[i].client_fd;
             pthread_mutex_unlock(&active_players[i].lock);
-            send(fd, &msg, sizeof(msg), 0);
+            server_send(fd, &msg, sizeof(msg));
         } else if (channel == CHAT_CHANNEL_PARTY) {
             // Only send to party members
             pthread_mutex_lock(&active_players[i].lock);
@@ -622,7 +622,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
             pthread_mutex_unlock(&active_players[i].lock);
 
             if (sender_party != 0 && their_party == sender_party) {
-                send(fd, &msg, sizeof(msg), 0);
+                server_send(fd, &msg, sizeof(msg));
             }
         }
     }
@@ -724,7 +724,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     if (target) {
         int fd = target->client_fd;
         player_release(target);
-        send(fd, &notify, sizeof(notify), 0);
+        server_send(fd, &notify, sizeof(notify));
     }
 
     printf("[PARTY] Player %u invited '%s' (%u) to party\n", character_id, target_name, target_id);

@@ -119,8 +119,9 @@ void* client_handler_thread(void* arg) {
                                 
                                 WorldConnectAckPacket response = {0};
                                 response.header.type = PACKET_WORLD_CONNECT_ACK;
+                                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                                 response.success = 0;
-                                strncpy(response.welcome_message, 
+                                strncpy(response.welcome_message,
                                     "Character ownership verification failed", 127);
                                 send(client_fd, &response, sizeof(response), 0);
                                 break;  // Exit without adding to registry
@@ -132,8 +133,9 @@ void* client_handler_thread(void* arg) {
                                 
                                 WorldConnectAckPacket response = {0};
                                 response.header.type = PACKET_WORLD_CONNECT_ACK;
+                                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                                 response.success = 0;
-                                strncpy(response.welcome_message, 
+                                strncpy(response.welcome_message,
                                     "Account already logged in", 127);
                                 send(client_fd, &response, sizeof(response), 0);
                                 break;
@@ -147,10 +149,11 @@ void* client_handler_thread(void* arg) {
                                 WorldConnectAckPacket response = {0};
                                 response.header.type = PACKET_WORLD_CONNECT_ACK;
                                 response.header.player_id = htonl(character_id);
+                                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                                 response.success = 1;
-                                strncpy(response.welcome_message, 
+                                strncpy(response.welcome_message,
                                     "Welcome to the world!", 127);
-                                
+
                                 send(client_fd, &response, sizeof(response), 0);
                                 player_send_data_response(client_fd, character_id);
 
@@ -178,6 +181,7 @@ void* client_handler_thread(void* arg) {
                         // Authentication failed - send error and disconnect
                         WorldConnectAckPacket response = {0};
                         response.header.type = PACKET_WORLD_CONNECT_ACK;
+                        response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                         response.success = 0;
                         strncpy(response.welcome_message, "Invalid ticket", 127);
                         send(client_fd, &response, sizeof(response), 0);

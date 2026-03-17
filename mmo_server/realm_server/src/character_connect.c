@@ -36,7 +36,10 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
         response.characters[i].race_id = htonl(characters[i].player_race);
     }
     
-    send(client_fd, &response, sizeof(CharacterListResponsePacket), 0);
+    size_t send_size = offsetof(CharacterListResponsePacket, characters) +
+                       (size_t)response.count * sizeof(response.characters[0]);
+    response.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+    send(client_fd, &response, send_size, 0);
     printf("Sent %d characters to account %u for world %u\n", count, account_id, world_id);
 }
 
@@ -46,6 +49,7 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     CharacterCreateResponsePacket response = {0};
     response.header.type = PACKET_CHARACTER_CREATE_RESPONSE;
     response.header.player_id = htonl(account_id);
+    response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
     response.world_id = htonl(world_id);
     
     // Check character limit per world
@@ -107,6 +111,7 @@ void handle_character_delete_request(int client_fd, uint32_t account_id,
     CharacterDeleteResponsePacket response = {0};
     response.header.type = PACKET_CHARACTER_DELETE_RESPONSE;
     response.header.player_id = htonl(account_id);
+    response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
     response.character_id = htonl(character_id);
     response.world_id = htonl(world_id);
     

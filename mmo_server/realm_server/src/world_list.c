@@ -73,8 +73,11 @@ void world_send_list(int client_fd, uint32_t account_id) {
     
     int world_count = response.count;
     pthread_mutex_unlock(&g_server.world_servers_lock);
-    
-    send(client_fd, &response, sizeof(WorldListResponsePacket), 0);
+
+    size_t send_size = offsetof(WorldListResponsePacket, worlds) +
+                       (size_t)response.count * sizeof(WorldInfo);
+    response.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+    send(client_fd, &response, send_size, 0);
     printf("Sent world list with %d worlds to account %u\n", world_count, account_id);
 }
 
@@ -95,6 +98,7 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
         EnterWorldResponsePacket response = {0};
         response.header.type = PACKET_ENTER_WORLD_RESPONSE;
         response.header.player_id = htonl(account_id);
+        response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
         response.success = 0;
         strncpy(response.message, "Character does not belong to account", sizeof(response.message) - 1);
         response.message[sizeof(response.message) - 1] = '\0';
@@ -118,6 +122,7 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     memset(&response, 0, sizeof(response));
     response.header.type = PACKET_ENTER_WORLD_RESPONSE;
     response.header.player_id = htonl(account_id);
+    response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
     
     if (!selected_world) {
         pthread_mutex_unlock(&g_server.world_servers_lock);
