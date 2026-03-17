@@ -293,6 +293,9 @@ client_done:
                     save_data.blessing      = player->blessing;
                     memcpy(save_data.inventory, player->inventory, sizeof(save_data.inventory));
                     do_save = 1;
+                    // Clear dirty flag so player_remove_active won't do a
+                    // redundant DB write while holding active_players_lock.
+                    player->is_dirty = 0;
                 }
                 player_release(player);   // Release slot lock NOW, before DB write
                 player_remove_active(character_id);

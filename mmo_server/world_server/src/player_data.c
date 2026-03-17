@@ -51,18 +51,45 @@ int playerdata_init(const char* conn_str) {
 
 void playerdata_close(void) {
     printf("Closing player data system...\n");
-    
-    // Save all active players before shutdown
+
+    // Snapshot all loaded players, clear slots, then save lock-free
+    CharacterInfo save_buf[MAX_PLAYERS];
+    int save_count = 0;
+
     pthread_mutex_lock(&active_players_lock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (active_players[i].is_loaded) {
             pthread_mutex_lock(&active_players[i].lock);
-            playerdata_save(&active_players[i]);
+            CharacterInfo* d = &save_buf[save_count++];
+            memset(d, 0, sizeof(*d));
+            d->character_id = active_players[i].character_id;
+            d->level        = active_players[i].level;
+            d->pos_x        = active_players[i].pos_x;
+            d->pos_y        = active_players[i].pos_y;
+            d->health       = active_players[i].health;
+            d->max_health   = active_players[i].max_health;
+            d->mana         = active_players[i].mana;
+            d->max_mana     = active_players[i].max_mana;
+            d->experience   = active_players[i].experience;
+            d->gold         = active_players[i].gold;
+            d->helmet       = active_players[i].helmet;
+            d->gloves       = active_players[i].gloves;
+            d->chest_armor  = active_players[i].chest_armor;
+            d->leggings     = active_players[i].leggings;
+            d->boots        = active_players[i].boots;
+            d->main_hand    = active_players[i].main_hand;
+            d->second_hand  = active_players[i].second_hand;
+            d->blessing     = active_players[i].blessing;
+            memcpy(d->inventory, active_players[i].inventory, sizeof(d->inventory));
             pthread_mutex_unlock(&active_players[i].lock);
         }
         pthread_mutex_destroy(&active_players[i].lock);
     }
     pthread_mutex_unlock(&active_players_lock);
+
+    for (int i = 0; i < save_count; i++) {
+        character_update_full_data(&save_buf[i]);
+    }
     
     // Close database connection
     character_database_close();
@@ -349,6 +376,9 @@ void player_remove_active(uint32_t character_id) {
     printf("[PLAYER_REMOVE] char=%u: acquiring active_players_lock\n", character_id);
     pthread_mutex_lock(&active_players_lock);
 
+    CharacterInfo save_data;
+    int do_save = 0;
+
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (active_players[i].is_loaded &&
             active_players[i].character_id == character_id) {
@@ -359,8 +389,29 @@ void player_remove_active(uint32_t character_id) {
             pthread_mutex_lock(&active_players[i].lock);
 
             if (active_players[i].is_dirty) {
-                printf("[PLAYER_REMOVE] char=%u: slot is dirty — saving before removal\n", character_id);
-                playerdata_save(&active_players[i]);
+                // Copy data out while we hold the lock, then save after releasing
+                printf("[PLAYER_REMOVE] char=%u: slot is dirty — copying for lock-free save\n", character_id);
+                memset(&save_data, 0, sizeof(save_data));
+                save_data.character_id = active_players[i].character_id;
+                save_data.level        = active_players[i].level;
+                save_data.pos_x        = active_players[i].pos_x;
+                save_data.pos_y        = active_players[i].pos_y;
+                save_data.health       = active_players[i].health;
+                save_data.max_health   = active_players[i].max_health;
+                save_data.mana         = active_players[i].mana;
+                save_data.max_mana     = active_players[i].max_mana;
+                save_data.experience   = active_players[i].experience;
+                save_data.gold         = active_players[i].gold;
+                save_data.helmet       = active_players[i].helmet;
+                save_data.gloves       = active_players[i].gloves;
+                save_data.chest_armor  = active_players[i].chest_armor;
+                save_data.leggings     = active_players[i].leggings;
+                save_data.boots        = active_players[i].boots;
+                save_data.main_hand    = active_players[i].main_hand;
+                save_data.second_hand  = active_players[i].second_hand;
+                save_data.blessing     = active_players[i].blessing;
+                memcpy(save_data.inventory, active_players[i].inventory, sizeof(save_data.inventory));
+                do_save = 1;
             }
 
             pthread_mutex_t saved_lock = active_players[i].lock;
@@ -368,13 +419,19 @@ void player_remove_active(uint32_t character_id) {
             active_players[i].lock = saved_lock;
 
             pthread_mutex_unlock(&active_players[i].lock);
-
             printf("[PLAYER_REMOVE] char=%u: slot=%d cleared (was fd=%d)\n", character_id, i, slot_fd);
             break;
         }
     }
 
     pthread_mutex_unlock(&active_players_lock);
+
+    // DB write is done after all locks are released
+    if (do_save) {
+        printf("[PLAYER_REMOVE] char=%u: writing to DB (lock-free)\n", character_id);
+        character_update_full_data(&save_data);
+    }
+
     printf("[PLAYER_REMOVE] char=%u: done\n", character_id);
 }
 
