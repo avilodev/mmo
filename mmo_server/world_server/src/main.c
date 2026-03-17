@@ -16,6 +16,7 @@
 #include "routes.h"
 #include "packet_handler.h"
 #include "player_data.h"
+#include "players_database.h"
 #include "session_registry.h"
 #include "party.h"
 #include "utils.h"
@@ -261,12 +262,39 @@ client_done:
         // client_fd no longer matches ours, the new session owns it — leave it alone.
         printf("[CLEANUP] fd=%d: acquiring player slot for char=%u\n", client_fd, character_id);
         ActivePlayer* player = player_acquire(character_id);
+        int do_save = 0;
+        CharacterInfo save_data;  // Local copy for lock-free DB save
         if (player) {
             if (player->client_fd == client_fd) {
-                printf("[CLEANUP] fd=%d: we own the slot — saving and removing char=%u\n",
+                printf("[CLEANUP] fd=%d: we own the slot — copying save data for char=%u\n",
                        client_fd, character_id);
-                if (player->is_loaded) playerdata_save(player);
-                player_release(player);
+                if (player->is_loaded) {
+                    // Copy data out quickly while holding the slot lock,
+                    // then release the lock so broadcast threads aren't blocked
+                    // for the entire duration of the DB write (~1-2s).
+                    memset(&save_data, 0, sizeof(save_data));
+                    save_data.character_id  = player->character_id;
+                    save_data.level         = player->level;
+                    save_data.pos_x         = player->pos_x;
+                    save_data.pos_y         = player->pos_y;
+                    save_data.health        = player->health;
+                    save_data.max_health    = player->max_health;
+                    save_data.mana          = player->mana;
+                    save_data.max_mana      = player->max_mana;
+                    save_data.experience    = player->experience;
+                    save_data.gold          = player->gold;
+                    save_data.helmet        = player->helmet;
+                    save_data.gloves        = player->gloves;
+                    save_data.chest_armor   = player->chest_armor;
+                    save_data.leggings      = player->leggings;
+                    save_data.boots         = player->boots;
+                    save_data.main_hand     = player->main_hand;
+                    save_data.second_hand   = player->second_hand;
+                    save_data.blessing      = player->blessing;
+                    memcpy(save_data.inventory, player->inventory, sizeof(save_data.inventory));
+                    do_save = 1;
+                }
+                player_release(player);   // Release slot lock NOW, before DB write
                 player_remove_active(character_id);
             } else {
                 printf("[CLEANUP] fd=%d: slot now owned by fd=%d (new session for char=%u) — skipping save/remove\n",
@@ -276,6 +304,11 @@ client_done:
         } else {
             printf("[CLEANUP] fd=%d: player slot not found for char=%u (already removed?)\n",
                    client_fd, character_id);
+        }
+        // DB write happens AFTER all locks are released — doesn't block broadcast threads
+        if (do_save) {
+            printf("[CLEANUP] fd=%d: saving char=%u to DB (lock-free)\n", client_fd, character_id);
+            character_update_full_data(&save_data);
         }
         printf("Account %u, Character %u disconnected (fd=%d)\n", account_id, character_id, client_fd);
     }

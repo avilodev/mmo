@@ -277,12 +277,11 @@ int player_add_active(uint32_t character_id, int client_fd) {
     active_players[slot].client_fd = client_fd;
     // is_loaded stays 0 until load succeeds — other threads skip this slot
 
-    // Release global lock before DB load so broadcast/acquire threads aren't
-    // frozen for the duration of the PostgreSQL query.  The per-slot lock
-    // (still held) guards the slot until load completes.
-    pthread_mutex_unlock(&active_players_lock);
-
-    printf("[PLAYER_ADD] char=%u fd=%d: released global lock, starting DB load\n", character_id, client_fd);
+    // NOTE: active_players_lock is held for the entire DB load to prevent the
+    // broadcast thread from seeing is_loaded=1 (set by playerdata_load) and
+    // trying to take the slot lock while we still hold it — that would deadlock.
+    // Broadcasts simply wait until login completes (<2s typically).
+    printf("[PLAYER_ADD] char=%u fd=%d: starting DB load (holding global lock)\n", character_id, client_fd);
 
     if (!playerdata_load(character_id, &active_players[slot])) {
         // Clear the slot on failure so it's available again
@@ -290,11 +289,13 @@ int player_add_active(uint32_t character_id, int client_fd) {
         memset(&active_players[slot], 0, sizeof(ActivePlayer));
         active_players[slot].lock = fail_lock;
         pthread_mutex_unlock(&active_players[slot].lock);
+        pthread_mutex_unlock(&active_players_lock);
         fprintf(stderr, "[PLAYER_ADD] char=%u fd=%d: DB load failed!\n", character_id, client_fd);
         return 0;
     }
 
     pthread_mutex_unlock(&active_players[slot].lock);
+    pthread_mutex_unlock(&active_players_lock);
 
     printf("[PLAYER_ADD] char=%u fd=%d: slot=%d loaded successfully\n", character_id, client_fd, slot);
     return 1;
@@ -461,19 +462,50 @@ void* periodic_save_thread(void* arg) {
         // If we were told to stop, exit immediately
         if (!g_save_thread_running) break;
 
-        // Do the save pass
+        // Do the save pass.
+        // Copy dirty players out while holding locks (fast), then save to DB
+        // without holding any lock so broadcast threads aren't starved.
+        typedef struct { uint32_t character_id; CharacterInfo data; } SaveEntry;
+        SaveEntry save_queue[MAX_PLAYERS];
+        int save_count = 0;
+
         pthread_mutex_lock(&active_players_lock);
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (!active_players[i].is_loaded) continue;
-
             pthread_mutex_lock(&active_players[i].lock);
             if (active_players[i].is_dirty) {
-                printf("Periodic save: character %u\n", active_players[i].character_id);
-                playerdata_save(&active_players[i]);
+                SaveEntry* e = &save_queue[save_count++];
+                e->character_id             = active_players[i].character_id;
+                e->data.character_id        = active_players[i].character_id;
+                e->data.level               = active_players[i].level;
+                e->data.pos_x               = active_players[i].pos_x;
+                e->data.pos_y               = active_players[i].pos_y;
+                e->data.health              = active_players[i].health;
+                e->data.max_health          = active_players[i].max_health;
+                e->data.mana                = active_players[i].mana;
+                e->data.max_mana            = active_players[i].max_mana;
+                e->data.experience          = active_players[i].experience;
+                e->data.gold                = active_players[i].gold;
+                e->data.helmet              = active_players[i].helmet;
+                e->data.gloves              = active_players[i].gloves;
+                e->data.chest_armor         = active_players[i].chest_armor;
+                e->data.leggings            = active_players[i].leggings;
+                e->data.boots               = active_players[i].boots;
+                e->data.main_hand           = active_players[i].main_hand;
+                e->data.second_hand         = active_players[i].second_hand;
+                e->data.blessing            = active_players[i].blessing;
+                memcpy(e->data.inventory, active_players[i].inventory, sizeof(e->data.inventory));
+                active_players[i].is_dirty = 0;  // Clear dirty flag while we have the lock
             }
             pthread_mutex_unlock(&active_players[i].lock);
         }
         pthread_mutex_unlock(&active_players_lock);
+
+        // Now write to DB without holding any locks
+        for (int i = 0; i < save_count; i++) {
+            printf("Periodic save: character %u\n", save_queue[i].character_id);
+            character_update_full_data(&save_queue[i].data);
+        }
     }
 
     printf("Periodic save thread exiting\n");
