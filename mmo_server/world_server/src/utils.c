@@ -27,10 +27,11 @@ ssize_t server_send(int fd, void* buf, size_t len) {
         PacketHeader* hdr = (PacketHeader*)buf;
         hdr->payload_size = htons((uint16_t)(len - sizeof(PacketHeader)));
     }
-    ssize_t sent = send(fd, buf, len, MSG_NOSIGNAL);
+    ssize_t sent = send(fd, buf, len, MSG_NOSIGNAL | MSG_DONTWAIT);
     if (sent < 0) {
-        // EPIPE/ECONNRESET = client disconnected, not worth logging loudly
-        if (errno != EPIPE && errno != ECONNRESET) {
+        // EPIPE/ECONNRESET = client disconnected; EAGAIN/EWOULDBLOCK = buffer full (dead/slow client)
+        if (errno != EPIPE && errno != ECONNRESET &&
+            errno != EAGAIN && errno != EWOULDBLOCK) {
             fprintf(stderr, "[NET] send() failed on fd %d: %s\n", fd, strerror(errno));
         }
     }

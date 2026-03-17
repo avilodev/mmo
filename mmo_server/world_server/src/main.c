@@ -173,7 +173,7 @@ void* client_handler_thread(void* arg) {
                                 // Send stats once explicitly (no longer hidden inside data response)
                                 ActivePlayer* p = player_acquire(character_id);
                                 if (p) {
-                                    player_send_stats(client_fd, p);
+                                    player_send_stats_locked(client_fd, p);
                                     ability_send_data(client_fd, p);
                                     p->is_ready = 1;  // Handshake complete, allow broadcasts
                                     player_release(p);
@@ -666,7 +666,7 @@ void* player_broadcast_thread(void* arg) {
                 size_t send_size = offsetof(PlayerPositionBroadcastPacket, players) +
                                    pkt.count * sizeof(NearbyPlayerData);
                 pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-                send(snapshots[i].client_fd, &pkt, send_size, 0);
+                send(snapshots[i].client_fd, &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
             }
         }
 
@@ -772,7 +772,7 @@ void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPC
         size_t send_size = offsetof(NPCPositionPacket, npcs) +
                            pkt.npc_count * sizeof(NPCPositionData);
         pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-        send(client_fd, &pkt, send_size, 0);
+        send(client_fd, &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
     }
 }
 
@@ -869,7 +869,7 @@ void* npc_broadcast_thread(void* arg) {
                            pkt.npc_count, players_snapshot[i].character_id);
                     s_npc_send_logged = 1;
                 }
-                send(players_snapshot[i].client_fd, &pkt, send_size, 0);
+                send(players_snapshot[i].client_fd, &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
             }
         }
         

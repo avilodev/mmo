@@ -493,7 +493,7 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     pthread_mutex_unlock(&player->lock);
 
     // Send packet
-    send(client_fd, response, sizeof(CharacterInfo), 0);
+    send(client_fd, response, sizeof(CharacterInfo), MSG_NOSIGNAL | MSG_DONTWAIT);
     free(response);
 
     printf("Sent player data for character %u\n", character_id);
