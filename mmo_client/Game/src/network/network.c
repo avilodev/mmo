@@ -1848,7 +1848,8 @@ int network_connect_to_world(const char* ip, uint16_t port,
     WorldConnectPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_WORLD_CONNECT;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(character_id);
+    pkt.header.payload_size = htons(sizeof(WorldConnectPacket) - sizeof(PacketHeader));
     memcpy(pkt.game_ticket, game_ticket, 64);
     pkt.character_id = htonl(character_id);
     

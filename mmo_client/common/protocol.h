@@ -496,7 +496,6 @@ typedef struct {
     uint32_t     target_new_health; // Authoritative HP after hit
     uint8_t      is_kill;           // 1 if this hit brought target to 0
     uint8_t      is_crit;           // 1 if this was a critical hit
-    uint8_t      _pad[2];
 } DamageV2Packet;
 
 typedef struct {
@@ -540,7 +539,6 @@ typedef struct {
     int32_t      target_new_health;
     uint8_t      is_kill;
     uint8_t      is_crit;           // 1 if this was a critical hit or heal
-    uint8_t      _pad[2];
 } AbilityEffectPacket;
 
 // Bidirectional: Ability cast cancelled
@@ -596,18 +594,18 @@ typedef struct {
 
 // Server -> Client: Ability bar loadout (sent on world entry and on level-up)
 typedef struct {
+    uint16_t id;
+    char     name[24];
+    float    cooldown;
+    float    cast_time;
+    int16_t  mana_cost;
+    char     image[32];  // Icon filename, e.g. "cleave.png" — looked up in Game/Sprites/Abilities/
+} AbilitySlotInfo;
+
+typedef struct {
     PacketHeader header;
     uint8_t  count;
-    uint8_t  _pad[3];
-    struct {
-        uint16_t id;
-        char     name[24];
-        float    cooldown;
-        float    cast_time;
-        int16_t  mana_cost;
-        uint8_t  _pad2[2];
-        char     image[32];  // Icon filename, e.g. "cleave.png" — looked up in Game/Sprites/Abilities/
-    } slots[5];
+    AbilitySlotInfo slots[5];
 } AbilityDataPacket;
 
 // ============================================================================
