@@ -1,6 +1,8 @@
 #include "session_registry.h"
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <sys/socket.h>
 
 SessionRegistry g_session_registry;
 
@@ -11,15 +13,27 @@ void session_registry_init(void) {
 
 int session_registry_add(int fd, uint32_t account_id, uint32_t character_id) {
     pthread_rwlock_wrlock(&g_session_registry.lock);
-    
-    // Check if account already logged in
+
+    // If the account is already logged in, kick the stale session so the new
+    // login can proceed.  This handles half-open TCP connections where the
+    // client closed the socket but the server never received the FIN/RST.
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (g_session_registry.entries[i].active && 
+        if (g_session_registry.entries[i].active &&
             g_session_registry.entries[i].account_id == account_id) {
+            int old_fd = g_session_registry.entries[i].fd;
+            printf("Account %u already logged in (fd=%d) — kicking stale session for new login (fd=%d)\n",
+                   account_id, old_fd, fd);
+            // Mark inactive before closing so the old handler's client_done
+            // sees nothing to clean up (session already gone).
+            g_session_registry.entries[i].active = 0;
             pthread_rwlock_unlock(&g_session_registry.lock);
-            printf("Account %u already logged in (fd=%d)\n", 
-                   account_id, g_session_registry.entries[i].fd);
-            return -1;  // Dual-login prevented!
+            // Closing the old fd causes the old client_handler_thread's
+            // recv() to return an error, which breaks its poll loop and
+            // triggers player save + player_remove_active.
+            shutdown(old_fd, SHUT_RDWR);
+            close(old_fd);
+            pthread_rwlock_wrlock(&g_session_registry.lock);
+            break;
         }
     }
     
