@@ -431,10 +431,19 @@ void* accept_thread_func(void* arg) {
                inet_ntoa(client_addr.sin_addr), 
                ntohs(client_addr.sin_port));
 
-        // Peek at the first packet to determine connection type
+        // Peek at the first packet to determine connection type.
+        // Use poll() with a timeout first so the accept thread never blocks
+        // indefinitely if a client connects but sends nothing.
+        struct pollfd cpfd = {.fd = client_fd, .events = POLLIN};
+        if (poll(&cpfd, 1, 3000) <= 0) {
+            printf("Peek timeout/error for fd %d — dropping connection\n", client_fd);
+            close(client_fd);
+            continue;
+        }
+
         uint8_t peek_buffer[16];
         ssize_t peek = recv(client_fd, peek_buffer, sizeof(peek_buffer), MSG_PEEK);
-        
+
         if (peek > 0) {
             PacketType type = peek_buffer[0];
             
@@ -889,16 +898,20 @@ int main(int argc, char** argv) {
     // Initialize g_server.running BEFORE setting up signals
     g_server.running = 1;
     
+    // Ignore SIGPIPE — prevents crash when broadcast threads write to a client
+    // socket that has been closed or reset (common on player disconnect).
+    signal(SIGPIPE, SIG_IGN);
+
     // Install signal handlers
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
-    
+
     sigaction(SIGINT, &sa, NULL);   // Ctrl+C
     sigaction(SIGTERM, &sa, NULL);  // kill command
-    
+
     printf("[SIGNAL] Signal handlers installed\n");
     
     // Connect to Redis
