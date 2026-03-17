@@ -72,8 +72,10 @@ static BOOL g_correction_ready = FALSE;
 static float g_last_facing_angle = 0.0f;
 
 // Ping tracking
-#define PING_INTERVAL 10.0
-static double g_last_ping_time = 0.0;
+#define PING_INTERVAL    10.0
+#define PING_MAX_MISSED  3      // Disconnect after 3 unanswered pings (~30s)
+static double g_last_ping_time  = 0.0;
+static int    g_pending_pings   = 0;   // Sent but not yet echoed back
 
 // Stream reassembly buffer for TCP framing
 static char g_recv_buf[65536];
@@ -105,6 +107,8 @@ static void process_packet(const char* data, int length) {
     
     switch (header->type) {
         case PACKET_PING:
+            // Server echoed our ping back — count it as received
+            if (g_pending_pings > 0) g_pending_pings--;
             break;
             
         case PACKET_WORLD_LIST_RESPONSE: {
@@ -1241,11 +1245,21 @@ void network_cleanup(void) {
 
 void network_disconnect(void) {
     if (g_socket != INVALID_SOCKET) {
+        if (g_connected) {
+            // Send a clean logout before closing so the server can save immediately
+            PacketHeader pkt;
+            memset(&pkt, 0, sizeof(pkt));
+            pkt.type = PACKET_LOGOUT;
+            pkt.player_id = htonl(g_account_id);
+            pkt.payload_size = 0;
+            send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+        }
         closesocket(g_socket);
         g_socket = INVALID_SOCKET;
     }
     g_connected = FALSE;
-    g_recv_len = 0;  // Clear stream buffer on disconnect
+    g_pending_pings = 0;
+    g_recv_len = 0;
 }
 
 int network_is_connected(void) {
@@ -1490,14 +1504,24 @@ void network_update(void) {
 
 void network_update_with_ping(int game_mode) {
     network_update();
-    
-    // Send pings during menu states
-    if (game_mode == GAME_MODE_MAIN_MENU ||
-        game_mode == GAME_MODE_SERVER_LIST ||
-        game_mode == GAME_MODE_CHARACTER_SELECT) {
-        
+
+    if (!g_connected) return;
+
+    // Send pings in all connected states
+    if (game_mode == GAME_MODE_MAIN_MENU      ||
+        game_mode == GAME_MODE_SERVER_LIST     ||
+        game_mode == GAME_MODE_CHARACTER_SELECT ||
+        game_mode == GAME_MODE_PLAYING) {
+
         double now = get_time();
         if (now - g_last_ping_time >= PING_INTERVAL) {
+            // Too many unanswered pings — server is unreachable
+            if (g_pending_pings >= PING_MAX_MISSED) {
+                printf("[NET] Ping timeout: %d pings unanswered, disconnecting\n",
+                       g_pending_pings);
+                network_disconnect();
+                return;
+            }
             network_send_ping();
             g_last_ping_time = now;
         }
@@ -1592,6 +1616,7 @@ int network_connect_to_realm(const char* ip, uint16_t port,
     }
     
     g_connected = TRUE;
+    g_pending_pings = 0;
     g_last_ping_time = get_time();
     printf("[NET] Connected to realm: %s\n", g_realm_connect_ack.message);
     return 1;
@@ -1814,6 +1839,7 @@ int network_connect_to_world(const char* ip, uint16_t port,
     }
     
     g_connected = TRUE;
+    g_pending_pings = 0;
     g_last_ping_time = get_time();
     printf("[NET] Connected to world server: %s\n", g_world_connect_ack.welcome_message);
     return 1;
@@ -1904,7 +1930,8 @@ void network_send_ping(void) {
     pkt.player_id = htonl(g_account_id);
     pkt.payload_size = 0;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt))
+        g_pending_pings++;
 }
 
 // ============================================================================

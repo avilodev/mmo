@@ -47,6 +47,7 @@ typedef enum {
     PACKET_PLAYER_DATA_RESPONSE = 55,
     PACKET_PING = 56,
     PACKET_PLAYER_MOVEMENT = 57,
+    PACKET_LOGOUT = 59,             // Client -> Server: clean disconnect
     PACKET_PLAYER_MOVEMENT_ACK = 58,
 
     PACKET_CAST_CANCEL = 73,

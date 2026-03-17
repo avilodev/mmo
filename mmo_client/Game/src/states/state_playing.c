@@ -59,8 +59,11 @@ static void playing_enter(GameState* game) {
 }
 
 static void playing_exit(GameState* game) {
-    (void)game;
     printf("[STATE] Exiting gameplay\n");
+    if (game->network_connected) {
+        network_disconnect();
+        game->network_connected = 0;
+    }
 }
 
 // UPDATE
