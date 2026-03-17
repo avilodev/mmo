@@ -54,6 +54,7 @@ typedef enum {
     NET_STATE_WAITING_FOR_WORLDS,
     NET_STATE_WAITING_FOR_CHARACTERS,
     NET_STATE_CREATING_CHARACTER,
+    NET_STATE_DELETING_CHARACTER,
     NET_STATE_WAITING_FOR_ENTER_WORLD,
     NET_STATE_WAITING_FOR_CHARACTER_DATA
 } NetworkState;
@@ -249,6 +250,8 @@ typedef struct {
     int selected_race;
     char error_message[128];
     int pending_create;
+    int pending_delete;
+    int pending_delete_index;
 } CharacterSelectState;
 
 // ============================================================================

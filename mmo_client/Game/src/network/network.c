@@ -38,8 +38,11 @@ static BOOL g_world_list_ready = FALSE;
 static CharacterListResponsePacket g_char_list;
 static BOOL g_char_list_ready = FALSE;
 
-static CharacterCreateResponsePacket g_char_create; 
+static CharacterCreateResponsePacket g_char_create;
 static BOOL g_char_create_ready = FALSE;
+
+static CharacterDeleteResponsePacket g_char_delete;
+static BOOL g_char_delete_ready = FALSE;
 
 static EnterWorldResponsePacket g_enter_world;
 static BOOL g_enter_world_ready = FALSE;
@@ -195,7 +198,15 @@ static void process_packet(const char* data, int length) {
                 g_char_create_ready = TRUE;
             }
             break;
-            
+
+        case PACKET_CHARACTER_DELETE_RESPONSE:
+            if (length >= (int)sizeof(CharacterDeleteResponsePacket)) {
+                memcpy(&g_char_delete, data, sizeof(CharacterDeleteResponsePacket));
+                g_char_delete.message[127] = '\0';
+                g_char_delete_ready = TRUE;
+            }
+            break;
+
         case PACKET_ENTER_WORLD_RESPONSE:
             if (length >= (int)sizeof(EnterWorldResponsePacket)) {
                 memcpy(&g_enter_world, data, sizeof(EnterWorldResponsePacket));
@@ -1433,148 +1444,34 @@ void network_update(void) {
         }
         
         uint8_t pkt_type = (uint8_t)g_recv_buf[offset];
-        int pkt_size = 0;
-        
-        NET_LOG("[NET] Processing packet type %d (0x%02X) at offset %d, %d bytes remaining\n",
-               pkt_type, pkt_type, offset, remaining);
-        
-        // Handle variable-length packets
-        switch (pkt_type) {
-            case PACKET_CHARACTER_LIST_RESPONSE: {
-                size_t base_size = offsetof(CharacterListResponsePacket, characters);
-                
-                if (remaining < (int)base_size) {
-                    NET_LOG("[NET] Waiting for complete CHAR_LIST header (%d < %zu)\n",
-                           remaining, base_size);
-                    goto wait_for_more_data;
-                }
+        PacketHeader* hdr = (PacketHeader*)(g_recv_buf + offset);
+        int pkt_size = (int)sizeof(PacketHeader) + (int)ntohs(hdr->payload_size);
 
-                CharacterListResponsePacket* pkt_ptr = (CharacterListResponsePacket*)(g_recv_buf + offset);
-                uint8_t count = pkt_ptr->count;
-                if (count > 10) count = 10;
+        NET_LOG("[NET] Packet type %d (0x%02X) at offset %d — payload_size=%d, total=%d, remaining=%d\n",
+               pkt_type, pkt_type, offset, (int)ntohs(hdr->payload_size), pkt_size, remaining);
 
-                pkt_size = (int)base_size + (count * 48);
-                NET_LOG("[NET] CHAR_LIST: %d chars, %d bytes\n", count, pkt_size);
-                break;
-            }
-            
-            case PACKET_WORLD_LIST_RESPONSE: {
-                size_t base_size = offsetof(WorldListResponsePacket, worlds);
-                
-                if (remaining < (int)base_size) {
-                    NET_LOG("[NET] Waiting for complete WORLD_LIST header (%d < %zu)\n",
-                           remaining, base_size);
-                    goto wait_for_more_data;
-                }
-
-                WorldListResponsePacket* pkt_ptr = (WorldListResponsePacket*)(g_recv_buf + offset);
-                uint8_t count = pkt_ptr->count;
-                if (count > MAX_WORLDS) count = MAX_WORLDS;
-
-                pkt_size = (int)base_size + (count * sizeof(WorldInfo));
-                NET_LOG("[NET] WORLD_LIST: %d worlds, %d bytes (base=%zu, WorldInfo=%zu)\n",
-                       count, pkt_size, base_size, sizeof(WorldInfo));
-                break;
-            }
-            
-            case PACKET_PLAYER_POSITIONS: {
-                size_t base_size = offsetof(PlayerPositionBroadcastPacket, players);
-                
-                if (remaining < (int)base_size) {
-                    goto wait_for_more_data;
-                }
-                
-                PlayerPositionBroadcastPacket* pkt_ptr = (PlayerPositionBroadcastPacket*)(g_recv_buf + offset);
-                uint8_t count = pkt_ptr->count;
-                if (count > MAX_NEARBY_PLAYERS) count = MAX_NEARBY_PLAYERS;
-                
-                pkt_size = (int)base_size + (count * sizeof(NearbyPlayerData));
-                break;
-            }
-            
-            case PACKET_NPC_POSITIONS: {
-                size_t base_size = offsetof(NPCPositionPacket, npcs);
-                
-                if (remaining < (int)base_size) {
-                    goto wait_for_more_data;
-                }
-                
-                NPCPositionPacket* pkt_ptr = (NPCPositionPacket*)(g_recv_buf + offset);
-                uint8_t count = pkt_ptr->npc_count;
-                if (count > MAX_NPCS_PER_PACKET) count = MAX_NPCS_PER_PACKET;
-                
-                pkt_size = (int)base_size + (count * sizeof(NPCPositionData));
-                break;
-            }
-            
-            case PACKET_PROJECTILE_UPDATE: {
-                size_t base_size = offsetof(ProjectileUpdatePacket, projectiles);
-                
-                if (remaining < (int)base_size) {
-                    goto wait_for_more_data;
-                }
-                
-                ProjectileUpdatePacket* pkt_ptr = (ProjectileUpdatePacket*)(g_recv_buf + offset);
-                uint8_t count = pkt_ptr->count;
-                if (count > MAX_PROJECTILES_PER_PACKET) count = MAX_PROJECTILES_PER_PACKET;
-                
-                pkt_size = (int)base_size + (count * sizeof(ProjectilePositionData));
-                break;
-            }
-            
-            case PACKET_PARTY_UPDATE: {
-                size_t base_size = offsetof(PartyUpdatePacket, members);
-                
-                if (remaining < (int)base_size) {
-                    goto wait_for_more_data;
-                }
-                
-                PartyUpdatePacket* pkt_ptr = (PartyUpdatePacket*)(g_recv_buf + offset);
-                uint8_t count = pkt_ptr->member_count;
-                if (count > MAX_PARTY_SIZE) count = MAX_PARTY_SIZE;
-                
-                pkt_size = (int)base_size + (count * 56);
-                break;
-            }
-            
-            default:
-                pkt_size = get_packet_size(pkt_type);
-                
-                if (pkt_size <= 0) {
-                    printf("[NET] ❌ Unknown packet type %d (0x%02X) at offset %d\n", 
-                           pkt_type, pkt_type, offset);
-                    printf("[NET] ❌ This could be:\n");
-                    printf("[NET]    1. Missing case in get_packet_size()\n");
-                    printf("[NET]    2. Server/client version mismatch\n");
-                    printf("[NET]    3. Buffer corruption/desync\n");
-                    printf("[NET] Attempting to recover by skipping 1 byte...\n");
-                    
-                    // Don't discard entire buffer! Just skip this byte.
-                    offset++;
-                    continue;
-                }
-                
-                NET_LOG("[NET] Fixed-size packet: %d bytes\n", pkt_size);
-                break;
+        // Reject oversized packets (corrupted header guard)
+        if (pkt_size > (int)sizeof(g_recv_buf)) {
+            printf("[NET] ❌ Packet type %d (0x%02X) claims %d bytes — exceeds buffer, disconnecting\n",
+                   pkt_type, pkt_type, pkt_size);
+            g_connected = FALSE;
+            closesocket(g_socket);
+            g_socket = INVALID_SOCKET;
+            g_recv_len = 0;
+            return;
         }
-        
-        // Check if we have the complete packet
+
+        // Wait for the full packet
         if (remaining < pkt_size) {
-            NET_LOG("[NET] Waiting for complete packet (have %d, need %d)\n",
-                   remaining, pkt_size);
+            NET_LOG("[NET] Waiting for complete packet type %d (have %d, need %d)\n",
+                   pkt_type, remaining, pkt_size);
             break;
         }
 
         // Process the complete packet
-        NET_LOG("[NET] Processing complete packet (%d bytes)\n", pkt_size);
+        NET_LOG("[NET] Processing complete packet type %d (%d bytes)\n", pkt_type, pkt_size);
         process_packet(g_recv_buf + offset, pkt_size);
         offset += pkt_size;
-        continue;
-        
-    wait_for_more_data:
-        // Need more bytes for variable-length packet header
-        NET_LOG("[NET] Waiting for more data (variable-length header incomplete)\n");
-        break;
     }
     
     // Shift remaining data to start of buffer
@@ -1766,9 +1663,33 @@ int network_create_character(uint32_t world_id, const char* name,
 
 int network_get_character_create_response(CharacterCreateResponsePacket* out) {
     if (!g_char_create_ready) return 0;
-    
+
     memcpy(out, &g_char_create, sizeof(CharacterCreateResponsePacket));
     g_char_create_ready = FALSE;
+    return 1;
+}
+
+int network_delete_character(uint32_t world_id, uint32_t character_id) {
+    if (!g_connected) return 0;
+
+    g_char_delete_ready = FALSE;
+
+    CharacterDeleteRequestPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_CHARACTER_DELETE_REQUEST;
+    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(CharacterDeleteRequestPacket) - sizeof(PacketHeader));
+    pkt.character_id = htonl(character_id);
+    pkt.world_id = htonl(world_id);
+
+    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+}
+
+int network_get_character_delete_response(CharacterDeleteResponsePacket* out) {
+    if (!g_char_delete_ready) return 0;
+
+    memcpy(out, &g_char_delete, sizeof(CharacterDeleteResponsePacket));
+    g_char_delete_ready = FALSE;
     return 1;
 }
 

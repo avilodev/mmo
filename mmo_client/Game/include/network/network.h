@@ -41,6 +41,9 @@ int network_create_character(uint32_t world_id, const char* name,
                             uint32_t class_id, uint32_t race_id);
 int network_get_character_create_response(CharacterCreateResponsePacket* out);
 
+int network_delete_character(uint32_t world_id, uint32_t character_id);
+int network_get_character_delete_response(CharacterDeleteResponsePacket* out);
+
 int network_request_enter_world(uint32_t character_id, uint32_t world_id);
 int network_get_enter_world_response(EnterWorldResponsePacket* out);
 

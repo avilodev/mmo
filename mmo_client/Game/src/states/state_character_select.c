@@ -18,6 +18,8 @@ static void char_select_enter(GameState* game) {
     game->char_select.show_creation = 0;
     game->char_select.selected_class = 1;
     game->char_select.selected_race = 1;
+    game->char_select.pending_delete = 0;
+    game->char_select.pending_delete_index = -1;
     memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
     memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
     game->net_state = NET_STATE_IDLE;
@@ -34,12 +36,12 @@ static void char_select_update(GameState* game, float delta_time) {
     // Handle deferred character creation
     if (game->char_select.pending_create) {
         game->char_select.pending_create = 0;
-        
+
         if (strlen(game->char_select.new_name) < 3) {
             snprintf(game->char_select.error_message, sizeof(game->char_select.error_message), "Name must be at least 3 characters");
         } else if (game->net_state == NET_STATE_IDLE) {
             uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
-            
+
             if (network_create_character(world_id, game->char_select.new_name,
                                          game->char_select.selected_class,
                                          game->char_select.selected_race)) {
@@ -47,6 +49,21 @@ static void char_select_update(GameState* game, float delta_time) {
                 memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
             }
         }
+    }
+
+    // Handle deferred character deletion
+    if (game->char_select.pending_delete) {
+        game->char_select.pending_delete = 0;
+        int idx = game->char_select.pending_delete_index;
+        if (idx >= 0 && idx < game->char_select.list.count && game->net_state == NET_STATE_IDLE) {
+            uint32_t world_id = ntohl(game->char_select.list.world_id);
+            uint32_t char_id  = ntohl(game->char_select.list.characters[idx].character_id);
+            if (network_delete_character(world_id, char_id)) {
+                game->net_state = NET_STATE_DELETING_CHARACTER;
+                memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
+            }
+        }
+        game->char_select.pending_delete_index = -1;
     }
     
     // State machine
@@ -77,6 +94,22 @@ static void char_select_update(GameState* game, float delta_time) {
                         game->char_select.show_creation = 0;
                         game->char_select.loaded = 0;  // Reload list
                         memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
+                    } else {
+                        strncpy(game->char_select.error_message, response.message, 127);
+                        game->char_select.error_message[127] = '\0';
+                    }
+                }
+            }
+            break;
+
+        case NET_STATE_DELETING_CHARACTER:
+            {
+                CharacterDeleteResponsePacket response;
+                if (network_get_character_delete_response(&response)) {
+                    game->net_state = NET_STATE_IDLE;
+                    if (response.success) {
+                        game->char_select.loaded = 0;  // Server sends updated list automatically
+                        game->char_select.selected_index = -1;
                     } else {
                         strncpy(game->char_select.error_message, response.message, 127);
                         game->char_select.error_message[127] = '\0';
@@ -260,34 +293,53 @@ static void char_select_render(GameState* game) {
         const char* class_names[] = {"", "Gladiator", "Ninja", "Landweaver", "Spirit"};
         const char* race_names[] = {"", "Human", "Pyseck", "Infor"};
         
+        int is_busy = (game->net_state != NET_STATE_IDLE);
+
         for (int i = 0; i < game->char_select.list.count && i < 10; i++) {
             float y = item_y + i * (item_h + item_spacing);
-            
-            int hovered = input_mouse_in_rect(&game->input, panel_x + 20, y, panel_w - 40, item_h);
-            float c = hovered ? 0.3f : 0.2f;
-            renderer_draw_rect(panel_x + 20, y, panel_w - 40, item_h, c, c, c + 0.1f, 1.0f);
-            
+
+            // Main row (excluding delete button area)
+            float row_w = panel_w - 100;  // leave 80px on right for DEL
+            int row_hovered = input_mouse_in_rect(&game->input, panel_x + 20, y, row_w, item_h);
+            float c = row_hovered ? 0.3f : 0.2f;
+            renderer_draw_rect(panel_x + 20, y, row_w, item_h, c, c, c + 0.1f, 1.0f);
+
             char info[128];
             uint32_t class_id = ntohl(game->char_select.list.characters[i].class_id);
-            uint32_t race_id = ntohl(game->char_select.list.characters[i].race_id);
-            
+            uint32_t race_id  = ntohl(game->char_select.list.characters[i].race_id);
+
             snprintf(info, sizeof(info), "%s - Lv.%lu %s %s",
                     game->char_select.list.characters[i].name,
-                    ntohl(game->char_select.list.characters[i].level),
+                    (unsigned long)ntohl(game->char_select.list.characters[i].level),
                     class_id <= 4 ? class_names[class_id] : "Unknown",
-                    race_id <= 3 ? race_names[race_id] : "Unknown");
-            
+                    race_id  <= 3 ? race_names[race_id]  : "Unknown");
+
             renderer_draw_text(panel_x + 40, y + 40, info);
-            
-            if (hovered && game->input.mouse_left_clicked && game->net_state == NET_STATE_IDLE) {
+
+            if (row_hovered && game->input.mouse_left_clicked && !is_busy) {
                 game->char_select.selected_index = i;
-                
+
                 uint32_t char_id = ntohl(game->char_select.list.characters[i].character_id);
                 uint32_t world_id = ntohl(game->char_select.list.world_id);
-                
+
                 if (network_request_enter_world(char_id, world_id)) {
                     game->net_state = NET_STATE_WAITING_FOR_ENTER_WORLD;
+                    is_busy = 1;
                 }
+            }
+
+            // Delete button
+            float del_x = panel_x + 20 + row_w + 5;
+            float del_w = 55;
+            int del_hovered = input_mouse_in_rect(&game->input, del_x, y + 10, del_w, item_h - 20);
+            renderer_draw_rect(del_x, y + 10, del_w, item_h - 20,
+                              del_hovered ? 0.9f : 0.6f, 0.2f, 0.2f, 1.0f);
+            renderer_draw_text(del_x + 8, y + 35, "DEL");
+
+            if (del_hovered && game->input.mouse_left_clicked && !is_busy) {
+                game->char_select.pending_delete = 1;
+                game->char_select.pending_delete_index = i;
+                is_busy = 1;
             }
         }
         
@@ -308,6 +360,9 @@ static void char_select_render(GameState* game) {
     if (game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD) {
         renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.2f, 0.6f, 0.8f, 0.9f);
         renderer_draw_text(panel_x + 220, panel_y + 230, "Entering world...");
+    } else if (game->net_state == NET_STATE_DELETING_CHARACTER) {
+        renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.7f, 0.2f, 0.2f, 0.9f);
+        renderer_draw_text(panel_x + 215, panel_y + 230, "Deleting...");
     }
     
     // Back button
@@ -337,12 +392,14 @@ static void char_select_input(GameState* game, GLFWwindow* window, float delta_t
     
     // Handle text input for character creation
     if (game->char_select.show_creation) {
+        int shift_held = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                         glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
         for (int key = GLFW_KEY_A; key <= GLFW_KEY_Z; key++) {
             if (input_key_just_pressed(&game->input, key)) {
                 size_t len = strlen(game->char_select.new_name);
                 if (len < 31) {
-                    char c = 'a' + (key - GLFW_KEY_A);
-                    if (len == 0) c = 'A' + (key - GLFW_KEY_A);
+                    int capitalize = shift_held || (len == 0);
+                    char c = capitalize ? ('A' + (key - GLFW_KEY_A)) : ('a' + (key - GLFW_KEY_A));
                     game->char_select.new_name[len] = c;
                 }
             }
