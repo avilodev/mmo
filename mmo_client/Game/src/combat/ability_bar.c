@@ -48,6 +48,16 @@ void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_hei
     bar->bar_y = screen_height - bar->slot_size - 20.0f;
 }
 
+void ability_bar_cleanup(AbilityBarState* bar) {
+    for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
+        if (bar->slots[i].texture_id) {
+            texture_unload(bar->slots[i].texture_id);
+            bar->slots[i].texture_id = 0;
+        }
+    }
+    bar->slot_count = 0;
+}
+
 // ============================================================================
 // SET ABILITIES (from server data on login)
 // ============================================================================

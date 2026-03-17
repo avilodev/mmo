@@ -107,6 +107,7 @@ typedef struct {
 
 // Initialize the ability bar (call once after game_init)
 void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_height);
+void ability_bar_cleanup(AbilityBarState* bar);  // Unload all slot textures
 
 // Set abilities from server data (call after player data is loaded)
 // ability_ids and ability_names are parallel arrays of length count.

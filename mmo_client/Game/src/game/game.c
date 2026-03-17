@@ -90,18 +90,10 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     
     camera_set_position(&game->camera, game->player.x, game->player.y);
     
-    // Load textures
-    game->textures.player = texture_load("Game/Sprites/Player/player.png");
-    game->textures.grass = texture_load("Game/Sprites/World/grass.png");
-    game->textures.water = texture_load("Game/Sprites/World/water.png");
-    game->textures.rock = texture_load("Game/Sprites/World/rock.png");
+    // Load only menu/shared assets at startup.
+    // Gameplay textures (player, tiles, decorations) are loaded in playing_enter
+    // and unloaded in playing_exit.
     game->textures.background = texture_load("Game/Sprites/Background/background.png");
-    game->textures.tree1 = texture_load("Game/Sprites/Decoration/Tree/tree1.png");
-    game->textures.shrub1 = texture_load("Game/Sprites/Decoration/Bush/bush1.png");
-    
-    if (game->textures.player == 0) {
-        fprintf(stderr, "[GAME] Warning: Failed to load player texture\n");
-    }
     
     game->background_width = 860;
     game->background_height = 458;
@@ -217,15 +209,9 @@ void game_cleanup(GameState* game) {
     // Free world (closes file, frees chunks)
     world_cleanup(&game->world);
     
-    // Unload textures
-    if (game->textures.player) texture_unload(game->textures.player);
-    if (game->textures.grass) texture_unload(game->textures.grass);
-    if (game->textures.water) texture_unload(game->textures.water);
-    if (game->textures.rock) texture_unload(game->textures.rock);
+    // Unload menu/shared textures
+    // (gameplay textures are already unloaded by playing_exit)
     if (game->textures.background) texture_unload(game->textures.background);
-
-    if (game->textures.tree1) texture_unload(game->textures.tree1);
-    if (game->textures.shrub1) texture_unload(game->textures.shrub1);
     
     // Save settings and shut down audio
     game_settings_save(&game->settings, SETTINGS_PATH);

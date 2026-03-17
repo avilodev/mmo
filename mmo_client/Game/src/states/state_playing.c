@@ -1,5 +1,6 @@
 #include "game_types.h"
 #include "game.h"
+#include "texture/texture.h"
 #include "state_handler.h"
 #include "renderer.h"
 #include "input.h"
@@ -42,7 +43,18 @@ static void playing_enter(GameState* game) {
     printf("[STATE] Entering gameplay\n");
     s_move_state_init = 0;
     combat_init(&game->combat);
-    
+
+    // Load gameplay-only textures
+    game->textures.player = texture_load("Game/Sprites/Player/player.png");
+    game->textures.grass  = texture_load("Game/Sprites/World/grass.png");
+    game->textures.water  = texture_load("Game/Sprites/World/water.png");
+    game->textures.rock   = texture_load("Game/Sprites/World/rock.png");
+    game->textures.tree1  = texture_load("Game/Sprites/Decoration/Tree/tree1.png");
+    game->textures.shrub1 = texture_load("Game/Sprites/Decoration/Bush/bush1.png");
+
+    if (!game->textures.player)
+        fprintf(stderr, "[GAME] Warning: failed to load player texture\n");
+
     ability_bar_init(&game->ability_bar,
                      game->camera.viewport_width,
                      game->camera.viewport_height);
@@ -60,10 +72,22 @@ static void playing_enter(GameState* game) {
 
 static void playing_exit(GameState* game) {
     printf("[STATE] Exiting gameplay\n");
+
     if (game->network_connected) {
         network_disconnect();
         game->network_connected = 0;
     }
+
+    // Unload gameplay-only textures
+    if (game->textures.player) { texture_unload(game->textures.player); game->textures.player = 0; }
+    if (game->textures.grass)  { texture_unload(game->textures.grass);  game->textures.grass  = 0; }
+    if (game->textures.water)  { texture_unload(game->textures.water);  game->textures.water  = 0; }
+    if (game->textures.rock)   { texture_unload(game->textures.rock);   game->textures.rock   = 0; }
+    if (game->textures.tree1)  { texture_unload(game->textures.tree1);  game->textures.tree1  = 0; }
+    if (game->textures.shrub1) { texture_unload(game->textures.shrub1); game->textures.shrub1 = 0; }
+
+    // Unload ability icon textures
+    ability_bar_cleanup(&game->ability_bar);
 }
 
 // UPDATE
