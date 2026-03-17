@@ -73,6 +73,7 @@ $(WORLD_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(WORLD_OBJS)
 	@cp world_server/data/dialogues.json $(WORLD_BIN)/data/
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
+	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
 	@echo "Built world_server -> $@"
 

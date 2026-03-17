@@ -773,6 +773,12 @@ void* npc_broadcast_thread(void* arg) {
                 size_t send_size = offsetof(NPCPositionPacket, npcs) +
                                    pkt.npc_count * sizeof(NPCPositionData);
                 pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+                static int s_npc_send_logged = 0;
+                if (!s_npc_send_logged) {
+                    printf("[NPC_BROADCAST] First NPC packet sent: %d NPCs to player %u\n",
+                           pkt.npc_count, players_snapshot[i].character_id);
+                    s_npc_send_logged = 1;
+                }
                 send(players_snapshot[i].client_fd, &pkt, send_size, 0);
             }
         }
