@@ -48,6 +48,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
 
     // Route to appropriate handler
     switch (header->type) {
+        case PACKET_LOGOUT:
+            printf("[LOGOUT] Character %u requested clean disconnect\n", character_id);
+            return -1;  // Signal caller to break the recv loop cleanly
+
         case PACKET_PING:
             handle_ping(client_fd, buffer);
             break;

@@ -86,6 +86,9 @@ void* client_handler_thread(void* arg) {
     uint32_t character_id = 0;
     uint32_t account_id = 0;
 
+#define PING_TIMEOUT_SECS 35   // ~3 missed 10s pings before server drops the connection
+    time_t last_recv_time = time(NULL);
+
     while (g_server.running) {
         int ret = poll(&pfd, 1, 1000);
 
@@ -93,13 +96,22 @@ void* client_handler_thread(void* arg) {
             if (errno == EINTR) continue;
             break;
         }
-        if (ret == 0) continue;
+        if (ret == 0) {
+            // Check for ping timeout on authenticated players
+            if (authenticated && (time(NULL) - last_recv_time) > PING_TIMEOUT_SECS) {
+                printf("[TIMEOUT] Character %u timed out (no data for %ds)\n",
+                       character_id, PING_TIMEOUT_SECS);
+                break;
+            }
+            continue;
+        }
 
         if (pfd.revents & POLLIN) {
             ssize_t bytes = recv(client_fd, buffer + buf_len,
                                  sizeof(buffer) - (size_t)buf_len, 0);
 
             if (bytes <= 0) break;
+            last_recv_time = time(NULL);
             buf_len += bytes;
 
             if (!authenticated) {
@@ -208,11 +220,13 @@ void* client_handler_thread(void* arg) {
 
                     // Process this packet
                     session_update_activity(client_fd);
-                    process_packet(client_fd, character_id, packet_size, ptr);
+                    int pkt_result = process_packet(client_fd, character_id, packet_size, ptr);
 
                     // Move to next packet
                     ptr += packet_size;
                     remaining -= packet_size;
+
+                    if (pkt_result == -1) goto client_done;  // Clean logout requested
                 }
 
                 // Carry over any leftover bytes to the start of the buffer
@@ -228,6 +242,7 @@ void* client_handler_thread(void* arg) {
         }
     }
     
+client_done:
     if (authenticated) {
         party_handle_disconnect(character_id);
         ActivePlayer* player = player_acquire(character_id);
@@ -240,7 +255,7 @@ void* client_handler_thread(void* arg) {
         g_state.current_players--;
         printf("Account %u, Character %u disconnected\n", account_id, character_id);
     }
-    
+
     close(client_fd);
     return NULL;
 }
