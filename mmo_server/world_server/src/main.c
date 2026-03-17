@@ -243,23 +243,46 @@ void* client_handler_thread(void* arg) {
     }
     
 client_done:
+    printf("[CLEANUP] fd=%d: cleanup starting (authenticated=%d, char=%u, account=%u)\n",
+           client_fd, authenticated, character_id, account_id);
+
     if (authenticated) {
         // Remove from registry FIRST so a fast reconnect isn't blocked
         // while the (potentially slow) database save runs below.
         session_registry_remove(client_fd);
         g_state.current_players--;
 
+        printf("[CLEANUP] fd=%d: session removed, handling party disconnect\n", client_fd);
         party_handle_disconnect(character_id);
+
+        // Only save/remove if WE still own the active player slot.
+        // When a stale session is kicked, the new connection may have already
+        // loaded the same character by the time we reach here.  If the slot's
+        // client_fd no longer matches ours, the new session owns it — leave it alone.
+        printf("[CLEANUP] fd=%d: acquiring player slot for char=%u\n", client_fd, character_id);
         ActivePlayer* player = player_acquire(character_id);
         if (player) {
-            if (player->is_loaded) playerdata_save(player);
-            player_release(player);
+            if (player->client_fd == client_fd) {
+                printf("[CLEANUP] fd=%d: we own the slot — saving and removing char=%u\n",
+                       client_fd, character_id);
+                if (player->is_loaded) playerdata_save(player);
+                player_release(player);
+                player_remove_active(character_id);
+            } else {
+                printf("[CLEANUP] fd=%d: slot now owned by fd=%d (new session for char=%u) — skipping save/remove\n",
+                       client_fd, player->client_fd, character_id);
+                player_release(player);
+            }
+        } else {
+            printf("[CLEANUP] fd=%d: player slot not found for char=%u (already removed?)\n",
+                   client_fd, character_id);
         }
-        player_remove_active(character_id);
-        printf("Account %u, Character %u disconnected\n", account_id, character_id);
+        printf("Account %u, Character %u disconnected (fd=%d)\n", account_id, character_id, client_fd);
     }
 
+    printf("[CLEANUP] fd=%d: closing socket\n", client_fd);
     close(client_fd);
+    printf("[CLEANUP] fd=%d: thread exiting\n", client_fd);
     return NULL;
 }
 

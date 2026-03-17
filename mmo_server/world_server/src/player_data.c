@@ -244,8 +244,10 @@ int playerdata_save(ActivePlayer* player) {
 }
 
 int player_add_active(uint32_t character_id, int client_fd) {
+    printf("[PLAYER_ADD] char=%u fd=%d: acquiring active_players_lock\n", character_id, client_fd);
     pthread_mutex_lock(&active_players_lock);
-    
+    printf("[PLAYER_ADD] char=%u fd=%d: lock acquired, searching for empty slot\n", character_id, client_fd);
+
     // Find an empty slot
     int slot = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -254,13 +256,15 @@ int player_add_active(uint32_t character_id, int client_fd) {
             break;
         }
     }
-    
+
     if (slot == -1) {
         pthread_mutex_unlock(&active_players_lock);
-        fprintf(stderr, "No available slots for new player\n");
+        fprintf(stderr, "[PLAYER_ADD] char=%u fd=%d: no available slots!\n", character_id, client_fd);
         return 0;
     }
-    
+
+    printf("[PLAYER_ADD] char=%u fd=%d: using slot=%d, loading from DB\n", character_id, client_fd, slot);
+
     // Initialize the player slot
     pthread_mutex_lock(&active_players[slot].lock);
 
@@ -271,20 +275,28 @@ int player_add_active(uint32_t character_id, int client_fd) {
 
     active_players[slot].character_id = character_id;
     active_players[slot].client_fd = client_fd;
-    
-    // Load player data from database
+    // is_loaded stays 0 until load succeeds — other threads skip this slot
+
+    // Release global lock before DB load so broadcast/acquire threads aren't
+    // frozen for the duration of the PostgreSQL query.  The per-slot lock
+    // (still held) guards the slot until load completes.
+    pthread_mutex_unlock(&active_players_lock);
+
+    printf("[PLAYER_ADD] char=%u fd=%d: released global lock, starting DB load\n", character_id, client_fd);
+
     if (!playerdata_load(character_id, &active_players[slot])) {
+        // Clear the slot on failure so it's available again
+        pthread_mutex_t fail_lock = active_players[slot].lock;
+        memset(&active_players[slot], 0, sizeof(ActivePlayer));
+        active_players[slot].lock = fail_lock;
         pthread_mutex_unlock(&active_players[slot].lock);
-        pthread_mutex_unlock(&active_players_lock);
-        fprintf(stderr, "Failed to load player data for character %u\n", character_id);
+        fprintf(stderr, "[PLAYER_ADD] char=%u fd=%d: DB load failed!\n", character_id, client_fd);
         return 0;
     }
-    
+
     pthread_mutex_unlock(&active_players[slot].lock);
-    pthread_mutex_unlock(&active_players_lock);
-    
-    printf("Added active player: char_id=%u, fd=%d, slot=%d\n", 
-           character_id, client_fd, slot);
+
+    printf("[PLAYER_ADD] char=%u fd=%d: slot=%d loaded successfully\n", character_id, client_fd, slot);
     return 1;
 }
 
@@ -333,30 +345,36 @@ void player_release(ActivePlayer* player) {
 }
 
 void player_remove_active(uint32_t character_id) {
+    printf("[PLAYER_REMOVE] char=%u: acquiring active_players_lock\n", character_id);
     pthread_mutex_lock(&active_players_lock);
-    
+
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded && 
+        if (active_players[i].is_loaded &&
             active_players[i].character_id == character_id) {
-            
+
+            int slot_fd = active_players[i].client_fd;
+            printf("[PLAYER_REMOVE] char=%u: found in slot=%d (fd=%d), clearing\n",
+                   character_id, i, slot_fd);
             pthread_mutex_lock(&active_players[i].lock);
-            
+
             if (active_players[i].is_dirty) {
+                printf("[PLAYER_REMOVE] char=%u: slot is dirty — saving before removal\n", character_id);
                 playerdata_save(&active_players[i]);
             }
-            
+
             pthread_mutex_t saved_lock = active_players[i].lock;
             memset(&active_players[i], 0, sizeof(ActivePlayer));
             active_players[i].lock = saved_lock;
-            
+
             pthread_mutex_unlock(&active_players[i].lock);
-            
-            printf("Removed active player: char_id=%u, slot=%d\n", character_id, i);
+
+            printf("[PLAYER_REMOVE] char=%u: slot=%d cleared (was fd=%d)\n", character_id, i, slot_fd);
             break;
         }
     }
-    
+
     pthread_mutex_unlock(&active_players_lock);
+    printf("[PLAYER_REMOVE] char=%u: done\n", character_id);
 }
 
 void player_send_data_response(int client_fd, uint32_t character_id) {
