@@ -5,6 +5,7 @@
 #include "dialogue_handler.h"
 #include "loot.h"
 #include "shop.h"
+#include "quest_system.h"
 
 #include <math.h>
 #include <string.h>
@@ -260,6 +261,8 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                     player->inventory[inv_slot] = item_id;
                     player->is_dirty = 1;
                     pthread_mutex_unlock(&player->lock);
+
+                    quest_on_item_collect(character_id, client_fd, item_id);
 
                     resp.success = 1;
                     resp.item_id = htonl(item_id);

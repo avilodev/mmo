@@ -80,6 +80,8 @@ data:
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
 	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
+	@cp world_server/data/quests.json $(WORLD_BIN)/data/
+	@cp world_server/data/shops.json $(WORLD_BIN)/data/
 	@echo "Data files copied -> $(WORLD_BIN)/data/"
 
 # Common object files

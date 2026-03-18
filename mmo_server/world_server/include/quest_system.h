@@ -11,6 +11,7 @@
 // Types of quest objectives
 #define QUEST_OBJ_KILL    0
 #define QUEST_OBJ_COLLECT 1
+#define QUEST_OBJ_TALK    2
 
 typedef struct {
     uint8_t  type;              // QUEST_OBJ_KILL / QUEST_OBJ_COLLECT
@@ -62,6 +63,12 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
 
 // Called on NPC kill — updates kill objectives for the attacker
 void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_id);
+
+// Called when a player picks up a ground item — updates collect objectives
+void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_id);
+
+// Called when a player opens dialogue with an NPC — updates talk objectives
+void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_id);
 
 // Save/load quest state for a character (file-based)
 void quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count);

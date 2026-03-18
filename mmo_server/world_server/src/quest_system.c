@@ -133,7 +133,9 @@ int quest_system_init(const char* json_path) {
                 QuestObjectiveDef* od = &q->objectives[q->obj_count];
                 char type_str[16] = {0};
                 v = qs_find_value(o, "type");  if (v) qs_parse_string(v, type_str, sizeof(type_str));
-                od->type = (strcmp(type_str, "collect") == 0) ? QUEST_OBJ_COLLECT : QUEST_OBJ_KILL;
+                od->type = (strcmp(type_str, "collect") == 0) ? QUEST_OBJ_COLLECT :
+                           (strcmp(type_str, "talk")    == 0) ? QUEST_OBJ_TALK    :
+                                                                QUEST_OBJ_KILL;
                 v = qs_find_value(o, "target_id");   if (v) od->target_id      = qs_parse_int(v);
                 v = qs_find_value(o, "required");    if (v) od->required_count  = qs_parse_int(v);
                 v = qs_find_value(o, "description"); if (v) qs_parse_string(v, od->description, sizeof(od->description));
@@ -411,6 +413,108 @@ void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_i
             if (!p) return;
         }
         (void)any_progress;
+    }
+
+    player_release(p);
+}
+
+void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_id) {
+    ActivePlayer* p = player_acquire(character_id);
+    if (!p) return;
+
+    for (int qi = 0; qi < p->quest_count; qi++) {
+        struct PlayerQuestSlot* pq = &p->quests[qi];
+        if (!pq->is_active || pq->is_complete) continue;
+
+        const QuestDef* q = quest_get(pq->quest_id);
+        if (!q) continue;
+
+        for (int oi = 0; oi < q->obj_count; oi++) {
+            if (q->objectives[oi].type != QUEST_OBJ_COLLECT) continue;
+            if (q->objectives[oi].target_id != item_id) continue;
+            if (pq->progress[oi] >= q->objectives[oi].required_count) continue;
+
+            pq->progress[oi]++;
+
+            int32_t  cur  = pq->progress[oi];
+            int32_t  req  = q->objectives[oi].required_count;
+            uint32_t qid  = pq->quest_id;
+            uint8_t  oidx = (uint8_t)oi;
+
+            int all_done = 1;
+            for (int k = 0; k < q->obj_count; k++) {
+                if (pq->progress[k] < q->objectives[k].required_count) { all_done = 0; break; }
+            }
+            if (all_done) pq->is_complete = 1;
+
+            p->is_dirty = 1;
+            player_release(p);
+
+            QuestProgressPacket pp;
+            memset(&pp, 0, sizeof(pp));
+            pp.header.type = PACKET_QUEST_PROGRESS;
+            pp.header.player_id = htonl(character_id);
+            pp.header.payload_size = htons(sizeof(pp) - sizeof(PacketHeader));
+            pp.quest_id  = htonl(qid);
+            pp.obj_index = oidx;
+            pp.current   = htonl(cur);
+            pp.required  = htonl(req);
+            server_send(client_fd, &pp, sizeof(pp));
+
+            p = player_acquire(character_id);
+            if (!p) return;
+        }
+    }
+
+    player_release(p);
+}
+
+void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_id) {
+    ActivePlayer* p = player_acquire(character_id);
+    if (!p) return;
+
+    for (int qi = 0; qi < p->quest_count; qi++) {
+        struct PlayerQuestSlot* pq = &p->quests[qi];
+        if (!pq->is_active || pq->is_complete) continue;
+
+        const QuestDef* q = quest_get(pq->quest_id);
+        if (!q) continue;
+
+        for (int oi = 0; oi < q->obj_count; oi++) {
+            if (q->objectives[oi].type != QUEST_OBJ_TALK) continue;
+            if (q->objectives[oi].target_id != (uint32_t)npc_type_id) continue;
+            if (pq->progress[oi] >= q->objectives[oi].required_count) continue;
+
+            pq->progress[oi]++;
+
+            int32_t  cur  = pq->progress[oi];
+            int32_t  req  = q->objectives[oi].required_count;
+            uint32_t qid  = pq->quest_id;
+            uint8_t  oidx = (uint8_t)oi;
+
+            int all_done = 1;
+            for (int k = 0; k < q->obj_count; k++) {
+                if (pq->progress[k] < q->objectives[k].required_count) { all_done = 0; break; }
+            }
+            if (all_done) pq->is_complete = 1;
+
+            p->is_dirty = 1;
+            player_release(p);
+
+            QuestProgressPacket pp;
+            memset(&pp, 0, sizeof(pp));
+            pp.header.type = PACKET_QUEST_PROGRESS;
+            pp.header.player_id = htonl(character_id);
+            pp.header.payload_size = htons(sizeof(pp) - sizeof(PacketHeader));
+            pp.quest_id  = htonl(qid);
+            pp.obj_index = oidx;
+            pp.current   = htonl(cur);
+            pp.required  = htonl(req);
+            server_send(client_fd, &pp, sizeof(pp));
+
+            p = player_acquire(character_id);
+            if (!p) return;
+        }
     }
 
     player_release(p);

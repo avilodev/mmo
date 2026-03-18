@@ -1,6 +1,7 @@
 #include "types.h"
 #include "session.h"
 #include "auth.h"
+#include "rate_limiter.h"
 #include "users_database.h"
 #include "config.h"
 #include "routes.h"
@@ -108,11 +109,16 @@ void* accept_thread_func(void* arg) {
             continue;
         }
         
-        printf("New login from %s:%d (fd: %d)\n", 
-               inet_ntoa(client_addr.sin_addr), 
-               ntohs(client_addr.sin_port), 
-               client_fd);
-        
+        const char* peer_ip = inet_ntoa(client_addr.sin_addr);
+        printf("New login from %s:%d (fd: %d)\n",
+               peer_ip, ntohs(client_addr.sin_port), client_fd);
+
+        if (rate_limiter_check(peer_ip)) {
+            printf("[RATE_LIMIT] Rejected blocked IP %s\n", peer_ip);
+            close(client_fd);
+            continue;
+        }
+
         pthread_t thread;
         int* client_fd_ptr = malloc(sizeof(int));
         *client_fd_ptr = client_fd;
@@ -148,7 +154,8 @@ int main(int argc, char** argv) {
 
     printf("=== LOGIN SERVER (Two-Stage Auth) ===\n");
     printf("PID: %d\n", getpid());
-    
+
+    rate_limiter_init();
     patch_notes_init();
 
     // Initialize TLS — cert/key relative to server working directory

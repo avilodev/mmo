@@ -41,6 +41,7 @@ typedef struct {
     float    pos_x, pos_y;
     uint32_t dialogue_id;
     uint8_t  is_interactable;
+    uint16_t npc_type_id;
     char     name[32];
 } NPCSnapshot;
 
@@ -51,11 +52,12 @@ static int find_npc_snapshot(uint32_t npc_id, NPCSnapshot* out) {
     for (int i = 0; i < MAX_NPCS; i++) {
         const NPCEntity* npc = &g_npc_world.npcs[i];
         if (npc->id == npc_id && npc->is_alive) {
-            out->id             = npc->id;
-            out->pos_x          = npc->pos_x;
-            out->pos_y          = npc->pos_y;
-            out->dialogue_id    = npc->dialogue_id;
+            out->id              = npc->id;
+            out->pos_x           = npc->pos_x;
+            out->pos_y           = npc->pos_y;
+            out->dialogue_id     = npc->dialogue_id;
             out->is_interactable = npc->is_interactable;
+            out->npc_type_id     = npc->npc_type_id;
             strncpy(out->name, npc->name, sizeof(out->name) - 1);
             out->name[sizeof(out->name) - 1] = '\0';
             pthread_mutex_unlock(&g_npc_world.lock);
@@ -140,6 +142,9 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
         printf("[DIALOGUE] Failed to create session\n");
         return;
     }
+
+    // Notify quest system that the player talked to this NPC type
+    quest_on_npc_talk(character_id, client_fd, npc.npc_type_id);
 
     // Build response packet with page 0
     // Client will look up text from local dialogues.json

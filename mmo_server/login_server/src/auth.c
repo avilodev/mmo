@@ -1,12 +1,23 @@
 #include "auth.h"
+#include "rate_limiter.h"
 #include "users_database.h"
 #include "session.h"
 #include "utils.h"
 #include "tls.h"
 
 #include <stdio.h>
-#include <string.h> 
+#include <string.h>
+#include <sys/socket.h>
 #include <arpa/inet.h>
+
+// Retrieve the dotted-decimal IP of the remote end of client_fd.
+static void get_peer_ip(int fd, char* out, size_t out_size) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    out[0] = '\0';
+    if (getpeername(fd, (struct sockaddr*)&addr, &len) == 0)
+        strncpy(out, inet_ntoa(addr.sin_addr), out_size - 1);
+}
 
 void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
     printf("[STAGE 1] Login validation: username=%s\n", packet->username);
@@ -34,8 +45,13 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
         response.success = 0;
         response.player_id = 0;
         strncpy(response.message, "Invalid credentials", 127);
-        
-        printf("[STAGE 1] FAILED: invalid credentials for user=%s\n", packet->username);
+
+        char peer_ip[16] = {0};
+        get_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        rate_limiter_record_failure(peer_ip);
+
+        printf("[STAGE 1] FAILED: invalid credentials for user=%s (ip=%s)\n",
+               packet->username, peer_ip);
     }
     
     printf("[DEBUG] Response packet bytes:\n");
@@ -155,7 +171,12 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     } else {
         response.success = 0;
         strncpy(response.message, "Username already exists", 127);
-        printf("[REGISTER] FAILED: username exists\n");
+
+        char peer_ip[16] = {0};
+        get_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        rate_limiter_record_failure(peer_ip);
+
+        printf("[REGISTER] FAILED: username exists (ip=%s)\n", peer_ip);
     }
     
     tls_send(client_fd, &response, sizeof(response), 0);

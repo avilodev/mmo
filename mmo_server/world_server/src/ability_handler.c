@@ -28,6 +28,7 @@
 
 extern ActivePlayer active_players[];
 extern pthread_mutex_t active_players_lock;
+extern NPCWorld g_npc_world;
 
 // ---------------------------------------------------------------------------
 // Static state
@@ -462,8 +463,52 @@ void ability_handle_cast_intent(NPCWorld* world,
         return;
     }
 
+    // Snapshot target position for range check before acquiring any player lock
+    // to avoid potential deadlocks from nested player_acquire calls.
+    float target_x = 0.0f, target_y = 0.0f;
+    int   has_range_target = 0;
+    if (target_id != 0 && ability->range > 0.0f) {
+        pthread_mutex_lock(&g_npc_world.lock);
+        for (int i = 0; i < MAX_NPCS; i++) {
+            if (g_npc_world.npcs[i].id == target_id && g_npc_world.npcs[i].is_alive) {
+                target_x = g_npc_world.npcs[i].pos_x;
+                target_y = g_npc_world.npcs[i].pos_y;
+                has_range_target = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_npc_world.lock);
+
+        if (!has_range_target) {
+            ActivePlayer* tgt = player_acquire(target_id);
+            if (tgt) {
+                target_x = tgt->pos_x;
+                target_y = tgt->pos_y;
+                has_range_target = 1;
+                player_release(tgt);
+            }
+        }
+    }
+
     ActivePlayer* caster = player_acquire(caster_id);
     if (!caster) return;
+
+    // Dead check — dead players cannot cast
+    if (caster->is_dead) {
+        player_release(caster);
+        send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
+        return;
+    }
+
+    // Stun check — stunned players cannot cast
+    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
+        if (caster->active_effects[i].active &&
+            caster->active_effects[i].effect_type == EFFECT_STUN) {
+            player_release(caster);
+            send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
+            return;
+        }
+    }
 
     int player_slot = find_player_slot(caster_id);
     if (player_slot < 0) {
@@ -494,6 +539,17 @@ void ability_handle_cast_intent(NPCWorld* world,
         player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
+    }
+
+    // Range check for targeted abilities
+    if (has_range_target) {
+        float dx = caster->pos_x - target_x;
+        float dy = caster->pos_y - target_y;
+        if (sqrtf(dx * dx + dy * dy) > ability->range) {
+            player_release(caster);
+            send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
+            return;
+        }
     }
 
     pthread_mutex_lock(&g_ability_casts_lock);

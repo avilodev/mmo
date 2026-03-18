@@ -31,6 +31,60 @@
       "item_rewards": [
         { "item_id": 3, "quantity": 1 }
       ]
+    },
+
+    {
+      "quest_id": 3,
+      "title": "Gather Supplies",
+      "xp": 500,
+      "gold": 80,
+      "objectives": [
+        {
+          "type": "collect",
+          "target_id": 1,
+          "required": 5,
+          "description": "Collect 5 Chicken Feathers"
+        }
+      ],
+      "item_rewards": []
+    },
+
+    {
+      "quest_id": 4,
+      "title": "Report to the Captain",
+      "xp": 250,
+      "gold": 30,
+      "objectives": [
+        {
+          "type": "talk",
+          "target_id": 0,
+          "required": 1,
+          "description": "Speak with Captain Aldric"
+        }
+      ],
+      "item_rewards": []
+    },
+
+    {
+      "quest_id": 5,
+      "title": "Purge the Undead",
+      "xp": 1200,
+      "gold": 200,
+      "objectives": [
+        {
+          "type": "kill",
+          "target_id": 3,
+          "required": 8,
+          "description": "Destroy 8 Skeleton Warriors"
+        },
+        {
+          "type": "kill",
+          "target_id": 4,
+          "required": 3,
+          "description": "Eliminate 3 Dark Mages"
+        }
+      ],
+      "item_rewards": []
     }
   ]
 }
