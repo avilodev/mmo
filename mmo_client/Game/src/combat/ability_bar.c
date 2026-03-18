@@ -20,6 +20,19 @@
 // Class color palettes for ability slots
 // ---------------------------------------------------------------------------
 
+// Returns 1 if the ability name indicates a healing ability
+static int ability_name_is_heal(const char* name) {
+    for (const char* p = name; *p; p++) {
+        char c0 = p[0] | 0x20;
+        char c1 = p[1] ? (p[1] | 0x20) : 0;
+        char c2 = p[2] ? (p[2] | 0x20) : 0;
+        char c3 = p[3] ? (p[3] | 0x20) : 0;
+        if (c0 == 'h' && c1 == 'e' && c2 == 'a' && c3 == 'l')
+            return 1;
+    }
+    return 0;
+}
+
 static void get_class_color_for_slot(int slot_index, int slot_count,
                                      float* r, float* g, float* b, float* a) {
     // Default neutral color
@@ -87,6 +100,7 @@ void ability_bar_set_abilities(AbilityBarState* bar,
         bar->slots[i].cooldown_remaining = 0.0f;
         bar->slots[i].cast_time          = cast_times[i];
         bar->slots[i].mana_cost          = mana_costs[i];
+        bar->slots[i].is_heal            = ability_name_is_heal(ability_names[i]);
 
         // Store icon path and load texture
         bar->slots[i].image[0] = '\0';
@@ -205,11 +219,13 @@ void ability_bar_on_cast_start(AbilityBarState* bar, uint16_t ability_id, float 
     bar->cast_elapsed = 0.0f;
     bar->cast_duration = cast_time;
     bar->casting_ability_id = ability_id;
+    bar->cast_is_heal = 0;
 
-    // Find ability name
+    // Find ability name and heal flag
     for (int i = 0; i < bar->slot_count; i++) {
         if (bar->slots[i].id == ability_id) {
             strncpy(bar->casting_ability_name, bar->slots[i].name, MAX_ABILITY_NAME - 1);
+            bar->cast_is_heal = bar->slots[i].is_heal;
             break;
         }
     }
@@ -461,9 +477,11 @@ void ability_bar_render_cast_bar(const AbilityBarState* bar,
     renderer_draw_rect(bx, by, bar_width, bar_height,
                        0.15f, 0.15f, 0.2f, 1.0f);
 
-    // Fill — use a purple/blue color for abilities (distinct from basic attack)
-    renderer_draw_rect(bx, by, bar_width * progress, bar_height,
-                       0.4f, 0.3f, 0.9f, 0.9f);
+    // Fill — green for heals, red for damage abilities
+    float cr = bar->cast_is_heal ? 0.15f : 0.90f;
+    float cg = bar->cast_is_heal ? 0.85f : 0.18f;
+    float cb = bar->cast_is_heal ? 0.30f : 0.18f;
+    renderer_draw_rect(bx, by, bar_width * progress, bar_height, cr, cg, cb, 0.9f);
 
     // Glowing edge
     if (progress > 0.01f && progress < 0.99f) {

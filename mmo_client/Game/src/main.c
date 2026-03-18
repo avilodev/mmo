@@ -42,6 +42,12 @@ static void char_callback(GLFWwindow* window, unsigned int codepoint) {
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
     if (!game || !game->chat.is_typing) return;
 
+    // Skip one character when chat was opened with T (to avoid 't' in buffer)
+    if (game->chat.suppress_next_char) {
+        game->chat.suppress_next_char = 0;
+        return;
+    }
+
     // Only handle printable ASCII
     if (codepoint >= 32 && codepoint < 127) {
         if (game->chat.input_len < MAX_CHAT_INPUT_LEN - 1) {

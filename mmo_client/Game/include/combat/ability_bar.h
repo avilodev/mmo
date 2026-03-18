@@ -41,6 +41,7 @@ typedef struct {
     float       cooldown_remaining;     // Current CD remaining (ticked locally)
     float       cast_time;              // For cast bar display
     int         mana_cost;
+    int         is_heal;                // 1 = healing ability (green cast bar)
 
     // Icon
     char        image[32];              // Filename, e.g. "cleave.png"
@@ -82,6 +83,7 @@ typedef struct {
     float       cast_duration;
     uint16_t    casting_ability_id;
     char        casting_ability_name[MAX_ABILITY_NAME];
+    int         cast_is_heal;           // 1 = current cast is a healing ability
 
     // Active effects on the player
     ClientStatusEffect effects[MAX_CLIENT_EFFECTS];

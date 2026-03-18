@@ -395,6 +395,19 @@ static void process_packet(const char* data, int length) {
                     } else if (healing > 0) {
                         combat_on_damage(&g_current_game->combat,
                                          target, healing, pkt->is_crit, 0, 1, tx, ty);
+
+                        // Spawn a green pulse ring at the healed target's position
+                        for (int v = 0; v < MAX_HEAL_VFXS; v++) {
+                            if (!g_current_game->heal_vfxs[v].active) {
+                                g_current_game->heal_vfxs[v].active     = 1;
+                                g_current_game->heal_vfxs[v].pos_x      = tx;
+                                g_current_game->heal_vfxs[v].pos_y      = ty;
+                                g_current_game->heal_vfxs[v].age        = 0.0f;
+                                g_current_game->heal_vfxs[v].duration   = 0.7f;
+                                g_current_game->heal_vfxs[v].max_radius = 55.0f;
+                                break;
+                            }
+                        }
                     }
 
                     if (pkt->is_kill) {

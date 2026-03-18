@@ -30,6 +30,14 @@
 #define MOVE_THRESHOLD      0.5f
 #define HEARTBEAT_INTERVAL  15.0f
 
+// Chat layout constants (shared between render_chat and input handler)
+#define CHAT_X      14.0f
+#define CHAT_W      420.0f
+#define CHAT_LINE_H 20.0f
+#define CHAT_LINES  8
+#define CHAT_PAD    8.0f
+#define CHAT_INBOX_H 30.0f
+
 // Static state for movement sync
 static double s_last_move_send = 0.0;
 static double s_last_any_send = 0.0;
@@ -231,6 +239,16 @@ static void playing_update(GameState* game, float delta_time) {
         }
     }
 
+    // Update heal VFX timers
+    for (int i = 0; i < MAX_HEAL_VFXS; i++) {
+        if (game->heal_vfxs[i].active) {
+            game->heal_vfxs[i].age += delta_time;
+            if (game->heal_vfxs[i].age >= game->heal_vfxs[i].duration) {
+                game->heal_vfxs[i].active = 0;
+            }
+        }
+    }
+
     // Update party invite timer
     if (game->party.has_pending_invite) {
         game->party.invite_timer -= delta_time;
@@ -401,6 +419,31 @@ static void render_zones(GameState* game) {
     }
 }
 
+static void render_heal_vfxs(GameState* game) {
+    for (int i = 0; i < MAX_HEAL_VFXS; i++) {
+        HealVFX* vfx = &game->heal_vfxs[i];
+        if (!vfx->active) continue;
+
+        float t = vfx->age / vfx->duration;
+        if (t > 1.0f) t = 1.0f;
+
+        // Outer expanding ring fades out
+        float outer_r = vfx->max_radius * t;
+        float outer_a = (1.0f - t) * 0.7f;
+        renderer_draw_circle(vfx->pos_x, vfx->pos_y, outer_r,
+                             0.15f, 1.0f, 0.35f, outer_a, 32);
+
+        // Second inner ring slightly delayed
+        if (t > 0.15f) {
+            float t2 = (t - 0.15f) / 0.85f;
+            float inner_r = vfx->max_radius * 0.6f * t2;
+            float inner_a = (1.0f - t2) * 0.45f;
+            renderer_draw_circle(vfx->pos_x, vfx->pos_y, inner_r,
+                                 0.3f, 1.0f, 0.5f, inner_a, 24);
+        }
+    }
+}
+
 static void render_ground_items(GameState* game) {
     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
         if (!game->ground_items[i].active) continue;
@@ -421,87 +464,79 @@ static void render_ground_items(GameState* game) {
 static void render_chat(GameState* game) {
     ChatState* chat = &game->chat;
 
-    // Layout constants
-    static const float CHAT_X    = 14.0f;
-    static const float CHAT_W    = 420.0f;
-    static const float LINE_H    = 20.0f;
-    static const int   MAX_LINES = 8;
-    static const float PAD       = 8.0f;
-    static const float INBOX_H   = 30.0f;
+    float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
+    float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
 
-    float chat_h  = (float)MAX_LINES * LINE_H + PAD * 2.0f;
-    float chat_y  = (float)game->camera.viewport_height - chat_h - INBOX_H - 20.0f;
-
-    // Only draw the message panel if there are messages or we're typing
     int has_messages = (chat->line_count > 0);
-    int show_panel   = has_messages || chat->is_typing;
 
-    if (show_panel) {
-        // Slightly darker, more opaque when typing
-        float bg_alpha = chat->is_typing ? 0.65f : 0.35f;
+    // Message panel: always show when typing, show when there are messages,
+    // and show a very faint panel otherwise so the user knows chat is here.
+    {
+        float bg_alpha;
+        if (chat->is_typing)   bg_alpha = 0.65f;
+        else if (has_messages) bg_alpha = 0.35f;
+        else                   bg_alpha = 0.10f;  // faint "empty" state
+
         renderer_draw_rect(CHAT_X, chat_y, CHAT_W, chat_h, 0.04f, 0.04f, 0.08f, bg_alpha);
 
-        // Top border line
-        renderer_draw_rect(CHAT_X, chat_y, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
+        float border_a = chat->is_typing ? 0.6f : (has_messages ? 0.4f : 0.15f);
+        // Top border
+        renderer_draw_rect(CHAT_X, chat_y, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, border_a);
         // Left border
-        renderer_draw_rect(CHAT_X, chat_y, 1.5f, chat_h, 0.4f, 0.5f, 0.7f, 0.6f);
+        renderer_draw_rect(CHAT_X, chat_y, 1.5f, chat_h, 0.4f, 0.5f, 0.7f, border_a);
     }
 
     // Messages (newest at the bottom)
-    int start = chat->line_count - MAX_LINES;
+    int start = chat->line_count - CHAT_LINES;
     if (start < 0) start = 0;
     for (int i = start; i < chat->line_count; i++) {
         const ChatLine* ln = &chat->lines[i];
 
-        // Channel prefix text and accent color
         const char* prefix = "";
-        float pr = 1.0f, pg = 1.0f, pb = 1.0f; // default white
         switch (ln->channel) {
-            case 0: prefix = "[L] "; pr=0.85f; pg=0.85f; pb=0.85f; break; // local  - off-white
-            case 1: prefix = "[G] "; pr=1.0f;  pg=0.85f; pb=0.20f; break; // global - gold
-            case 2: prefix = "[W] "; pr=0.85f; pg=0.40f; pb=0.85f; break; // whisper- purple
-            case 3: prefix = "[P] "; pr=0.30f; pg=0.90f; pb=0.45f; break; // party  - green
+            case 0: prefix = "[L] "; break;
+            case 1: prefix = "[G] "; break;
+            case 2: prefix = "[W] "; break;
+            case 3: prefix = "[P] "; break;
         }
-        (void)pr; (void)pg; (void)pb; // suppress unused warning (used later if colored renderer added)
 
         char line[320];
         snprintf(line, sizeof(line), "%s%s: %s", prefix, ln->sender, ln->text);
 
-        float line_y = chat_y + PAD + (float)(i - start) * LINE_H + LINE_H;
-        renderer_draw_text(CHAT_X + PAD, line_y, line);
+        float line_y = chat_y + CHAT_PAD + (float)(i - start) * CHAT_LINE_H + CHAT_LINE_H;
+        renderer_draw_text(CHAT_X + CHAT_PAD, line_y, line);
     }
 
-    // Input box (always visible when typing, or shown as hint when has messages)
+    // Input box
     float input_y = chat_y + chat_h;
 
     if (chat->is_typing) {
-        // Channel names and their accent colors
         static const char* ch_names[] = {"Local", "Global", "Whisper", "Party"};
         int ch = (int)chat->active_channel;
         if (ch < 0 || ch > 3) ch = 0;
 
         // Input box background
-        renderer_draw_rect(CHAT_X, input_y, CHAT_W, INBOX_H, 0.08f, 0.08f, 0.14f, 0.90f);
-        // Bottom border
-        renderer_draw_rect(CHAT_X, input_y + INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
-        // Left border
-        renderer_draw_rect(CHAT_X, input_y, 1.5f, INBOX_H, 0.4f, 0.5f, 0.7f, 0.6f);
+        renderer_draw_rect(CHAT_X, input_y, CHAT_W, CHAT_INBOX_H, 0.08f, 0.08f, 0.14f, 0.90f);
+        // Bottom and left borders
+        renderer_draw_rect(CHAT_X, input_y + CHAT_INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
+        renderer_draw_rect(CHAT_X, input_y, 1.5f, CHAT_INBOX_H, 0.4f, 0.5f, 0.7f, 0.6f);
 
-        // Channel badge  e.g. "[Local]"
+        // Channel badge e.g. "[Local]"
         char badge[16];
         snprintf(badge, sizeof(badge), "[%s] ", ch_names[ch]);
-        renderer_draw_text(CHAT_X + PAD, input_y + INBOX_H - 8.0f, badge);
+        renderer_draw_text(CHAT_X + CHAT_PAD, input_y + CHAT_INBOX_H - 8.0f, badge);
 
         // Typed text with blinking cursor
         char input_display[270];
         snprintf(input_display, sizeof(input_display), "%s_", chat->input_buf);
-        renderer_draw_text(CHAT_X + PAD + 72.0f, input_y + INBOX_H - 8.0f, input_display);
-    } else if (has_messages) {
-        // Subtle hint when idle
-        renderer_draw_rect(CHAT_X, input_y, CHAT_W, INBOX_H, 0.04f, 0.04f, 0.08f, 0.25f);
-        renderer_draw_rect(CHAT_X, input_y + INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.3f);
-        renderer_draw_rect(CHAT_X, input_y, 1.5f, INBOX_H, 0.4f, 0.5f, 0.7f, 0.3f);
-        renderer_draw_text(CHAT_X + PAD, input_y + INBOX_H - 8.0f, "Press Enter to chat");
+        renderer_draw_text(CHAT_X + CHAT_PAD + 72.0f, input_y + CHAT_INBOX_H - 8.0f, input_display);
+    } else {
+        // Idle input area — always show a faint clickable hint
+        float a = has_messages ? 0.25f : 0.15f;
+        renderer_draw_rect(CHAT_X, input_y, CHAT_W, CHAT_INBOX_H, 0.04f, 0.04f, 0.08f, a);
+        renderer_draw_rect(CHAT_X, input_y + CHAT_INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, a * 1.2f);
+        renderer_draw_rect(CHAT_X, input_y, 1.5f, CHAT_INBOX_H, 0.4f, 0.5f, 0.7f, a * 1.2f);
+        renderer_draw_text(CHAT_X + CHAT_PAD, input_y + CHAT_INBOX_H - 8.0f, "Press T to chat");
     }
 }
 
@@ -805,6 +840,7 @@ static void playing_render(GameState* game) {
 
     // World-space entities
     render_zones(game);
+    render_heal_vfxs(game);
     render_telegraphs(game);
     render_ground_items(game);
     npc_render_all(game->visible_npcs, game->visible_npc_count, game->world.tile_size);
@@ -1076,6 +1112,23 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                 }
                 return;  // Don't process other clicks
             }
+        }
+    }
+
+    // T key opens chat (won't add 't' to buffer thanks to suppress_next_char)
+    if (!game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_T)) {
+        game->chat.is_typing = 1;
+        game->chat.suppress_next_char = 1;
+    }
+
+    // Click on the chat input box also opens chat
+    if (!game->chat.is_typing && game->input.mouse_left_clicked) {
+        float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
+        float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
+        float input_y = chat_y + chat_h;
+        if (game->input.mouse_x >= CHAT_X && game->input.mouse_x <= CHAT_X + CHAT_W &&
+            game->input.mouse_y >= input_y && game->input.mouse_y <= input_y + CHAT_INBOX_H) {
+            game->chat.is_typing = 1;
         }
     }
 

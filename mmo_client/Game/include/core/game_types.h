@@ -31,6 +31,7 @@ typedef struct WorldState WorldState;  // Fully defined in world.h (included bel
 #define MAX_GROUND_ITEMS        64
 #define MAX_CHAT_LINES          50
 #define MAX_CHAT_INPUT_LEN      256
+#define MAX_HEAL_VFXS           8
 
 #define INVENTORY_SIZE 150
 #define INVENTORY_COLS 10
@@ -391,7 +392,20 @@ typedef struct {
     uint8_t active_channel;
     float backspace_timer;
     int   backspace_first;
+    uint8_t suppress_next_char; // 1 = skip next char_callback (used when T opens chat)
 } ChatState;
+
+// ============================================================================
+// HEAL VFX (client-side expanding ring on heal land)
+// ============================================================================
+
+typedef struct {
+    float pos_x, pos_y;
+    float age;
+    float duration;
+    float max_radius;
+    int   active;
+} HealVFX;
 
 // ============================================================================
 // PARTY STATE
@@ -527,6 +541,9 @@ struct GameState {
 
     // --- Chat ---
     ChatState chat;
+
+    // --- Heal VFX ---
+    HealVFX heal_vfxs[MAX_HEAL_VFXS];
 
     // --- Party ---
     PartyState party;
