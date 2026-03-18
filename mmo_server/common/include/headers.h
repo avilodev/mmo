@@ -1107,6 +1107,112 @@ typedef struct {
 
 // ============================================================================
 
+// ============================================================================
+// SHOP PACKETS
+// ============================================================================
+
+typedef struct {
+    uint32_t item_id;
+    uint32_t buy_price;
+} ShopItemInfo;
+
+// Server -> Client: shop opened, contents sent
+typedef struct {
+    PacketHeader header;
+    uint32_t     shop_id;
+    char         shop_name[32];
+    uint8_t      item_count;
+    uint8_t      padding[3];
+    ShopItemInfo items[32]; // MAX_SHOP_ITEMS
+} ShopOpenPacket;
+
+// Client -> Server: buy an item
+typedef struct {
+    PacketHeader header;
+    uint32_t     shop_id;
+    uint32_t     item_id;
+} ShopBuyPacket;
+
+// Server -> Client: buy result
+typedef struct {
+    PacketHeader header;
+    uint8_t      success;
+    uint8_t      inventory_slot;
+    uint8_t      padding[2];
+    uint32_t     item_id;
+    uint32_t     new_gold;
+    char         message[64];
+} ShopBuyResponsePacket;
+
+// Client -> Server: sell an item
+typedef struct {
+    PacketHeader header;
+    uint32_t     shop_id;
+    uint8_t      inventory_slot;
+    uint8_t      padding[3];
+} ShopSellPacket;
+
+// Server -> Client: sell result
+typedef struct {
+    PacketHeader header;
+    uint8_t      success;
+    uint8_t      inventory_slot;
+    uint8_t      padding[2];
+    uint32_t     item_id;
+    uint32_t     sell_price;
+    uint32_t     new_gold;
+    char         message[64];
+} ShopSellResponsePacket;
+
+// ============================================================================
+// QUEST PACKETS
+// ============================================================================
+
+typedef struct {
+    char     description[64];
+    uint32_t required;
+} QuestObjectiveInfo;
+
+// Server -> Client: quest accepted (also sent on login to restore active quests)
+typedef struct {
+    PacketHeader     header;
+    uint32_t         quest_id;
+    char             title[48];
+    uint8_t          obj_count;
+    uint8_t          padding[3];
+    QuestObjectiveInfo objectives[4]; // MAX_QUEST_OBJECTIVES
+} QuestAcceptPacket;
+
+// Server -> Client: single objective progress update
+typedef struct {
+    PacketHeader header;
+    uint32_t     quest_id;
+    uint8_t      obj_index;
+    uint8_t      padding[3];
+    int32_t      current;
+    int32_t      required;
+} QuestProgressPacket;
+
+typedef struct {
+    uint32_t item_id;
+    uint8_t  quantity;
+    uint8_t  inventory_slot;
+    uint8_t  padding[2];
+} QuestRewardItem;
+
+// Server -> Client: quest turned in + rewards granted
+typedef struct {
+    PacketHeader    header;
+    uint32_t        quest_id;
+    uint32_t        xp_reward;
+    uint32_t        gold_reward;
+    uint8_t         item_count;
+    uint8_t         padding[3];
+    QuestRewardItem items[4]; // MAX_QUEST_OBJECTIVES
+} QuestCompletePacket;
+
+// ============================================================================
+
 // Network byte order conversion for 64-bit values
 #define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
 #define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))

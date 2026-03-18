@@ -141,6 +141,18 @@ typedef enum {
     // REWARDS
     PACKET_KILL_REWARD         = 190,      // Server -> Client: XP + gold gained on kill
 
+    // Quest packets (191-193)
+    PACKET_QUEST_ACCEPT   = 191,           // Server -> Client: quest accepted / full quest data
+    PACKET_QUEST_PROGRESS = 192,           // Server -> Client: objective progress update
+    PACKET_QUEST_COMPLETE = 193,           // Server -> Client: quest turned in + rewards
+
+    // Shop packets (194-198)
+    PACKET_SHOP_OPEN          = 194,       // Server -> Client: shop contents
+    PACKET_SHOP_BUY           = 195,       // Client -> Server: buy item
+    PACKET_SHOP_BUY_RESPONSE  = 196,       // Server -> Client: buy result
+    PACKET_SHOP_SELL          = 197,       // Client -> Server: sell item
+    PACKET_SHOP_SELL_RESPONSE = 198,       // Server -> Client: sell result
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,

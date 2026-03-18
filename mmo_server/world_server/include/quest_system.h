@@ -2,10 +2,11 @@
 #define QUEST_SYSTEM_H
 
 #include <stdint.h>
-#include "../../common/protocol.h"  // MAX_QUEST_OBJECTIVES
 
 #define MAX_QUESTS          256
 #define MAX_PLAYER_QUESTS   32
+
+#define MAX_QUEST_OBJECTIVES 4
 
 // Types of quest objectives
 #define QUEST_OBJ_KILL    0
@@ -47,6 +48,7 @@ typedef struct {
 // Init: load quests.json
 int  quest_system_init(const char* json_path);
 void quest_system_cleanup(void);
+void quest_system_set_dir(const char* dir);
 
 // Look up a quest definition
 const QuestDef* quest_get(uint32_t quest_id);

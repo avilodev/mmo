@@ -2,9 +2,9 @@
 #define SHOP_H
 
 #include <stdint.h>
-#include "../../common/protocol.h"  // MAX_SHOP_ITEMS
 
 #define MAX_SHOPS 64
+#define MAX_SHOP_ITEMS 32
 
 typedef struct {
     uint32_t item_id;

@@ -220,7 +220,7 @@ int quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_c
 // Helpers
 // ---------------------------------------------------------------------------
 
-static PlayerQuestEntry* find_player_quest(ActivePlayer* p, uint32_t quest_id) {
+static struct PlayerQuestSlot* find_player_quest(ActivePlayer* p, uint32_t quest_id) {
     for (int i = 0; i < p->quest_count; i++)
         if (p->quests[i].quest_id == quest_id) return &p->quests[i];
     return NULL;
@@ -285,17 +285,17 @@ int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id)
         return 0;
     }
 
-    PlayerQuestEntry* pq = &p->quests[p->quest_count++];
+    struct PlayerQuestSlot* pq = &p->quests[p->quest_count++];
     memset(pq, 0, sizeof(*pq));
     pq->quest_id   = quest_id;
     pq->is_active  = 1;
     p->is_dirty    = 1;
 
     // Copy before sending so we can release lock first
-    PlayerQuestEntry pq_copy = *pq;
+    struct PlayerQuestSlot pq_copy = *pq;
     player_release(p);
 
-    send_quest_accept_packet(client_fd, character_id, q, &pq_copy);
+    send_quest_accept_packet(client_fd, character_id, q, (const PlayerQuestEntry*)&pq_copy);
     printf("[QUEST] Player %u accepted quest %u '%s'\n", character_id, quest_id, q->title);
     return 1;
 }
@@ -307,7 +307,7 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
     ActivePlayer* p = player_acquire(character_id);
     if (!p) return 0;
 
-    PlayerQuestEntry* pq = find_player_quest(p, quest_id);
+    struct PlayerQuestSlot* pq = find_player_quest(p, quest_id);
     if (!pq || !pq->is_active || !pq->is_complete) {
         player_release(p);
         return 0;  // caller uses fail_page
@@ -364,7 +364,7 @@ void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_i
     if (!p) return;
 
     for (int qi = 0; qi < p->quest_count; qi++) {
-        PlayerQuestEntry* pq = &p->quests[qi];
+        struct PlayerQuestSlot* pq = &p->quests[qi];
         if (!pq->is_active || pq->is_complete) continue;
 
         const QuestDef* q = quest_get(pq->quest_id);

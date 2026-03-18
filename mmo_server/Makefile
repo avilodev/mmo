@@ -70,7 +70,7 @@ $(WORLD_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(WORLD_OBJS)
 	@mkdir -p $(WORLD_BIN)/data
 	@cp world_server/data/items.json $(WORLD_BIN)/data/
 	@cp world_server/data/abilities.json $(WORLD_BIN)/data/
-	@cp world_server/data/dialogues.json $(WORLD_BIN)/data/
+	@cp -r world_server/data/dialogues $(WORLD_BIN)/data/
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
 	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
