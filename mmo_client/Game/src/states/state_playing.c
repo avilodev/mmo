@@ -535,9 +535,13 @@ static void render_chat(GameState* game) {
         renderer_draw_rect(CHAT_X, input_y + CHAT_INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
         renderer_draw_rect(CHAT_X, input_y, 1.5f, CHAT_INBOX_H, 0.4f, 0.5f, 0.7f, 0.6f);
 
-        // Channel badge e.g. "[Local]"
-        char badge[16];
-        snprintf(badge, sizeof(badge), "[%s] ", ch_names[ch]);
+        // Channel badge e.g. "[Local]" or "[-> Name]" for whisper with a known target
+        char badge[48];
+        if (ch == 2 && chat->whisper_reply_target[0] != '\0') {
+            snprintf(badge, sizeof(badge), "[-> %s] ", chat->whisper_reply_target);
+        } else {
+            snprintf(badge, sizeof(badge), "[%s] ", ch_names[ch]);
+        }
         renderer_draw_text(CHAT_X + CHAT_PAD, input_y + CHAT_INBOX_H - 8.0f, badge);
 
         // Typed text with blinking cursor
@@ -1144,14 +1148,38 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         game->chat.is_typing = 1;
     }
 
-    // Click on the chat input box also opens chat
+    // Click on chat area: input box opens chat; clicking a message line starts a whisper
     if (!game->chat.is_typing && game->input.mouse_left_clicked) {
         float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
         float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
         float input_y = chat_y + chat_h;
-        if (game->input.mouse_x >= CHAT_X && game->input.mouse_x <= CHAT_X + CHAT_W &&
-            game->input.mouse_y >= input_y && game->input.mouse_y <= input_y + CHAT_INBOX_H) {
-            game->chat.is_typing = 1;
+        float mx = game->input.mouse_x;
+        float my = game->input.mouse_y;
+
+        if (mx >= CHAT_X && mx <= CHAT_X + CHAT_W) {
+            if (my >= input_y && my <= input_y + CHAT_INBOX_H) {
+                // Clicked the input box — just open chat
+                game->chat.is_typing = 1;
+            } else if (my >= chat_y && my < input_y) {
+                // Clicked a message line — pre-fill "/w SenderName " for that line
+                ChatState* chat = &game->chat;
+                int start = chat->line_count - CHAT_LINES;
+                if (start < 0) start = 0;
+                for (int i = start; i < chat->line_count; i++) {
+                    float line_y = chat_y + CHAT_PAD + (float)(i - start) * CHAT_LINE_H;
+                    if (my >= line_y && my < line_y + CHAT_LINE_H) {
+                        const ChatLine* ln = &chat->lines[i];
+                        // Only pre-fill for lines that have a real sender
+                        if (ln->sender[0] != '\0' && strncmp(ln->sender, "-> ", 3) != 0) {
+                            snprintf(chat->input_buf, sizeof(chat->input_buf),
+                                     "/w %s ", ln->sender);
+                            chat->input_len = (int)strlen(chat->input_buf);
+                            chat->is_typing = 1;
+                        }
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1173,10 +1201,29 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                         network_send_chat(3, msg + 3); // channel 3 = party
                     } else if (strncmp(msg, "/w ", 3) == 0 && msg[3] != '\0') {
                         network_send_chat(2, msg + 3); // channel 2 = whisper
+                    } else if (strncmp(msg, "/r ", 3) == 0 && msg[3] != '\0') {
+                        // Reply to last whisper sender
+                        if (game->chat.whisper_reply_target[0] != '\0') {
+                            char whisper_msg[MAX_CHAT_INPUT_LEN + 32];
+                            snprintf(whisper_msg, sizeof(whisper_msg), "%s %s",
+                                     game->chat.whisper_reply_target, msg + 3);
+                            network_send_chat(2, whisper_msg);
+                        }
+                        // If no reply target yet, silently drop (no one has whispered us)
                     }
                     // Unknown commands are silently dropped (no server echo)
                 } else {
-                    network_send_chat(game->chat.active_channel, msg);
+                    // When active channel is WHISPER, prepend the reply target so
+                    // the server knows who to route to
+                    if (game->chat.active_channel == 2 &&
+                        game->chat.whisper_reply_target[0] != '\0') {
+                        char whisper_msg[MAX_CHAT_INPUT_LEN + 32];
+                        snprintf(whisper_msg, sizeof(whisper_msg), "%s %s",
+                                 game->chat.whisper_reply_target, msg);
+                        network_send_chat(2, whisper_msg);
+                    } else {
+                        network_send_chat(game->chat.active_channel, msg);
+                    }
                 }
             }
             game->chat.is_typing = 0;

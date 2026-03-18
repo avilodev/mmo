@@ -1141,6 +1141,15 @@ static void process_packet(const char* data, int length) {
                     memcpy(chat->lines[idx].text, pkt->message, 255);
                     chat->lines[idx].text[255] = '\0';
                     chat->lines[idx].channel = pkt->channel;
+
+                    // Track whisper reply target: only set on received whispers,
+                    // not on echo-backs (echo sender_name starts with "-> ")
+                    if (pkt->channel == CHAT_CHANNEL_WHISPER &&
+                        strncmp(pkt->sender_name, "-> ", 3) != 0) {
+                        strncpy(chat->whisper_reply_target, pkt->sender_name,
+                                sizeof(chat->whisper_reply_target) - 1);
+                        chat->whisper_reply_target[sizeof(chat->whisper_reply_target) - 1] = '\0';
+                    }
                 }
             }
             break;

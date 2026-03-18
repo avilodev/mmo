@@ -392,6 +392,7 @@ typedef struct {
     uint8_t active_channel;
     float backspace_timer;
     int   backspace_first;
+    char whisper_reply_target[32];  // Character name of last whisper sender (for /r)
 } ChatState;
 
 // ============================================================================
