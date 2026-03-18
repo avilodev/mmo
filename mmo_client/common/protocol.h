@@ -132,11 +132,23 @@ typedef enum {
     // Rewards
     PACKET_KILL_REWARD         = 190,      // Server -> Client: XP + gold gained on kill
 
-    // SERVER-TO-SERVER PACKETS (200-219)
+    // SERVER-TO-SERVER PACKETS (200-209)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,
     PACKET_WORLD_HEARTBEAT = 202,
     PACKET_WORLD_STATUS = 203,
+
+    // Shop packets (210-214)
+    PACKET_SHOP_OPEN         = 210,  // Server -> Client: shop inventory
+    PACKET_SHOP_BUY          = 211,  // Client -> Server: buy item
+    PACKET_SHOP_BUY_RESPONSE = 212,  // Server -> Client: buy result
+    PACKET_SHOP_SELL         = 213,  // Client -> Server: sell item
+    PACKET_SHOP_SELL_RESPONSE = 214, // Server -> Client: sell result
+
+    // Quest packets (215-217)
+    PACKET_QUEST_ACCEPT   = 215,  // Server -> Client: quest added to log
+    PACKET_QUEST_PROGRESS = 216,  // Server -> Client: objective progress update
+    PACKET_QUEST_COMPLETE = 217,  // Server -> Client: quest done + rewards
 } PacketType;
 
 typedef enum {
@@ -1096,6 +1108,110 @@ typedef struct {
     uint64_t     total_xp;       // Player's new total XP (for bar update)
     uint32_t     total_gold;     // Player's new total gold
 } KillRewardPacket;
+
+// ============================================================================
+// SHOP PACKETS
+// ============================================================================
+
+#define MAX_SHOP_ITEMS 32
+
+// Server -> Client: Open shop window with item list
+typedef struct {
+    PacketHeader header;
+    uint32_t shop_id;
+    char     shop_name[32];
+    uint8_t  item_count;
+    uint8_t  padding[3];
+    struct {
+        uint32_t item_id;
+        uint32_t buy_price;
+    } items[MAX_SHOP_ITEMS];
+} ShopOpenPacket;
+
+// Client -> Server: Buy one item from the shop
+typedef struct {
+    PacketHeader header;
+    uint32_t shop_id;
+    uint32_t item_id;
+} ShopBuyPacket;
+
+// Server -> Client: Result of a buy request
+typedef struct {
+    PacketHeader header;
+    uint8_t  success;
+    uint8_t  padding[3];
+    uint32_t item_id;
+    uint32_t new_gold;
+    uint8_t  inventory_slot;
+    uint8_t  padding2[3];
+    char     message[64];
+} ShopBuyResponsePacket;
+
+// Client -> Server: Sell one inventory slot to the shop
+typedef struct {
+    PacketHeader header;
+    uint32_t shop_id;
+    uint8_t  inventory_slot;
+    uint8_t  padding[3];
+} ShopSellPacket;
+
+// Server -> Client: Result of a sell request
+typedef struct {
+    PacketHeader header;
+    uint8_t  success;
+    uint8_t  padding[3];
+    uint32_t item_id;
+    uint32_t sell_price;
+    uint32_t new_gold;
+    uint8_t  inventory_slot;
+    uint8_t  padding2[3];
+    char     message[64];
+} ShopSellResponsePacket;
+
+// ============================================================================
+// QUEST PACKETS
+// ============================================================================
+
+#define MAX_QUEST_OBJECTIVES 4
+
+// Server -> Client: Quest accepted / added to log
+typedef struct {
+    PacketHeader header;
+    uint32_t quest_id;
+    char     title[48];
+    uint8_t  obj_count;
+    uint8_t  padding[3];
+    struct {
+        char    description[64];
+        int32_t required;
+    } objectives[MAX_QUEST_OBJECTIVES];
+} QuestAcceptPacket;
+
+// Server -> Client: Real-time objective progress update
+typedef struct {
+    PacketHeader header;
+    uint32_t quest_id;
+    uint8_t  obj_index;
+    uint8_t  padding[3];
+    int32_t  current;
+    int32_t  required;
+} QuestProgressPacket;
+
+// Server -> Client: Quest completed + rewards granted
+typedef struct {
+    PacketHeader header;
+    uint32_t quest_id;
+    uint32_t xp_reward;
+    uint32_t gold_reward;
+    uint8_t  item_count;
+    uint8_t  padding[3];
+    struct {
+        uint32_t item_id;
+        uint8_t  quantity;
+        uint8_t  inventory_slot;
+        uint8_t  padding[2];
+    } items[MAX_QUEST_OBJECTIVES];
+} QuestCompletePacket;
 
 // Network byte order conversion for 64-bit values
 #define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))

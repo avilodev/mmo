@@ -137,4 +137,11 @@ void network_send_party_decline(void);
 void network_send_party_leave(void);
 void network_send_party_kick(uint32_t target_id);
 
+// ----------------------------------------------------------------------------
+// SHOP
+// ----------------------------------------------------------------------------
+
+void network_send_shop_buy(uint32_t shop_id, uint32_t item_id);
+void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot);
+
 #endif // NETWORK_H

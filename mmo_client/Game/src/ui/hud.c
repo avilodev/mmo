@@ -94,6 +94,8 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     hud_render_character_button(hud, game);
     hud_render_currencies(hud, game);
     hud_render_target_bar(game, (float)hud->screen_width);
+    hud_render_player_target_bar(game, (float)hud->screen_width);
+    hud_render_party_frames(game);
 }
 
 void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
@@ -425,6 +427,119 @@ void hud_render_target_bar(const GameState* game, float screen_width) {
     char hp_text[32];
     snprintf(hp_text, sizeof(hp_text), "%d / %d", npc->health, npc->max_health);
     renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
+}
+
+void hud_render_player_target_bar(const GameState* game, float screen_width) {
+    if (game->target_player_id == 0) return;
+
+    // Find the targeted player in the nearby list
+    const NearbyPlayer* np = NULL;
+    for (int i = 0; i < game->nearby_player_count; i++) {
+        if (game->nearby_players[i].player_id == game->target_player_id) {
+            np = &game->nearby_players[i];
+            break;
+        }
+    }
+    if (!np) return;
+
+    float bar_width  = 300.0f;
+    float bar_height = 22.0f;
+    // Place below the NPC target bar (which is at y=16); offset by bar panel height (50px)
+    float x = screen_width / 2.0f - bar_width / 2.0f;
+    float y = 72.0f;   // 16 + 28 (panel pad above) + 22 (bar) + 6
+
+    // Background panel (teal tint to distinguish from enemy red)
+    renderer_draw_rect(x - 4, y - 20, bar_width + 8, bar_height + 28, 0.05f, 0.08f, 0.10f, 0.88f);
+
+    // Panel border (teal)
+    renderer_draw_rect(x - 4,              y - 20,                        bar_width + 8, 1.5f, 0.30f, 0.65f, 0.70f, 1.0f);
+    renderer_draw_rect(x - 4,              y - 20 + bar_height + 28 - 1.5f, bar_width + 8, 1.5f, 0.30f, 0.65f, 0.70f, 1.0f);
+    renderer_draw_rect(x - 4,              y - 20,                        1.5f, bar_height + 28, 0.30f, 0.65f, 0.70f, 1.0f);
+    renderer_draw_rect(x - 4 + bar_width + 8 - 1.5f, y - 20,             1.5f, bar_height + 28, 0.30f, 0.65f, 0.70f, 1.0f);
+
+    // Name above bar
+    char label[40];
+    snprintf(label, sizeof(label), "%s", np->name);
+    renderer_draw_text(x + bar_width / 2.0f - 20.0f, y - 4.0f, label);
+
+    // HP bar background
+    renderer_draw_rect(x, y, bar_width, bar_height, 0.10f, 0.05f, 0.05f, 1.0f);
+
+    // HP fill (green tint for friendly)
+    if (np->max_health > 0) {
+        float pct = (float)np->health / (float)np->max_health;
+        if (pct > 1.0f) pct = 1.0f;
+        if (pct < 0.0f) pct = 0.0f;
+        renderer_draw_rect(x, y, bar_width * pct, bar_height, 0.10f, 0.70f, 0.30f, 1.0f);
+    }
+
+    // Bar border
+    renderer_draw_rect(x, y, bar_width, 1.5f, 0.6f, 0.6f, 0.6f, 1.0f);
+    renderer_draw_rect(x, y + bar_height - 1.5f, bar_width, 1.5f, 0.6f, 0.6f, 0.6f, 1.0f);
+    renderer_draw_rect(x, y, 1.5f, bar_height, 0.6f, 0.6f, 0.6f, 1.0f);
+    renderer_draw_rect(x + bar_width - 1.5f, y, 1.5f, bar_height, 0.6f, 0.6f, 0.6f, 1.0f);
+
+    // HP numbers
+    char hp_text[32];
+    snprintf(hp_text, sizeof(hp_text), "%d / %d", np->health, np->max_health);
+    renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
+}
+
+void hud_render_party_frames(const GameState* game) {
+    if (!game->party.has_party || game->party.member_count == 0) return;
+
+    const float FRAME_W  = 180.0f;
+    const float FRAME_H  = 50.0f;
+    const float FRAME_GAP = 5.0f;
+    const float BAR_PAD  = 6.0f;
+    const float BAR_W    = FRAME_W - BAR_PAD * 2.0f;
+    const float HP_H     = 10.0f;
+    const float MP_H     = 8.0f;
+    const float START_X  = 10.0f;
+    const float START_Y  = 10.0f;
+
+    for (int i = 0; i < game->party.member_count; i++) {
+        const PartyMember* m = &game->party.members[i];
+
+        float fx = START_X;
+        float fy = START_Y + i * (FRAME_H + FRAME_GAP);
+
+        // Background + border
+        renderer_draw_rect(fx, fy, FRAME_W, FRAME_H, 0.05f, 0.05f, 0.08f, 0.85f);
+        renderer_draw_rect(fx,            fy,                FRAME_W, 1.5f, 0.45f, 0.45f, 0.55f, 1.0f);
+        renderer_draw_rect(fx,            fy + FRAME_H - 1.5f, FRAME_W, 1.5f, 0.45f, 0.45f, 0.55f, 1.0f);
+        renderer_draw_rect(fx,            fy,            1.5f, FRAME_H, 0.45f, 0.45f, 0.55f, 1.0f);
+        renderer_draw_rect(fx + FRAME_W - 1.5f, fy, 1.5f, FRAME_H, 0.45f, 0.45f, 0.55f, 1.0f);
+
+        // Name + level
+        char label[48];
+        int is_leader = (m->id == game->party.leader_id);
+        snprintf(label, sizeof(label), "%s%s (%u)",
+                 is_leader ? "* " : "", m->name, (unsigned)m->level);
+        renderer_draw_text(fx + BAR_PAD, fy + 12.0f, label);
+
+        // HP bar
+        float hp_y = fy + 18.0f;
+        float hp_pct = (m->max_health > 0)
+            ? (float)m->health / (float)m->max_health : 0.0f;
+        if (hp_pct > 1.0f) hp_pct = 1.0f;
+        if (hp_pct < 0.0f) hp_pct = 0.0f;
+        renderer_draw_rect(fx + BAR_PAD, hp_y, BAR_W, HP_H, 0.2f, 0.05f, 0.05f, 1.0f);
+        float hr = 1.0f, hg = hp_pct * 0.6f;
+        renderer_draw_rect(fx + BAR_PAD, hp_y, BAR_W * hp_pct, HP_H, hr, hg, 0.0f, 0.9f);
+
+        // Mana bar
+        float mp_y = fy + 32.0f;
+        float mp_pct = (m->max_mana > 0)
+            ? (float)m->mana / (float)m->max_mana : 0.0f;
+        if (mp_pct > 1.0f) mp_pct = 1.0f;
+        if (mp_pct < 0.0f) mp_pct = 0.0f;
+        renderer_draw_rect(fx + BAR_PAD, mp_y, BAR_W, MP_H, 0.05f, 0.05f, 0.2f, 1.0f);
+        // Ninja (class 2) gets yellow energy bar, others get blue mana
+        float mr = 0.2f, mg = 0.3f, mb = 0.9f;
+        if (m->player_class == 2) { mr = 1.0f; mg = 0.9f; mb = 0.2f; }
+        renderer_draw_rect(fx + BAR_PAD, mp_y, BAR_W * mp_pct, MP_H, mr, mg, mb, 0.9f);
+    }
 }
 
 void hud_render_currencies(const HUDLayout* hud, const GameState* game) {

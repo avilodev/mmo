@@ -16,6 +16,7 @@
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
 #include "ui/quest_log.h"
+#include "ui/shop_ui.h"
 #include "ui/settings_panel.h"
 #include "audio/audio.h"
 #include "core/keybinds.h"
@@ -70,8 +71,8 @@ static void playing_enter(GameState* game) {
     hud_init(&game->hud, 1920, 1080);
 
     // Initialize dialogue system with JSON data
-    if (!dialogue_system_init("data/dialogues.json")) {
-        printf("[WARNING] Failed to load dialogues.json\n");
+    if (!dialogue_system_init("data/dialogues")) {
+        printf("[WARNING] Failed to load dialogues directory\n");
     }
 
     extern GameState* g_current_game;
@@ -219,6 +220,19 @@ static void playing_update(GameState* game, float delta_time) {
         if (!t || !t->is_alive) {
             game->target_npc_id = 0;
         }
+    }
+
+    // Clear player target if targeted player is dead or no longer nearby
+    if (game->target_player_id != 0) {
+        int still_alive = 0;
+        for (int i = 0; i < game->nearby_player_count; i++) {
+            if (game->nearby_players[i].player_id == game->target_player_id &&
+                !game->nearby_players[i].is_dead) {
+                still_alive = 1;
+                break;
+            }
+        }
+        if (!still_alive) game->target_player_id = 0;
     }
 
     // Update telegraph timers
@@ -892,6 +906,9 @@ static void playing_render(GameState* game) {
                      game->camera.viewport_width,
                      game->camera.viewport_height);
 
+    // Shop window (on top of game world, below pause)
+    shop_ui_render(game);
+
     // Buff icon tooltip (before pause/settings overlays)
     render_buff_tooltip(game);
 
@@ -1007,21 +1024,28 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     quest_log_handle_input_full(&game->quest_log,
                                  game->input.mouse_x, game->input.mouse_y,
                                  game->input.mouse_left_clicked,
-                                 input_key_just_pressed(&game->input, g_keybinds.toggle_quest_log),
-                                 input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
+                                 !game->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_quest_log),
+                                 !game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
                                  game->camera.viewport_width,
                                  game->camera.viewport_height);
     if (game->quest_log.is_open) return; // Block gameplay input while quest log open
 
+    // Shop window input (blocks gameplay input while open)
+    if (game->shop.is_open) {
+        shop_ui_handle_input(game, game->input.mouse_x, game->input.mouse_y,
+                             game->input.mouse_left_clicked);
+        return;
+    }
+
     // Toggle inventory
-    if (input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {
+    if (!game->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {
         if (game->inventory) {
             inventory_toggle(game->inventory);
         }
     }
     
     // Toggle character screen
-    if (input_key_just_pressed(&game->input, g_keybinds.toggle_character)) {
+    if (!game->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_character)) {
         if (game->character_screen) {
             character_screen_toggle(game->character_screen);
         }
@@ -1115,10 +1139,9 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // T key opens chat (won't add 't' to buffer thanks to suppress_next_char)
+    // T key opens chat
     if (!game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_T)) {
         game->chat.is_typing = 1;
-        game->chat.suppress_next_char = 1;
     }
 
     // Click on the chat input box also opens chat
@@ -1226,28 +1249,65 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
-    // Left click: NPC targeting, then ground item pickup
+    // Party frame click = target that member
+    if (game->input.mouse_left_clicked && game->party.has_party) {
+        const float FRAME_W  = 180.0f;
+        const float FRAME_H  = 50.0f;
+        const float FRAME_GAP = 5.0f;
+        const float START_X  = 10.0f;
+        const float START_Y  = 10.0f;
+        for (int i = 0; i < game->party.member_count; i++) {
+            float fx = START_X;
+            float fy = START_Y + i * (FRAME_H + FRAME_GAP);
+            if (game->input.mouse_x >= fx && game->input.mouse_x <= fx + FRAME_W &&
+                game->input.mouse_y >= fy && game->input.mouse_y <= fy + FRAME_H) {
+                game->target_player_id = game->party.members[i].id;
+                game->target_npc_id    = 0;
+                goto done_click; // Skip world-coord click
+            }
+        }
+    }
+
+    // Left click: player/NPC targeting in world, then ground item pickup
     if (game->input.mouse_left_clicked) {
         float world_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
         float world_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
 
-        // Check if clicked on an NPC to target it
-        int hit_npc = 0;
-        for (int i = 0; i < game->visible_npc_count; i++) {
-            VisibleNPC* npc = &game->visible_npcs[i];
-            if (!npc->is_alive) continue;
-            float dx = world_x - npc->pos_x;
-            float dy = world_y - npc->pos_y;
+        // Check if clicked on a nearby player to target them
+        int hit_target = 0;
+        for (int i = 0; i < game->nearby_player_count; i++) {
+            const NearbyPlayer* np = &game->nearby_players[i];
+            if (np->is_dead) continue;
+            float dx = world_x - np->pos_x;
+            float dy = world_y - np->pos_y;
             if (dx * dx + dy * dy < 32.0f * 32.0f) {
-                game->target_npc_id = npc->npc_id;
-                hit_npc = 1;
+                game->target_player_id = np->player_id;
+                game->target_npc_id    = 0;  // Clear NPC target
+                hit_target = 1;
                 break;
             }
         }
 
-        // Click on empty space clears target
-        if (!hit_npc) {
-            game->target_npc_id = 0;
+        // Check if clicked on an NPC to target it
+        if (!hit_target) {
+            for (int i = 0; i < game->visible_npc_count; i++) {
+                VisibleNPC* npc = &game->visible_npcs[i];
+                if (!npc->is_alive) continue;
+                float dx = world_x - npc->pos_x;
+                float dy = world_y - npc->pos_y;
+                if (dx * dx + dy * dy < 32.0f * 32.0f) {
+                    game->target_npc_id    = npc->npc_id;
+                    game->target_player_id = 0;  // Clear player target
+                    hit_target = 1;
+                    break;
+                }
+            }
+        }
+
+        // Click on empty space clears all targets
+        if (!hit_target) {
+            game->target_npc_id    = 0;
+            game->target_player_id = 0;
         }
 
         // Ground item pickup
@@ -1266,6 +1326,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             }
         }
     }
+    done_click:;
 
     // Leave party
     if (input_key_just_pressed(&game->input, g_keybinds.party_leave) && game->party.has_party) {
@@ -1321,8 +1382,9 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             character_screen_toggle(game->character_screen);
         } else if (game->inventory && game->inventory->is_open) {
             inventory_toggle(game->inventory);
-        } else if (game->target_npc_id != 0) {
-            game->target_npc_id = 0;
+        } else if (game->target_npc_id != 0 || game->target_player_id != 0) {
+            game->target_npc_id    = 0;
+            game->target_player_id = 0;
         } else {
             game->is_paused = 1;
         }

@@ -6,6 +6,7 @@
 #include "inventory.h"
 #include "npc_types.h"
 #include "audio/audio.h"
+#include "ui/quest_log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1214,6 +1215,136 @@ static void process_packet(const char* data, int length) {
             g_connected = FALSE;
             break;
 
+        // ----------------------------------------------------------------
+        // SHOP packets
+        // ----------------------------------------------------------------
+
+        case PACKET_SHOP_OPEN:
+            if (length >= (int)sizeof(ShopOpenPacket) && g_current_game) {
+                ShopOpenPacket* pkt = (ShopOpenPacket*)data;
+                ShopState* shop = &g_current_game->shop;
+                shop->shop_id = ntohl(pkt->shop_id);
+                uint8_t count = pkt->item_count;
+                if (count > MAX_SHOP_ITEMS) count = MAX_SHOP_ITEMS;
+                shop->item_count = count;
+                memcpy(shop->shop_name, pkt->shop_name, 31);
+                shop->shop_name[31] = '\0';
+                for (int i = 0; i < count; i++) {
+                    shop->items[i].item_id   = ntohl(pkt->items[i].item_id);
+                    shop->items[i].buy_price = ntohl(pkt->items[i].buy_price);
+                }
+                shop->sell_tab  = 0;
+                shop->is_open   = 1;
+                printf("[NET] Shop open: id=%u '%s' (%u items)\n",
+                       shop->shop_id, shop->shop_name, count);
+            }
+            break;
+
+        case PACKET_SHOP_BUY_RESPONSE:
+            if (length >= (int)sizeof(ShopBuyResponsePacket) && g_current_game) {
+                ShopBuyResponsePacket* pkt = (ShopBuyResponsePacket*)data;
+                pkt->message[63] = '\0';
+                printf("[NET] Shop buy: %s — %s\n",
+                       pkt->success ? "OK" : "FAIL", pkt->message);
+                if (pkt->success) {
+                    // Update gold and inventory from server-authoritative values
+                    g_current_game->player.info.gold = ntohl(pkt->new_gold);
+                    uint8_t slot = pkt->inventory_slot;
+                    if (slot < INVENTORY_SIZE && g_current_game->inventory) {
+                        uint32_t item_id = ntohl(pkt->item_id);
+                        g_current_game->inventory->slots[slot].template_id = item_id;
+                        g_current_game->inventory->slots[slot].quantity     = 1;
+                    }
+                }
+            }
+            break;
+
+        case PACKET_SHOP_SELL_RESPONSE:
+            if (length >= (int)sizeof(ShopSellResponsePacket) && g_current_game) {
+                ShopSellResponsePacket* pkt = (ShopSellResponsePacket*)data;
+                pkt->message[63] = '\0';
+                printf("[NET] Shop sell: %s — %s\n",
+                       pkt->success ? "OK" : "FAIL", pkt->message);
+                if (pkt->success) {
+                    g_current_game->player.info.gold = ntohl(pkt->new_gold);
+                    uint8_t slot = pkt->inventory_slot;
+                    if (slot < INVENTORY_SIZE && g_current_game->inventory) {
+                        g_current_game->inventory->slots[slot].template_id = 0;
+                        g_current_game->inventory->slots[slot].quantity     = 0;
+                    }
+                }
+            }
+            break;
+
+        // ----------------------------------------------------------------
+        // QUEST packets
+        // ----------------------------------------------------------------
+
+        case PACKET_QUEST_ACCEPT:
+            if (length >= (int)sizeof(QuestAcceptPacket) && g_current_game) {
+                QuestAcceptPacket* pkt = (QuestAcceptPacket*)data;
+                uint32_t quest_id = ntohl(pkt->quest_id);
+                pkt->title[47] = '\0';
+                uint8_t obj_count = pkt->obj_count;
+                if (obj_count > MAX_QUEST_OBJECTIVES) obj_count = MAX_QUEST_OBJECTIVES;
+
+                char descs[MAX_QUEST_OBJECTIVES][64];
+                int32_t reqs[MAX_QUEST_OBJECTIVES];
+                for (int i = 0; i < obj_count; i++) {
+                    memcpy(descs[i], pkt->objectives[i].description, 63);
+                    descs[i][63] = '\0';
+                    reqs[i] = (int32_t)ntohl((uint32_t)pkt->objectives[i].required);
+                }
+
+                quest_log_add(&g_current_game->quest_log,
+                              quest_id, pkt->title,
+                              obj_count, descs, reqs);
+                printf("[NET] Quest accepted: id=%u '%s'\n", quest_id, pkt->title);
+            }
+            break;
+
+        case PACKET_QUEST_PROGRESS:
+            if (length >= (int)sizeof(QuestProgressPacket) && g_current_game) {
+                QuestProgressPacket* pkt = (QuestProgressPacket*)data;
+                uint32_t quest_id = ntohl(pkt->quest_id);
+                int32_t current  = (int32_t)ntohl((uint32_t)pkt->current);
+                int32_t required = (int32_t)ntohl((uint32_t)pkt->required);
+                quest_log_update_progress(&g_current_game->quest_log,
+                                          quest_id, pkt->obj_index,
+                                          current, required);
+                printf("[NET] Quest progress: id=%u obj=%u %d/%d\n",
+                       quest_id, pkt->obj_index, current, required);
+            }
+            break;
+
+        case PACKET_QUEST_COMPLETE:
+            if (length >= (int)sizeof(QuestCompletePacket) && g_current_game) {
+                QuestCompletePacket* pkt = (QuestCompletePacket*)data;
+                uint32_t quest_id  = ntohl(pkt->quest_id);
+                uint32_t xp_reward = ntohl(pkt->xp_reward);
+                uint32_t gold_reward = ntohl(pkt->gold_reward);
+
+                quest_log_complete(&g_current_game->quest_log, quest_id);
+
+                // Show reward notification (reuse existing kill-reward popup)
+                for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
+                    if (!g_current_game->reward_notifications[i].active) {
+                        g_current_game->reward_notifications[i].xp_gained   = xp_reward;
+                        g_current_game->reward_notifications[i].gold_gained = gold_reward;
+                        g_current_game->reward_notifications[i].age         = 0.0f;
+                        g_current_game->reward_notifications[i].active      = 1;
+                        break;
+                    }
+                }
+
+                // Refresh gold/XP from server
+                network_request_player_data_refresh();
+
+                printf("[NET] Quest complete: id=%u +%u XP +%u gold\n",
+                       quest_id, xp_reward, gold_reward);
+            }
+            break;
+
         default:
             printf("[NET] ⚠️ Unknown packet type: %d (0x%02X)\n", header->type, header->type);
             break;
@@ -1415,6 +1546,18 @@ static int get_packet_size(uint8_t type) {
         case PACKET_PARTY_KICK:                 return (int)sizeof(PartyKickPacket);
         // PACKET_PARTY_UPDATE - variable length, handled in network_update()
         case PACKET_PARTY_DISBAND:              return (int)sizeof(PartyDisbandPacket);
+
+        // Shop packets
+        case PACKET_SHOP_OPEN:                  return (int)sizeof(ShopOpenPacket);
+        case PACKET_SHOP_BUY:                   return (int)sizeof(ShopBuyPacket);
+        case PACKET_SHOP_BUY_RESPONSE:          return (int)sizeof(ShopBuyResponsePacket);
+        case PACKET_SHOP_SELL:                  return (int)sizeof(ShopSellPacket);
+        case PACKET_SHOP_SELL_RESPONSE:         return (int)sizeof(ShopSellResponsePacket);
+
+        // Quest packets
+        case PACKET_QUEST_ACCEPT:               return (int)sizeof(QuestAcceptPacket);
+        case PACKET_QUEST_PROGRESS:             return (int)sizeof(QuestProgressPacket);
+        case PACKET_QUEST_COMPLETE:             return (int)sizeof(QuestCompletePacket);
 
         // Server-to-server packets (shouldn't receive these in client, but handle anyway)
         case PACKET_REALM_AUTH:                 return 0;  // Unknown structure
@@ -2286,4 +2429,38 @@ void network_send_party_kick(uint32_t target_id) {
 
     send(g_socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Party kick sent: %u\n", target_id);
+}
+
+// ============================================================================
+// PUBLIC API - SHOP
+// ============================================================================
+
+void network_send_shop_buy(uint32_t shop_id, uint32_t item_id) {
+    if (!g_connected) return;
+
+    ShopBuyPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_SHOP_BUY;
+    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.payload_size = htons(sizeof(ShopBuyPacket) - sizeof(PacketHeader));
+    pkt.shop_id = htonl(shop_id);
+    pkt.item_id = htonl(item_id);
+
+    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    printf("[NET] Shop buy: shop=%u item=%u\n", shop_id, item_id);
+}
+
+void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot) {
+    if (!g_connected) return;
+
+    ShopSellPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_SHOP_SELL;
+    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.payload_size = htons(sizeof(ShopSellPacket) - sizeof(PacketHeader));
+    pkt.shop_id = htonl(shop_id);
+    pkt.inventory_slot = inventory_slot;
+
+    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    printf("[NET] Shop sell: shop=%u slot=%u\n", shop_id, inventory_slot);
 }

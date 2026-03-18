@@ -392,7 +392,6 @@ typedef struct {
     uint8_t active_channel;
     float backspace_timer;
     int   backspace_first;
-    uint8_t suppress_next_char; // 1 = skip next char_callback (used when T opens chat)
 } ChatState;
 
 // ============================================================================
@@ -406,6 +405,26 @@ typedef struct {
     float max_radius;
     int   active;
 } HealVFX;
+
+// ============================================================================
+// SHOP STATE
+// ============================================================================
+
+typedef struct {
+    uint32_t item_id;
+    uint32_t buy_price;
+} ShopItemEntry;
+
+typedef struct {
+    int          is_open;
+    uint32_t     shop_id;
+    char         shop_name[32];
+    uint8_t      item_count;
+    ShopItemEntry items[MAX_SHOP_ITEMS];
+    // Sell tab
+    int          sell_tab;       // 0 = buy tab, 1 = sell tab
+    int          hovered_slot;   // item index hovered in current tab
+} ShopState;
 
 // ============================================================================
 // PARTY STATE
@@ -557,6 +576,12 @@ struct GameState {
 
     // --- Quest Log ---
     QuestLogState quest_log;
+
+    // --- Shop ---
+    ShopState shop;
+
+    // --- Player Targeting ---
+    uint32_t target_player_id;  // 0 = no player target (mutually exclusive with target_npc_id)
 };
 
 #endif // GAME_TYPES_H

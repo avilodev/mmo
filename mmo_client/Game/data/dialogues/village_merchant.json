@@ -1,0 +1,30 @@
+{
+  "id": 3,
+  "name": "village_merchant",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Welcome, traveler! I'm Sera. I stock supplies for adventurers passing through. What can I get for you?",
+      "options": [
+        { "option_id": 0, "text": "Show me your wares", "next_page": 1, "action": "open_shop", "action_value": 1 },
+        { "option_id": 1, "text": "Do you buy gear?", "next_page": 2 },
+        { "option_id": 2, "text": "Maybe later", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Here you go! Take your time browsing.",
+      "options": [
+        { "option_id": 0, "text": "Thanks", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Of course! Open the shop and use the Sell tab to sell your unwanted items. I pay fair prices.",
+      "options": [
+        { "option_id": 0, "text": "Let me see the shop", "next_page": 1, "action": "open_shop", "action_value": 1 },
+        { "option_id": 1, "text": "Maybe later", "next_page": -1 }
+      ]
+    }
+  ]
+}

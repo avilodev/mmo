@@ -27,7 +27,13 @@ void hud_render_inventory_button(const HUDLayout* hud, const GameState* game);
 void hud_render_character_button(const HUDLayout* hud, const GameState* game);
 void hud_render_currencies(const HUDLayout* hud, const GameState* game);
 
-// Render target health bar at top-center of screen
+// Render target health bar at top-center of screen (NPC)
 void hud_render_target_bar(const GameState* game, float screen_width);
+
+// Render targeted player health bar (below NPC target bar)
+void hud_render_player_target_bar(const GameState* game, float screen_width);
+
+// Render party member frames (top-left, stacked vertically)
+void hud_render_party_frames(const GameState* game);
 
 #endif // HUD_H
