@@ -71,7 +71,7 @@ static void playing_enter(GameState* game) {
     hud_init(&game->hud, 1920, 1080);
 
     // Initialize dialogue system with JSON data
-    if (!dialogue_system_init("data/dialogues")) {
+    if (!dialogue_system_init("Game/Data/dialogues")) {
         printf("[WARNING] Failed to load dialogues directory\n");
     }
 
