@@ -23,7 +23,6 @@
 
 // Packet Types
 typedef enum {
-    PACKET_CONNECT = 1,
     PACKET_DISCONNECT = 2,
     PACKET_AUTH_LOGIN = 3,              // Username/password validation (no session created)
     PACKET_AUTH_REGISTER = 4,

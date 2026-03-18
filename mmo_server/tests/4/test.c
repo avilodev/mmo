@@ -593,18 +593,18 @@ int main(int argc, char** argv) {
     // ==========================================
     print_step(8, 10, "Request Player Data (Items & Equipment)");
     
-    RequestPlayerDataPacket data_req = {0};
-    data_req.header.type = PACKET_REQUEST_PLAYER_DATA;
-    data_req.header.player_id = htonl(character_id);
-    
+    PacketHeader data_req = {0};
+    data_req.type = PACKET_REQUEST_PLAYER_DATA;
+    data_req.player_id = htonl(character_id);
+
     if (send(world_fd, &data_req, sizeof(data_req), 0) <= 0) {
         print_error("Failed to send player data request");
         close(world_fd);
         stats_finish();
         return 1;
     }
-    
-    PlayerDataPacket player_data;
+
+    CharacterInfo player_data;
     bytes = safe_recv(world_fd, &player_data, sizeof(player_data), "player data");
     
     if (bytes <= 0) {

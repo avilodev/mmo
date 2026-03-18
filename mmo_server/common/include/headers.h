@@ -510,45 +510,6 @@ typedef struct {
     uint8_t padding;
 } MoveItemResponsePacket;
 
-// ============================================================================
-// PLAYER DATA PACKET (Enhanced with equipment/inventory)
-// ============================================================================
-
-// Client -> Server: Request full player data
-typedef struct {
-    PacketHeader header;
-} RequestPlayerDataPacket;
-
-// Server -> Client: Full player data including equipment and inventory
-typedef struct {
-    PacketHeader header;
-    
-    // Basic stats
-    uint32_t level;
-    uint32_t health;
-    uint32_t max_health;
-    uint64_t experience;
-    uint32_t gold;
-    
-    // Position
-    float pos_x;
-    float pos_y;
-    float pos_z;
-    
-    // Equipment (item IDs)
-    uint32_t helmet;
-    uint32_t gloves;
-    uint32_t chest_armor;
-    uint32_t leggings;
-    uint32_t boots;
-    uint32_t main_hand;
-    uint32_t second_hand;
-    uint16_t blessing;
-    uint16_t padding;
-    
-    // Inventory (150 slots)
-    uint32_t inventory[150];
-} PlayerDataPacket;
 
 // ============================================================================
 // MOVEMENT PACKET
@@ -1111,6 +1072,8 @@ typedef struct {
 // SHOP PACKETS
 // ============================================================================
 
+#define MAX_SHOP_ITEMS 32
+
 typedef struct {
     uint32_t item_id;
     uint32_t buy_price;
@@ -1123,7 +1086,7 @@ typedef struct {
     char         shop_name[32];
     uint8_t      item_count;
     uint8_t      padding[3];
-    ShopItemInfo items[32]; // MAX_SHOP_ITEMS
+    ShopItemInfo items[MAX_SHOP_ITEMS];
 } ShopOpenPacket;
 
 // Client -> Server: buy an item
@@ -1168,9 +1131,11 @@ typedef struct {
 // QUEST PACKETS
 // ============================================================================
 
+#define MAX_QUEST_OBJECTIVES 4
+
 typedef struct {
-    char     description[64];
-    uint32_t required;
+    char    description[64];
+    int32_t required;
 } QuestObjectiveInfo;
 
 // Server -> Client: quest accepted (also sent on login to restore active quests)
@@ -1180,7 +1145,7 @@ typedef struct {
     char             title[48];
     uint8_t          obj_count;
     uint8_t          padding[3];
-    QuestObjectiveInfo objectives[4]; // MAX_QUEST_OBJECTIVES
+    QuestObjectiveInfo objectives[MAX_QUEST_OBJECTIVES];
 } QuestAcceptPacket;
 
 // Server -> Client: single objective progress update
@@ -1208,7 +1173,7 @@ typedef struct {
     uint32_t        gold_reward;
     uint8_t         item_count;
     uint8_t         padding[3];
-    QuestRewardItem items[4]; // MAX_QUEST_OBJECTIVES
+    QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
 
 // ============================================================================
