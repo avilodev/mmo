@@ -133,7 +133,12 @@ void game_change_state(GameState* game, GameMode new_mode) {
     }
     
     game->mode = new_mode;
-    
+
+    // Consume the click that triggered this transition so the new state's
+    // first update frame doesn't see it and accidentally fire a button.
+    game->input.mouse_left_clicked  = 0;
+    game->input.mouse_right_clicked = 0;
+
     // Enter new state
     const StateHandler* new_handler = state_handler_get(new_mode);
     if (new_handler && new_handler->enter) {
