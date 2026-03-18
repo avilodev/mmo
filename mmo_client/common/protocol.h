@@ -12,7 +12,6 @@
 
 // Packet Types
 typedef enum {
-    PACKET_CONNECT = 1,
     PACKET_DISCONNECT = 2,
     PACKET_AUTH_LOGIN = 3,              // Username/password validation (no session created)
     PACKET_AUTH_REGISTER = 4,
@@ -46,9 +45,7 @@ typedef enum {
     PACKET_REQUEST_PLAYER_DATA = 54,
     PACKET_PLAYER_DATA_RESPONSE = 55,
     PACKET_PING = 56,
-    PACKET_PLAYER_MOVEMENT = 57,
     PACKET_LOGOUT = 59,             // Client -> Server: clean disconnect
-    PACKET_PLAYER_MOVEMENT_ACK = 58,
 
     PACKET_CAST_CANCEL = 73,
     PACKET_ATTACK_INTENT    = 74,
@@ -138,17 +135,17 @@ typedef enum {
     PACKET_WORLD_HEARTBEAT = 202,
     PACKET_WORLD_STATUS = 203,
 
-    // Shop packets (210-214)
-    PACKET_SHOP_OPEN         = 210,  // Server -> Client: shop inventory
-    PACKET_SHOP_BUY          = 211,  // Client -> Server: buy item
-    PACKET_SHOP_BUY_RESPONSE = 212,  // Server -> Client: buy result
-    PACKET_SHOP_SELL         = 213,  // Client -> Server: sell item
-    PACKET_SHOP_SELL_RESPONSE = 214, // Server -> Client: sell result
+    // Quest packets (191-193)
+    PACKET_QUEST_ACCEPT   = 191,  // Server -> Client: quest added to log
+    PACKET_QUEST_PROGRESS = 192,  // Server -> Client: objective progress update
+    PACKET_QUEST_COMPLETE = 193,  // Server -> Client: quest done + rewards
 
-    // Quest packets (215-217)
-    PACKET_QUEST_ACCEPT   = 215,  // Server -> Client: quest added to log
-    PACKET_QUEST_PROGRESS = 216,  // Server -> Client: objective progress update
-    PACKET_QUEST_COMPLETE = 217,  // Server -> Client: quest done + rewards
+    // Shop packets (194-198)
+    PACKET_SHOP_OPEN         = 194,  // Server -> Client: shop inventory
+    PACKET_SHOP_BUY          = 195,  // Client -> Server: buy item
+    PACKET_SHOP_BUY_RESPONSE = 196,  // Server -> Client: buy result
+    PACKET_SHOP_SELL         = 197,  // Client -> Server: sell item
+    PACKET_SHOP_SELL_RESPONSE = 198, // Server -> Client: sell result
 } PacketType;
 
 typedef enum {
@@ -255,11 +252,6 @@ typedef struct {
     char message[128];
 } RealmConnectAckPacket;
 
-typedef struct {
-
-} RealmPing;
-
-//
 // World list packets
 typedef struct {
     PacketHeader header;
@@ -446,24 +438,6 @@ typedef struct {
 // ============================================================================
 // COMBAT PACKETS
 // ============================================================================
-
-// Server -> Client: Cast started
-typedef struct {
-    PacketHeader header;
-    uint32_t caster_id;
-    uint32_t target_id;
-    float cast_time;         // How long the cast takes
-    uint8_t action_type;     // 0 = auto-attack, 1+ = spell
-} CastStartPacket;
-
-// Server -> Client: Damage dealt
-typedef struct {
-    PacketHeader header;
-    uint32_t attacker_id;
-    uint32_t target_id;
-    uint32_t damage;
-    uint32_t new_health;     // Target's new health
-} DamagePacket;
 
 // Server -> Client: Cast cancelled/interrupted
 typedef struct {
@@ -1115,17 +1089,19 @@ typedef struct {
 
 #define MAX_SHOP_ITEMS 32
 
+typedef struct {
+    uint32_t item_id;
+    uint32_t buy_price;
+} ShopItemInfo;
+
 // Server -> Client: Open shop window with item list
 typedef struct {
     PacketHeader header;
-    uint32_t shop_id;
-    char     shop_name[32];
-    uint8_t  item_count;
-    uint8_t  padding[3];
-    struct {
-        uint32_t item_id;
-        uint32_t buy_price;
-    } items[MAX_SHOP_ITEMS];
+    uint32_t     shop_id;
+    char         shop_name[32];
+    uint8_t      item_count;
+    uint8_t      padding[3];
+    ShopItemInfo items[MAX_SHOP_ITEMS];
 } ShopOpenPacket;
 
 // Client -> Server: Buy one item from the shop
@@ -1139,11 +1115,10 @@ typedef struct {
 typedef struct {
     PacketHeader header;
     uint8_t  success;
-    uint8_t  padding[3];
+    uint8_t  inventory_slot;
+    uint8_t  padding[2];
     uint32_t item_id;
     uint32_t new_gold;
-    uint8_t  inventory_slot;
-    uint8_t  padding2[3];
     char     message[64];
 } ShopBuyResponsePacket;
 
@@ -1159,12 +1134,11 @@ typedef struct {
 typedef struct {
     PacketHeader header;
     uint8_t  success;
-    uint8_t  padding[3];
+    uint8_t  inventory_slot;
+    uint8_t  padding[2];
     uint32_t item_id;
     uint32_t sell_price;
     uint32_t new_gold;
-    uint8_t  inventory_slot;
-    uint8_t  padding2[3];
     char     message[64];
 } ShopSellResponsePacket;
 
@@ -1174,17 +1148,19 @@ typedef struct {
 
 #define MAX_QUEST_OBJECTIVES 4
 
+typedef struct {
+    char    description[64];
+    int32_t required;
+} QuestObjectiveInfo;
+
 // Server -> Client: Quest accepted / added to log
 typedef struct {
-    PacketHeader header;
-    uint32_t quest_id;
-    char     title[48];
-    uint8_t  obj_count;
-    uint8_t  padding[3];
-    struct {
-        char    description[64];
-        int32_t required;
-    } objectives[MAX_QUEST_OBJECTIVES];
+    PacketHeader       header;
+    uint32_t           quest_id;
+    char               title[48];
+    uint8_t            obj_count;
+    uint8_t            padding[3];
+    QuestObjectiveInfo objectives[MAX_QUEST_OBJECTIVES];
 } QuestAcceptPacket;
 
 // Server -> Client: Real-time objective progress update
@@ -1197,20 +1173,22 @@ typedef struct {
     int32_t  required;
 } QuestProgressPacket;
 
+typedef struct {
+    uint32_t item_id;
+    uint8_t  quantity;
+    uint8_t  inventory_slot;
+    uint8_t  padding[2];
+} QuestRewardItem;
+
 // Server -> Client: Quest completed + rewards granted
 typedef struct {
-    PacketHeader header;
-    uint32_t quest_id;
-    uint32_t xp_reward;
-    uint32_t gold_reward;
-    uint8_t  item_count;
-    uint8_t  padding[3];
-    struct {
-        uint32_t item_id;
-        uint8_t  quantity;
-        uint8_t  inventory_slot;
-        uint8_t  padding[2];
-    } items[MAX_QUEST_OBJECTIVES];
+    PacketHeader    header;
+    uint32_t        quest_id;
+    uint32_t        xp_reward;
+    uint32_t        gold_reward;
+    uint8_t         item_count;
+    uint8_t         padding[3];
+    QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
 
 // Network byte order conversion for 64-bit values

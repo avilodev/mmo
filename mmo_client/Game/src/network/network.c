@@ -1425,7 +1425,6 @@ static int get_packet_size(uint8_t type) {
         // Basic packets
         case PACKET_PING:                       return (int)sizeof(PacketHeader);
         case PACKET_DISCONNECT:                 return (int)sizeof(PacketHeader);
-        case PACKET_CONNECT:                    return (int)sizeof(PacketHeader);
         
         // Auth packets
         case PACKET_AUTH_LOGIN:                 return (int)sizeof(AuthLoginPacket);
@@ -1459,8 +1458,6 @@ static int get_packet_size(uint8_t type) {
         case PACKET_PLAYER_MOVE_ACK:            return (int)sizeof(PlayerMoveAckPacket);
         case PACKET_REQUEST_PLAYER_DATA:        return (int)sizeof(WorldPlayerDataRequest);
         case PACKET_PLAYER_DATA_RESPONSE:       return (int)sizeof(CharacterInfo);
-        case PACKET_PLAYER_MOVEMENT:            return (int)sizeof(PlayerMovePacket);
-        case PACKET_PLAYER_MOVEMENT_ACK:        return (int)sizeof(PlayerMoveAckPacket);
 
         // Combat packets
         case PACKET_CAST_CANCEL:                return (int)sizeof(CastCancelPacket);
