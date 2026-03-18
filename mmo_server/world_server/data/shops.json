@@ -1,0 +1,26 @@
+{
+  "shops": [
+    {
+      "shop_id": 1,
+      "name": "General Goods",
+      "items": [
+        { "item_id": 1,  "buy_price": 50  },
+        { "item_id": 2,  "buy_price": 50  },
+        { "item_id": 3,  "buy_price": 100 },
+        { "item_id": 4,  "buy_price": 100 },
+        { "item_id": 5,  "buy_price": 200 }
+      ]
+    },
+    {
+      "shop_id": 2,
+      "name": "Armory",
+      "items": [
+        { "item_id": 10, "buy_price": 500  },
+        { "item_id": 11, "buy_price": 500  },
+        { "item_id": 12, "buy_price": 750  },
+        { "item_id": 13, "buy_price": 750  },
+        { "item_id": 14, "buy_price": 1000 }
+      ]
+    }
+  ]
+}

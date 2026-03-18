@@ -19,6 +19,8 @@
 #include "players_database.h"
 #include "session_registry.h"
 #include "party.h"
+#include "quest_system.h"
+#include "shop.h"
 #include "utils.h"
 
 #include <sys/socket.h>
@@ -35,6 +37,9 @@ static char DIALOGUES_PATH[512];
 static char NPC_TYPES_PATH[512];
 static char SPAWNS_PATH[512];
 static char ATTACK_PROFILES_PATH[512];
+static char QUESTS_PATH[512];
+static char SHOPS_PATH[512];
+static char QUEST_SAVE_DIR[512];
 
 static void init_data_paths(void) {
     char exe[512] = {0};
@@ -44,16 +49,18 @@ static void init_data_paths(void) {
         char* slash = strrchr(exe, '/');
         if (slash) *slash = '\0';
     } else {
-        // fallback: use current working directory
         exe[0] = '.';
         exe[1] = '\0';
     }
     snprintf(DATA_PATH,             sizeof(DATA_PATH),             "%s/data/items.json",            exe);
     snprintf(ABILITIES_PATH,        sizeof(ABILITIES_PATH),        "%s/data/abilities.json",        exe);
-    snprintf(DIALOGUES_PATH,        sizeof(DIALOGUES_PATH),        "%s/data/dialogues.json",        exe);
+    snprintf(DIALOGUES_PATH,        sizeof(DIALOGUES_PATH),        "%s/data/dialogues",             exe);
     snprintf(NPC_TYPES_PATH,        sizeof(NPC_TYPES_PATH),        "%s/data/npc_types.json",        exe);
     snprintf(SPAWNS_PATH,           sizeof(SPAWNS_PATH),           "%s/data/spawns.json",           exe);
     snprintf(ATTACK_PROFILES_PATH,  sizeof(ATTACK_PROFILES_PATH),  "%s/data/attack_profiles.json",  exe);
+    snprintf(QUESTS_PATH,           sizeof(QUESTS_PATH),           "%s/data/quests.json",           exe);
+    snprintf(SHOPS_PATH,            sizeof(SHOPS_PATH),            "%s/data/shops.json",            exe);
+    snprintf(QUEST_SAVE_DIR,        sizeof(QUEST_SAVE_DIR),        "%s/data/quests",                exe);
     printf("[PATHS] Data directory: %s/data/\n", exe);
 }
 
@@ -1037,6 +1044,17 @@ int main(int argc, char** argv) {
         return 1;
     }
     printf("OK (%d dialogues loaded)\n", dialogues_get_count());
+
+    quest_system_set_dir(QUEST_SAVE_DIR);
+    printf("Loading quest system... ");
+    fflush(stdout);
+    quest_system_init(QUESTS_PATH);
+    printf("OK\n");
+
+    printf("Loading shop system... ");
+    fflush(stdout);
+    shop_init(SHOPS_PATH);
+    printf("OK\n");
 
     // Connect to database
     printf("Connecting to database for world '%s'\n", g_server.server_name);

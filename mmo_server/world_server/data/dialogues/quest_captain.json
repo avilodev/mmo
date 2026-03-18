@@ -1,0 +1,51 @@
+{
+  "id": 2,
+  "name": "quest_captain",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Recruits! I am Captain Aldric. The training grounds are full of dummy targets — good for honing your combat skills. I have two assignments if you're up for the challenge.",
+      "options": [
+        { "option_id": 0, "text": "I'll destroy the training dummies", "next_page": 1, "action": "quest_accept", "action_value": 1, "fail_page": 4 },
+        { "option_id": 1, "text": "I've eliminated enough dummies", "next_page": 2, "action": "quest_turnin", "action_value": 1, "fail_page": 3 },
+        { "option_id": 2, "text": "Clear the goblin threat?", "next_page": 5, "action": "quest_accept", "action_value": 2, "fail_page": 4 },
+        { "option_id": 3, "text": "Farewell, Captain", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Excellent, recruit! Destroy 5 training dummies and report back to me. I'll have a reward waiting.",
+      "options": [
+        { "option_id": 0, "text": "Understood, Captain!", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Well done, recruit! You've proven yourself on the training grounds. Here is your reward. Keep pushing forward — greater threats await.",
+      "options": [
+        { "option_id": 0, "text": "Thank you, Captain!", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "You haven't completed the assignment yet. Keep at it, recruit — those dummies won't destroy themselves!",
+      "options": [
+        { "option_id": 0, "text": "I'll keep trying", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "You already have an active assignment or have already completed it. Focus on what's in front of you, recruit.",
+      "options": [
+        { "option_id": 0, "text": "Right, understood", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 5,
+      "text": "Goblin Archers have been harassing travelers to the east. Eliminate 10 of them and the roads will be safer. Return when the task is done.",
+      "options": [
+        { "option_id": 0, "text": "I'll handle it", "next_page": -1 }
+      ]
+    }
+  ]
+}

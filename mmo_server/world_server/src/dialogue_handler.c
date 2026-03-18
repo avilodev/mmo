@@ -8,6 +8,8 @@
 #include "dialogue_system.h"
 #include "combat.h"
 #include "player_data.h"
+#include "quest_system.h"
+#include "shop.h"
 #include "headers.h"
 #include "types.h"
 
@@ -251,6 +253,30 @@ void handle_dialogue_option_select(int client_fd, uint32_t character_id,
 
     const DialogueOptionDef* option = &page->options[option_selected];
     int8_t next_page = option->next_page;
+
+    // Dispatch action before page navigation
+    if (option->action == DIALOGUE_ACTION_OPEN_SHOP) {
+        shop_open(character_id, client_fd, option->action_value);
+        // Close dialogue after opening shop
+        dialogue_session_close(character_id);
+        DialogueClosePacket close_pkt;
+        close_pkt.header.type = PACKET_DIALOGUE_CLOSE;
+        close_pkt.header.player_id = htonl(character_id);
+        close_pkt.header.payload_size = htons(sizeof(close_pkt) - sizeof(PacketHeader));
+        close_pkt.npc_id = htonl(npc_id);
+        send_packet(client_fd, &close_pkt, sizeof(close_pkt));
+        return;
+    } else if (option->action == DIALOGUE_ACTION_QUEST_ACCEPT) {
+        quest_player_accept(character_id, client_fd, option->action_value);
+        // Continue to next_page normally (NPC can respond "Quest accepted!")
+    } else if (option->action == DIALOGUE_ACTION_QUEST_TURNIN) {
+        int turned_in = quest_player_turnin(character_id, client_fd, option->action_value);
+        if (!turned_in) {
+            // Quest not complete — use fail_page if set
+            int8_t fp = option->fail_page;
+            if (fp != -2) next_page = fp;
+        }
+    }
 
     // If next_page == -1, close dialogue
     if (next_page == -1) {

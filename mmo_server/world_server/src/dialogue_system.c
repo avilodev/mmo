@@ -12,14 +12,15 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <dirent.h>
 
 // ---------------------------------------------------------------------------
-// External function from dialogue_loader.c
+// External functions from dialogue_loader.c
 // ---------------------------------------------------------------------------
 
-// Parse dialogues from JSON content and populate dialogue_table
-// Returns number of dialogues loaded, or -1 on error
-int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, int max_dialogues);
+// Parse one per-NPC JSON file {"id":N,"pages":[...]} into dialogue_table
+// Returns 1 on success, 0 on failure
+int dialogue_parse_single(const char* json_content, DialogueDef** dialogue_table, int max_dialogues);
 
 // ---------------------------------------------------------------------------
 // Static storage
@@ -66,8 +67,8 @@ static double get_current_time(void) {
 // Public API - Initialization & Cleanup
 // ---------------------------------------------------------------------------
 
-int dialogue_system_init(const char* json_path) {
-    printf("Loading dialogues from: %s\n", json_path);
+int dialogue_system_init(const char* dir_path) {
+    printf("[DIALOGUE] Loading dialogues from directory: %s\n", dir_path);
 
     // Clear dialogue table
     memset(dialogue_table, 0, sizeof(dialogue_table));
@@ -78,24 +79,36 @@ int dialogue_system_init(const char* json_path) {
     memset(sessions, 0, sizeof(sessions));
     pthread_mutex_unlock(&sessions_lock);
 
-    // Read JSON file
-    char* json_content = read_file(json_path);
-    if (!json_content) {
-        fprintf(stderr, "Failed to read dialogues file: %s\n", json_path);
+    DIR* dir = opendir(dir_path);
+    if (!dir) {
+        fprintf(stderr, "[DIALOGUE] Failed to open dialogue directory: %s\n", dir_path);
         return 0;
     }
 
-    // Parse JSON (handled by dialogue_loader.c)
-    int loaded = dialogue_parse_json(json_content, dialogue_table, MAX_DIALOGUES);
-    free(json_content);
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const char* fname = entry->d_name;
+        size_t len = strlen(fname);
+        if (len < 6 || strcmp(fname + len - 5, ".json") != 0)
+            continue;
 
-    if (loaded < 0) {
-        fprintf(stderr, "Failed to parse dialogues JSON\n");
-        return 0;
+        char filepath[512];
+        snprintf(filepath, sizeof(filepath), "%s/%s", dir_path, fname);
+
+        char* json_content = read_file(filepath);
+        if (!json_content) {
+            fprintf(stderr, "[DIALOGUE] Could not read file: %s\n", filepath);
+            continue;
+        }
+
+        if (dialogue_parse_single(json_content, dialogue_table, MAX_DIALOGUES) > 0) {
+            dialogues_loaded++;
+        }
+        free(json_content);
     }
 
-    dialogues_loaded = loaded;
-    printf("Successfully loaded %d dialogues\n", dialogues_loaded);
+    closedir(dir);
+    printf("[DIALOGUE] Successfully loaded %d dialogues\n", dialogues_loaded);
     return 1;
 }
 

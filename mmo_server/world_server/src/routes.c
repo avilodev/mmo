@@ -4,6 +4,7 @@
 #include "combat.h"
 #include "dialogue_handler.h"
 #include "loot.h"
+#include "shop.h"
 
 #include <math.h>
 #include <string.h>
@@ -274,6 +275,14 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             }
             break;
         }
+
+        case PACKET_SHOP_BUY:
+            shop_handle_buy(character_id, client_fd, buffer, bytes);
+            break;
+
+        case PACKET_SHOP_SELL:
+            shop_handle_sell(character_id, client_fd, buffer, bytes);
+            break;
 
         default:
             printf("Unknown packet type: %d\n", header->type);

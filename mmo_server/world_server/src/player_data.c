@@ -8,6 +8,7 @@
 #include "players_database.h"
 #include "class_stats.h"
 #include "player_level.h"
+#include "quest_system.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,6 +204,10 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     // Copy inventory data
     memcpy(player->inventory, char_info.inventory, sizeof(player->inventory));
 
+    // Load quest state from file
+    player->quest_count = quest_player_load(character_id, (PlayerQuestEntry*)player->quests,
+                                             MAX_PLAYER_QUESTS);
+
     // Now that equipment is loaded, recalculate stats with gear bonuses
     player_apply_equipment_bonuses(player);
 
@@ -250,6 +255,10 @@ int playerdata_save(ActivePlayer* player) {
     
     // Copy inventory data
     memcpy(char_info.inventory, player->inventory, sizeof(char_info.inventory));
+
+    // Save quest state to file
+    quest_player_save(player->character_id, (const PlayerQuestEntry*)player->quests,
+                      player->quest_count);
 
     // DEBUG — print what we're about to save
     printf("[SAVE DEBUG] char %u: player->pos = (%f, %f), char_info->pos = (%f, %f)\n",

@@ -22,12 +22,21 @@
 // Dialogue definition structures (loaded from JSON)
 // ---------------------------------------------------------------------------
 
+// Action types for dialogue options
+#define DIALOGUE_ACTION_NONE         0
+#define DIALOGUE_ACTION_OPEN_SHOP    1   // action_value = shop_id
+#define DIALOGUE_ACTION_QUEST_ACCEPT 2   // action_value = quest_id
+#define DIALOGUE_ACTION_QUEST_TURNIN 3   // action_value = quest_id; fail_page used if not complete
+
 // Single dialogue option (player choice)
 typedef struct {
     uint8_t  option_id;
     char     text[MAX_OPTION_TEXT];
     int8_t   next_page;          // -1 = close dialogue, >= 0 = page number
-    uint8_t  enabled;            // For future conditional logic
+    int8_t   fail_page;          // page override when action fails; -2 = use next_page
+    uint8_t  action;             // DIALOGUE_ACTION_*
+    uint8_t  enabled;
+    uint32_t action_value;       // shop_id or quest_id depending on action
 } DialogueOptionDef;
 
 // Single page of dialogue

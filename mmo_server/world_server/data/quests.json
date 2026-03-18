@@ -1,0 +1,36 @@
+{
+  "quests": [
+    {
+      "quest_id": 1,
+      "title": "First Blood",
+      "xp": 300,
+      "gold": 50,
+      "objectives": [
+        {
+          "type": "kill",
+          "target_id": 1,
+          "required": 5,
+          "description": "Slay 5 Training Dummies"
+        }
+      ],
+      "item_rewards": []
+    },
+    {
+      "quest_id": 2,
+      "title": "Clear the Threat",
+      "xp": 750,
+      "gold": 120,
+      "objectives": [
+        {
+          "type": "kill",
+          "target_id": 2,
+          "required": 10,
+          "description": "Defeat 10 Hostile Bandits"
+        }
+      ],
+      "item_rewards": [
+        { "item_id": 3, "quantity": 1 }
+      ]
+    }
+  ]
+}

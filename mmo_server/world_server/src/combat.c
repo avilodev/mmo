@@ -9,6 +9,7 @@
 #include "player_data.h"
 #include "party.h"
 #include "loot.h"
+#include "quest_system.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -744,6 +745,7 @@ void combat_tick(NPCWorld* world) {
                         }
                     }
                     loot_roll(hits[h].npc_type_id, hits[h].npc_x, hits[h].npc_y, attacker_id);
+                    quest_on_npc_kill(attacker_id, client_fd, hits[h].npc_type_id);
                 }
             }
             continue;  // Next pending cast

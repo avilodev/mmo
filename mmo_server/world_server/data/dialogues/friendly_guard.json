@@ -1,0 +1,38 @@
+{
+  "id": 1,
+  "name": "friendly_guard",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Greetings, adventurer! I am a town guard stationed here to help newcomers. What can I do for you?",
+      "options": [
+        { "option_id": 0, "text": "Tell me about this place", "next_page": 1 },
+        { "option_id": 1, "text": "Can you teach me combat?", "next_page": 2 },
+        { "option_id": 2, "text": "Goodbye", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "This is the training grounds where new adventurers learn the basics of combat. You'll find training dummies scattered around that you can practice your skills on safely. Captain Aldric nearby can give you a proper assignment, and Sera the merchant sells supplies.",
+      "options": [
+        { "option_id": 0, "text": "Tell me about combat", "next_page": 2 },
+        { "option_id": 1, "text": "Thanks for the information!", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Combat in our world is based on abilities and tactics. Each class has unique abilities you can equip and use. Try attacking the training dummies to test your skills - they won't fight back!",
+      "options": [
+        { "option_id": 0, "text": "What about the training dummies?", "next_page": 3 },
+        { "option_id": 1, "text": "I understand, thank you!", "next_page": -1 }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "The training dummies are perfect for practicing. They have health and defense stats like real enemies, but they won't attack you. Use them to test your damage output and ability combinations!",
+      "options": [
+        { "option_id": 0, "text": "Got it, I'll give it a try!", "next_page": -1 }
+      ]
+    }
+  ]
+}

@@ -324,6 +324,17 @@ typedef struct {
     // Party
     uint32_t    party_id;              // 0 = not in a party
 
+    // Quests (layout must match PlayerQuestEntry in quest_system.h)
+    #define MAX_PLAYER_QUESTS 32
+    struct PlayerQuestSlot {
+        uint32_t quest_id;
+        uint8_t  is_active;
+        uint8_t  is_complete;
+        uint8_t  _pad[2];
+        int32_t  progress[4];
+    } quests[MAX_PLAYER_QUESTS];
+    int quest_count;
+
     pthread_mutex_t lock;
 } ActivePlayer;
 

@@ -27,10 +27,116 @@ static const char* skip_whitespace(const char* str);
 // Main parser
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// parse_dialogue_object — shared helper, fills one DialogueDef from a JSON obj
+// ---------------------------------------------------------------------------
+
+static void parse_dialogue_object(const char* obj, DialogueDef* dialogue) {
+    const char* id_val = find_json_value(obj, "id");
+    if (id_val) dialogue->dialogue_id = parse_json_int(id_val);
+
+    const char* name_val = find_json_value(obj, "name");
+    if (name_val) parse_json_string(name_val, dialogue->name, sizeof(dialogue->name));
+
+    const char* pages_array = find_json_array(obj, "pages");
+    if (!pages_array) return;
+
+    const char* page_obj = pages_array;
+    int page_idx = 0;
+
+    while ((page_obj = next_array_element(page_obj)) != NULL && page_idx < MAX_PAGES_PER_DIALOGUE) {
+        DialoguePageDef* page = &dialogue->pages[page_idx];
+
+        const char* page_num_val = find_json_value(page_obj, "page_num");
+        if (page_num_val) page->page_num = parse_json_int(page_num_val);
+
+        const char* text_val = find_json_value(page_obj, "text");
+        if (text_val) parse_json_string(text_val, page->text, sizeof(page->text));
+
+        const char* options_array = find_json_array(page_obj, "options");
+        if (options_array) {
+            const char* option_obj = options_array;
+            int option_idx = 0;
+
+            while ((option_obj = next_array_element(option_obj)) != NULL && option_idx < MAX_DIALOGUE_OPTIONS) {
+                DialogueOptionDef* option = &page->options[option_idx];
+
+                const char* option_id_val = find_json_value(option_obj, "option_id");
+                if (option_id_val) option->option_id = parse_json_int(option_id_val);
+
+                const char* option_text_val = find_json_value(option_obj, "text");
+                if (option_text_val) parse_json_string(option_text_val, option->text, sizeof(option->text));
+
+                const char* next_page_val = find_json_value(option_obj, "next_page");
+                if (next_page_val) option->next_page = parse_json_int(next_page_val);
+
+                option->fail_page = -2;
+                const char* fail_page_val = find_json_value(option_obj, "fail_page");
+                if (fail_page_val) option->fail_page = parse_json_int(fail_page_val);
+
+                option->action = DIALOGUE_ACTION_NONE;
+                const char* action_val = find_json_value(option_obj, "action");
+                if (action_val) {
+                    char action_str[32] = {0};
+                    parse_json_string(action_val, action_str, sizeof(action_str));
+                    if      (strcmp(action_str, "open_shop")    == 0) option->action = DIALOGUE_ACTION_OPEN_SHOP;
+                    else if (strcmp(action_str, "quest_accept") == 0) option->action = DIALOGUE_ACTION_QUEST_ACCEPT;
+                    else if (strcmp(action_str, "quest_turnin") == 0) option->action = DIALOGUE_ACTION_QUEST_TURNIN;
+                }
+
+                option->action_value = 0;
+                const char* action_value_val = find_json_value(option_obj, "action_value");
+                if (action_value_val) option->action_value = (uint32_t)parse_json_int(action_value_val);
+
+                option->enabled = 1;
+                option_idx++;
+            }
+
+            page->option_count = option_idx;
+        }
+
+        page_idx++;
+    }
+
+    dialogue->page_count = page_idx;
+}
+
+// ---------------------------------------------------------------------------
+// dialogue_parse_single — parse one per-NPC JSON file {"id":N,"pages":[...]}
+// Returns 1 on success, 0 on failure
+// ---------------------------------------------------------------------------
+
+int dialogue_parse_single(const char* json_content, DialogueDef** dialogue_table, int max_dialogues) {
+    DialogueDef* dialogue = calloc(1, sizeof(DialogueDef));
+    if (!dialogue) {
+        fprintf(stderr, "[DIALOGUE] Memory allocation failed\n");
+        return 0;
+    }
+
+    parse_dialogue_object(json_content, dialogue);
+
+    if (dialogue->dialogue_id > 0 && dialogue->dialogue_id < max_dialogues) {
+        if (dialogue_table[dialogue->dialogue_id]) {
+            free(dialogue_table[dialogue->dialogue_id]);
+        }
+        dialogue_table[dialogue->dialogue_id] = dialogue;
+        printf("[DIALOGUE] Loaded '%s' (id=%u, %u pages)\n",
+               dialogue->name, dialogue->dialogue_id, dialogue->page_count);
+        return 1;
+    }
+
+    fprintf(stderr, "[DIALOGUE] Invalid dialogue ID: %u\n", dialogue->dialogue_id);
+    free(dialogue);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// dialogue_parse_json — legacy: parse {"dialogues":[...]} multi-dialogue file
+// ---------------------------------------------------------------------------
+
 int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, int max_dialogues) {
     int loaded = 0;
 
-    // Find "dialogues" array
     const char* dialogues_array = find_json_array(json_content, "dialogues");
     if (!dialogues_array) {
         fprintf(stderr, "[DIALOGUE] No 'dialogues' array found in JSON\n");
@@ -38,8 +144,6 @@ int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, 
     }
 
     const char* dialogue_obj = dialogues_array;
-
-    // Parse each dialogue object
     while ((dialogue_obj = next_array_element(dialogue_obj)) != NULL) {
         DialogueDef* dialogue = calloc(1, sizeof(DialogueDef));
         if (!dialogue) {
@@ -47,82 +151,8 @@ int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, 
             return -1;
         }
 
-        // Parse dialogue ID
-        const char* id_val = find_json_value(dialogue_obj, "id");
-        if (id_val) {
-            dialogue->dialogue_id = parse_json_int(id_val);
-        }
+        parse_dialogue_object(dialogue_obj, dialogue);
 
-        // Parse dialogue name
-        const char* name_val = find_json_value(dialogue_obj, "name");
-        if (name_val) {
-            parse_json_string(name_val, dialogue->name, sizeof(dialogue->name));
-        }
-
-        // Parse pages array
-        const char* pages_array = find_json_array(dialogue_obj, "pages");
-        if (pages_array) {
-            const char* page_obj = pages_array;
-            int page_idx = 0;
-
-            while ((page_obj = next_array_element(page_obj)) != NULL && page_idx < MAX_PAGES_PER_DIALOGUE) {
-                DialoguePageDef* page = &dialogue->pages[page_idx];
-
-                // Parse page_num
-                const char* page_num_val = find_json_value(page_obj, "page_num");
-                if (page_num_val) {
-                    page->page_num = parse_json_int(page_num_val);
-                }
-
-                // Parse text
-                const char* text_val = find_json_value(page_obj, "text");
-                if (text_val) {
-                    parse_json_string(text_val, page->text, sizeof(page->text));
-                }
-
-                // Parse options array
-                const char* options_array = find_json_array(page_obj, "options");
-                if (options_array) {
-                    const char* option_obj = options_array;
-                    int option_idx = 0;
-
-                    while ((option_obj = next_array_element(option_obj)) != NULL && option_idx < MAX_DIALOGUE_OPTIONS) {
-                        DialogueOptionDef* option = &page->options[option_idx];
-
-                        // Parse option_id
-                        const char* option_id_val = find_json_value(option_obj, "option_id");
-                        if (option_id_val) {
-                            option->option_id = parse_json_int(option_id_val);
-                        }
-
-                        // Parse text
-                        const char* option_text_val = find_json_value(option_obj, "text");
-                        if (option_text_val) {
-                            parse_json_string(option_text_val, option->text, sizeof(option->text));
-                        }
-
-                        // Parse next_page
-                        const char* next_page_val = find_json_value(option_obj, "next_page");
-                        if (next_page_val) {
-                            option->next_page = parse_json_int(next_page_val);
-                        }
-
-                        // Default enabled = 1
-                        option->enabled = 1;
-
-                        option_idx++;
-                    }
-
-                    page->option_count = option_idx;
-                }
-
-                page_idx++;
-            }
-
-            dialogue->page_count = page_idx;
-        }
-
-        // Store in table
         if (dialogue->dialogue_id > 0 && dialogue->dialogue_id < max_dialogues) {
             dialogue_table[dialogue->dialogue_id] = dialogue;
             loaded++;
