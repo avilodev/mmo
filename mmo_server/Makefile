@@ -49,7 +49,7 @@ REALM_EXEC = $(REALM_BIN)/realm_server
 WORLD_EXEC = $(WORLD_BIN)/world_server
 
 # Build everything
-all: $(LOGIN_EXEC) $(REALM_EXEC) $(WORLD_EXEC)
+all: $(LOGIN_EXEC) $(REALM_EXEC) $(WORLD_EXEC) data
 
 # Login server (needs database + OpenSSL for TLS)
 $(LOGIN_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(LOGIN_OBJS)
@@ -67,6 +67,12 @@ $(REALM_EXEC): $(COMMON_OBJS) $(REALM_OBJS) $(DB_OBJS)
 # World server (needs PostgreSQL and Redis for game state) - FIXED: Added $(DB_OBJS)
 $(WORLD_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(WORLD_OBJS)
 	@mkdir -p $(WORLD_BIN)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
+	@echo "Built world_server -> $@"
+
+# Copy all world server data files (always runs so edits to JSON are picked up without a recompile)
+.PHONY: data
+data:
 	@mkdir -p $(WORLD_BIN)/data
 	@cp world_server/data/items.json $(WORLD_BIN)/data/
 	@cp world_server/data/abilities.json $(WORLD_BIN)/data/
@@ -74,8 +80,7 @@ $(WORLD_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(WORLD_OBJS)
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
 	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
-	@echo "Built world_server -> $@"
+	@echo "Data files copied -> $(WORLD_BIN)/data/"
 
 # Common object files
 $(COMMON_OBJ)/%.o: $(COMMON_DIR)/src/%.c
@@ -298,4 +303,4 @@ help:
 	@echo "  Europe: karmel, longevity, nervow"
 	@echo "  Asia: jatrus"
 
-.PHONY: all clean clean-db rebuild run-login run-realm run-world run-all run-both stop help setup-postgres init-world-tables show-dbs reset-world reset-all-characters setup-all
+.PHONY: all data clean clean-db rebuild run-login run-realm run-world run-all run-both stop help setup-postgres init-world-tables show-dbs reset-world reset-all-characters setup-all
