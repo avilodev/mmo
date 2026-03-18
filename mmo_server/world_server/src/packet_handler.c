@@ -52,6 +52,19 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
         return;
     }
 
+    // Collision check — reject moves into solid tiles (player box = 16px half-size)
+    if (world_collision_check_box(client_x, client_y, 16.0f)) {
+        PlayerMoveAckPacket correction;
+        memset(&correction, 0, sizeof(correction));
+        correction.header.type = PACKET_PLAYER_MOVE_ACK;
+        correction.header.payload_size = htons(sizeof(PlayerMoveAckPacket) - sizeof(PacketHeader));
+        correction.pos_x = player->pos_x;
+        correction.pos_y = player->pos_y;
+        server_send(client_fd, &correction, sizeof(correction));
+        player_release(player);
+        return;
+    }
+
     player->pos_x = client_x;
     player->pos_y = client_y;
     player->last_move_tv = now;
@@ -593,36 +606,82 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
     pthread_mutex_lock(&active_players_lock);
 
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!active_players[i].is_loaded) continue;
+    if (channel == CHAT_CHANNEL_WHISPER) {
+        // Message format sent by client: "TargetName rest of message"
+        // Parse the first word as target name and remainder as the message body.
+        const char* space = strchr(msg.message, ' ');
+        if (!space || space == msg.message || *(space + 1) == '\0') {
+            // Malformed — no target name or no body; silently drop
+            pthread_mutex_unlock(&active_players_lock);
+            return;
+        }
 
-        if (channel == CHAT_CHANNEL_LOCAL) {
-            // Distance check for local chat
+        char target_name[32] = {0};
+        size_t name_len = (size_t)(space - msg.message);
+        if (name_len >= sizeof(target_name)) name_len = sizeof(target_name) - 1;
+        memcpy(target_name, msg.message, name_len);
+
+        // Rewrite msg.message to just the body text
+        char body[MAX_CHAT_MESSAGE];
+        strncpy(body, space + 1, sizeof(body) - 1);
+        body[sizeof(body) - 1] = '\0';
+        memset(msg.message, 0, sizeof(msg.message));
+        strncpy(msg.message, body, sizeof(msg.message) - 1);
+
+        printf("[WHISPER] %s -> %s: %s\n", sender_name, target_name, msg.message);
+
+        // Find target and deliver
+        int target_fd = -1;
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!active_players[i].is_loaded) continue;
             pthread_mutex_lock(&active_players[i].lock);
-            float dx = active_players[i].pos_x - sender_x;
-            float dy = active_players[i].pos_y - sender_y;
-            float dist_sq = dx * dx + dy * dy;
-            int in_range = (dist_sq <= CHAT_LOCAL_RANGE * CHAT_LOCAL_RANGE);
-            int fd = active_players[i].client_fd;
+            int match = (strncmp(active_players[i].username, target_name, 31) == 0);
+            int fd    = active_players[i].client_fd;
             pthread_mutex_unlock(&active_players[i].lock);
-
-            if (in_range) {
+            if (match) {
                 server_send(fd, &msg, sizeof(msg));
+                target_fd = fd;
+                break;
             }
-        } else if (channel == CHAT_CHANNEL_GLOBAL) {
-            pthread_mutex_lock(&active_players[i].lock);
-            int fd = active_players[i].client_fd;
-            pthread_mutex_unlock(&active_players[i].lock);
-            server_send(fd, &msg, sizeof(msg));
-        } else if (channel == CHAT_CHANNEL_PARTY) {
-            // Only send to party members
-            pthread_mutex_lock(&active_players[i].lock);
-            uint32_t their_party = active_players[i].party_id;
-            int fd = active_players[i].client_fd;
-            pthread_mutex_unlock(&active_players[i].lock);
+        }
 
-            if (sender_party != 0 && their_party == sender_party) {
+        if (target_fd == -1) {
+            printf("[WHISPER] Target '%s' not online\n", target_name);
+        } else {
+            // Echo back to sender: sender_name field shows "→ TargetName"
+            // so the client renders it as "[W] → TargetName: message"
+            ChatMessagePacket echo = msg;
+            memset(echo.sender_name, 0, sizeof(echo.sender_name));
+            snprintf(echo.sender_name, sizeof(echo.sender_name), "-> %s", target_name);
+            server_send(client_fd, &echo, sizeof(echo));
+        }
+    } else {
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!active_players[i].is_loaded) continue;
+
+            if (channel == CHAT_CHANNEL_LOCAL) {
+                pthread_mutex_lock(&active_players[i].lock);
+                float dx = active_players[i].pos_x - sender_x;
+                float dy = active_players[i].pos_y - sender_y;
+                float dist_sq = dx * dx + dy * dy;
+                int in_range = (dist_sq <= CHAT_LOCAL_RANGE * CHAT_LOCAL_RANGE);
+                int fd = active_players[i].client_fd;
+                pthread_mutex_unlock(&active_players[i].lock);
+                if (in_range) server_send(fd, &msg, sizeof(msg));
+
+            } else if (channel == CHAT_CHANNEL_GLOBAL) {
+                pthread_mutex_lock(&active_players[i].lock);
+                int fd = active_players[i].client_fd;
+                pthread_mutex_unlock(&active_players[i].lock);
                 server_send(fd, &msg, sizeof(msg));
+
+            } else if (channel == CHAT_CHANNEL_PARTY) {
+                pthread_mutex_lock(&active_players[i].lock);
+                uint32_t their_party = active_players[i].party_id;
+                int fd = active_players[i].client_fd;
+                pthread_mutex_unlock(&active_players[i].lock);
+                if (sender_party != 0 && their_party == sender_party)
+                    server_send(fd, &msg, sizeof(msg));
             }
         }
     }

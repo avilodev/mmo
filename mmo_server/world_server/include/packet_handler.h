@@ -1,6 +1,7 @@
 #include "types.h"
 
 #include "routes.h"
+#include "world_collision.h"
 #include "player_data.h"
 #include "player_level.h"
 #include "items_database.h"
