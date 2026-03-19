@@ -14,6 +14,7 @@
 #include "player_level.h"
 #include "party.h"
 #include "loot.h"
+#include "quest_system.h"
 
 #include <math.h>
 #include <string.h>
@@ -204,6 +205,7 @@ static void dq_flush(DeferredQueue* q) {
             case DSEND_LOOT_ROLL:
                 loot_roll(ds->loot.npc_type_id, ds->loot.npc_x,
                           ds->loot.npc_y, ds->loot.killer_id);
+                quest_on_npc_kill(ds->loot.killer_id, ds->client_fd, ds->loot.npc_type_id);
                 break;
         }
     }
@@ -541,6 +543,7 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                         {
                             DeferredSend ds = {0};
                             ds.type = DSEND_LOOT_ROLL;
+                            ds.client_fd = owner_fd;  // used for quest_on_npc_kill
                             ds.loot.npc_type_id = npc->npc_type_id;
                             ds.loot.npc_x = npc->pos_x;
                             ds.loot.npc_y = npc->pos_y;

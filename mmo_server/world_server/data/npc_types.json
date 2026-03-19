@@ -103,6 +103,40 @@
       ]
     },
     {
+      "npc_type_id": 5,
+      "name": "Kingdom Slime",
+      "movement": "follow",
+      "move_speed": 75,
+      "aggro_range": 280,
+      "leash_range": 500,
+      "abilities": [
+        {
+          "ability_id": 120,
+          "damage": 35,
+          "range": 300,
+          "cooldown": 8.0,
+          "delivery": "telegraph",
+          "cast_time": 2.0,
+          "telegraph_shape": "line",
+          "telegraph_width": 30,
+          "telegraph_length": 300,
+          "telegraph_at_target": 0,
+          "teleport_on_resolve": 1
+        },
+        {
+          "ability_id": 121,
+          "damage": 45,
+          "range": 110,
+          "cooldown": 10.0,
+          "delivery": "telegraph",
+          "cast_time": 2.0,
+          "telegraph_shape": "circle",
+          "telegraph_radius": 110,
+          "telegraph_at_target": 0
+        }
+      ]
+    },
+    {
       "npc_type_id": 4,
       "name": "Dark Mage",
       "movement": "stationary",

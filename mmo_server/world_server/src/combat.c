@@ -10,6 +10,7 @@
 #include "party.h"
 #include "loot.h"
 #include "quest_system.h"
+#include "projectile.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -45,25 +46,35 @@ ClassAttackProfile g_class_profiles[5] = {
       .cone_half_angle = 30.0f,
       .line_width    = 0.0f },
 
-    // [3] Landweaver — AoE, slow ranged
-    { .cast_time     = 0.8f,
+    // [3] Landweaver — targeted ranged bolt (earth)
+    { .cast_time     = 0.4f,
       .cooldown      = 1.0f,
-      .range         = 80.0f,
+      .range         = 400.0f,
       .base_damage   = 35,
       .damage_variance = 25,
-      .attack_type   = 1,
+      .attack_type   = 0,      // SINGLE — target must be within range at intent
       .cone_half_angle = 0.0f,
-      .line_width    = 0.0f },
+      .line_width    = 0.0f,
+      .is_ranged               = 1,
+      .projectile_speed        = 350.0f,
+      .projectile_width        = 14.0f,
+      .projectile_damage_stat  = 6,   // STAT_INTELLIGENCE
+      .projectile_damage_type  = 1 }, // ABILITY_DMG_EARTH
 
-    // [4] Spirit — line/piercing, medium range
-    { .cast_time     = 0.6f,
+    // [4] Spirit — targeted ranged bolt (spirit)
+    { .cast_time     = 0.3f,
       .cooldown      = 0.8f,
-      .range         = 150.0f,
+      .range         = 500.0f,
       .base_damage   = 20,
       .damage_variance = 20,
-      .attack_type   = 3,
+      .attack_type   = 0,      // SINGLE
       .cone_half_angle = 0.0f,
-      .line_width    = 12.0f }
+      .line_width    = 0.0f,
+      .is_ranged               = 1,
+      .projectile_speed        = 450.0f,
+      .projectile_width        = 10.0f,
+      .projectile_damage_stat  = 7,   // STAT_WISDOM
+      .projectile_damage_type  = 2 }  // ABILITY_DMG_SPIRIT
 };
 
 // ---------------------------------------------------------------------------
@@ -133,10 +144,26 @@ int combat_profiles_load(const char* path) {
         v = ap_find_value(obj_start, "line_width");
         if (v) p->line_width = (float)atof(v);
 
+        v = ap_find_value(obj_start, "is_ranged");
+        if (v) p->is_ranged = (uint8_t)atoi(v);
+
+        v = ap_find_value(obj_start, "projectile_speed");
+        if (v) p->projectile_speed = (float)atof(v);
+
+        v = ap_find_value(obj_start, "projectile_width");
+        if (v) p->projectile_width = (float)atof(v);
+
+        v = ap_find_value(obj_start, "projectile_damage_stat");
+        if (v) p->projectile_damage_stat = (uint8_t)atoi(v);
+
+        v = ap_find_value(obj_start, "projectile_damage_type");
+        if (v) p->projectile_damage_type = (uint8_t)atoi(v);
+
         printf("[COMBAT] Loaded attack profile for class %d: "
-               "dmg=%d ±%d%% cast=%.2fs cd=%.2fs range=%.0f\n",
+               "dmg=%d ±%d%% cast=%.2fs cd=%.2fs range=%.0f%s\n",
                class_id, p->base_damage, p->damage_variance,
-               p->cast_time, p->cooldown, p->range);
+               p->cast_time, p->cooldown, p->range,
+               p->is_ranged ? " [RANGED]" : "");
         loaded++;
         cur++;
     }
@@ -531,6 +558,11 @@ void combat_handle_attack_intent(NPCWorld* world,
     cast->cone_half_angle  = profile->cone_half_angle;
     cast->line_width       = profile->line_width;
     cast->cooldown         = profile->cooldown;
+    cast->is_ranged              = profile->is_ranged;
+    cast->projectile_speed       = profile->projectile_speed;
+    cast->projectile_width       = profile->projectile_width;
+    cast->projectile_damage_stat = profile->projectile_damage_stat;
+    cast->projectile_damage_type = profile->projectile_damage_type;
 
     pthread_mutex_unlock(&g_pending_casts_lock);
 
@@ -636,6 +668,33 @@ void combat_tick(NPCWorld* world) {
         float dir_y   = (aim_len > 0.001f) ? aim_dy / aim_len : 0.0f;
         float cone_half_rad = cast->cone_half_angle * (M_PI / 180.0f);
         float line_half_w   = cast->line_width / 2.0f;
+
+        // Ranged auto-attack: spawn a projectile toward the aim point.
+        // The projectile system handles hit detection, damage, and packets.
+        if (cast->is_ranged) {
+            ProjectileSpawnInfo info = {0};
+            info.owner_type            = PROJECTILE_OWNER_PLAYER;
+            info.owner_id              = attacker_id;
+            info.owner_fd              = client_fd;
+            info.ability_id            = 0;  // 0 = basic auto-attack (no ability icon)
+            info.origin_x              = origin_x;
+            info.origin_y              = origin_y;
+            info.aim_x                 = aim_x;
+            info.aim_y                 = aim_y;
+            info.speed                 = cast->projectile_speed;
+            info.width                 = cast->projectile_width;
+            info.max_range             = range;
+            info.damage                = cast->base_damage + a_wpn;
+            info.damage_type           = (AbilityDamageType)cast->projectile_damage_type;
+            info.caster_strength       = a_str;
+            info.caster_agility        = a_agi;
+            info.caster_intelligence   = a_int;
+            info.caster_wisdom         = a_wis;
+            info.damage_stat           = (int)cast->projectile_damage_stat;
+            info.effect_count          = 0;
+            projectile_spawn(&info);
+            continue;
+        }
 
         // Collect hit results under lock, send after unlock
         #define MAX_HIT_RESULTS 16

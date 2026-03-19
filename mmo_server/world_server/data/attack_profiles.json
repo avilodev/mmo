@@ -29,24 +29,34 @@
             "class_name": "Landweaver",
             "base_damage": 35,
             "damage_variance": 25,
-            "cast_time": 0.8,
+            "cast_time": 0.4,
             "cooldown": 1.0,
-            "range": 80.0,
-            "attack_type": 1,
+            "range": 400.0,
+            "attack_type": 0,
             "cone_half_angle": 0.0,
-            "line_width": 0.0
+            "line_width": 0.0,
+            "is_ranged": 1,
+            "projectile_speed": 350.0,
+            "projectile_width": 14.0,
+            "projectile_damage_stat": 6,
+            "projectile_damage_type": 1
         },
         {
             "class_id": 4,
             "class_name": "Spirit",
             "base_damage": 20,
             "damage_variance": 20,
-            "cast_time": 0.6,
+            "cast_time": 0.3,
             "cooldown": 0.8,
-            "range": 150.0,
-            "attack_type": 3,
+            "range": 500.0,
+            "attack_type": 0,
             "cone_half_angle": 0.0,
-            "line_width": 12.0
+            "line_width": 0.0,
+            "is_ranged": 1,
+            "projectile_speed": 450.0,
+            "projectile_width": 10.0,
+            "projectile_damage_stat": 7,
+            "projectile_damage_type": 2
         }
     ]
 }

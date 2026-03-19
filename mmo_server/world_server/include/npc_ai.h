@@ -92,7 +92,8 @@ typedef struct {
     float    telegraph_angle;    // Cone angle in degrees
     float    telegraph_width;    // Rectangle/line width
     float    telegraph_length;   // Rectangle/line length
-    uint8_t  telegraph_at_target; // 0 = centered on NPC, 1 = centered on target position
+    uint8_t  telegraph_at_target;  // 0 = centered on NPC, 1 = centered on target position
+    uint8_t  teleport_on_resolve;  // 1 = NPC teleports to end of line at cast resolve
 } NPCAbilityDef;
 
 // ---------------------------------------------------------------------------

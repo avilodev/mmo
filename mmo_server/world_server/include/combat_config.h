@@ -28,6 +28,12 @@ typedef struct {
     uint8_t     attack_type;        // AttackType: SINGLE / AOE / CONE / LINE
     float       cone_half_angle;    // Degrees — only used when attack_type == CONE
     float       line_width;         // World units — only used when attack_type == LINE
+    // Ranged auto-attack fields (Landweaver / Spirit)
+    uint8_t     is_ranged;          // 1 = spawn projectile at cast resolution instead of instant damage
+    float       projectile_speed;   // World units per second
+    float       projectile_width;   // Hitbox width of the projectile
+    uint8_t     projectile_damage_stat;  // StatType that scales projectile damage
+    uint8_t     projectile_damage_type;  // AbilityDamageType (0=phys, 1=earth, 2=spirit)
 } ClassAttackProfile;
 
 // ---------------------------------------------------------------------------
@@ -130,6 +136,12 @@ typedef struct {
     float       cone_half_angle;    // Degrees, from class profile
     float       line_width;         // World units, from class profile
     float       cooldown;           // Stored so we can set last_attack_time on resolve
+    // Ranged projectile fields (populated when is_ranged == 1)
+    uint8_t     is_ranged;
+    float       projectile_speed;
+    float       projectile_width;
+    uint8_t     projectile_damage_stat;
+    uint8_t     projectile_damage_type;
 } PendingCast;
 
 #endif // COMBAT_CONFIG_H

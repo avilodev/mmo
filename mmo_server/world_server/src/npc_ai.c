@@ -274,6 +274,9 @@ static int parse_npc_types(const char* json) {
                         v = find_key(ab_obj, "telegraph_at_target");
                         if (v) ab->telegraph_at_target = (uint8_t)atoi(v);
 
+                        v = find_key(ab_obj, "teleport_on_resolve");
+                        if (v) ab->teleport_on_resolve = (uint8_t)atoi(v);
+
                         prof->ability_count++;
                         free(ab_obj);
 
@@ -674,6 +677,14 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                 npc->ai_is_casting = 0;
                 npc->ai_ability_cooldowns[abi] = now;
                 npc->ai_state = NPC_AI_AGGRO;
+
+                // Teleport to end of line (e.g., Kingdom Slime charge)
+                if (ab->teleport_on_resolve) {
+                    npc->pos_x = npc->ai_cast_pos_x + npc->ai_cast_dir_x * ab->telegraph_length;
+                    npc->pos_y = npc->ai_cast_pos_y + npc->ai_cast_dir_y * ab->telegraph_length;
+                    printf("[NPC_AI] NPC %u (%s) teleported to (%.1f, %.1f)\n",
+                           npc->id, npc->name, npc->pos_x, npc->pos_y);
+                }
 
                 DeferredAction da = {0};
                 da.type = DSEND_TELEGRAPH_RESOLVE;
