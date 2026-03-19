@@ -970,7 +970,7 @@ int main(int argc, char** argv) {
     g_server.running = 1;
     
     // Ignore SIGPIPE — prevents crash when broadcast threads write to a client
-    // socket that has been closed or reset (common on player disconnect).
+    // socket that has been closed or reset.
     signal(SIGPIPE, SIG_IGN);
 
     // Install signal handlers
