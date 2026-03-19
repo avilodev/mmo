@@ -1,4 +1,5 @@
 #include "packet_handler.h"
+#include <stdlib.h>
 
 void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id) {
     // Extract client-reported ping_ms from payload if present
@@ -906,4 +907,100 @@ void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ss
 
     printf("[PARTY] Player %u kicked player %u from party\n", character_id, target_id);
     party_remove_member(target_id);
+}
+void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) {
+    extern ActivePlayer active_players[];
+    extern pthread_mutex_t active_players_lock;
+
+    if (bytes < (ssize_t)sizeof(SessionListRequestPacket)) return;
+
+    SessionListRequestPacket* req = (SessionListRequestPacket*)buffer;
+    uint16_t requested_page = ntohs(req->page);
+
+    // Snapshot counts and build entry list under lock
+    // We collect up to (requested_page+1)*SESSION_LIST_PAGE_SIZE entries
+    // then slice the right page out.
+    // For simplicity with potentially thousands of players, we collect all
+    // loaded player ids/data, sort by character_id, then page.
+
+    // Step 1: collect all online players
+    typedef struct {
+        uint32_t character_id;
+        char     name[32];
+        int      level;
+        uint8_t  player_class;
+        uint8_t  player_race;
+        uint16_t ping_ms;
+    } Snap;
+
+    Snap* snaps = NULL;
+    int   snap_count = 0;
+
+    pthread_mutex_lock(&active_players_lock);
+    // Count first
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (active_players[i].is_loaded && active_players[i].is_ready)
+            snap_count++;
+    }
+    if (snap_count > 0) {
+        snaps = malloc((size_t)snap_count * sizeof(Snap));
+        if (snaps) {
+            int idx = 0;
+            for (int i = 0; i < MAX_PLAYERS && idx < snap_count; i++) {
+                ActivePlayer* ap = &active_players[i];
+                if (!ap->is_loaded || !ap->is_ready) continue;
+                snaps[idx].character_id = ap->character_id;
+                strncpy(snaps[idx].name, ap->username, 31);
+                snaps[idx].name[31]     = '\0';
+                snaps[idx].level        = ap->level;
+                snaps[idx].player_class = (uint8_t)ap->player_class;
+                snaps[idx].player_race  = (uint8_t)ap->player_race;
+                snaps[idx].ping_ms      = ap->ping_ms;
+                idx++;
+            }
+            snap_count = idx;
+        }
+    }
+    pthread_mutex_unlock(&active_players_lock);
+
+    // Step 2: compute pagination
+    uint32_t total_players = (uint32_t)snap_count;
+    uint16_t total_pages   = (uint16_t)((snap_count + SESSION_LIST_PAGE_SIZE - 1) / SESSION_LIST_PAGE_SIZE);
+    if (total_pages == 0) total_pages = 1;
+    if (requested_page >= total_pages) requested_page = total_pages - 1;
+
+    int page_start = (int)requested_page * SESSION_LIST_PAGE_SIZE;
+    int page_count = snap_count - page_start;
+    if (page_count > SESSION_LIST_PAGE_SIZE) page_count = SESSION_LIST_PAGE_SIZE;
+    if (page_count < 0) page_count = 0;
+
+    // Step 3: build and send response
+    SessionListResponsePacket resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.header.type         = PACKET_SESSION_LIST_RESPONSE;
+    resp.header.payload_size = htons(sizeof(SessionListResponsePacket) - sizeof(PacketHeader));
+    resp.total_players       = htonl(total_players);
+    resp.total_pages         = htons(total_pages);
+    resp.current_page        = htons(requested_page);
+    resp.count               = (uint8_t)page_count;
+
+    for (int i = 0; i < page_count; i++) {
+        Snap* s = &snaps[page_start + i];
+        SessionPlayerEntry* e = &resp.entries[i];
+        e->player_id    = htonl(s->character_id);
+        strncpy(e->name, s->name, 31);
+        e->name[31]     = '\0';
+        e->level        = (uint8_t)(s->level > 255 ? 255 : s->level);
+        e->player_class = s->player_class;
+        e->player_race  = s->player_race;
+        e->ping_ms      = htons(s->ping_ms);
+    }
+
+    free(snaps);
+
+    size_t send_size = offsetof(SessionListResponsePacket, entries) +
+                       (size_t)page_count * sizeof(SessionPlayerEntry);
+    server_send(client_fd, &resp, send_size);
+    printf("[SESSION] Sent page %u/%u (%d entries, %u total) to fd=%d\n",
+           requested_page + 1, total_pages, page_count, total_players, client_fd);
 }

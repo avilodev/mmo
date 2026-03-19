@@ -30,3 +30,4 @@ void handle_party_accept(int client_fd, uint32_t character_id);
 void handle_party_decline(int client_fd, uint32_t character_id);
 void handle_party_leave(int client_fd, uint32_t character_id);
 void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes);
+void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes);

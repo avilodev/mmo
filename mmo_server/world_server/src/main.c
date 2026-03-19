@@ -615,6 +615,8 @@ void* player_broadcast_thread(void* arg) {
             float    pos_x, pos_y;
             int32_t  health, max_health;
             uint8_t  player_class;
+            uint8_t  player_race;
+            uint8_t  level;
             uint8_t  is_dead;
             uint16_t ping_ms;
         } PlayerSnapshot;
@@ -634,6 +636,8 @@ void* player_broadcast_thread(void* arg) {
                 snapshots[i].health = active_players[i].health;
                 snapshots[i].max_health = active_players[i].max_health;
                 snapshots[i].player_class = active_players[i].player_class;
+                snapshots[i].player_race = (uint8_t)active_players[i].player_race;
+                snapshots[i].level = (uint8_t)active_players[i].level;
                 snapshots[i].is_dead = active_players[i].is_dead;
                 snapshots[i].ping_ms = active_players[i].ping_ms;
                 pthread_mutex_unlock(&active_players[i].lock);
@@ -671,6 +675,8 @@ void* player_broadcast_thread(void* arg) {
                 np->health = htonl(snapshots[j].health);
                 np->max_health = htonl(snapshots[j].max_health);
                 np->player_class = snapshots[j].player_class;
+                np->player_race = snapshots[j].player_race;
+                np->level = snapshots[j].level;
                 np->is_dead = snapshots[j].is_dead;
                 np->ping_ms = htons(snapshots[j].ping_ms);
                 pkt.count++;

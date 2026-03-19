@@ -287,6 +287,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             shop_handle_sell(character_id, client_fd, buffer, bytes);
             break;
 
+        case PACKET_SESSION_LIST_REQUEST:
+            handle_session_list_request(client_fd, buffer, bytes);
+            break;
+
         default:
             printf("Unknown packet type: %d\n", header->type);
             return 0;
