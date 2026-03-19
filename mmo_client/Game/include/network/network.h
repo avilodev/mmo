@@ -61,6 +61,7 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
 int network_get_server_correction(float* out_x, float* out_y);
 
 void network_send_ping(void);
+int  network_get_ping_ms(void);  // Returns most recent measured RTT in milliseconds
 
 // ----------------------------------------------------------------------------
 // COMBAT

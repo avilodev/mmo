@@ -319,6 +319,7 @@ typedef struct {
     int32_t health, max_health;
     uint8_t player_class;
     uint8_t is_dead;
+    uint16_t ping_ms;
     char name[32];
 } NearbyPlayer;
 
@@ -578,6 +579,9 @@ struct GameState {
 
     // --- Quest Log ---
     QuestLogState quest_log;
+
+    // --- Session Panel ---
+    int show_session_panel;
 
     // --- Shop ---
     ShopState shop;

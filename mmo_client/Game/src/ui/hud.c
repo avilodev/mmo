@@ -2,6 +2,7 @@
 #include "renderer.h"
 #include "core/game_types.h"
 #include "world/npc.h"
+#include "network/network.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -75,17 +76,20 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     if (!game->player.info_loaded) {
         return;
     }
-    
+
     // Don't touch projection - just set up ortho for screen space
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrtho(0, hud->screen_width, hud->screen_height, 0, -1, 1);
-    
+
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    
+
+    int own_ping = network_get_ping_ms();
+
     // Render all HUD elements
     hud_render_minimap(hud, game);
+    hud_render_ping(hud, own_ping);
     hud_render_health_bar(hud, game);
     hud_render_mana_bar(hud, game);
     hud_render_exp_bar(hud, game);
@@ -96,6 +100,9 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     hud_render_target_bar(game, (float)hud->screen_width);
     hud_render_player_target_bar(game, (float)hud->screen_width);
     hud_render_party_frames(game);
+
+    if (game->show_session_panel)
+        hud_render_session_panel(hud, game, own_ping);
 }
 
 void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
@@ -556,4 +563,172 @@ void hud_render_currencies(const HUDLayout* hud, const GameState* game) {
     renderer_draw_rect(x - 6, y - 16, 1.5f, th, 0.70f, 0.55f, 0.10f, 0.8f);
     renderer_draw_rect(x - 6 + tw - 1.5f, y - 16, 1.5f, th, 0.70f, 0.55f, 0.10f, 0.8f);
     renderer_draw_text(x, y, gold_text);
+}
+
+void hud_render_ping(const HUDLayout* hud, int ping_ms) {
+    // Render ping badge just above the minimap in the upper-right
+    char text[32];
+    if (ping_ms <= 0)
+        snprintf(text, sizeof(text), "Ping: --");
+    else
+        snprintf(text, sizeof(text), "Ping: %dms", ping_ms);
+
+    // Color: green <=80ms, yellow <=150ms, red >150ms
+    float r, g, b;
+    if (ping_ms <= 0)       { r = 0.6f; g = 0.6f; b = 0.6f; }
+    else if (ping_ms <= 80) { r = 0.2f; g = 0.9f; b = 0.3f; }
+    else if (ping_ms <= 150){ r = 0.9f; g = 0.85f; b = 0.1f; }
+    else                    { r = 0.9f; g = 0.2f;  b = 0.2f; }
+
+    float w = 100.0f, h = 18.0f;
+    float x = hud->minimap_x + hud->minimap_size - w;
+    float y = hud->minimap_y - h - 4.0f;
+
+    renderer_draw_rect(x - 4, y - 2, w + 8, h + 4, 0.05f, 0.05f, 0.08f, 0.82f);
+    // colored left accent bar
+    renderer_draw_rect(x - 4, y - 2, 3.0f, h + 4, r, g, b, 1.0f);
+
+    // Use OpenGL color for the text (approximate by drawing colored rect behind it)
+    // Since renderer_draw_text doesn't take a color, we draw a subtle tinted bg instead
+    renderer_draw_text(x + 2, y + h - 3, text);
+}
+
+// Class name helper (mirrors server-side Class enum)
+static const char* session_class_name(uint8_t cls) {
+    switch (cls) {
+        case 1: return "Gladiator";
+        case 2: return "Ninja";
+        case 3: return "Landweaver";
+        case 4: return "Spirit";
+        default: return "Unknown";
+    }
+}
+
+void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int own_ping_ms) {
+    const float PANEL_W  = 340.0f;
+    const float ROW_H    = 20.0f;
+    const float HEADER_H = 24.0f;
+    const float PAD      = 8.0f;
+
+    // Total rows = self + nearby players (capped for display)
+    int nearby = game->nearby_player_count;
+    int total_rows = 1 + nearby;  // +1 for self
+
+    float panel_h = HEADER_H + PAD + total_rows * ROW_H + PAD;
+
+    // Position: center-right, below minimap area
+    float px = (float)hud->screen_width / 2.0f - PANEL_W / 2.0f;
+    float py = 80.0f;
+
+    // Panel background + border
+    renderer_draw_rect(px, py, PANEL_W, panel_h, 0.04f, 0.04f, 0.07f, 0.92f);
+    renderer_draw_rect(px,              py,              PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
+    renderer_draw_rect(px,              py + panel_h - 1.5f, PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
+    renderer_draw_rect(px,              py,              1.5f, panel_h, 0.40f, 0.50f, 0.65f, 1.0f);
+    renderer_draw_rect(px + PANEL_W - 1.5f, py,         1.5f, panel_h, 0.40f, 0.50f, 0.65f, 1.0f);
+
+    // Header bar
+    renderer_draw_rect(px, py, PANEL_W, HEADER_H, 0.10f, 0.14f, 0.22f, 1.0f);
+
+    char header[64];
+    snprintf(header, sizeof(header), "Session  (%d player%s)",
+             total_rows, total_rows == 1 ? "" : "s");
+    renderer_draw_text(px + PAD, py + HEADER_H - 5, header);
+
+    // Column header hints (small, muted)
+    renderer_draw_text(px + PAD,          py + HEADER_H + PAD - 2,  "Name");
+    renderer_draw_text(px + 140.0f,       py + HEADER_H + PAD - 2,  "Class");
+    renderer_draw_text(px + 230.0f,       py + HEADER_H + PAD - 2,  "HP");
+    renderer_draw_text(px + PANEL_W - 60.0f, py + HEADER_H + PAD - 2, "Ping");
+
+    // Separator under column headers
+    float col_y = py + HEADER_H + PAD + ROW_H - 2;
+    renderer_draw_rect(px + PAD, col_y, PANEL_W - PAD * 2, 1.0f, 0.30f, 0.35f, 0.45f, 0.8f);
+
+    float row_y = col_y + 3.0f;
+
+    // Helper: draw one row
+    // Self row first
+    {
+        uint32_t max_hp = game->player.info.max_health;
+        uint32_t cur_hp = game->player.info.health;
+        float hp_pct = (max_hp > 0) ? (float)cur_hp / (float)max_hp : 1.0f;
+        if (hp_pct > 1.0f) hp_pct = 1.0f;
+
+        // Row bg (slightly lighter for self)
+        renderer_draw_rect(px + 2, row_y, PANEL_W - 4, ROW_H - 1, 0.10f, 0.18f, 0.14f, 0.70f);
+
+        char name_buf[40];
+        snprintf(name_buf, sizeof(name_buf), "%s (you)", game->player.info.name);
+        renderer_draw_text(px + PAD, row_y + ROW_H - 5, name_buf);
+
+        renderer_draw_text(px + 140.0f, row_y + ROW_H - 5,
+                           session_class_name(game->player.info.player_class));
+
+        // HP bar (mini)
+        float bar_x = px + 230.0f;
+        float bar_w = 60.0f;
+        float bar_h = 8.0f;
+        float bar_by = row_y + (ROW_H - bar_h) / 2.0f;
+        renderer_draw_rect(bar_x, bar_by, bar_w, bar_h, 0.15f, 0.05f, 0.05f, 1.0f);
+        float hr = 1.0f, hg = hp_pct * 0.6f;
+        renderer_draw_rect(bar_x, bar_by, bar_w * hp_pct, bar_h, hr, hg, 0.0f, 0.9f);
+
+        // Ping
+        char ping_buf[16];
+        if (own_ping_ms <= 0) snprintf(ping_buf, sizeof(ping_buf), "--");
+        else                  snprintf(ping_buf, sizeof(ping_buf), "%dms", own_ping_ms);
+        renderer_draw_text(px + PANEL_W - 60.0f, row_y + ROW_H - 5, ping_buf);
+
+        row_y += ROW_H;
+    }
+
+    // Nearby player rows
+    for (int i = 0; i < nearby; i++) {
+        const NearbyPlayer* p = &game->nearby_players[i];
+
+        // Alternate row shading
+        float bg_a = (i % 2 == 0) ? 0.0f : 0.05f;
+        if (bg_a > 0.0f)
+            renderer_draw_rect(px + 2, row_y, PANEL_W - 4, ROW_H - 1,
+                               0.08f, 0.08f, 0.12f, bg_a);
+
+        // Name (truncated to ~20 chars)
+        char name_buf[24];
+        snprintf(name_buf, sizeof(name_buf), "%.20s", p->name);
+        renderer_draw_text(px + PAD, row_y + ROW_H - 5, name_buf);
+
+        // Class
+        renderer_draw_text(px + 140.0f, row_y + ROW_H - 5,
+                           session_class_name(p->player_class));
+
+        // HP bar
+        float bar_x = px + 230.0f;
+        float bar_w = 60.0f;
+        float bar_h = 8.0f;
+        float bar_by = row_y + (ROW_H - bar_h) / 2.0f;
+        renderer_draw_rect(bar_x, bar_by, bar_w, bar_h, 0.15f, 0.05f, 0.05f, 1.0f);
+        if (p->max_health > 0) {
+            float hp_pct = (float)p->health / (float)p->max_health;
+            if (hp_pct > 1.0f) hp_pct = 1.0f;
+            if (hp_pct < 0.0f) hp_pct = 0.0f;
+            float hr = 1.0f, hg = hp_pct * 0.6f;
+            if (p->is_dead) { hr = 0.35f; hg = 0.35f; }
+            renderer_draw_rect(bar_x, bar_by, bar_w * (p->is_dead ? 0.0f : hp_pct),
+                               bar_h, hr, hg, 0.0f, 0.9f);
+        }
+
+        // Ping
+        char ping_buf[16];
+        if (p->ping_ms == 0) snprintf(ping_buf, sizeof(ping_buf), "--");
+        else                 snprintf(ping_buf, sizeof(ping_buf), "%dms", (int)p->ping_ms);
+        renderer_draw_text(px + PANEL_W - 60.0f, row_y + ROW_H - 5, ping_buf);
+
+        row_y += ROW_H;
+    }
+
+    // Hint at bottom of panel header area
+    char hint[32];
+    snprintf(hint, sizeof(hint), "[O] close");
+    renderer_draw_text(px + PANEL_W - 72.0f, py + HEADER_H - 5, hint);
 }

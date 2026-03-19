@@ -77,6 +77,8 @@ static float g_last_facing_angle = 0.0f;
 #define PING_MAX_MISSED  3      // Disconnect after 3 unanswered pings (~30s)
 static double g_last_ping_time  = 0.0;
 static int    g_pending_pings   = 0;   // Sent but not yet echoed back
+static double g_ping_send_time  = 0.0; // glfwGetTime() when last ping was sent
+static int    g_ping_ms         = 0;   // Most recent measured RTT in milliseconds
 
 // Stream reassembly buffer for TCP framing
 static char g_recv_buf[65536];
@@ -108,8 +110,13 @@ static void process_packet(const char* data, int length) {
     
     switch (header->type) {
         case PACKET_PING:
-            // Server echoed our ping back — count it as received
-            if (g_pending_pings > 0) g_pending_pings--;
+            // Server echoed our ping back — measure RTT
+            if (g_pending_pings > 0) {
+                g_pending_pings--;
+                double rtt = (get_time() - g_ping_send_time) * 1000.0;
+                if (rtt > 0.0 && rtt < 60000.0)
+                    g_ping_ms = (int)rtt;
+            }
             break;
             
         case PACKET_WORLD_LIST_RESPONSE: {
@@ -892,6 +899,7 @@ static void process_packet(const char* data, int length) {
                     g_current_game->nearby_players[i].max_health = (int32_t)ntohl(src->max_health);
                     g_current_game->nearby_players[i].player_class = src->player_class;
                     g_current_game->nearby_players[i].is_dead = src->is_dead;
+                    g_current_game->nearby_players[i].ping_ms = ntohs(src->ping_ms);
                     snprintf(g_current_game->nearby_players[i].name, 32,
                              "Player_%u", (uint32_t)ntohl(src->player_id));
                 }
@@ -2086,14 +2094,25 @@ int network_get_server_correction(float* out_x, float* out_y) {
 void network_send_ping(void) {
     if (!g_connected) return;
 
-    PacketHeader pkt;
+    // Pack header + uint16_t ping_ms payload so the server can store our RTT
+    struct {
+        PacketHeader header;
+        uint16_t     ping_ms;
+    } pkt;
     memset(&pkt, 0, sizeof(pkt));
-    pkt.type = PACKET_PING;
-    pkt.player_id = htonl(g_account_id);
-    pkt.payload_size = 0;
+    pkt.header.type         = PACKET_PING;
+    pkt.header.player_id    = htonl(g_account_id);
+    pkt.header.payload_size = htons(sizeof(uint16_t));
+    pkt.ping_ms             = htons((uint16_t)g_ping_ms);
 
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt))
+    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
         g_pending_pings++;
+        g_ping_send_time = get_time();
+    }
+}
+
+int network_get_ping_ms(void) {
+    return g_ping_ms;
 }
 
 // ============================================================================

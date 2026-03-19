@@ -1073,6 +1073,11 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             character_screen_toggle(game->character_screen);
         }
     }
+
+    // Toggle session panel (O key)
+    if (!game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_O)) {
+        game->show_session_panel = !game->show_session_panel;
+    }
     
     // Handle dialogue option clicks (highest priority)
     if (dialogue_is_active() && game->input.mouse_left_clicked) {
