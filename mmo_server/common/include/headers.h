@@ -324,6 +324,9 @@ typedef struct {
     // Party
     uint32_t    party_id;              // 0 = not in a party
 
+    // Last client-reported ping (RTT in ms) — updated each time we receive a PingPacket
+    uint16_t    ping_ms;
+
     // Quests (layout must match PlayerQuestEntry in quest_system.h)
     #define MAX_PLAYER_QUESTS 32
     struct PlayerQuestSlot {

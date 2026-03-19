@@ -1,7 +1,18 @@
 #include "packet_handler.h"
 
-void handle_ping(int client_fd, uint8_t* buffer) {
-    // Echo back the ping packet
+void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id) {
+    // Extract client-reported ping_ms from payload if present
+    PacketHeader* hdr = (PacketHeader*)buffer;
+    if (ntohs(hdr->payload_size) >= sizeof(uint16_t)) {
+        uint16_t* ping_ptr = (uint16_t*)(buffer + sizeof(PacketHeader));
+        uint16_t client_ping = ntohs(*ping_ptr);
+        ActivePlayer* player = player_acquire(character_id);
+        if (player) {
+            player->ping_ms = client_ping;
+            player_release(player);
+        }
+    }
+    // Echo back the header so the client can measure RTT
     server_send(client_fd, buffer, sizeof(PacketHeader));
 }
 

@@ -55,7 +55,7 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             return -1;  // Signal caller to break the recv loop cleanly
 
         case PACKET_PING:
-            handle_ping(client_fd, buffer);
+            handle_ping(client_fd, buffer, character_id);
             break;
 
         case PACKET_REQUEST_PLAYER_DATA:
