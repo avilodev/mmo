@@ -334,8 +334,7 @@ static void playing_update(GameState* game, float delta_time) {
         s_last_move_send = now;
         s_last_any_send = now;
     } else if ((now - s_last_any_send) >= HEARTBEAT_INTERVAL) {
-        network_send_ping();
-        s_last_any_send = now;
+        s_last_any_send = now;  // network_update_with_ping() handles keepalive pings
     }
 }
 
