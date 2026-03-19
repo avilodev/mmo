@@ -318,6 +318,8 @@ typedef struct {
     float pos_x, pos_y;
     int32_t health, max_health;
     uint8_t player_class;
+    uint8_t player_race;
+    uint8_t level;
     uint8_t is_dead;
     uint16_t ping_ms;
     char name[32];

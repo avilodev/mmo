@@ -898,6 +898,8 @@ static void process_packet(const char* data, int length) {
                     g_current_game->nearby_players[i].health = (int32_t)ntohl(src->health);
                     g_current_game->nearby_players[i].max_health = (int32_t)ntohl(src->max_health);
                     g_current_game->nearby_players[i].player_class = src->player_class;
+                    g_current_game->nearby_players[i].player_race = src->player_race;
+                    g_current_game->nearby_players[i].level = src->level;
                     g_current_game->nearby_players[i].is_dead = src->is_dead;
                     g_current_game->nearby_players[i].ping_ms = ntohs(src->ping_ms);
                     snprintf(g_current_game->nearby_players[i].name, 32,

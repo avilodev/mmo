@@ -936,8 +936,11 @@ typedef struct {
     int32_t  health;
     int32_t  max_health;
     uint8_t  player_class;
+    uint8_t  player_race;
+    uint8_t  level;
     uint8_t  is_dead;
     uint16_t ping_ms;       // client-reported RTT in milliseconds
+    uint8_t  padding[2];
 } NearbyPlayerData;
 
 // Server -> Client: Batch update of nearby player positions
