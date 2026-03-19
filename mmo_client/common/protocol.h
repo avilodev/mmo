@@ -146,6 +146,9 @@ typedef enum {
     PACKET_SHOP_BUY_RESPONSE = 196,  // Server -> Client: buy result
     PACKET_SHOP_SELL         = 197,  // Client -> Server: sell item
     PACKET_SHOP_SELL_RESPONSE = 198, // Server -> Client: sell result
+
+    PACKET_SESSION_LIST_REQUEST  = 210, // Client -> Server: request page of online players
+    PACKET_SESSION_LIST_RESPONSE = 211, // Server -> Client: paginated list of online players
 } PacketType;
 
 typedef enum {
@@ -950,6 +953,42 @@ typedef struct {
     uint8_t padding[3];
     NearbyPlayerData players[MAX_NEARBY_PLAYERS];
 } PlayerPositionBroadcastPacket;
+
+// ============================================================================
+// SESSION LIST (O MENU) — full server player list, paginated at 30 per page
+// ============================================================================
+
+#define SESSION_LIST_PAGE_SIZE 30
+
+// One entry per player in the server list
+typedef struct {
+    uint32_t player_id;
+    char     name[32];
+    uint8_t  level;
+    uint8_t  player_class;
+    uint8_t  player_race;
+    uint8_t  padding;
+    uint16_t ping_ms;
+    uint8_t  padding2[2];
+} SessionPlayerEntry;  // 44 bytes
+
+// Client -> Server: request page N of the online player list
+typedef struct {
+    PacketHeader header;
+    uint16_t page;      // 0-indexed
+    uint8_t  padding[2];
+} SessionListRequestPacket;
+
+// Server -> Client: one page of the online player list
+typedef struct {
+    PacketHeader     header;
+    uint32_t         total_players;   // total online right now
+    uint16_t         total_pages;
+    uint16_t         current_page;    // 0-indexed
+    uint8_t          count;           // entries in this packet (≤ SESSION_LIST_PAGE_SIZE)
+    uint8_t          padding[3];
+    SessionPlayerEntry entries[SESSION_LIST_PAGE_SIZE];
+} SessionListResponsePacket;
 
 // ============================================================================
 // NPC TELEGRAPH PACKETS

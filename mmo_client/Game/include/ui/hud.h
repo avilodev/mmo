@@ -39,7 +39,11 @@ void hud_render_party_frames(const GameState* game);
 // Render ping (ms) in the upper-right corner above the minimap
 void hud_render_ping(const HUDLayout* hud, int ping_ms);
 
-// Render the session panel (all nearby players + self, shown when show_session_panel=1)
+// Render the session panel (O menu — full server player list, paginated)
 void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int own_ping_ms);
+
+// Handle a left-click against the session panel buttons.
+// Returns -1 (prev page), 1 (next page), 0 (nothing hit).
+int hud_session_panel_handle_click(const GameState* game, float mx, float my);
 
 #endif // HUD_H

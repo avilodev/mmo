@@ -145,4 +145,10 @@ void network_send_party_kick(uint32_t target_id);
 void network_send_shop_buy(uint32_t shop_id, uint32_t item_id);
 void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot);
 
+// ----------------------------------------------------------------------------
+// SESSION LIST (O MENU)
+// ----------------------------------------------------------------------------
+
+void network_send_session_list_request(uint16_t page);
+
 #endif // NETWORK_H

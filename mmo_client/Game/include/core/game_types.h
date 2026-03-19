@@ -266,9 +266,21 @@ typedef struct {
     unsigned int water;
     unsigned int rock;
     unsigned int background;
-    unsigned int tree1;  
-    unsigned int shrub1;  
+    unsigned int tree1;
+    unsigned int shrub1;
+    unsigned int session_panel_bg;  // Static panel frame texture (O menu background)
+    unsigned int session_entry_bg;  // Per-row entry background texture (tiled per player)
 } GameTextures;
+
+// One row in the session panel — mirrors SessionPlayerEntry in protocol.h
+typedef struct {
+    uint32_t player_id;
+    char     name[32];
+    uint8_t  level;
+    uint8_t  player_class;
+    uint8_t  player_race;
+    uint16_t ping_ms;
+} SessionPlayer;
 
 // Include world.h here - it needs Camera (already defined) and GameTextures (just defined)
 #include "world.h"
@@ -584,6 +596,11 @@ struct GameState {
 
     // --- Session Panel ---
     int show_session_panel;
+    SessionPlayer session_list[SESSION_LIST_PAGE_SIZE]; // Current page of online players
+    int           session_list_count;                   // Entries in current page
+    uint32_t      session_total_players;                // Total online right now
+    uint16_t      session_current_page;                 // 0-indexed
+    uint16_t      session_total_pages;
 
     // --- Shop ---
     ShopState shop;

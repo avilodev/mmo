@@ -613,112 +613,180 @@ static const char* session_race_name(uint8_t race) {
     }
 }
 
+// Layout constants shared between render and click-handler
+#define SESSION_PANEL_W    450.0f
+#define SESSION_ROW_H       16.0f
+#define SESSION_HEADER_H    32.0f
+#define SESSION_COL_H       18.0f
+#define SESSION_FOOTER_H    30.0f
+#define SESSION_PAD          8.0f
+#define SESSION_ROWS        SESSION_LIST_PAGE_SIZE  // 30 rows per page
+
+// Column X offsets (relative to panel left edge)
+#define SESSION_COL_LV      SESSION_PAD
+#define SESSION_COL_NAME    44.0f
+#define SESSION_COL_CLASS  164.0f
+#define SESSION_COL_RACE   264.0f
+#define SESSION_COL_PING   (SESSION_PANEL_W - 54.0f)
+
+// Total fixed panel height: header + col-header row + 30 rows + footer
+#define SESSION_PANEL_H    (SESSION_HEADER_H + SESSION_COL_H + \
+                            SESSION_ROWS * SESSION_ROW_H + SESSION_FOOTER_H)
+
+// Prev/Next button dimensions (inside footer)
+#define SESSION_BTN_W  60.0f
+#define SESSION_BTN_H  18.0f
+
+static float session_panel_x(const HUDLayout* hud) {
+    return (float)hud->screen_width / 2.0f - SESSION_PANEL_W / 2.0f;
+}
+static float session_panel_y(void) { return 60.0f; }
+
 void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int own_ping_ms) {
-    const float PANEL_W  = 420.0f;
-    const float ROW_H    = 20.0f;
-    const float HEADER_H = 24.0f;
-    const float PAD      = 8.0f;
+    float px = session_panel_x(hud);
+    float py = session_panel_y();
 
-    // Column X positions: Lv | Name | Class | Race | Ping
-    const float COL_LV    = PAD;
-    const float COL_NAME  = 45.0f;
-    const float COL_CLASS = 165.0f;
-    const float COL_RACE  = 265.0f;
-    const float COL_PING  = PANEL_W - 58.0f;
-
-    int nearby = game->nearby_player_count;
-    int total_rows = 1 + nearby;  // +1 for self
-
-    float panel_h = HEADER_H + PAD + total_rows * ROW_H + PAD;
-
-    float px = (float)hud->screen_width / 2.0f - PANEL_W / 2.0f;
-    float py = 80.0f;
-
-    // Panel background + border
-    renderer_draw_rect(px, py, PANEL_W, panel_h, 0.04f, 0.04f, 0.07f, 0.92f);
-    renderer_draw_rect(px,              py,                   PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
-    renderer_draw_rect(px,              py + panel_h - 1.5f, PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
-    renderer_draw_rect(px,              py,                   1.5f, panel_h, 0.40f, 0.50f, 0.65f, 1.0f);
-    renderer_draw_rect(px + PANEL_W - 1.5f, py,              1.5f, panel_h, 0.40f, 0.50f, 0.65f, 1.0f);
-
-    // Header bar
-    renderer_draw_rect(px, py, PANEL_W, HEADER_H, 0.10f, 0.14f, 0.22f, 1.0f);
-
-    char header[64];
-    snprintf(header, sizeof(header), "Session  (%d player%s)",
-             total_rows, total_rows == 1 ? "" : "s");
-    renderer_draw_text(px + PAD, py + HEADER_H - 5, header);
-
-    // Column headers
-    renderer_draw_text(px + COL_LV,   py + HEADER_H + PAD - 2, "Lv");
-    renderer_draw_text(px + COL_NAME, py + HEADER_H + PAD - 2, "Name");
-    renderer_draw_text(px + COL_CLASS,py + HEADER_H + PAD - 2, "Class");
-    renderer_draw_text(px + COL_RACE, py + HEADER_H + PAD - 2, "Race");
-    renderer_draw_text(px + COL_PING, py + HEADER_H + PAD - 2, "Ping");
-
-    // Separator under column headers
-    float col_y = py + HEADER_H + PAD + ROW_H - 2;
-    renderer_draw_rect(px + PAD, col_y, PANEL_W - PAD * 2, 1.0f, 0.30f, 0.35f, 0.45f, 0.8f);
-
-    float row_y = col_y + 3.0f;
-
-    // Self row
-    {
-        renderer_draw_rect(px + 2, row_y, PANEL_W - 4, ROW_H - 1, 0.10f, 0.18f, 0.14f, 0.70f);
-
-        char lv_buf[8];
-        snprintf(lv_buf, sizeof(lv_buf), "%u", game->player.info.level);
-        renderer_draw_text(px + COL_LV, row_y + ROW_H - 5, lv_buf);
-
-        char name_buf[40];
-        snprintf(name_buf, sizeof(name_buf), "%s (you)", game->player.info.name);
-        renderer_draw_text(px + COL_NAME, row_y + ROW_H - 5, name_buf);
-
-        renderer_draw_text(px + COL_CLASS, row_y + ROW_H - 5,
-                           session_class_name(game->player.info.player_class));
-
-        renderer_draw_text(px + COL_RACE, row_y + ROW_H - 5,
-                           session_race_name((uint8_t)game->player.info.player_race));
-
-        char ping_buf[16];
-        if (own_ping_ms <= 0) snprintf(ping_buf, sizeof(ping_buf), "--");
-        else                  snprintf(ping_buf, sizeof(ping_buf), "%dms", own_ping_ms);
-        renderer_draw_text(px + COL_PING, row_y + ROW_H - 5, ping_buf);
-
-        row_y += ROW_H;
+    // -----------------------------------------------------------------------
+    // Static panel background texture (drawn once, covers the whole panel)
+    // Falls back to a flat rect if texture not loaded yet
+    // -----------------------------------------------------------------------
+    if (game->textures.session_panel_bg) {
+        renderer_draw_sprite(px, py, SESSION_PANEL_W, SESSION_PANEL_H,
+                             game->textures.session_panel_bg);
+    } else {
+        renderer_draw_rect(px, py, SESSION_PANEL_W, SESSION_PANEL_H,
+                           0.04f, 0.04f, 0.08f, 0.94f);
+        // Border
+        renderer_draw_rect(px, py, SESSION_PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
+        renderer_draw_rect(px, py + SESSION_PANEL_H - 1.5f, SESSION_PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
+        renderer_draw_rect(px, py, 1.5f, SESSION_PANEL_H, 0.40f, 0.50f, 0.65f, 1.0f);
+        renderer_draw_rect(px + SESSION_PANEL_W - 1.5f, py, 1.5f, SESSION_PANEL_H, 0.40f, 0.50f, 0.65f, 1.0f);
     }
 
-    // Nearby player rows
-    for (int i = 0; i < nearby; i++) {
-        const NearbyPlayer* p = &game->nearby_players[i];
+    // Header bar
+    renderer_draw_rect(px, py, SESSION_PANEL_W, SESSION_HEADER_H, 0.08f, 0.12f, 0.20f, 0.95f);
 
-        float bg_a = (i % 2 == 0) ? 0.0f : 0.05f;
-        if (bg_a > 0.0f)
-            renderer_draw_rect(px + 2, row_y, PANEL_W - 4, ROW_H - 1, 0.08f, 0.08f, 0.12f, bg_a);
+    char header[64];
+    snprintf(header, sizeof(header), "Players Online: %u",
+             game->session_total_players);
+    renderer_draw_text(px + SESSION_PAD, py + SESSION_HEADER_H - 8, header);
+
+    renderer_draw_text(px + SESSION_PANEL_W - 72.0f, py + SESSION_HEADER_H - 8, "[O] close");
+
+    // Column headers
+    float col_label_y = py + SESSION_HEADER_H + SESSION_COL_H - 4;
+    renderer_draw_text(px + SESSION_COL_LV,   col_label_y, "Lv");
+    renderer_draw_text(px + SESSION_COL_NAME,  col_label_y, "Name");
+    renderer_draw_text(px + SESSION_COL_CLASS, col_label_y, "Class");
+    renderer_draw_text(px + SESSION_COL_RACE,  col_label_y, "Race");
+    renderer_draw_text(px + SESSION_COL_PING,  col_label_y, "Ping");
+
+    // Thin separator under column headers
+    float sep_y = py + SESSION_HEADER_H + SESSION_COL_H;
+    renderer_draw_rect(px + SESSION_PAD, sep_y, SESSION_PANEL_W - SESSION_PAD * 2, 1.0f,
+                       0.30f, 0.36f, 0.48f, 0.8f);
+
+    // -----------------------------------------------------------------------
+    // Player rows — entry background texture drawn per row
+    // -----------------------------------------------------------------------
+    float row_y = sep_y + 2.0f;
+
+    for (int i = 0; i < game->session_list_count; i++) {
+        const SessionPlayer* p = &game->session_list[i];
+
+        // Entry background: texture if loaded, else alternating shaded rect
+        if (game->textures.session_entry_bg) {
+            renderer_draw_sprite(px + SESSION_PAD, row_y,
+                                 SESSION_PANEL_W - SESSION_PAD * 2, SESSION_ROW_H - 1,
+                                 game->textures.session_entry_bg);
+        } else {
+            // Self highlight (page 0, first entry is self)
+            if (i == 0 && game->session_current_page == 0) {
+                renderer_draw_rect(px + 2, row_y, SESSION_PANEL_W - 4, SESSION_ROW_H - 1,
+                                   0.08f, 0.18f, 0.10f, 0.70f);
+            } else if (i % 2 == 1) {
+                renderer_draw_rect(px + 2, row_y, SESSION_PANEL_W - 4, SESSION_ROW_H - 1,
+                                   0.08f, 0.08f, 0.13f, 0.45f);
+            }
+        }
+
+        float text_y = row_y + SESSION_ROW_H - 4;
 
         char lv_buf[8];
         snprintf(lv_buf, sizeof(lv_buf), "%u", (unsigned)p->level);
-        renderer_draw_text(px + COL_LV, row_y + ROW_H - 5, lv_buf);
-
-        char name_buf[24];
-        snprintf(name_buf, sizeof(name_buf), "%.20s", p->name);
-        renderer_draw_text(px + COL_NAME, row_y + ROW_H - 5, name_buf);
-
-        renderer_draw_text(px + COL_CLASS, row_y + ROW_H - 5,
-                           session_class_name(p->player_class));
-
-        renderer_draw_text(px + COL_RACE, row_y + ROW_H - 5,
-                           session_race_name(p->player_race));
+        renderer_draw_text(px + SESSION_COL_LV,    text_y, lv_buf);
+        renderer_draw_text(px + SESSION_COL_NAME,  text_y, p->name);
+        renderer_draw_text(px + SESSION_COL_CLASS, text_y, session_class_name(p->player_class));
+        renderer_draw_text(px + SESSION_COL_RACE,  text_y, session_race_name(p->player_race));
 
         char ping_buf[16];
         if (p->ping_ms == 0) snprintf(ping_buf, sizeof(ping_buf), "--");
         else                 snprintf(ping_buf, sizeof(ping_buf), "%dms", (int)p->ping_ms);
-        renderer_draw_text(px + COL_PING, row_y + ROW_H - 5, ping_buf);
+        renderer_draw_text(px + SESSION_COL_PING, text_y, ping_buf);
 
-        row_y += ROW_H;
+        row_y += SESSION_ROW_H;
     }
 
-    char hint[32];
-    snprintf(hint, sizeof(hint), "[O] close");
-    renderer_draw_text(px + PANEL_W - 72.0f, py + HEADER_H - 5, hint);
+    // -----------------------------------------------------------------------
+    // Footer: prev/next buttons + page indicator
+    // -----------------------------------------------------------------------
+    float footer_y = py + SESSION_PANEL_H - SESSION_FOOTER_H;
+    renderer_draw_rect(px, footer_y, SESSION_PANEL_W, 1.0f, 0.30f, 0.36f, 0.48f, 0.6f);
+
+    float btn_y = footer_y + (SESSION_FOOTER_H - SESSION_BTN_H) / 2.0f;
+
+    // Prev button
+    float prev_x = px + SESSION_PAD;
+    int can_prev = game->session_current_page > 0;
+    renderer_draw_rect(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H,
+                       can_prev ? 0.15f : 0.08f,
+                       can_prev ? 0.20f : 0.08f,
+                       can_prev ? 0.30f : 0.08f, 0.9f);
+    renderer_draw_text_centered(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, "< Prev");
+
+    // Next button
+    float next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
+    int can_next = game->session_total_pages > 0 &&
+                   game->session_current_page + 1 < game->session_total_pages;
+    renderer_draw_rect(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H,
+                       can_next ? 0.15f : 0.08f,
+                       can_next ? 0.20f : 0.08f,
+                       can_next ? 0.30f : 0.08f, 0.9f);
+    renderer_draw_text_centered(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, "Next >");
+
+    // Page indicator (centered)
+    char page_buf[48];
+    if (game->session_total_pages > 0)
+        snprintf(page_buf, sizeof(page_buf), "Page %u / %u",
+                 (unsigned)game->session_current_page + 1,
+                 (unsigned)game->session_total_pages);
+    else
+        snprintf(page_buf, sizeof(page_buf), "Loading...");
+    renderer_draw_text_centered(prev_x + SESSION_BTN_W, btn_y,
+                                next_x - prev_x - SESSION_BTN_W, SESSION_BTN_H,
+                                page_buf);
+}
+
+int hud_session_panel_handle_click(const GameState* game, float mx, float my) {
+    // Must mirror the footer layout in hud_render_session_panel
+    extern void hud_init(HUDLayout*, int, int);  // just to get screen_width via game->hud
+    float px = (float)game->hud.screen_width / 2.0f - SESSION_PANEL_W / 2.0f;
+    float py = session_panel_y();
+
+    float footer_y = py + SESSION_PANEL_H - SESSION_FOOTER_H;
+    float btn_y    = footer_y + (SESSION_FOOTER_H - SESSION_BTN_H) / 2.0f;
+
+    // Prev button bounds
+    float prev_x = px + SESSION_PAD;
+    if (mx >= prev_x && mx <= prev_x + SESSION_BTN_W &&
+        my >= btn_y  && my <= btn_y + SESSION_BTN_H)
+        return -1;
+
+    // Next button bounds
+    float next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
+    if (mx >= next_x && mx <= next_x + SESSION_BTN_W &&
+        my >= btn_y  && my <= btn_y + SESSION_BTN_H)
+        return 1;
+
+    return 0;
 }

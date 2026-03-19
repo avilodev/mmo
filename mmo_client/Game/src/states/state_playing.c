@@ -58,8 +58,10 @@ static void playing_enter(GameState* game) {
     game->textures.grass  = texture_load("Game/Sprites/World/grass.png");
     game->textures.water  = texture_load("Game/Sprites/World/water.png");
     game->textures.rock   = texture_load("Game/Sprites/World/rock.png");
-    game->textures.tree1  = texture_load("Game/Sprites/Decoration/Tree/tree1.png");
-    game->textures.shrub1 = texture_load("Game/Sprites/Decoration/Bush/bush1.png");
+    game->textures.tree1             = texture_load("Game/Sprites/Decoration/Tree/tree1.png");
+    game->textures.shrub1            = texture_load("Game/Sprites/Decoration/Bush/bush1.png");
+    game->textures.session_panel_bg  = texture_load("Game/Sprites/UI/session_panel_bg.png");
+    game->textures.session_entry_bg  = texture_load("Game/Sprites/UI/session_entry_bg.png");
 
     if (!game->textures.player)
         fprintf(stderr, "[GAME] Warning: failed to load player texture\n");
@@ -92,8 +94,10 @@ static void playing_exit(GameState* game) {
     if (game->textures.grass)  { texture_unload(game->textures.grass);  game->textures.grass  = 0; }
     if (game->textures.water)  { texture_unload(game->textures.water);  game->textures.water  = 0; }
     if (game->textures.rock)   { texture_unload(game->textures.rock);   game->textures.rock   = 0; }
-    if (game->textures.tree1)  { texture_unload(game->textures.tree1);  game->textures.tree1  = 0; }
-    if (game->textures.shrub1) { texture_unload(game->textures.shrub1); game->textures.shrub1 = 0; }
+    if (game->textures.tree1)            { texture_unload(game->textures.tree1);            game->textures.tree1            = 0; }
+    if (game->textures.shrub1)           { texture_unload(game->textures.shrub1);           game->textures.shrub1           = 0; }
+    if (game->textures.session_panel_bg) { texture_unload(game->textures.session_panel_bg); game->textures.session_panel_bg = 0; }
+    if (game->textures.session_entry_bg) { texture_unload(game->textures.session_entry_bg); game->textures.session_entry_bg = 0; }
 
     // Unload ability icon textures
     ability_bar_cleanup(&game->ability_bar);
@@ -1077,6 +1081,24 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     // Toggle session panel (O key)
     if (!game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_O)) {
         game->show_session_panel = !game->show_session_panel;
+        if (game->show_session_panel) {
+            game->session_current_page = 0;
+            network_send_session_list_request(0);
+        }
+    }
+
+    // Session panel pagination clicks
+    if (game->show_session_panel && game->input.mouse_left_clicked) {
+        int dir = hud_session_panel_handle_click(game, game->input.mouse_x, game->input.mouse_y);
+        if (dir == -1 && game->session_current_page > 0) {
+            uint16_t next = game->session_current_page - 1;
+            game->session_current_page = next;
+            network_send_session_list_request(next);
+        } else if (dir == 1 && game->session_current_page + 1 < game->session_total_pages) {
+            uint16_t next = game->session_current_page + 1;
+            game->session_current_page = next;
+            network_send_session_list_request(next);
+        }
     }
     
     // Handle dialogue option clicks (highest priority)

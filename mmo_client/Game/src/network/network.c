@@ -1296,6 +1296,40 @@ static void process_packet(const char* data, int length) {
             break;
 
         // ----------------------------------------------------------------
+        // SESSION LIST (O menu)
+        // ----------------------------------------------------------------
+
+        case PACKET_SESSION_LIST_RESPONSE:
+            if (length >= (int)(sizeof(PacketHeader) + 12) && g_current_game) {
+                SessionListResponsePacket* pkt = (SessionListResponsePacket*)data;
+                uint8_t count = pkt->count;
+                if (count > SESSION_LIST_PAGE_SIZE) count = SESSION_LIST_PAGE_SIZE;
+
+                g_current_game->session_total_players = ntohl(pkt->total_players);
+                g_current_game->session_total_pages   = ntohs(pkt->total_pages);
+                g_current_game->session_current_page  = ntohs(pkt->current_page);
+                g_current_game->session_list_count    = (int)count;
+
+                for (int i = 0; i < (int)count; i++) {
+                    SessionPlayerEntry* src = &pkt->entries[i];
+                    SessionPlayer*      dst = &g_current_game->session_list[i];
+                    dst->player_id    = ntohl(src->player_id);
+                    src->name[31]     = '\0';
+                    memcpy(dst->name, src->name, 32);
+                    dst->level        = src->level;
+                    dst->player_class = src->player_class;
+                    dst->player_race  = src->player_race;
+                    dst->ping_ms      = ntohs(src->ping_ms);
+                }
+                printf("[NET] Session list: page %u/%u, %u total players, %d on page\n",
+                       g_current_game->session_current_page + 1,
+                       g_current_game->session_total_pages,
+                       g_current_game->session_total_players,
+                       (int)count);
+            }
+            break;
+
+        // ----------------------------------------------------------------
         // QUEST packets
         // ----------------------------------------------------------------
 
@@ -1569,6 +1603,10 @@ static int get_packet_size(uint8_t type) {
         case PACKET_SHOP_BUY_RESPONSE:          return (int)sizeof(ShopBuyResponsePacket);
         case PACKET_SHOP_SELL:                  return (int)sizeof(ShopSellPacket);
         case PACKET_SHOP_SELL_RESPONSE:         return (int)sizeof(ShopSellResponsePacket);
+
+        // Session list packets
+        case PACKET_SESSION_LIST_REQUEST:        return (int)sizeof(SessionListRequestPacket);
+        case PACKET_SESSION_LIST_RESPONSE:       return (int)sizeof(PacketHeader) + 12; // min size, variable entries
 
         // Quest packets
         case PACKET_QUEST_ACCEPT:               return (int)sizeof(QuestAcceptPacket);
@@ -2490,4 +2528,18 @@ void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot) {
 
     send(g_socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Shop sell: shop=%u slot=%u\n", shop_id, inventory_slot);
+}
+
+void network_send_session_list_request(uint16_t page) {
+    if (!g_connected) return;
+
+    SessionListRequestPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_SESSION_LIST_REQUEST;
+    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.payload_size = htons(sizeof(SessionListRequestPacket) - sizeof(PacketHeader));
+    pkt.page = htons(page);
+
+    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    printf("[NET] Session list request: page=%u\n", page);
 }
