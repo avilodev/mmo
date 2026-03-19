@@ -227,6 +227,12 @@ void* client_handler_thread(void* arg) {
                     // Calculate full packet size (header + payload)
                     size_t packet_size = sizeof(PacketHeader) + ntohs(header->payload_size);
 
+                    if (packet_size > MAX_PACKET_SIZE) {
+                        printf("[ERROR] Client %u sent oversized packet (type=%d, claimed size=%zu) — disconnecting\n",
+                               character_id, header->type, packet_size);
+                        goto client_done;
+                    }
+
                     if (remaining < (ssize_t)packet_size) {
                         break;  // Incomplete packet, carry over
                     }

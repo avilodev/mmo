@@ -292,7 +292,9 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             break;
 
         default:
-            printf("Unknown packet type: %d\n", header->type);
+            printf("Unknown packet type: %d (0x%02X), size=%zd, bytes: ", header->type, header->type, bytes);
+            for (ssize_t _i = 0; _i < bytes && _i < 16; _i++) printf("%02X ", buffer[_i]);
+            printf("\n");
             return 0;
     }
 

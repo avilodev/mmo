@@ -14,7 +14,8 @@ void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id) {
         }
     }
     // Echo back the header so the client can measure RTT
-    server_send(client_fd, buffer, sizeof(PacketHeader));
+    PacketHeader echo = *hdr;
+    server_send(client_fd, &echo, sizeof(echo));
 }
 
 void handle_request_player_data(int client_fd, uint32_t character_id) {
