@@ -2,13 +2,51 @@
 #include "renderer.h"
 
 #include <stdio.h>
+#include <math.h>
 
 void npc_render(const VisibleNPC* npc, int tile_size) {
     if (!npc->is_alive) return;
 
     int npc_size = tile_size * 2;
     float x = npc->pos_x;
-    float y = npc->pos_y;
+    float y = npc->pos_y + npc->visual_y_offset;
+
+    // Kingdom Slime — unique green blob appearance
+    if (npc->npc_type_id == 5) {
+        float sw = (float)npc_size * 1.4f;
+        float sh = (float)npc_size * 0.75f;
+        float half_w = sw / 2.0f;
+        float half_h = sh / 2.0f;
+
+        // Outline
+        renderer_draw_rect(x - half_w - 1, y - half_h - 1,
+                           sw + 2, sh + 2, 0.0f, 0.0f, 0.0f, 0.6f);
+        // Body — lime green
+        renderer_draw_rect(x - half_w, y - half_h, sw, sh, 0.15f, 0.80f, 0.25f, 1.0f);
+        // Darker highlight on top
+        renderer_draw_rect(x - half_w * 0.6f, y - half_h + 2.0f,
+                           sw * 0.6f, sh * 0.3f, 0.3f, 1.0f, 0.45f, 0.5f);
+        // Eyes
+        renderer_draw_rect(x - half_w * 0.35f - 3, y - 2.0f, 5, 5, 0.05f, 0.1f, 0.05f, 1.0f);
+        renderer_draw_rect(x + half_w * 0.35f - 2, y - 2.0f, 5, 5, 0.05f, 0.1f, 0.05f, 1.0f);
+
+        // Health bar
+        float bar_width  = 44.0f;
+        float bar_height = 4.0f;
+        float bar_x = x - bar_width / 2.0f;
+        float bar_y = y - half_h - 10.0f;
+        renderer_draw_rect(bar_x, bar_y, bar_width, bar_height, 0.15f, 0.15f, 0.15f, 0.9f);
+        if (npc->max_health > 0) {
+            float pct = (float)npc->health / (float)npc->max_health;
+            float hr = (pct < 0.5f) ? 1.0f : (2.0f - pct * 2.0f);
+            float hg = (pct > 0.5f) ? 1.0f : (pct * 2.0f);
+            renderer_draw_rect(bar_x, bar_y, bar_width * pct, bar_height, hr, hg, 0.05f, 1.0f);
+        }
+        if (npc->name[0] != '\0') {
+            renderer_draw_text(x - 24.0f, bar_y - 2.0f, npc->name);
+        }
+        return;
+    }
 
     // Category-based body color
     // 0 = passive  (calm blue-green)

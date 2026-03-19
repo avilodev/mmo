@@ -245,6 +245,25 @@ static void playing_update(GameState* game, float delta_time) {
         }
     }
 
+    // Kingdom Slime ground pound animation — bounce NPC up during circle telegraph
+    for (int i = 0; i < game->visible_npc_count; i++) {
+        VisibleNPC* npc = &game->visible_npcs[i];
+        if (npc->npc_type_id != 5) continue;
+        npc->visual_y_offset = 0.0f;
+        for (int t = 0; t < MAX_TELEGRAPHS; t++) {
+            if (!game->telegraphs[t].active) continue;
+            if (game->telegraphs[t].npc_id != npc->npc_id) continue;
+            if (game->telegraphs[t].shape != 0) continue; // circle only
+            float progress = (game->telegraphs[t].cast_time > 0.0f)
+                ? game->telegraphs[t].elapsed / game->telegraphs[t].cast_time
+                : 1.0f;
+            if (progress > 1.0f) progress = 1.0f;
+            // Rise up then slam down: offset peaks (most negative = highest) at mid-cast
+            npc->visual_y_offset = -sinf(progress * 3.14159f) * 60.0f;
+            break;
+        }
+    }
+
     // Update zone timers
     for (int i = 0; i < MAX_ZONES; i++) {
         if (game->zones[i].active) {

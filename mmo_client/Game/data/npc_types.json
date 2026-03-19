@@ -4,6 +4,7 @@
     { "id": 1, "name": "Training Dummy" },
     { "id": 2, "name": "Goblin Archer" },
     { "id": 3, "name": "Skeleton Warrior" },
-    { "id": 4, "name": "Dark Mage" }
+    { "id": 4, "name": "Dark Mage" },
+    { "id": 5, "name": "Kingdom Slime" }
   ]
 }

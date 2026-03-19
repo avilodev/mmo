@@ -199,6 +199,7 @@ typedef struct {
     uint8_t is_interactable; // 1 if player can interact (talk)
     uint8_t npc_type_id;     // NPC type for client display
     char name[32];
+    float visual_y_offset;   // Client-side vertical animation offset (e.g., ground pound)
 } VisibleNPC;
 
 // ============================================================================
