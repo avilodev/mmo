@@ -152,6 +152,10 @@ typedef enum {
     PACKET_SHOP_SELL          = 197,       // Client -> Server: sell item
     PACKET_SHOP_SELL_RESPONSE = 198,       // Server -> Client: sell result
 
+    // SESSION LIST (O MENU) (210-211)
+    PACKET_SESSION_LIST_REQUEST  = 210,    // Client -> Server: request page of online players
+    PACKET_SESSION_LIST_RESPONSE = 211,    // Server -> Client: paginated list of online players
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,

@@ -930,8 +930,11 @@ typedef struct {
     int32_t  health;
     int32_t  max_health;
     uint8_t  player_class;
+    uint8_t  player_race;
+    uint8_t  level;
     uint8_t  is_dead;
     uint16_t ping_ms;       // client-reported RTT in milliseconds
+    uint8_t  padding[2];
 } NearbyPlayerData;
 
 // Server -> Client: Batch update of nearby player positions (20Hz)
@@ -941,6 +944,39 @@ typedef struct {
     uint8_t padding[3];
     NearbyPlayerData players[MAX_NEARBY_PLAYERS];
 } PlayerPositionBroadcastPacket;
+
+// ============================================================================
+// SESSION LIST (O MENU)
+// ============================================================================
+
+#define SESSION_LIST_PAGE_SIZE 30
+
+typedef struct {
+    uint32_t player_id;
+    char     name[32];
+    uint8_t  level;
+    uint8_t  player_class;
+    uint8_t  player_race;
+    uint8_t  padding;
+    uint16_t ping_ms;
+    uint8_t  padding2[2];
+} SessionPlayerEntry;
+
+typedef struct {
+    PacketHeader header;
+    uint16_t page;
+    uint8_t  padding[2];
+} SessionListRequestPacket;
+
+typedef struct {
+    PacketHeader       header;
+    uint32_t           total_players;
+    uint16_t           total_pages;
+    uint16_t           current_page;
+    uint8_t            count;
+    uint8_t            padding[3];
+    SessionPlayerEntry entries[SESSION_LIST_PAGE_SIZE];
+} SessionListResponsePacket;
 
 // ============================================================================
 // NPC TELEGRAPH PACKETS (FF14-style ground indicators)
