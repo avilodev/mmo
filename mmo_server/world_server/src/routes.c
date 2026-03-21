@@ -211,8 +211,9 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 uint32_t ground_item_id = ntohl(req->ground_item_id);
 
                 LootPickupResponsePacket resp = {0};
-                resp.header.type = PACKET_LOOT_PICKUP_RESPONSE;
-                resp.header.player_id = htonl(character_id);
+                resp.header.type         = PACKET_LOOT_PICKUP_RESPONSE;
+                resp.header.player_id    = htonl(character_id);
+                resp.header.payload_size = htons(sizeof(LootPickupResponsePacket) - sizeof(PacketHeader));
                 resp.ground_item_id = htonl(ground_item_id);
 
                 // Distance check

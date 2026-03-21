@@ -123,8 +123,9 @@ static void send_projectile_spawn_pkt(int client_fd, uint32_t projectile_id,
                                        float px, float py,
                                        float dx, float dy, float speed) {
     ProjectileSpawnPacket pkt = {0};
-    pkt.header.type      = PACKET_PROJECTILE_SPAWN;
-    pkt.header.player_id = htonl(owner_id);
+    pkt.header.type         = PACKET_PROJECTILE_SPAWN;
+    pkt.header.player_id    = htonl(owner_id);
+    pkt.header.payload_size = htons(sizeof(ProjectileSpawnPacket) - sizeof(PacketHeader));
     pkt.projectile_id    = htonl(projectile_id);
     pkt.ability_id       = htons(ability_id);
     pkt.owner_id         = htonl(owner_id);
@@ -140,8 +141,9 @@ static void send_projectile_spawn_pkt(int client_fd, uint32_t projectile_id,
 static void send_projectile_destroy(int client_fd, uint32_t projectile_id,
                                      uint8_t reason) {
     ProjectileDestroyPacket pkt = {0};
-    pkt.header.type      = PACKET_PROJECTILE_DESTROY;
-    pkt.header.player_id = 0;
+    pkt.header.type         = PACKET_PROJECTILE_DESTROY;
+    pkt.header.player_id    = 0;
+    pkt.header.payload_size = htons(sizeof(ProjectileDestroyPacket) - sizeof(PacketHeader));
     pkt.projectile_id    = htonl(projectile_id);
     pkt.reason           = reason;
     server_send(client_fd, &pkt, sizeof(pkt));
@@ -153,6 +155,7 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     AbilityEffectPacket pkt = {0};
     pkt.header.type         = PACKET_ABILITY_EFFECT;
     pkt.header.player_id    = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(AbilityEffectPacket) - sizeof(PacketHeader));
     pkt.caster_id           = htonl(caster_id);
     pkt.target_id           = htonl(target_id);
     pkt.ability_id          = htons(ability_id);

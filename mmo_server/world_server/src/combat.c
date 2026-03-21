@@ -603,10 +603,11 @@ void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
 
         CastCancelPacket cancel;
         memset(&cancel, 0, sizeof(cancel));
-        cancel.header.type      = PACKET_CAST_CANCEL;
-        cancel.header.player_id = htonl(attacker_id);
-        cancel.caster_id        = htonl(attacker_id);
-        cancel.reason           = 0;
+        cancel.header.type         = PACKET_CAST_CANCEL;
+        cancel.header.player_id    = htonl(attacker_id);
+        cancel.header.payload_size = htons(sizeof(CastCancelPacket) - sizeof(PacketHeader));
+        cancel.caster_id           = htonl(attacker_id);
+        cancel.reason              = 0;
 
         server_send(client_fd, &cancel, sizeof(cancel));
         printf("[COMBAT] Player %u cancelled cast\n", attacker_id);
@@ -1029,8 +1030,9 @@ void combat_tick(NPCWorld* world) {
         // Send death packets outside lock
         for (int d = 0; d < death_count; d++) {
             PlayerDeathPacket pkt = {0};
-            pkt.header.type = PACKET_PLAYER_DEATH;
-            pkt.header.player_id = htonl(deaths[d].player_id);
+            pkt.header.type         = PACKET_PLAYER_DEATH;
+            pkt.header.player_id    = htonl(deaths[d].player_id);
+            pkt.header.payload_size = htons(sizeof(PlayerDeathPacket) - sizeof(PacketHeader));
             pkt.dead_player_id = htonl(deaths[d].player_id);
             pkt.killer_id = 0;
             pkt.killer_type = 0;
@@ -1094,8 +1096,9 @@ void combat_tick(NPCWorld* world) {
 
         for (int r = 0; r < respawn_count; r++) {
             PlayerRespawnPacket pkt = {0};
-            pkt.header.type = PACKET_PLAYER_RESPAWN;
-            pkt.header.player_id = htonl(respawns[r].player_id);
+            pkt.header.type         = PACKET_PLAYER_RESPAWN;
+            pkt.header.player_id    = htonl(respawns[r].player_id);
+            pkt.header.payload_size = htons(sizeof(PlayerRespawnPacket) - sizeof(PacketHeader));
             pkt.player_id = htonl(respawns[r].player_id);
             pkt.pos_x = RESPAWN_X;
             pkt.pos_y = RESPAWN_Y;

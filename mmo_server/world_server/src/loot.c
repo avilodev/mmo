@@ -353,8 +353,9 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
 
         for (int p = 0; p < pending_count; p++) {
             LootDropPacket pkt = {0};
-            pkt.header.type = PACKET_LOOT_DROP;
-            pkt.header.player_id = 0;
+            pkt.header.type         = PACKET_LOOT_DROP;
+            pkt.header.player_id    = 0;
+            pkt.header.payload_size = htons(sizeof(LootDropPacket) - sizeof(PacketHeader));
             pkt.ground_item_id = htonl(pending[p].ground_id);
             pkt.item_id = htonl(pending[p].item_id);
             pkt.quantity = pending[p].quantity;
@@ -407,7 +408,8 @@ uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, ui
 
     // Broadcast LOOT_DROP to nearby players
     LootDropPacket pkt = {0};
-    pkt.header.type = PACKET_LOOT_DROP;
+    pkt.header.type         = PACKET_LOOT_DROP;
+    pkt.header.payload_size = htons(sizeof(LootDropPacket) - sizeof(PacketHeader));
     pkt.ground_item_id = htonl(ground_id);
     pkt.item_id = htonl(item_id);
     pkt.quantity = quantity;
@@ -466,8 +468,9 @@ int loot_try_pickup(uint32_t ground_item_id, uint32_t player_id,
     // If picked up, broadcast despawn to nearby players
     if (success) {
         LootDespawnPacket pkt = {0};
-        pkt.header.type = PACKET_LOOT_DESPAWN;
-        pkt.header.player_id = 0;
+        pkt.header.type         = PACKET_LOOT_DESPAWN;
+        pkt.header.player_id    = 0;
+        pkt.header.payload_size = htons(sizeof(LootDespawnPacket) - sizeof(PacketHeader));
         pkt.ground_item_id = htonl(ground_item_id);
 
         pthread_mutex_lock(&active_players_lock);
@@ -509,8 +512,9 @@ void loot_tick(void) {
         pthread_mutex_lock(&active_players_lock);
         for (int d = 0; d < despawn_count; d++) {
             LootDespawnPacket pkt = {0};
-            pkt.header.type = PACKET_LOOT_DESPAWN;
-            pkt.header.player_id = 0;
+            pkt.header.type         = PACKET_LOOT_DESPAWN;
+            pkt.header.player_id    = 0;
+            pkt.header.payload_size = htons(sizeof(LootDespawnPacket) - sizeof(PacketHeader));
             pkt.ground_item_id = htonl(despawned[d]);
 
             for (int i = 0; i < MAX_PLAYERS; i++) {

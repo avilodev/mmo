@@ -474,8 +474,9 @@ static void dq_flush(DeferredQueue* q) {
             case DSEND_TELEGRAPH_START: {
                 // Build packet
                 NPCTelegraphStartPacket pkt = {0};
-                pkt.header.type = PACKET_NPC_TELEGRAPH_START;
-                pkt.header.player_id = 0;
+                pkt.header.type         = PACKET_NPC_TELEGRAPH_START;
+                pkt.header.player_id    = 0;
+                pkt.header.payload_size = htons(sizeof(NPCTelegraphStartPacket) - sizeof(PacketHeader));
                 pkt.npc_id     = htonl(d->tstart.npc_id);
                 pkt.ability_id = htons(d->tstart.ability_id);
                 pkt.shape      = d->tstart.shape;
@@ -506,8 +507,9 @@ static void dq_flush(DeferredQueue* q) {
             case DSEND_TELEGRAPH_RESOLVE: {
                 // Send resolve packet to nearby players
                 NPCTelegraphResolvePacket rpkt = {0};
-                rpkt.header.type = PACKET_NPC_TELEGRAPH_RESOLVE;
-                rpkt.header.player_id = 0;
+                rpkt.header.type         = PACKET_NPC_TELEGRAPH_RESOLVE;
+                rpkt.header.player_id    = 0;
+                rpkt.header.payload_size = htons(sizeof(NPCTelegraphResolvePacket) - sizeof(PacketHeader));
                 rpkt.npc_id     = htonl(d->tresolve.npc_id);
                 rpkt.ability_id = htons(d->tresolve.ability_id);
 
@@ -558,7 +560,8 @@ static void dq_flush(DeferredQueue* q) {
 
                     // Send damage via AbilityEffectPacket
                     AbilityEffectPacket epkt = {0};
-                    epkt.header.type       = PACKET_ABILITY_EFFECT;
+                    epkt.header.type         = PACKET_ABILITY_EFFECT;
+                    epkt.header.payload_size = htons(sizeof(AbilityEffectPacket) - sizeof(PacketHeader));
                     epkt.header.player_id  = htonl(d->tresolve.npc_id);
                     epkt.caster_id         = htonl(d->tresolve.npc_id);
                     epkt.target_id         = htonl(char_id);
