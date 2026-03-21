@@ -2146,18 +2146,20 @@ int network_get_server_correction(float* out_x, float* out_y) {
 void network_send_ping(void) {
     if (!g_connected) return;
 
-    // Pack header + uint16_t ping_ms payload so the server can store our RTT
-    struct {
-        PacketHeader header;
-        uint16_t     ping_ms;
-    } pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.header.type         = PACKET_PING;
-    pkt.header.player_id    = htonl(g_account_id);
-    pkt.header.payload_size = htons(sizeof(uint16_t));
-    pkt.ping_ms             = htons((uint16_t)g_ping_ms);
+    // Serialize into a flat byte array to avoid struct padding between
+    // PacketHeader (7 bytes, packed) and uint16_t — the anonymous struct
+    // would be padded to 10 bytes, sending a rogue zero byte that desynchronizes
+    // the server's TCP reassembly pointer.
+    uint8_t buf[9]; // sizeof(PacketHeader)=7 + sizeof(uint16_t)=2, no padding
+    PacketHeader* hdr = (PacketHeader*)buf;
+    memset(buf, 0, sizeof(buf));
+    hdr->type         = PACKET_PING;
+    hdr->player_id    = htonl(g_account_id);
+    hdr->payload_size = htons(sizeof(uint16_t));
+    uint16_t pm_net   = htons((uint16_t)g_ping_ms);
+    memcpy(buf + sizeof(PacketHeader), &pm_net, sizeof(uint16_t));
 
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
+    if (send(g_socket, (char*)buf, sizeof(buf), 0) == (int)sizeof(buf)) {
         g_pending_pings++;
         g_ping_send_time = get_time();
     }
