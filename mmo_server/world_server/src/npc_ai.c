@@ -658,6 +658,22 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
         const NPCAIProfile* prof = npc_ai_get_profile(npc->npc_type_id);
         if (!prof || prof->ability_count == 0) continue;
 
+        // Seed per-enemy cooldown phases once — each NPC instance gets a unique
+        // random offset within its full cooldown window so enemies of the same
+        // type never fire in sync with each other.
+        if (!npc->ai_cd_seeded) {
+            for (int a = 0; a < prof->ability_count && a < MAX_NPC_ABILITIES_RT; a++) {
+                double cd = prof->abilities[a].cooldown;
+                if (cd > 0.0) {
+                    // Place this ability at a random point in [0, cd] of its cycle.
+                    // Storing (now - random_elapsed) means next fire in (cd - random_elapsed).
+                    double elapsed = cd * ((double)(rand() % 1000) / 1000.0);
+                    npc->ai_ability_cooldowns[a] = now - elapsed;
+                }
+            }
+            npc->ai_cd_seeded = 1;
+        }
+
         float spawn_dist = dist2d(npc->pos_x, npc->pos_y, npc->spawn_x, npc->spawn_y);
 
         // =============================================================
@@ -678,7 +694,8 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
             if (elapsed >= ab->cast_time) {
                 // Cast complete — resolve the telegraph (deal damage)
                 npc->ai_is_casting = 0;
-                npc->ai_ability_cooldowns[abi] = now;
+                float v = (float)(rand() % 40 - 20) / 100.0f;
+                npc->ai_ability_cooldowns[abi] = now - ab->cooldown * v;
                 npc->ai_state = NPC_AI_AGGRO;
 
                 // Teleport to end of line (e.g., Kingdom Slime charge)
@@ -856,86 +873,112 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                 break;
         }
 
-        // ----- Fire abilities on cooldown -----
-        for (int a = 0; a < prof->ability_count && a < MAX_NPC_ABILITIES_RT; a++) {
-            const NPCAbilityDef* ab = &prof->abilities[a];
-
+        // ----- Fire abilities: collect ready pool, pick randomly -----
+        {
             float cur_dist = dist2d(npc->pos_x, npc->pos_y, tx, ty);
-            if (cur_dist > ab->range) continue;
 
-            double time_since = now - npc->ai_ability_cooldowns[a];
-            if (time_since < ab->cooldown) continue;
+            // Build list of ability indices that are off cooldown and in range
+            int ready[MAX_NPC_ABILITIES_RT];
+            int ready_count = 0;
+            for (int a = 0; a < prof->ability_count && a < MAX_NPC_ABILITIES_RT; a++) {
+                const NPCAbilityDef* ab = &prof->abilities[a];
+                if (cur_dist > ab->range) continue;
+                if ((now - npc->ai_ability_cooldowns[a]) < ab->cooldown) continue;
+                ready[ready_count++] = a;
+            }
 
-            // Direction from NPC to target
-            float dx = tx - npc->pos_x;
-            float dy = ty - npc->pos_y;
-            float len = sqrtf(dx * dx + dy * dy);
-            float dir_x = (len > 0.001f) ? dx / len : 1.0f;
-            float dir_y = (len > 0.001f) ? dy / len : 0.0f;
+            if (ready_count > 0) {
+                // Pick a random ability from the ready pool so firing order
+                // is never fixed — abilities feel unpredictable but each one
+                // is still clearly telegraphed when it fires.
+                int a = ready[rand() % ready_count];
+                const NPCAbilityDef* ab = &prof->abilities[a];
 
-            if (ab->delivery == NPC_DELIVERY_TELEGRAPH) {
-                // ----- Start telegraph cast -----
-                // Determine telegraph center position
-                float tele_x, tele_y;
-                if (ab->telegraph_at_target) {
-                    tele_x = tx;
-                    tele_y = ty;
-                } else {
-                    tele_x = npc->pos_x;
-                    tele_y = npc->pos_y;
+                // Direction from NPC to target
+                float dx = tx - npc->pos_x;
+                float dy = ty - npc->pos_y;
+                float len = sqrtf(dx * dx + dy * dy);
+                float dir_x = (len > 0.001f) ? dx / len : 1.0f;
+                float dir_y = (len > 0.001f) ? dy / len : 0.0f;
+
+                // Aim jitter: rotate direction by a small random angle (±8°).
+                // The telegraph still points roughly at the player, but not
+                // with pixel-perfect precision — standing still is punished,
+                // small sidesteps can dodge.
+                float jitter = ((float)(rand() % 17) - 8.0f) * (3.14159f / 180.0f);
+                float cj = cosf(jitter), sj = sinf(jitter);
+                float jdir_x = dir_x * cj - dir_y * sj;
+                float jdir_y = dir_x * sj + dir_y * cj;
+                dir_x = jdir_x;
+                dir_y = jdir_y;
+
+                if (ab->delivery == NPC_DELIVERY_TELEGRAPH) {
+                    // ----- Start telegraph cast -----
+                    float tele_x, tele_y;
+                    if (ab->telegraph_at_target) {
+                        tele_x = tx;
+                        tele_y = ty;
+                    } else {
+                        tele_x = npc->pos_x;
+                        tele_y = npc->pos_y;
+                    }
+
+                    // Lock NPC into casting state
+                    npc->ai_state = NPC_AI_CASTING;
+                    npc->ai_is_casting = 1;
+                    npc->ai_cast_ability_idx = a;
+                    npc->ai_cast_start = now;
+                    npc->ai_cast_pos_x = tele_x;
+                    npc->ai_cast_pos_y = tele_y;
+                    npc->ai_cast_dir_x = dir_x;
+                    npc->ai_cast_dir_y = dir_y;
+
+                    // Cooldown variance ±20%: next use of this ability won't
+                    // land on an exact fixed cadence.
+                    float v = (float)(rand() % 40 - 20) / 100.0f; // [-0.2, +0.2)
+                    npc->ai_ability_cooldowns[a] = now - ab->cooldown * v;
+
+                    // Queue telegraph start broadcast
+                    DeferredAction da = {0};
+                    da.type = DSEND_TELEGRAPH_START;
+                    da.tstart.npc_id     = npc->id;
+                    da.tstart.ability_id = ab->ability_id;
+                    da.tstart.shape      = ab->telegraph_shape;
+                    da.tstart.pos_x      = tele_x;
+                    da.tstart.pos_y      = tele_y;
+                    da.tstart.dir_x      = dir_x;
+                    da.tstart.dir_y      = dir_y;
+                    da.tstart.radius     = ab->telegraph_radius;
+                    da.tstart.angle      = ab->telegraph_angle;
+                    da.tstart.width      = ab->telegraph_width;
+                    da.tstart.length     = ab->telegraph_length;
+                    da.tstart.cast_time  = ab->cast_time;
+                    da.tstart.npc_x      = npc->pos_x;
+                    da.tstart.npc_y      = npc->pos_y;
+                    dq_push(&q, &da);
+
+                    printf("[NPC_AI] NPC %u (%s) started telegraph — ability %u, shape=%d, cast=%.1fs\n",
+                           npc->id, npc->name, ab->ability_id, ab->telegraph_shape, ab->cast_time);
+
+                } else if (ab->delivery == NPC_DELIVERY_PROJECTILE && ab->projectile_speed > 0.0f) {
+                    // ----- Fire projectile -----
+                    float v = (float)(rand() % 40 - 20) / 100.0f;
+                    npc->ai_ability_cooldowns[a] = now - ab->cooldown * v;
+
+                    DeferredAction da = {0};
+                    da.type = DSEND_PROJECTILE_SHOT;
+                    da.proj.npc_id     = npc->id;
+                    da.proj.ability_id = ab->ability_id;
+                    da.proj.origin_x   = npc->pos_x;
+                    da.proj.origin_y   = npc->pos_y;
+                    da.proj.target_x   = tx;
+                    da.proj.target_y   = ty;
+                    da.proj.damage     = ab->damage;
+                    da.proj.speed      = ab->projectile_speed;
+                    da.proj.width      = ab->projectile_width;
+                    da.proj.range      = ab->range;
+                    dq_push(&q, &da);
                 }
-
-                // Lock NPC into casting state
-                npc->ai_state = NPC_AI_CASTING;
-                npc->ai_is_casting = 1;
-                npc->ai_cast_ability_idx = a;
-                npc->ai_cast_start = now;
-                npc->ai_cast_pos_x = tele_x;
-                npc->ai_cast_pos_y = tele_y;
-                npc->ai_cast_dir_x = dir_x;
-                npc->ai_cast_dir_y = dir_y;
-
-                // Queue telegraph start broadcast
-                DeferredAction da = {0};
-                da.type = DSEND_TELEGRAPH_START;
-                da.tstart.npc_id     = npc->id;
-                da.tstart.ability_id = ab->ability_id;
-                da.tstart.shape      = ab->telegraph_shape;
-                da.tstart.pos_x      = tele_x;
-                da.tstart.pos_y      = tele_y;
-                da.tstart.dir_x      = dir_x;
-                da.tstart.dir_y      = dir_y;
-                da.tstart.radius     = ab->telegraph_radius;
-                da.tstart.angle      = ab->telegraph_angle;
-                da.tstart.width      = ab->telegraph_width;
-                da.tstart.length     = ab->telegraph_length;
-                da.tstart.cast_time  = ab->cast_time;
-                da.tstart.npc_x      = npc->pos_x;
-                da.tstart.npc_y      = npc->pos_y;
-                dq_push(&q, &da);
-
-                printf("[NPC_AI] NPC %u (%s) started telegraph — ability %u, shape=%d, cast=%.1fs\n",
-                       npc->id, npc->name, ab->ability_id, ab->telegraph_shape, ab->cast_time);
-
-                break; // Only one ability per tick when starting a cast
-
-            } else if (ab->delivery == NPC_DELIVERY_PROJECTILE && ab->projectile_speed > 0.0f) {
-                // ----- Fire projectile -----
-                npc->ai_ability_cooldowns[a] = now;
-
-                DeferredAction da = {0};
-                da.type = DSEND_PROJECTILE_SHOT;
-                da.proj.npc_id    = npc->id;
-                da.proj.ability_id = ab->ability_id;
-                da.proj.origin_x  = npc->pos_x;
-                da.proj.origin_y  = npc->pos_y;
-                da.proj.target_x  = tx;
-                da.proj.target_y  = ty;
-                da.proj.damage    = ab->damage;
-                da.proj.speed     = ab->projectile_speed;
-                da.proj.width     = ab->projectile_width;
-                da.proj.range     = ab->range;
-                dq_push(&q, &da);
             }
         }
     }

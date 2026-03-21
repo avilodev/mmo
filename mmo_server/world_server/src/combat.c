@@ -1136,6 +1136,7 @@ void combat_tick(NPCWorld* world) {
             for (int c = 0; c < MAX_NPC_ABILITIES_RT; c++) {
                 npc->ai_ability_cooldowns[c] = 0.0;
             }
+            npc->ai_cd_seeded = 0; // Re-seed phases on next npc_ai_tick entry
 
             printf("[COMBAT] NPC '%s' (id=%u) respawned at (%.1f, %.1f)\n",
                    npc->name, npc->id, npc->spawn_x, npc->spawn_y);

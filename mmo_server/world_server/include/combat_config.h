@@ -95,6 +95,7 @@ typedef struct {
     uint8_t     ai_state;          // NPCAIState: 0=idle, 1=aggro, 2=returning, 3=casting
     uint32_t    ai_target_id;      // Current target character_id (0 = no target)
     double      ai_ability_cooldowns[MAX_NPC_ABILITIES_RT]; // Last use time per ability slot
+    uint8_t     ai_cd_seeded;      // 1 once per-enemy cooldown phases have been randomized
 
     // Telegraph cast state (active when ai_state == NPC_AI_CASTING)
     uint8_t     ai_is_casting;     // 1 = currently casting a telegraph
