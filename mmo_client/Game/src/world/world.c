@@ -46,8 +46,10 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
 }
 
 void world_update_chunks(WorldState* world, float player_x, float player_y) {
+    if (!world->world_file || world->tile_size == 0) return;
+
     world->current_frame++;
-    
+
     // Calculate which chunk player is in
     int player_chunk_x = (int)(player_x / world->tile_size) / CHUNK_SIZE;
     int player_chunk_y = (int)(player_y / world->tile_size) / CHUNK_SIZE;
@@ -115,8 +117,10 @@ Chunk* world_get_chunk(WorldState* world, int chunk_x, int chunk_y) {
 }
 
 Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
+    if (!world->world_file) return NULL;
+
     Chunk* target = NULL;
-    
+
     if (world->loaded_chunk_count < MAX_LOADED_CHUNKS) {
         // Use next empty slot
         for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {

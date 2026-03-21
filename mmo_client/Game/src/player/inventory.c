@@ -170,6 +170,10 @@ static int parse_items_json(const char* json_content) {
         
         size_t obj_len = obj_end - obj_start + 1;
         char* obj_json = (char*)malloc(obj_len + 1);
+        if (!obj_json) {
+            fprintf(stderr, "[ITEM_DB] Out of memory parsing items\n");
+            break;
+        }
         memcpy(obj_json, obj_start, obj_len);
         obj_json[obj_len] = '\0';
         

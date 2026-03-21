@@ -1299,35 +1299,47 @@ static void process_packet(const char* data, int length) {
         // SESSION LIST (O menu)
         // ----------------------------------------------------------------
 
-        case PACKET_SESSION_LIST_RESPONSE:
-            if (length >= (int)(sizeof(PacketHeader) + 12) && g_current_game) {
-                SessionListResponsePacket* pkt = (SessionListResponsePacket*)data;
-                uint8_t count = pkt->count;
-                if (count > SESSION_LIST_PAGE_SIZE) count = SESSION_LIST_PAGE_SIZE;
+        case PACKET_SESSION_LIST_RESPONSE: {
+            // Server sends a variable-length packet: fixed header + count entries.
+            // Minimum needed: up to (but not including) the entries array.
+            int sl_base = (int)offsetof(SessionListResponsePacket, entries);
+            if (length < sl_base || !g_current_game) break;
 
-                g_current_game->session_total_players = ntohl(pkt->total_players);
-                g_current_game->session_total_pages   = ntohs(pkt->total_pages);
-                g_current_game->session_current_page  = ntohs(pkt->current_page);
-                g_current_game->session_list_count    = (int)count;
+            SessionListResponsePacket* pkt = (SessionListResponsePacket*)data;
+            uint8_t count = pkt->count;
+            if (count > SESSION_LIST_PAGE_SIZE) count = SESSION_LIST_PAGE_SIZE;
 
-                for (int i = 0; i < (int)count; i++) {
-                    SessionPlayerEntry* src = &pkt->entries[i];
-                    SessionPlayer*      dst = &g_current_game->session_list[i];
-                    dst->player_id    = ntohl(src->player_id);
-                    src->name[31]     = '\0';
-                    memcpy(dst->name, src->name, 32);
-                    dst->level        = src->level;
-                    dst->player_class = src->player_class;
-                    dst->player_race  = src->player_race;
-                    dst->ping_ms      = ntohs(src->ping_ms);
-                }
-                printf("[NET] Session list: page %u/%u, %u total players, %d on page\n",
-                       g_current_game->session_current_page + 1,
-                       g_current_game->session_total_pages,
-                       g_current_game->session_total_players,
-                       (int)count);
+            // Validate the packet actually contains all claimed entries
+            int sl_needed = sl_base + (int)count * (int)sizeof(SessionPlayerEntry);
+            if (length < sl_needed) {
+                printf("[NET] SESSION_LIST incomplete: have %d bytes, need %d for %d entries\n",
+                       length, sl_needed, count);
+                break;
             }
+
+            g_current_game->session_total_players = ntohl(pkt->total_players);
+            g_current_game->session_total_pages   = ntohs(pkt->total_pages);
+            g_current_game->session_current_page  = ntohs(pkt->current_page);
+            g_current_game->session_list_count    = (int)count;
+
+            for (int i = 0; i < (int)count; i++) {
+                SessionPlayerEntry* src = &pkt->entries[i];
+                SessionPlayer*      dst = &g_current_game->session_list[i];
+                dst->player_id    = ntohl(src->player_id);
+                src->name[31]     = '\0';
+                memcpy(dst->name, src->name, 32);
+                dst->level        = src->level;
+                dst->player_class = src->player_class;
+                dst->player_race  = src->player_race;
+                dst->ping_ms      = ntohs(src->ping_ms);
+            }
+            printf("[NET] Session list: page %u/%u, %u total players, %d on page\n",
+                   g_current_game->session_current_page + 1,
+                   g_current_game->session_total_pages,
+                   g_current_game->session_total_players,
+                   (int)count);
             break;
+        }
 
         // ----------------------------------------------------------------
         // QUEST packets
