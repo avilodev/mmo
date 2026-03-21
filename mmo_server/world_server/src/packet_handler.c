@@ -13,9 +13,10 @@ void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id) {
             player_release(player);
         }
     }
-    // Echo back the header so the client can measure RTT
-    PacketHeader echo = *hdr;
-    server_send(client_fd, &echo, sizeof(echo));
+    // Echo the full ping packet back (header + uint16_t payload) so the client
+    // can measure RTT. Sending only the 7-byte header while declaring
+    // payload_size=2 would desynchronize the client's TCP reassembly.
+    server_send(client_fd, buffer, sizeof(PacketHeader) + sizeof(uint16_t));
 }
 
 void handle_request_player_data(int client_fd, uint32_t character_id) {
