@@ -945,11 +945,17 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
     }
     if (snap_count > 0) {
         snaps = malloc((size_t)snap_count * sizeof(Snap));
-        if (snaps) {
+        if (!snaps) {
+            // Allocation failure: treat as zero players rather than crash
+            snap_count = 0;
+        } else {
             int idx = 0;
             for (int i = 0; i < MAX_PLAYERS && idx < snap_count; i++) {
                 ActivePlayer* ap = &active_players[i];
                 if (!ap->is_loaded || !ap->is_ready) continue;
+                // Hold per-player lock while copying to avoid data races with
+                // threads that already hold ap->lock via player_acquire.
+                pthread_mutex_lock(&ap->lock);
                 snaps[idx].character_id = ap->character_id;
                 strncpy(snaps[idx].name, ap->username, 31);
                 snaps[idx].name[31]     = '\0';
@@ -957,6 +963,7 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
                 snaps[idx].player_class = (uint8_t)ap->player_class;
                 snaps[idx].player_race  = (uint8_t)ap->player_race;
                 snaps[idx].ping_ms      = ap->ping_ms;
+                pthread_mutex_unlock(&ap->lock);
                 idx++;
             }
             snap_count = idx;
