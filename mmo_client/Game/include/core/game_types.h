@@ -594,6 +594,10 @@ struct GameState {
     // --- Quest Log ---
     QuestLogState quest_log;
 
+    // --- Full Map ---
+    int   show_map;
+    float map_zoom;   // 1.0 = default; higher = zoomed in, lower = zoomed out
+
     // --- Session Panel ---
     int show_session_panel;
     SessionPlayer session_list[SESSION_LIST_PAGE_SIZE]; // Current page of online players

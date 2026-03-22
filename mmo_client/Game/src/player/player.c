@@ -96,7 +96,7 @@ void player_load_info(PlayerState* player, const CharacterInfo* info) {
 
 void player_render(const PlayerState* player, unsigned int texture, int tile_size) {
     int size = tile_size * 2;
-    
+
     if (texture != 0) {
         renderer_draw_sprite(
             player->x - size / 2,
@@ -112,6 +112,17 @@ void player_render(const PlayerState* player, unsigned int texture, int tile_siz
             size, size,
             0.2f, 0.6f, 1.0f, 1.0f
         );
+    }
+
+    // Name + level label above the sprite
+    if (player->info_loaded && player->info.name[0] != '\0') {
+        char label[48];
+        snprintf(label, sizeof(label), "%u - %s",
+                 (unsigned)player->info.level, player->info.name);
+        float label_w = 120.0f;
+        float label_x = player->x - label_w / 2.0f;
+        float label_y = player->y - size / 2.0f - 20.0f;
+        renderer_draw_text_centered(label_x, label_y, label_w, 0.0f, label);
     }
 }
 

@@ -51,6 +51,8 @@ static int s_move_state_init = 0;
 static void playing_enter(GameState* game) {
     printf("[STATE] Entering gameplay\n");
     s_move_state_init = 0;
+    game->show_map  = 0;
+    game->map_zoom  = 1.0f;
     combat_init(&game->combat);
 
     // Load gameplay-only textures
@@ -368,6 +370,15 @@ static void render_nearby_players(GameState* game) {
         if (p->max_health > 0) {
             float pct = (float)p->health / (float)p->max_health;
             renderer_draw_rect(bar_x, bar_y, bar_w * pct, bar_h, 0.2f, 0.8f, 0.2f, 1.0f);
+        }
+
+        // Name + level label above the health bar
+        if (p->name[0] != '\0') {
+            char label[48];
+            snprintf(label, sizeof(label), "%u - %s", (unsigned)p->level, p->name);
+            float label_w = 120.0f;
+            renderer_draw_text_centered(p->pos_x - label_w / 2.0f,
+                                        bar_y - 18.0f, label_w, 0.0f, label);
         }
     }
 }
@@ -823,6 +834,108 @@ static void render_settings_overlay(GameState* game) {
     glPopMatrix();
 }
 
+static void render_big_map(GameState* game) {
+    if (!game->show_map) return;
+
+    float vw = (float)game->camera.viewport_width;
+    float vh = (float)game->camera.viewport_height;
+
+    // Dim world behind the map
+    renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.65f);
+
+    // Panel
+    float pw = 620.0f, ph = 640.0f;
+    float px = floorf((vw - pw) * 0.5f);
+    float py = floorf((vh - ph) * 0.5f);
+
+    renderer_draw_rect(px, py, pw, ph, 0.07f, 0.07f, 0.11f, 0.97f);
+
+    // Border
+    renderer_draw_rect(px,        py,        pw,   2.0f, 0.40f, 0.50f, 0.65f, 1.0f);
+    renderer_draw_rect(px,        py+ph-2,   pw,   2.0f, 0.40f, 0.50f, 0.65f, 1.0f);
+    renderer_draw_rect(px,        py,        2.0f, ph,   0.40f, 0.50f, 0.65f, 1.0f);
+    renderer_draw_rect(px+pw-2,   py,        2.0f, ph,   0.40f, 0.50f, 0.65f, 1.0f);
+
+    // Title bar
+    renderer_draw_rect(px, py, pw, 32.0f, 0.10f, 0.12f, 0.18f, 1.0f);
+    renderer_draw_text(px + 12.0f, py + 22.0f, "Map");
+    renderer_draw_text(px + pw - 130.0f, py + 22.0f, "M / ESC to close");
+
+    // Map drawing area (inset from the panel)
+    float mx = px + 10.0f;
+    float my = py + 38.0f;
+    float mw = pw - 20.0f;
+    float mh = ph - 60.0f;
+    float mcx = mx + mw * 0.5f;
+    float mcy = my + mh * 0.5f;
+
+    // Clip: dark map background
+    renderer_draw_rect(mx, my, mw, mh, 0.04f, 0.05f, 0.07f, 1.0f);
+
+    float player_wx = game->player.x;
+    float player_wy = game->player.y;
+
+    // view_radius in world units visible to the map edge
+    float base_radius = 1050.0f;
+    float view_radius = base_radius / game->map_zoom;
+    float scale = (mw * 0.5f) / view_radius;
+
+    // Grid lines every 200 world units
+    float grid_spacing = 200.0f;
+    float grid_start_x = player_wx - view_radius;
+    float grid_start_y = player_wy - view_radius;
+    // Snap to grid
+    grid_start_x = floorf(grid_start_x / grid_spacing) * grid_spacing;
+    grid_start_y = floorf(grid_start_y / grid_spacing) * grid_spacing;
+
+    for (float wx = grid_start_x; wx < player_wx + view_radius; wx += grid_spacing) {
+        float sx = mcx + (wx - player_wx) * scale;
+        if (sx < mx || sx > mx + mw) continue;
+        renderer_draw_rect(sx, my, 1.0f, mh, 0.15f, 0.15f, 0.22f, 1.0f);
+    }
+    for (float wy = grid_start_y; wy < player_wy + view_radius; wy += grid_spacing) {
+        float sy = mcy + (wy - player_wy) * scale;
+        if (sy < my || sy > my + mh) continue;
+        renderer_draw_rect(mx, sy, mw, 1.0f, 0.15f, 0.15f, 0.22f, 1.0f);
+    }
+
+    // NPC dots
+    for (int i = 0; i < game->visible_npc_count; i++) {
+        const VisibleNPC* npc = &game->visible_npcs[i];
+        if (!npc->is_alive) continue;
+        float sx = mcx + (npc->pos_x - player_wx) * scale;
+        float sy = mcy + (npc->pos_y - player_wy) * scale;
+        if (sx < mx || sx > mx+mw-7 || sy < my || sy > my+mh-7) continue;
+        float dr, dg, db;
+        switch (npc->category) {
+            case 1:  dr=0.90f; dg=0.22f; db=0.22f; break; // hostile - red
+            case 2:  dr=0.90f; dg=0.78f; db=0.10f; break; // quest   - gold
+            default: dr=0.20f; dg=0.55f; db=0.90f; break; // passive - blue
+        }
+        renderer_draw_rect(sx - 3.5f, sy - 3.5f, 7.0f, 7.0f, dr, dg, db, 0.95f);
+    }
+
+    // Nearby player dots
+    for (int i = 0; i < game->nearby_player_count; i++) {
+        const NearbyPlayer* p = &game->nearby_players[i];
+        if (p->is_dead) continue;
+        float sx = mcx + (p->pos_x - player_wx) * scale;
+        float sy = mcy + (p->pos_y - player_wy) * scale;
+        if (sx < mx || sx > mx+mw-7 || sy < my || sy > my+mh-7) continue;
+        renderer_draw_rect(sx - 3.5f, sy - 3.5f, 7.0f, 7.0f, 0.25f, 0.90f, 0.45f, 1.0f);
+    }
+
+    // Own player dot — always at center
+    renderer_draw_rect(mcx - 6.0f, mcy - 6.0f, 12.0f, 12.0f, 1.0f, 1.0f, 0.25f, 1.0f);
+
+    // Bottom bar: coords + zoom
+    float bar_y = py + ph - 22.0f;
+    char info[64];
+    snprintf(info, sizeof(info), "X: %.0f  Y: %.0f    Zoom: %.1fx",
+             player_wx, player_wy, game->map_zoom);
+    renderer_draw_text(px + 10.0f, bar_y + 14.0f, info);
+}
+
 static void render_pause_overlay(GameState* game) {
     if (!game->is_paused) return;
 
@@ -893,6 +1006,9 @@ static void playing_render(GameState* game) {
     player_render(&game->player, game->textures.player, game->world.tile_size);
 
     renderer_end_2d();
+
+    // Full map overlay (before HUD so it sits on top of world but under chat/panels)
+    render_big_map(game);
 
     // Screen-space UI
     hud_render(&game->hud, game);
@@ -1341,6 +1457,9 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
     }
 
+    // While map is open, eat all gameplay input except M and ESC
+    if (game->show_map) goto map_input_only;
+
     // Party frame click = target that member
     if (game->input.mouse_left_clicked && game->party.has_party) {
         const float FRAME_W  = 180.0f;
@@ -1425,9 +1544,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         network_send_party_leave();
     }
 
-    // Player movement (always allowed)
     player_update_movement(&game->player, &game->input, &game->world, delta_time);
-    
+
     // Ability input (keys 1-5)
     uint16_t ability_to_cast = ability_bar_update(&game->ability_bar, delta_time, 
                                            game->input.keys_just_pressed, 
@@ -1466,9 +1584,19 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         ability_bar_on_cast_cancel(&game->ability_bar, game->ability_bar.casting_ability_id);
     }
     
-    // ESC — close open windows, clear target, or open pause menu
+    map_input_only:;
+    // M — toggle full map
+    if (input_key_just_pressed(&game->input, GLFW_KEY_M)) {
+        game->show_map = !game->show_map;
+        if (game->show_map && game->map_zoom == 0.0f)
+            game->map_zoom = 1.0f;
+    }
+
+    // ESC — close map first, then other windows, then pause
     if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
-        if (dialogue_is_active()) {
+        if (game->show_map) {
+            game->show_map = 0;
+        } else if (dialogue_is_active()) {
             dialogue_close();
         } else if (game->character_screen && game->character_screen->is_open) {
             character_screen_toggle(game->character_screen);

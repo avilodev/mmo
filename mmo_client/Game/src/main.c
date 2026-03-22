@@ -31,11 +31,16 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
     (void)xoffset;
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
 
-    game->camera.zoom *= (1.0f + (float)yoffset * 0.1f);
-
-    // Clamp zoom between min and max (don't wrap around)
-    if (game->camera.zoom < 1.0f) game->camera.zoom = 1.0f;
-    if (game->camera.zoom > 2.0f) game->camera.zoom = 2.0f;
+    if (game->show_map) {
+        // Scroll zooms the full map (faster rate than camera)
+        game->map_zoom *= (1.0f + (float)yoffset * 0.15f);
+        if (game->map_zoom < 0.25f) game->map_zoom = 0.25f;
+        if (game->map_zoom > 4.0f)  game->map_zoom = 4.0f;
+    } else {
+        game->camera.zoom *= (1.0f + (float)yoffset * 0.1f);
+        if (game->camera.zoom < 1.0f) game->camera.zoom = 1.0f;
+        if (game->camera.zoom > 2.0f) game->camera.zoom = 2.0f;
+    }
 }
 
 static void char_callback(GLFWwindow* window, unsigned int codepoint) {

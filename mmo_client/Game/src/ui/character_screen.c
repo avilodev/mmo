@@ -27,7 +27,7 @@ void character_screen_init(CharacterScreenState* char_screen, float screen_width
     float char_display_width = 150.0f;
     
     char_screen->window_width = weapons_width + char_display_width + armor_width + char_screen->slot_padding * 4;
-    char_screen->window_height = 550.0f;  // Increased for blessing slot
+    char_screen->window_height = 590.0f;
     
     // Center window on screen
     char_screen->window_x = (screen_width - char_screen->window_width) / 2.0f;
@@ -390,6 +390,188 @@ static void render_tooltip(const CharacterScreenState* char_screen, const GameSt
     }
 }
 
+// ============================================================================
+// Character doll + stats helpers
+// ============================================================================
+
+static void doll_rarity_color(uint32_t item_id, float* r, float* g, float* b) {
+    const ItemTemplate* item = item_db_get(item_id);
+    if (!item || item_id == 0) { *r=0.28f; *g=0.28f; *b=0.32f; return; }
+    switch (item->rarity) {
+        case ITEM_RARITY_COMMON:    *r=0.50f; *g=0.50f; *b=0.52f; break;
+        case ITEM_RARITY_UNCOMMON:  *r=0.15f; *g=0.65f; *b=0.20f; break;
+        case ITEM_RARITY_RARE:      *r=0.20f; *g=0.40f; *b=0.80f; break;
+        case ITEM_RARITY_EPIC:      *r=0.55f; *g=0.15f; *b=0.80f; break;
+        case ITEM_RARITY_LEGENDARY: *r=0.80f; *g=0.45f; *b=0.00f; break;
+        default:                    *r=0.28f; *g=0.28f; *b=0.32f; break;
+    }
+}
+
+static void class_base_color(Class player_class, float* r, float* g, float* b) {
+    switch (player_class) {
+        case GLADIATOR:   *r=0.70f; *g=0.18f; *b=0.18f; break;
+        case NINJA:       *r=0.38f; *g=0.12f; *b=0.58f; break;
+        case LANDWEAVER:  *r=0.42f; *g=0.28f; *b=0.12f; break;
+        case SPIRIT:      *r=0.15f; *g=0.55f; *b=0.72f; break;
+        default:          *r=0.28f; *g=0.28f; *b=0.32f; break;
+    }
+}
+
+// Draw a region rect with a 1px dark outline
+static void doll_rect(float x, float y, float w, float h, float r, float g, float b) {
+    renderer_draw_rect(x - 1, y - 1, w + 2, h + 2, 0.05f, 0.04f, 0.07f, 1.0f);
+    renderer_draw_rect(x, y, w, h, r, g, b, 1.0f);
+}
+
+static void render_character_doll(const CharacterScreenState* cs, const GameState* game) {
+    float dx = cs->char_display_x;
+    float dy = cs->char_display_y;
+    float dw = cs->char_display_width;
+    float dh = cs->char_display_height;
+    float cx = dx + dw * 0.5f;
+
+    // Panel background
+    renderer_draw_rect(dx, dy, dw, dh, 0.10f, 0.08f, 0.13f, 1.0f);
+
+    if (!game->player.info_loaded) {
+        renderer_draw_text_centered(dx, dy + dh * 0.5f, dw, 0.0f, "Loading...");
+        return;
+    }
+
+    // Name + level
+    char name_label[48];
+    snprintf(name_label, sizeof(name_label), "%u - %s",
+             (unsigned)game->player.info.level, game->player.info.name);
+    renderer_draw_text_centered(dx, dy + 14.0f, dw, 0.0f, name_label);
+
+    // Class name (dimmed)
+    static const char* class_names[] = { "", "Gladiator", "Ninja", "Landweaver", "Spirit" };
+    int ci = (int)game->player.info.player_class;
+    if (ci >= 1 && ci <= 4)
+        renderer_draw_text_primitive(cx - 28.0f, dy + 28.0f, class_names[ci], 0.55f, 0.55f, 0.65f);
+
+    float r, g, b;
+    float fy = dy + 42.0f; // figure top
+
+    // HEAD (22×22) — helmet color
+    float head_w = 22.0f, head_h = 22.0f;
+    float head_x = cx - head_w * 0.5f;
+    if (game->player.info.helmet)
+        doll_rarity_color(game->player.info.helmet, &r, &g, &b);
+    else
+        class_base_color(game->player.info.player_class, &r, &g, &b);
+    doll_rect(head_x, fy, head_w, head_h, r, g, b);
+
+    // NECK (8×8) — always class base, darker
+    float neck_w = 8.0f, neck_h = 8.0f;
+    float neck_y = fy + head_h;
+    class_base_color(game->player.info.player_class, &r, &g, &b);
+    renderer_draw_rect(cx - neck_w * 0.5f, neck_y, neck_w, neck_h, r * 0.6f, g * 0.6f, b * 0.6f, 1.0f);
+
+    // TORSO (48×44) — chest armor color
+    float torso_w = 48.0f, torso_h = 44.0f;
+    float torso_x = cx - torso_w * 0.5f;
+    float torso_y = neck_y + neck_h;
+    if (game->player.info.chest_armor)
+        doll_rarity_color(game->player.info.chest_armor, &r, &g, &b);
+    else
+        class_base_color(game->player.info.player_class, &r, &g, &b);
+    doll_rect(torso_x, torso_y, torso_w, torso_h, r, g, b);
+
+    // ARMS — upper half class base, lower half gloves color
+    float arm_w = 13.0f, arm_upper_h = 22.0f, arm_lower_h = 20.0f;
+    float arm_y = torso_y;
+    float left_arm_x  = torso_x - arm_w - 2.0f;
+    float right_arm_x = torso_x + torso_w + 2.0f;
+
+    class_base_color(game->player.info.player_class, &r, &g, &b);
+    doll_rect(left_arm_x,  arm_y, arm_w, arm_upper_h, r, g, b);
+    doll_rect(right_arm_x, arm_y, arm_w, arm_upper_h, r, g, b);
+
+    float glove_y = arm_y + arm_upper_h;
+    if (game->player.info.gloves)
+        doll_rarity_color(game->player.info.gloves, &r, &g, &b);
+    else
+        class_base_color(game->player.info.player_class, &r, &g, &b);
+    r *= 0.8f; g *= 0.8f; b *= 0.8f;
+    doll_rect(left_arm_x,  glove_y, arm_w, arm_lower_h, r, g, b);
+    doll_rect(right_arm_x, glove_y, arm_w, arm_lower_h, r, g, b);
+
+    // LEGS (two 20×38) — leggings color
+    float leg_w = 20.0f, leg_h = 38.0f;
+    float leg_y = torso_y + torso_h;
+    float left_leg_x  = cx - leg_w - 2.0f;
+    float right_leg_x = cx + 2.0f;
+    if (game->player.info.leggings)
+        doll_rarity_color(game->player.info.leggings, &r, &g, &b);
+    else
+        class_base_color(game->player.info.player_class, &r, &g, &b);
+    doll_rect(left_leg_x,  leg_y, leg_w, leg_h, r, g, b);
+    doll_rect(right_leg_x, leg_y, leg_w, leg_h, r, g, b);
+
+    // FEET (boots color, slightly wider than legs)
+    float foot_w = 22.0f, foot_h = 11.0f;
+    float foot_y = leg_y + leg_h;
+    if (game->player.info.boots)
+        doll_rarity_color(game->player.info.boots, &r, &g, &b);
+    else
+        class_base_color(game->player.info.player_class, &r, &g, &b);
+    doll_rect(left_leg_x  - 1.0f, foot_y, foot_w, foot_h, r, g, b);
+    doll_rect(right_leg_x - 1.0f, foot_y, foot_w, foot_h, r, g, b);
+}
+
+static void render_character_stats(const CharacterScreenState* cs, const GameState* game) {
+    if (!game->player.info_loaded) return;
+
+    float sx = cs->char_display_x;
+    float sy = cs->char_display_y + cs->char_display_height + 6.0f;
+    float sw = cs->char_display_width;
+    float sh = 158.0f;
+    float mid = sx + sw * 0.5f;
+
+    // Background + top divider
+    renderer_draw_rect(sx, sy, sw, sh, 0.10f, 0.08f, 0.13f, 1.0f);
+    renderer_draw_rect(sx, sy, sw, 1.5f, 0.30f, 0.30f, 0.45f, 1.0f);
+
+    // "STATS" header
+    renderer_draw_text_centered(sx, sy + 14.0f, sw, 0.0f, "STATS");
+
+    // Center vertical divider
+    renderer_draw_rect(mid - 0.75f, sy + 20.0f, 1.5f, sh - 22.0f, 0.22f, 0.22f, 0.32f, 1.0f);
+
+    char buf[16];
+    float row_h = 18.0f;
+    float lx = sx + 6.0f;
+    float rx = mid + 6.0f;
+    float ry = sy + 30.0f;
+
+    // Left column: ATK, STR, AGI, LCK
+    struct { const char* label; int val; } left_stats[] = {
+        { "ATK", game->player_weapon_damage },
+        { "STR", game->player_strength      },
+        { "AGI", game->player_agility       },
+        { "LCK", game->player_luck          },
+    };
+    for (int i = 0; i < 4; i++) {
+        renderer_draw_text_primitive(lx, ry + i * row_h, left_stats[i].label, 0.60f, 0.60f, 0.70f);
+        snprintf(buf, sizeof(buf), "%d", left_stats[i].val);
+        renderer_draw_text(lx + 46.0f, ry + i * row_h, buf);
+    }
+
+    // Right column: DEF, VIT, EVA, INT
+    struct { const char* label; int val; } right_stats[] = {
+        { "DEF", game->player_defense       },
+        { "VIT", game->player_vitality      },
+        { "EVA", game->player_evasion       },
+        { "INT", game->player_intelligence  },
+    };
+    for (int i = 0; i < 4; i++) {
+        renderer_draw_text_primitive(rx, ry + i * row_h, right_stats[i].label, 0.60f, 0.60f, 0.70f);
+        snprintf(buf, sizeof(buf), "%d", right_stats[i].val);
+        renderer_draw_text(rx + 46.0f, ry + i * row_h, buf);
+    }
+}
+
 void character_screen_render(const CharacterScreenState* char_screen, const GameState* game) {
     if (!char_screen->is_open) return;
     
@@ -434,13 +616,9 @@ void character_screen_render(const CharacterScreenState* char_screen, const Game
     renderer_draw_rect(close_x + close_size - 1, close_y, 1, close_size, 0.6f, 0.2f, 0.2f, 1.0f);
     renderer_draw_text(close_x + 7, close_y + 18, "X");
     
-    // Character display area (center)
-    renderer_draw_rect(char_screen->char_display_x, char_screen->char_display_y,
-                      char_screen->char_display_width, char_screen->char_display_height,
-                      0.2f, 0.15f, 0.25f, 0.8f);
-    renderer_draw_text(char_screen->char_display_x + 30, 
-                      char_screen->char_display_y + char_screen->char_display_height / 2,
-                      "Character\nPlaceholder");
+    // Character doll + stats
+    render_character_doll(char_screen, game);
+    render_character_stats(char_screen, game);
     
     // Section labels
     renderer_draw_text(char_screen->window_x + 10, char_screen->window_y + 60, "Weapons");
