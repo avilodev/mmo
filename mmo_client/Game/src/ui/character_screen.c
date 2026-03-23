@@ -547,10 +547,10 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
 
     // Left column: ATK, STR, AGI, LCK
     struct { const char* label; int val; } left_stats[] = {
-        { "ATK", game->player_weapon_damage },
-        { "STR", game->player_strength      },
-        { "AGI", game->player_agility       },
-        { "LCK", game->player_luck          },
+        { "ATK", game->playing->player_weapon_damage },
+        { "STR", game->playing->player_strength      },
+        { "AGI", game->playing->player_agility       },
+        { "LCK", game->playing->player_luck          },
     };
     for (int i = 0; i < 4; i++) {
         renderer_draw_text_primitive(lx, ry + i * row_h, left_stats[i].label, 0.60f, 0.60f, 0.70f);
@@ -560,10 +560,10 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
 
     // Right column: DEF, VIT, EVA, INT
     struct { const char* label; int val; } right_stats[] = {
-        { "DEF", game->player_defense       },
-        { "VIT", game->player_vitality      },
-        { "EVA", game->player_evasion       },
-        { "INT", game->player_intelligence  },
+        { "DEF", game->playing->player_defense       },
+        { "VIT", game->playing->player_vitality      },
+        { "EVA", game->playing->player_evasion       },
+        { "INT", game->playing->player_intelligence  },
     };
     for (int i = 0; i < 4; i++) {
         renderer_draw_text_primitive(rx, ry + i * row_h, right_stats[i].label, 0.60f, 0.60f, 0.70f);

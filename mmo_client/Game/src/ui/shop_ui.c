@@ -49,8 +49,8 @@ static float shop_chrome(const GameState* game, int vw, int vh,
     renderer_draw_rect(px, py, SW_W, SW_HEADER_H, 0.15f, 0.10f, 0.20f, 1.0f);
 
     char title[64];
-    if (game->shop.shop_name[0])
-        snprintf(title, sizeof(title), "%s", game->shop.shop_name);
+    if (game->playing->shop.shop_name[0])
+        snprintf(title, sizeof(title), "%s", game->playing->shop.shop_name);
     else
         snprintf(title, sizeof(title), "Shop");
     renderer_draw_text(px + SW_W * 0.5f - 30.0f, py + SW_HEADER_H - 12.0f, title);
@@ -65,12 +65,12 @@ static float shop_chrome(const GameState* game, int vw, int vh,
     float tab_w = SW_W * 0.5f;
 
     // Buy tab
-    float buy_bg = (game->shop.sell_tab == 0) ? 0.20f : 0.10f;
+    float buy_bg = (game->playing->shop.sell_tab == 0) ? 0.20f : 0.10f;
     renderer_draw_rect(px,         tab_y, tab_w, SW_TAB_H, buy_bg, buy_bg, buy_bg+0.08f, 1.0f);
     renderer_draw_text(px + tab_w * 0.5f - 14.0f, tab_y + SW_TAB_H - 10.0f, "BUY");
 
     // Sell tab
-    float sell_bg = (game->shop.sell_tab == 1) ? 0.20f : 0.10f;
+    float sell_bg = (game->playing->shop.sell_tab == 1) ? 0.20f : 0.10f;
     renderer_draw_rect(px+tab_w,   tab_y, tab_w, SW_TAB_H, sell_bg, sell_bg, sell_bg+0.08f, 1.0f);
     renderer_draw_text(px + tab_w + tab_w * 0.5f - 14.0f, tab_y + SW_TAB_H - 10.0f, "SELL");
 
@@ -85,12 +85,12 @@ static float shop_chrome(const GameState* game, int vw, int vh,
 // ============================================================================
 
 void shop_ui_render(const GameState* game) {
-    if (!game->shop.is_open) return;
+    if (!game->playing->shop.is_open) return;
 
     int vw, vh;
     // Retrieve viewport size from HUD layout (already computed each frame)
-    vw = game->hud.screen_width;
-    vh = game->hud.screen_height;
+    vw = game->playing->hud.screen_width;
+    vh = game->playing->hud.screen_height;
     if (vw <= 0 || vh <= 0) return;
 
     float px, py;
@@ -98,19 +98,19 @@ void shop_ui_render(const GameState* game) {
     float list_h = SW_H - (list_y - py) - SW_PAD;
     float max_y  = py + SW_H - SW_PAD;
 
-    if (game->shop.sell_tab == 0) {
+    if (game->playing->shop.sell_tab == 0) {
         // ---- BUY TAB ----
-        if (game->shop.item_count == 0) {
+        if (game->playing->shop.item_count == 0) {
             renderer_draw_text(px + SW_PAD, list_y + 20.0f, "No items for sale.");
             return;
         }
 
-        for (int i = 0; i < game->shop.item_count; i++) {
+        for (int i = 0; i < game->playing->shop.item_count; i++) {
             float row_y = list_y + i * SW_ROW_H;
             if (row_y + SW_ROW_H > max_y) break;
 
-            uint32_t item_id   = game->shop.items[i].item_id;
-            uint32_t buy_price = game->shop.items[i].buy_price;
+            uint32_t item_id   = game->playing->shop.items[i].item_id;
+            uint32_t buy_price = game->playing->shop.items[i].buy_price;
             const char* name   = item_db_get_name(item_id);
 
             // Row background (alternating)
@@ -186,17 +186,17 @@ void shop_ui_render(const GameState* game) {
 // ============================================================================
 
 int shop_ui_handle_input(GameState* game, float mx, float my, int clicked) {
-    if (!game->shop.is_open) return 0;
+    if (!game->playing->shop.is_open) return 0;
 
-    int vw = game->hud.screen_width;
-    int vh = game->hud.screen_height;
+    int vw = game->playing->hud.screen_width;
+    int vh = game->playing->hud.screen_height;
     float px = ((float)vw - SW_W) * 0.5f;
     float py = ((float)vh - SW_H) * 0.5f;
 
     // Always consume clicks inside the window
     int inside = (mx >= px && mx <= px + SW_W && my >= py && my <= py + SW_H);
     if (!inside) {
-        if (clicked) { game->shop.is_open = 0; }
+        if (clicked) { game->playing->shop.is_open = 0; }
         return clicked && inside ? 1 : 0;
     }
 
@@ -205,7 +205,7 @@ int shop_ui_handle_input(GameState* game, float mx, float my, int clicked) {
     // Close button
     if (mx >= px + SW_W - 30.0f && mx <= px + SW_W - 8.0f &&
         my >= py + 10.0f && my <= py + 32.0f) {
-        game->shop.is_open = 0;
+        game->playing->shop.is_open = 0;
         return 1;
     }
 
@@ -214,18 +214,18 @@ int shop_ui_handle_input(GameState* game, float mx, float my, int clicked) {
     float tab_w  = SW_W * 0.5f;
     if (my >= tab_y && my <= tab_y + SW_TAB_H) {
         if (mx < px + tab_w)
-            game->shop.sell_tab = 0;
+            game->playing->shop.sell_tab = 0;
         else
-            game->shop.sell_tab = 1;
+            game->playing->shop.sell_tab = 1;
         return 1;
     }
 
     float list_y = py + SW_HEADER_H + SW_TAB_H + 2.0f;
     float max_y  = py + SW_H - SW_PAD;
 
-    if (game->shop.sell_tab == 0) {
+    if (game->playing->shop.sell_tab == 0) {
         // Buy tab: check each Buy button
-        for (int i = 0; i < game->shop.item_count; i++) {
+        for (int i = 0; i < game->playing->shop.item_count; i++) {
             float row_y  = list_y + i * SW_ROW_H;
             if (row_y + SW_ROW_H > max_y) break;
 
@@ -235,7 +235,7 @@ int shop_ui_handle_input(GameState* game, float mx, float my, int clicked) {
             if (mx >= btn_x && mx <= btn_x + SW_BTN_W &&
                 my >= btn_y && my <= btn_y + SW_BTN_H) {
                 // Send buy request
-                network_send_shop_buy(game->shop.shop_id, game->shop.items[i].item_id);
+                network_send_shop_buy(game->playing->shop.shop_id, game->playing->shop.items[i].item_id);
                 return 1;
             }
         }
@@ -256,7 +256,7 @@ int shop_ui_handle_input(GameState* game, float mx, float my, int clicked) {
 
             if (mx >= btn_x && mx <= btn_x + SW_BTN_W &&
                 my >= btn_y && my <= btn_y + SW_BTN_H) {
-                network_send_shop_sell(game->shop.shop_id, (uint8_t)s);
+                network_send_shop_sell(game->playing->shop.shop_id, (uint8_t)s);
                 return 1;
             }
             shown++;

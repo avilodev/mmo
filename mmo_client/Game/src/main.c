@@ -31,11 +31,11 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
     (void)xoffset;
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
 
-    if (game->show_map) {
+    if (game->playing && game->playing->show_map) {
         // Scroll zooms the full map (faster rate than camera)
-        game->map_zoom *= (1.0f + (float)yoffset * 0.15f);
-        if (game->map_zoom < 0.25f) game->map_zoom = 0.25f;
-        if (game->map_zoom > 4.0f)  game->map_zoom = 4.0f;
+        game->playing->map_zoom *= (1.0f + (float)yoffset * 0.15f);
+        if (game->playing->map_zoom < 0.25f) game->playing->map_zoom = 0.25f;
+        if (game->playing->map_zoom > 4.0f)  game->playing->map_zoom = 4.0f;
     } else {
         game->camera.zoom *= (1.0f + (float)yoffset * 0.1f);
         if (game->camera.zoom < 1.0f) game->camera.zoom = 1.0f;
@@ -45,14 +45,14 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
 
 static void char_callback(GLFWwindow* window, unsigned int codepoint) {
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
-    if (!game || !game->chat.is_typing) return;
+    if (!game || !game->playing || !game->playing->chat.is_typing) return;
 
     // Only handle printable ASCII
     if (codepoint >= 32 && codepoint < 127) {
-        if (game->chat.input_len < MAX_CHAT_INPUT_LEN - 1) {
-            game->chat.input_buf[game->chat.input_len] = (char)codepoint;
-            game->chat.input_len++;
-            game->chat.input_buf[game->chat.input_len] = '\0';
+        if (game->playing->chat.input_len < MAX_CHAT_INPUT_LEN - 1) {
+            game->playing->chat.input_buf[game->playing->chat.input_len] = (char)codepoint;
+            game->playing->chat.input_len++;
+            game->playing->chat.input_buf[game->playing->chat.input_len] = '\0';
         }
     }
 }
@@ -69,15 +69,19 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
     game->realm_port = 7777;
     game->network_connected = 0;
     snprintf(game->network_status, sizeof(game->network_status), "Not connected");
-    
+
+    // Session key comes from the environment variable set by the Launcher,
+    // not from argv — keeps it out of the process command line.
+    const char* env_session = getenv("MMO_SESSION");
+    if (env_session) {
+        strncpy(game->session_key, env_session, 64);
+        game->session_key[64] = '\0';
+    }
+
     printf("[ARGS] Parsing %d arguments\n", argc);
-    
+
     for (int i = 1; i < argc; i++) {
-        if (strncmp(argv[i], "--session=", 10) == 0) {
-            strncpy(game->session_key, argv[i] + 10, 64);
-            game->session_key[64] = '\0';
-        }
-        else if (strncmp(argv[i], "--playerid=", 11) == 0) {
+        if (strncmp(argv[i], "--playerid=", 11) == 0) {
             char* end = NULL;
             long id = strtol(argv[i] + 11, &end, 10);
             game->account_id = (end != argv[i] + 11 && id > 0) ? (uint32_t)id : 0;

@@ -23,66 +23,56 @@
 #endif
 
 // ============================================================================
-// INTERNAL STATE
+// NETWORK STATE — all module state in one place
 // ============================================================================
 
-static uint32_t g_account_id = 0;
-static uint32_t g_character_id = 0;
-static BOOL g_initialized = FALSE;
-static SOCKET g_socket = INVALID_SOCKET;
-static BOOL g_connected = FALSE;
+// Each pending response uses the same layout: a ready flag + the data.
+// The response_lock (Windows CRITICAL_SECTION) protects all ready flags and
+// data fields so a future network thread can write them safely while the
+// main thread reads them via network_get_*().
+typedef struct {
+    // Connection
+    SOCKET   socket;
+    BOOL     initialized;
+    BOOL     connected;
+    uint32_t account_id;
+    uint32_t character_id;
 
-// Response storage
-static WorldListResponsePacket g_world_list;
-static BOOL g_world_list_ready = FALSE;
+    // TCP stream reassembly
+    char recv_buf[65536];
+    int  recv_len;
 
-static CharacterListResponsePacket g_char_list;
-static BOOL g_char_list_ready = FALSE;
+    // Combat / movement
+    float last_facing_angle;
 
-static CharacterCreateResponsePacket g_char_create;
-static BOOL g_char_create_ready = FALSE;
+    // Ping
+    double last_ping_time;
+    int    pending_pings;
+    double ping_send_time;
+    int    ping_ms;
 
-static CharacterDeleteResponsePacket g_char_delete;
-static BOOL g_char_delete_ready = FALSE;
+    // Pending server responses — written by recv path, read by callers
+    CRITICAL_SECTION response_lock;
 
-static EnterWorldResponsePacket g_enter_world;
-static BOOL g_enter_world_ready = FALSE;
+    struct { BOOL ready; WorldListResponsePacket       data; } world_list;
+    struct { BOOL ready; CharacterListResponsePacket   data; } char_list;
+    struct { BOOL ready; CharacterCreateResponsePacket data; } char_create;
+    struct { BOOL ready; CharacterDeleteResponsePacket data; } char_delete;
+    struct { BOOL ready; EnterWorldResponsePacket      data; } enter_world;
+    struct { BOOL ready; CharacterInfo                 data; } char_data;
+    struct { BOOL ready; NPCInteractResponsePacket     data; } npc_interact;
+    struct { BOOL ready; DialogueUpdatePacket          data; } dialogue_update;
+    struct { BOOL ready; DialogueClosePacket           data; } dialogue_close;
+    struct { BOOL ready; WorldConnectAckPacket         data; } world_connect_ack;
+    struct { BOOL ready; RealmConnectAckPacket         data; } realm_connect_ack;
+    struct { BOOL ready; float x; float y;                  } correction;
+} NetworkState;
 
-static CharacterInfo g_char_data;
-static BOOL g_char_data_ready = FALSE;
-
-static NPCInteractResponsePacket g_npc_interact_response;
-static BOOL g_npc_interact_response_ready = FALSE;
-
-static DialogueUpdatePacket g_dialogue_update;
-static BOOL g_dialogue_update_ready = FALSE;
-
-static DialogueClosePacket g_dialogue_close;
-static BOOL g_dialogue_close_ready = FALSE;
-
-static BOOL g_world_connect_ack_ready = FALSE;
-static WorldConnectAckPacket g_world_connect_ack;
-
-static BOOL g_realm_connect_ack_ready = FALSE;
-static RealmConnectAckPacket g_realm_connect_ack;
-
-static float g_correction_x = 0.0f;
-static float g_correction_y = 0.0f;
-static BOOL g_correction_ready = FALSE;
-
-static float g_last_facing_angle = 0.0f;
+static NetworkState g_net;
 
 // Ping tracking
 #define PING_INTERVAL    10.0
 #define PING_MAX_MISSED  3      // Disconnect after 3 unanswered pings (~30s)
-static double g_last_ping_time  = 0.0;
-static int    g_pending_pings   = 0;   // Sent but not yet echoed back
-static double g_ping_send_time  = 0.0; // glfwGetTime() when last ping was sent
-static int    g_ping_ms         = 0;   // Most recent measured RTT in milliseconds
-
-// Stream reassembly buffer for TCP framing
-static char g_recv_buf[65536];
-static int  g_recv_len = 0;
 
 // External game state for combat events
 extern GameState* g_current_game;
@@ -111,11 +101,11 @@ static void process_packet(const char* data, int length) {
     switch (header->type) {
         case PACKET_PING:
             // Server echoed our ping back — measure RTT
-            if (g_pending_pings > 0) {
-                g_pending_pings--;
-                double rtt = (get_time() - g_ping_send_time) * 1000.0;
+            if (g_net.pending_pings > 0) {
+                g_net.pending_pings--;
+                double rtt = (get_time() - g_net.ping_send_time) * 1000.0;
                 if (rtt > 0.0 && rtt < 60000.0)
-                    g_ping_ms = (int)rtt;
+                    g_net.ping_ms = (int)rtt;
             }
             break;
             
@@ -143,24 +133,26 @@ static void process_packet(const char* data, int length) {
                 claimed_count = MAX_WORLDS;
             }
 
-            memcpy(&g_world_list, data, sizeof(WorldListResponsePacket));
-            g_world_list.count = claimed_count;
-            
+            EnterCriticalSection(&g_net.response_lock);
+            memcpy(&g_net.world_list.data, data, sizeof(WorldListResponsePacket));
+            g_net.world_list.data.count = claimed_count;
+
             for (int i = 0; i < claimed_count; i++) {
-                g_world_list.worlds[i].name[63] = '\0';
-                g_world_list.worlds[i].ip[15] = '\0';
-                g_world_list.worlds[i].region[31] = '\0';
-                
+                g_net.world_list.data.worlds[i].name[63] = '\0';
+                g_net.world_list.data.worlds[i].ip[15] = '\0';
+                g_net.world_list.data.worlds[i].region[31] = '\0';
+
                 // Debug: Print each world
                 printf("[NET]   World %d: '%s' at %s:%d (status=%d)\n",
-                       i, 
-                       g_world_list.worlds[i].name,
-                       g_world_list.worlds[i].ip,
-                       ntohs(g_world_list.worlds[i].port),
-                       g_world_list.worlds[i].status);
+                       i,
+                       g_net.world_list.data.worlds[i].name,
+                       g_net.world_list.data.worlds[i].ip,
+                       ntohs(g_net.world_list.data.worlds[i].port),
+                       g_net.world_list.data.worlds[i].status);
             }
-            
-            g_world_list_ready = TRUE;
+
+            g_net.world_list.ready = TRUE;
+            LeaveCriticalSection(&g_net.response_lock);
             printf("[NET] ✓ World list received: %d worlds validated\n", claimed_count);
             break;
         }
@@ -188,75 +180,89 @@ static void process_packet(const char* data, int length) {
                 return;
             }
 
-            memset(&g_char_list, 0, sizeof(g_char_list));
-            memcpy(&g_char_list, data, needed);
-            g_char_list.count = claimed_count;
-            
+            EnterCriticalSection(&g_net.response_lock);
+            memset(&g_net.char_list.data, 0, sizeof(g_net.char_list.data));
+            memcpy(&g_net.char_list.data, data, needed);
+            g_net.char_list.data.count = claimed_count;
+
             // Null-terminate character names
             for (int i = 0; i < claimed_count; i++) {
-                g_char_list.characters[i].name[31] = '\0';
+                g_net.char_list.data.characters[i].name[31] = '\0';
             }
-            
-            g_char_list_ready = TRUE;
+
+            g_net.char_list.ready = TRUE;
+            LeaveCriticalSection(&g_net.response_lock);
             printf("[NET] ✓ Character list received: %d chars validated\n", claimed_count);
             break;
         }
             
         case PACKET_CHARACTER_CREATE_RESPONSE:
             if (length >= (int)sizeof(CharacterCreateResponsePacket)) {
-                memcpy(&g_char_create, data, sizeof(CharacterCreateResponsePacket));
-                g_char_create.character_name[31] = '\0';
-                g_char_create.message[127] = '\0';
-                g_char_create_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.char_create.data, data, sizeof(CharacterCreateResponsePacket));
+                g_net.char_create.data.character_name[31] = '\0';
+                g_net.char_create.data.message[127] = '\0';
+                g_net.char_create.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
             }
             break;
 
         case PACKET_CHARACTER_DELETE_RESPONSE:
             if (length >= (int)sizeof(CharacterDeleteResponsePacket)) {
-                memcpy(&g_char_delete, data, sizeof(CharacterDeleteResponsePacket));
-                g_char_delete.message[127] = '\0';
-                g_char_delete_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.char_delete.data, data, sizeof(CharacterDeleteResponsePacket));
+                g_net.char_delete.data.message[127] = '\0';
+                g_net.char_delete.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
             }
             break;
 
         case PACKET_ENTER_WORLD_RESPONSE:
             if (length >= (int)sizeof(EnterWorldResponsePacket)) {
-                memcpy(&g_enter_world, data, sizeof(EnterWorldResponsePacket));
-                g_enter_world.game_ticket[63] = '\0';
-                g_enter_world.world_ip[15] = '\0';
-                g_enter_world.message[127] = '\0';
-                g_enter_world_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.enter_world.data, data, sizeof(EnterWorldResponsePacket));
+                g_net.enter_world.data.game_ticket[63] = '\0';
+                g_net.enter_world.data.world_ip[15] = '\0';
+                g_net.enter_world.data.message[127] = '\0';
+                g_net.enter_world.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
             }
             break;
 
         case PACKET_REALM_CONNECT_ACK:
             if (length >= (int)sizeof(RealmConnectAckPacket)) {
-                memcpy(&g_realm_connect_ack, data, sizeof(RealmConnectAckPacket));
-                g_realm_connect_ack.message[127] = '\0';
-                g_realm_connect_ack_ready = TRUE;
-                printf("[NET] Realm connect ACK received: success=%d\n", g_realm_connect_ack.success);
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.realm_connect_ack.data, data, sizeof(RealmConnectAckPacket));
+                g_net.realm_connect_ack.data.message[127] = '\0';
+                g_net.realm_connect_ack.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
+                printf("[NET] Realm connect ACK received: success=%d\n", g_net.realm_connect_ack.data.success);
             }
             break;
             
         case PACKET_WORLD_CONNECT_ACK:
             if (length >= (int)sizeof(WorldConnectAckPacket)) {
-                memcpy(&g_world_connect_ack, data, sizeof(WorldConnectAckPacket));
-                g_world_connect_ack.welcome_message[127] = '\0';
-                g_world_connect_ack_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.world_connect_ack.data, data, sizeof(WorldConnectAckPacket));
+                g_net.world_connect_ack.data.welcome_message[127] = '\0';
+                g_net.world_connect_ack.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
                 printf("[NET] World connect ACK received\n");
             }
             break;
             
         case PACKET_PLAYER_DATA_RESPONSE:
             if (length >= (int)sizeof(CharacterInfo)) {
-                memcpy(&g_char_data, data, sizeof(CharacterInfo));
-                g_char_data.name[31] = '\0';
-                g_char_data_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.char_data.data, data, sizeof(CharacterInfo));
+                g_net.char_data.data.name[31] = '\0';
+                g_net.char_data.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
 
                 // If game is already running, update live XP and gold immediately
                 if (g_current_game && g_current_game->player.info_loaded) {
-                    g_current_game->player.info.experience = ntohll(g_char_data.experience);
-                    g_current_game->player.info.gold = ntohl(g_char_data.gold);
+                    g_current_game->player.info.experience = ntohll(g_net.char_data.data.experience);
+                    g_current_game->player.info.gold = ntohl(g_net.char_data.data.gold);
                 }
 
                 printf("[NET] Character data received\n");
@@ -266,17 +272,19 @@ static void process_packet(const char* data, int length) {
         case PACKET_PLAYER_MOVE_ACK:
             if (length >= (int)sizeof(PlayerMoveAckPacket)) {
                 PlayerMoveAckPacket* ack = (PlayerMoveAckPacket*)data;
-                g_correction_x = ack->pos_x;
-                g_correction_y = ack->pos_y;
-                g_correction_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                g_net.correction.x = ack->pos_x;
+                g_net.correction.y = ack->pos_y;
+                g_net.correction.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
             }
             break;
             
         case PACKET_ATTACK_RESULT:
             if (length >= (int)sizeof(AttackResultPacket)) {
                 AttackResultPacket* pkt = (AttackResultPacket*)data;
-                if (g_current_game) {
-                    combat_on_attack_result(&g_current_game->combat, pkt->result_code, 0.5f);
+                if (g_current_game && g_current_game->playing) {
+                    combat_on_attack_result(&g_current_game->playing->combat, pkt->result_code, 0.5f);
                 }
             }
             break;
@@ -290,8 +298,8 @@ static void process_packet(const char* data, int length) {
                     targets[i] = ntohl(pkt->target_ids[i]);
                 }
                 
-                if (g_current_game) {
-                    combat_on_cast_start(&g_current_game->combat,
+                if (g_current_game && g_current_game->playing) {
+                    combat_on_cast_start(&g_current_game->playing->combat,
                                         pkt->attack_type,
                                         pkt->cast_time,
                                         pkt->origin_x, pkt->origin_y,
@@ -308,29 +316,29 @@ static void process_packet(const char* data, int length) {
                 uint32_t damage = ntohl(pkt->damage);
                 uint32_t new_health = ntohl(pkt->target_new_health);
 
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     float tx = 0, ty = 0;
 
-                    if (target == g_character_id) {
+                    if (target == g_net.character_id) {
                         // Player is the target — update health bar
                         g_current_game->player.info.health = new_health;
                         tx = g_current_game->player.x;
                         ty = g_current_game->player.y;
                     } else {
-                        for (int i = 0; i < g_current_game->visible_npc_count; i++) {
-                            if (g_current_game->visible_npcs[i].npc_id == target) {
-                                tx = g_current_game->visible_npcs[i].pos_x;
-                                ty = g_current_game->visible_npcs[i].pos_y;
+                        for (int i = 0; i < g_current_game->playing->visible_npc_count; i++) {
+                            if (g_current_game->playing->visible_npcs[i].npc_id == target) {
+                                tx = g_current_game->playing->visible_npcs[i].pos_x;
+                                ty = g_current_game->playing->visible_npcs[i].pos_y;
                                 break;
                             }
                         }
                     }
 
                     if (damage == 0 && !pkt->is_kill) {
-                        combat_on_damage(&g_current_game->combat,
+                        combat_on_damage(&g_current_game->playing->combat,
                                          target, -1, 0, 0, 0, tx, ty);
                     } else {
-                        combat_on_damage(&g_current_game->combat,
+                        combat_on_damage(&g_current_game->playing->combat,
                                          target, (int)damage, pkt->is_crit, pkt->is_kill, 0, tx, ty);
                     }
 
@@ -344,8 +352,8 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_CAST_CANCEL:
             if (length >= (int)sizeof(CastCancelPacket)) {
-                if (g_current_game) {
-                    combat_on_cast_cancel(&g_current_game->combat);
+                if (g_current_game && g_current_game->playing) {
+                    combat_on_cast_cancel(&g_current_game->playing->combat);
                 }
             }
             break;
@@ -353,9 +361,9 @@ static void process_packet(const char* data, int length) {
         case PACKET_ABILITY_CAST_START:
             if (length >= (int)sizeof(AbilityCastStartPacket)) {
                 AbilityCastStartPacket* pkt = (AbilityCastStartPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     uint16_t ability_id = ntohs(pkt->ability_id);
-                    ability_bar_on_cast_start(&g_current_game->ability_bar,
+                    ability_bar_on_cast_start(&g_current_game->playing->ability_bar,
                                               ability_id, pkt->cast_time);
                     printf("[NET] Ability cast start: id=%u cast_time=%.1f\n",
                            ability_id, pkt->cast_time);
@@ -366,18 +374,18 @@ static void process_packet(const char* data, int length) {
         case PACKET_ABILITY_EFFECT:
             if (length >= (int)sizeof(AbilityEffectPacket)) {
                 AbilityEffectPacket* pkt = (AbilityEffectPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     uint16_t ability_id = ntohs(pkt->ability_id);
                     uint32_t target = ntohl(pkt->target_id);
                     int32_t damage = (int32_t)ntohl(pkt->damage);
                     int32_t healing = (int32_t)ntohl(pkt->healing);
                     int32_t new_health = (int32_t)ntohl(pkt->target_new_health);
 
-                    ability_bar_on_cast_resolve(&g_current_game->ability_bar, ability_id);
+                    ability_bar_on_cast_resolve(&g_current_game->playing->ability_bar, ability_id);
 
                     float tx = 0, ty = 0;
 
-                    if (target == g_character_id) {
+                    if (target == g_net.character_id) {
                         // Player is the target — update health bar
                         if (new_health >= 0) {
                             g_current_game->player.info.health = (uint32_t)new_health;
@@ -385,34 +393,34 @@ static void process_packet(const char* data, int length) {
                         tx = g_current_game->player.x;
                         ty = g_current_game->player.y;
                     } else {
-                        for (int i = 0; i < g_current_game->visible_npc_count; i++) {
-                            if (g_current_game->visible_npcs[i].npc_id == target) {
-                                tx = g_current_game->visible_npcs[i].pos_x;
-                                ty = g_current_game->visible_npcs[i].pos_y;
+                        for (int i = 0; i < g_current_game->playing->visible_npc_count; i++) {
+                            if (g_current_game->playing->visible_npcs[i].npc_id == target) {
+                                tx = g_current_game->playing->visible_npcs[i].pos_x;
+                                ty = g_current_game->playing->visible_npcs[i].pos_y;
                                 break;
                             }
                         }
                     }
 
                     if (damage == 0 && healing == 0 && !pkt->is_kill) {
-                        combat_on_damage(&g_current_game->combat,
+                        combat_on_damage(&g_current_game->playing->combat,
                                          target, -1, 0, 0, 0, tx, ty);
                     } else if (damage > 0) {
-                        combat_on_damage(&g_current_game->combat,
+                        combat_on_damage(&g_current_game->playing->combat,
                                          target, damage, pkt->is_crit, pkt->is_kill, 0, tx, ty);
                     } else if (healing > 0) {
-                        combat_on_damage(&g_current_game->combat,
+                        combat_on_damage(&g_current_game->playing->combat,
                                          target, healing, pkt->is_crit, 0, 1, tx, ty);
 
                         // Spawn a green pulse ring at the healed target's position
                         for (int v = 0; v < MAX_HEAL_VFXS; v++) {
-                            if (!g_current_game->heal_vfxs[v].active) {
-                                g_current_game->heal_vfxs[v].active     = 1;
-                                g_current_game->heal_vfxs[v].pos_x      = tx;
-                                g_current_game->heal_vfxs[v].pos_y      = ty;
-                                g_current_game->heal_vfxs[v].age        = 0.0f;
-                                g_current_game->heal_vfxs[v].duration   = 0.7f;
-                                g_current_game->heal_vfxs[v].max_radius = 55.0f;
+                            if (!g_current_game->playing->heal_vfxs[v].active) {
+                                g_current_game->playing->heal_vfxs[v].active     = 1;
+                                g_current_game->playing->heal_vfxs[v].pos_x      = tx;
+                                g_current_game->playing->heal_vfxs[v].pos_y      = ty;
+                                g_current_game->playing->heal_vfxs[v].age        = 0.0f;
+                                g_current_game->playing->heal_vfxs[v].duration   = 0.7f;
+                                g_current_game->playing->heal_vfxs[v].max_radius = 55.0f;
                                 break;
                             }
                         }
@@ -432,9 +440,9 @@ static void process_packet(const char* data, int length) {
         case PACKET_ABILITY_CAST_CANCEL:
             if (length >= (int)sizeof(AbilityCastCancelPacket)) {
                 AbilityCastCancelPacket* pkt = (AbilityCastCancelPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     uint16_t ability_id = ntohs(pkt->ability_id);
-                    ability_bar_on_cast_cancel(&g_current_game->ability_bar, ability_id);
+                    ability_bar_on_cast_cancel(&g_current_game->playing->ability_bar, ability_id);
                     printf("[NET] Ability cast cancelled (id=%u reason=%u)\n",
                            ability_id, pkt->reason);
                 }
@@ -444,16 +452,16 @@ static void process_packet(const char* data, int length) {
         case PACKET_MANA_UPDATE:
             if (length >= (int)sizeof(ManaUpdatePacket)) {
                 ManaUpdatePacket* pkt = (ManaUpdatePacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     int32_t mana = (int32_t)ntohl(pkt->mana);
                     int32_t max_mana = (int32_t)ntohl(pkt->max_mana);
-                    ability_bar_on_mana_update(&g_current_game->ability_bar, mana, max_mana);
+                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar, mana, max_mana);
                 }
             }
             break;
 
         case PACKET_ABILITY_DATA:
-            if (length >= (int)sizeof(AbilityDataPacket) && g_current_game) {
+            if (length >= (int)sizeof(AbilityDataPacket) && g_current_game && g_current_game->playing) {
                 AbilityDataPacket* pkt = (AbilityDataPacket*)data;
                 uint8_t count = pkt->count;
                 if (count > MAX_ABILITY_SLOTS) count = MAX_ABILITY_SLOTS;
@@ -480,7 +488,7 @@ static void process_packet(const char* data, int length) {
                     images[i]     = image_bufs[i];
                 }
 
-                ability_bar_set_abilities(&g_current_game->ability_bar,
+                ability_bar_set_abilities(&g_current_game->playing->ability_bar,
                                           ids, names, cooldowns, cast_times, costs, images, count);
                 printf("[NET] Ability data received: %d slots\n", count);
             }
@@ -489,8 +497,8 @@ static void process_packet(const char* data, int length) {
         case PACKET_STATUS_EFFECT_APPLY:
             if (length >= (int)sizeof(StatusEffectApplyPacket)) {
                 StatusEffectApplyPacket* pkt = (StatusEffectApplyPacket*)data;
-                if (g_current_game) {
-                    ability_bar_on_effect_apply(&g_current_game->ability_bar,
+                if (g_current_game && g_current_game->playing) {
+                    ability_bar_on_effect_apply(&g_current_game->playing->ability_bar,
                                                 pkt->effect_type,
                                                 (int)ntohl(pkt->value),
                                                 pkt->duration,
@@ -502,8 +510,8 @@ static void process_packet(const char* data, int length) {
         case PACKET_STATUS_EFFECT_REMOVE:
             if (length >= (int)sizeof(StatusEffectRemovePacket)) {
                 StatusEffectRemovePacket* pkt = (StatusEffectRemovePacket*)data;
-                if (g_current_game) {
-                    ability_bar_on_effect_remove(&g_current_game->ability_bar,
+                if (g_current_game && g_current_game->playing) {
+                    ability_bar_on_effect_remove(&g_current_game->playing->ability_bar,
                                                  pkt->effect_type);
                 }
             }
@@ -515,16 +523,16 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Zone spawned: id=%u at (%.1f, %.1f) radius=%.1f dur=%.1f\n",
                     (unsigned int)ntohl(pkt->zone_id), pkt->pos_x, pkt->pos_y,
                     pkt->radius, pkt->duration);
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_ZONES; i++) {
-                        if (!g_current_game->zones[i].active) {
-                            g_current_game->zones[i].zone_id = ntohl(pkt->zone_id);
-                            g_current_game->zones[i].pos_x = pkt->pos_x;
-                            g_current_game->zones[i].pos_y = pkt->pos_y;
-                            g_current_game->zones[i].radius = pkt->radius;
-                            g_current_game->zones[i].duration = pkt->duration;
-                            g_current_game->zones[i].elapsed = 0.0f;
-                            g_current_game->zones[i].active = 1;
+                        if (!g_current_game->playing->zones[i].active) {
+                            g_current_game->playing->zones[i].zone_id = ntohl(pkt->zone_id);
+                            g_current_game->playing->zones[i].pos_x = pkt->pos_x;
+                            g_current_game->playing->zones[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->zones[i].radius = pkt->radius;
+                            g_current_game->playing->zones[i].duration = pkt->duration;
+                            g_current_game->playing->zones[i].elapsed = 0.0f;
+                            g_current_game->playing->zones[i].active = 1;
                             break;
                         }
                     }
@@ -537,11 +545,11 @@ static void process_packet(const char* data, int length) {
                 RemoveZonePacket* pkt = (RemoveZonePacket*)data;
                 uint32_t remove_zid = ntohl(pkt->zone_id);
                 printf("[NET] Zone removed: id=%u\n", (unsigned int)remove_zid);
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_ZONES; i++) {
-                        if (g_current_game->zones[i].active &&
-                            g_current_game->zones[i].zone_id == remove_zid) {
-                            g_current_game->zones[i].active = 0;
+                        if (g_current_game->playing->zones[i].active &&
+                            g_current_game->playing->zones[i].zone_id == remove_zid) {
+                            g_current_game->playing->zones[i].active = 0;
                             break;
                         }
                     }
@@ -576,9 +584,9 @@ static void process_packet(const char* data, int length) {
             
             printf("[NET] NPC positions received: %d NPCs\n", claimed_count);
             
-            if (g_current_game) {
-                int old_count = g_current_game->visible_npc_count;
-                g_current_game->visible_npc_count = claimed_count;
+            if (g_current_game && g_current_game->playing) {
+                int old_count = g_current_game->playing->visible_npc_count;
+                g_current_game->playing->visible_npc_count = claimed_count;
 
                 for (int i = 0; i < claimed_count && i < MAX_VISIBLE_NPCS; i++) {
                     NPCPositionData* src = &pkt->npcs[i];
@@ -589,43 +597,43 @@ static void process_packet(const char* data, int length) {
                     // Check if this NPC existed before to interpolate
                     int found = 0;
                     for (int j = 0; j < old_count && j < MAX_VISIBLE_NPCS; j++) {
-                        if (g_current_game->visible_npcs[j].npc_id == npc_id) {
+                        if (g_current_game->playing->visible_npcs[j].npc_id == npc_id) {
                             // Existing NPC: set up interpolation from current to new
-                            g_current_game->visible_npcs[i].prev_x = g_current_game->visible_npcs[j].pos_x;
-                            g_current_game->visible_npcs[i].prev_y = g_current_game->visible_npcs[j].pos_y;
+                            g_current_game->playing->visible_npcs[i].prev_x = g_current_game->playing->visible_npcs[j].pos_x;
+                            g_current_game->playing->visible_npcs[i].prev_y = g_current_game->playing->visible_npcs[j].pos_y;
                             found = 1;
                             break;
                         }
                     }
 
-                    g_current_game->visible_npcs[i].npc_id = npc_id;
-                    g_current_game->visible_npcs[i].target_x = new_x;
-                    g_current_game->visible_npcs[i].target_y = new_y;
+                    g_current_game->playing->visible_npcs[i].npc_id = npc_id;
+                    g_current_game->playing->visible_npcs[i].target_x = new_x;
+                    g_current_game->playing->visible_npcs[i].target_y = new_y;
 
                     if (!found) {
                         // New NPC: snap to position immediately
-                        g_current_game->visible_npcs[i].pos_x = new_x;
-                        g_current_game->visible_npcs[i].pos_y = new_y;
-                        g_current_game->visible_npcs[i].prev_x = new_x;
-                        g_current_game->visible_npcs[i].prev_y = new_y;
-                        g_current_game->visible_npcs[i].interp_t = 1.0f;
+                        g_current_game->playing->visible_npcs[i].pos_x = new_x;
+                        g_current_game->playing->visible_npcs[i].pos_y = new_y;
+                        g_current_game->playing->visible_npcs[i].prev_x = new_x;
+                        g_current_game->playing->visible_npcs[i].prev_y = new_y;
+                        g_current_game->playing->visible_npcs[i].interp_t = 1.0f;
                     } else {
                         // Reset interpolation timer for smooth movement
-                        g_current_game->visible_npcs[i].interp_t = 0.0f;
+                        g_current_game->playing->visible_npcs[i].interp_t = 0.0f;
                     }
 
-                    g_current_game->visible_npcs[i].health = ntohl(src->health);
-                    g_current_game->visible_npcs[i].max_health = ntohl(src->max_health);
-                    g_current_game->visible_npcs[i].is_alive = src->is_alive;
-                    g_current_game->visible_npcs[i].category = src->category;
-                    g_current_game->visible_npcs[i].is_interactable = src->is_interactable;
-                    g_current_game->visible_npcs[i].npc_type_id = src->npc_type_id;
+                    g_current_game->playing->visible_npcs[i].health = ntohl(src->health);
+                    g_current_game->playing->visible_npcs[i].max_health = ntohl(src->max_health);
+                    g_current_game->playing->visible_npcs[i].is_alive = src->is_alive;
+                    g_current_game->playing->visible_npcs[i].category = src->category;
+                    g_current_game->playing->visible_npcs[i].is_interactable = src->is_interactable;
+                    g_current_game->playing->visible_npcs[i].npc_type_id = src->npc_type_id;
                     if (!found) {
                         const char* type_name = npc_type_get_name(src->npc_type_id);
                         if (type_name) {
-                            snprintf(g_current_game->visible_npcs[i].name, 32, "%s", type_name);
+                            snprintf(g_current_game->playing->visible_npcs[i].name, 32, "%s", type_name);
                         } else {
-                            snprintf(g_current_game->visible_npcs[i].name, 32, "NPC_%u", npc_id);
+                            snprintf(g_current_game->playing->visible_npcs[i].name, 32, "NPC_%u", npc_id);
                         }
                     }
                 }
@@ -636,7 +644,7 @@ static void process_packet(const char* data, int length) {
         case PACKET_LEVEL_UP:
             if (length >= (int)sizeof(LevelUpPacket)) {
                 LevelUpPacket* pkt = (LevelUpPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     uint32_t new_level    = ntohl(pkt->new_level);
                     uint32_t new_hp       = ntohl(pkt->new_health);
                     uint32_t new_max_hp   = ntohl(pkt->new_max_health);
@@ -647,35 +655,35 @@ static void process_packet(const char* data, int length) {
                     g_current_game->player.info.health     = new_hp;
                     g_current_game->player.info.max_health = new_max_hp;
 
-                    g_current_game->player_strength      = (int32_t)ntohl(pkt->strength);
-                    g_current_game->player_agility       = (int32_t)ntohl(pkt->agility);
-                    g_current_game->player_intelligence   = (int32_t)ntohl(pkt->intelligence);
-                    g_current_game->player_wisdom         = (int32_t)ntohl(pkt->wisdom);
-                    g_current_game->player_defense        = (int32_t)ntohl(pkt->defense);
-                    g_current_game->player_evasion        = (int32_t)ntohl(pkt->evasion);
-                    g_current_game->player_vitality       = (int32_t)ntohl(pkt->vitality);
-                    g_current_game->player_luck           = (int32_t)ntohl(pkt->luck);
-                    g_current_game->player_xp_for_next    = ntohll(pkt->xp_for_next_level);
+                    g_current_game->playing->player_strength      = (int32_t)ntohl(pkt->strength);
+                    g_current_game->playing->player_agility       = (int32_t)ntohl(pkt->agility);
+                    g_current_game->playing->player_intelligence   = (int32_t)ntohl(pkt->intelligence);
+                    g_current_game->playing->player_wisdom         = (int32_t)ntohl(pkt->wisdom);
+                    g_current_game->playing->player_defense        = (int32_t)ntohl(pkt->defense);
+                    g_current_game->playing->player_evasion        = (int32_t)ntohl(pkt->evasion);
+                    g_current_game->playing->player_vitality       = (int32_t)ntohl(pkt->vitality);
+                    g_current_game->playing->player_luck           = (int32_t)ntohl(pkt->luck);
+                    g_current_game->playing->player_xp_for_next    = ntohll(pkt->xp_for_next_level);
 
-                    ability_bar_on_mana_update(&g_current_game->ability_bar,
+                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
                                                (int32_t)new_mana, (int32_t)new_max_mana);
 
-                    g_current_game->show_level_up      = 1;
-                    g_current_game->level_up_timer      = 3.0f;
-                    g_current_game->level_up_new_level  = (int)new_level;
+                    g_current_game->playing->show_level_up      = 1;
+                    g_current_game->playing->level_up_timer      = 3.0f;
+                    g_current_game->playing->level_up_new_level  = (int)new_level;
                     audio_event_level_up();
 
                     printf("[NET] LEVEL UP! Now level %u (HP=%u/%u, Mana=%u/%u)\n",
                            new_level, new_hp, new_max_hp, new_mana, new_max_mana);
                     printf("[NET] Stats: STR=%d AGI=%d INT=%d WIS=%d DEF=%d EVA=%d VIT=%d LCK=%d\n",
-                           g_current_game->player_strength,
-                           g_current_game->player_agility,
-                           g_current_game->player_intelligence,
-                           g_current_game->player_wisdom,
-                           g_current_game->player_defense,
-                           g_current_game->player_evasion,
-                           g_current_game->player_vitality,
-                           g_current_game->player_luck);
+                           g_current_game->playing->player_strength,
+                           g_current_game->playing->player_agility,
+                           g_current_game->playing->player_intelligence,
+                           g_current_game->playing->player_wisdom,
+                           g_current_game->playing->player_defense,
+                           g_current_game->playing->player_evasion,
+                           g_current_game->playing->player_vitality,
+                           g_current_game->playing->player_luck);
                 }
             }
             break;
@@ -683,18 +691,18 @@ static void process_packet(const char* data, int length) {
         case PACKET_PLAYER_STATS:
             if (length >= (int)sizeof(PlayerStatsPacket)) {
                 PlayerStatsPacket* pkt = (PlayerStatsPacket*)data;
-                if (g_current_game) {
-                    g_current_game->player_strength      = (int32_t)ntohl(pkt->strength);
-                    g_current_game->player_agility       = (int32_t)ntohl(pkt->agility);
-                    g_current_game->player_intelligence   = (int32_t)ntohl(pkt->intelligence);
-                    g_current_game->player_wisdom         = (int32_t)ntohl(pkt->wisdom);
-                    g_current_game->player_defense        = (int32_t)ntohl(pkt->defense);
-                    g_current_game->player_evasion        = (int32_t)ntohl(pkt->evasion);
-                    g_current_game->player_vitality       = (int32_t)ntohl(pkt->vitality);
-                    g_current_game->player_luck           = (int32_t)ntohl(pkt->luck);
-                    g_current_game->player_move_speed     = pkt->move_speed;
-                    g_current_game->player_weapon_damage   = (int32_t)ntohl(pkt->weapon_damage);
-                    g_current_game->player_xp_for_next    = ntohll(pkt->xp_for_next_level);
+                if (g_current_game && g_current_game->playing) {
+                    g_current_game->playing->player_strength      = (int32_t)ntohl(pkt->strength);
+                    g_current_game->playing->player_agility       = (int32_t)ntohl(pkt->agility);
+                    g_current_game->playing->player_intelligence   = (int32_t)ntohl(pkt->intelligence);
+                    g_current_game->playing->player_wisdom         = (int32_t)ntohl(pkt->wisdom);
+                    g_current_game->playing->player_defense        = (int32_t)ntohl(pkt->defense);
+                    g_current_game->playing->player_evasion        = (int32_t)ntohl(pkt->evasion);
+                    g_current_game->playing->player_vitality       = (int32_t)ntohl(pkt->vitality);
+                    g_current_game->playing->player_luck           = (int32_t)ntohl(pkt->luck);
+                    g_current_game->playing->player_move_speed     = pkt->move_speed;
+                    g_current_game->playing->player_weapon_damage   = (int32_t)ntohl(pkt->weapon_damage);
+                    g_current_game->playing->player_xp_for_next    = ntohll(pkt->xp_for_next_level);
 
                     int32_t max_hp       = (int32_t)ntohl(pkt->max_health);
                     int32_t max_mana     = (int32_t)ntohl(pkt->max_mana);
@@ -706,24 +714,24 @@ static void process_packet(const char* data, int length) {
                         g_current_game->player.info.health = (uint32_t)current_hp;
                     }
 
-                    ability_bar_on_mana_update(&g_current_game->ability_bar,
+                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
                                                current_mana, max_mana);
 
-                    if (g_current_game->player_move_speed > 0.0f) {
-                        g_current_game->player.speed = g_current_game->player_move_speed;
+                    if (g_current_game->playing->player_move_speed > 0.0f) {
+                        g_current_game->player.speed = g_current_game->playing->player_move_speed;
                     }
 
                     printf("[NET] Stats received: STR=%d AGI=%d INT=%d WIS=%d DEF=%d EVA=%d VIT=%d LCK=%d speed=%.0f wdmg=%d HP=%d/%d Mana=%d/%d\n",
-                           g_current_game->player_strength,
-                           g_current_game->player_agility,
-                           g_current_game->player_intelligence,
-                           g_current_game->player_wisdom,
-                           g_current_game->player_defense,
-                           g_current_game->player_evasion,
-                           g_current_game->player_vitality,
-                           g_current_game->player_luck,
-                           g_current_game->player_move_speed,
-                           g_current_game->player_weapon_damage,
+                           g_current_game->playing->player_strength,
+                           g_current_game->playing->player_agility,
+                           g_current_game->playing->player_intelligence,
+                           g_current_game->playing->player_wisdom,
+                           g_current_game->playing->player_defense,
+                           g_current_game->playing->player_evasion,
+                           g_current_game->playing->player_vitality,
+                           g_current_game->playing->player_luck,
+                           g_current_game->playing->player_move_speed,
+                           g_current_game->playing->player_weapon_damage,
                            current_hp, max_hp,
                            current_mana, max_mana);
                 }
@@ -733,7 +741,7 @@ static void process_packet(const char* data, int length) {
         case PACKET_KILL_REWARD:
             if (length >= (int)sizeof(KillRewardPacket)) {
                 KillRewardPacket* pkt = (KillRewardPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     uint32_t xp_gained    = ntohl(pkt->xp_gained);
                     uint32_t gold_gained  = ntohl(pkt->gold_gained);
                     uint64_t total_xp     = ntohll(pkt->total_xp);
@@ -745,11 +753,11 @@ static void process_packet(const char* data, int length) {
 
                     // Find an empty reward notification slot and spawn the notification
                     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
-                        if (!g_current_game->reward_notifications[i].active) {
-                            g_current_game->reward_notifications[i].xp_gained   = xp_gained;
-                            g_current_game->reward_notifications[i].gold_gained = gold_gained;
-                            g_current_game->reward_notifications[i].age         = 0.0f;
-                            g_current_game->reward_notifications[i].active      = 1;
+                        if (!g_current_game->playing->reward_notifications[i].active) {
+                            g_current_game->playing->reward_notifications[i].xp_gained   = xp_gained;
+                            g_current_game->playing->reward_notifications[i].gold_gained = gold_gained;
+                            g_current_game->playing->reward_notifications[i].age         = 0.0f;
+                            g_current_game->playing->reward_notifications[i].active      = 1;
                             break;
                         }
                     }
@@ -763,32 +771,38 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_NPC_INTERACT_RESPONSE:
             if (length >= (int)sizeof(NPCInteractResponsePacket)) {
-                memcpy(&g_npc_interact_response, data, sizeof(NPCInteractResponsePacket));
-                g_npc_interact_response.npc_name[31] = '\0';
-                g_npc_interact_response_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.npc_interact.data, data, sizeof(NPCInteractResponsePacket));
+                g_net.npc_interact.data.npc_name[31] = '\0';
+                g_net.npc_interact.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
                 printf("[NET] NPC Interact Response: NPC %u, Dialogue %u, Page %u\n",
-                       (uint32_t)ntohl(g_npc_interact_response.npc_id),
-                       (uint32_t)ntohl(g_npc_interact_response.dialogue_id),
-                       g_npc_interact_response.page_num);
+                       (uint32_t)ntohl(g_net.npc_interact.data.npc_id),
+                       (uint32_t)ntohl(g_net.npc_interact.data.dialogue_id),
+                       g_net.npc_interact.data.page_num);
             }
             break;
 
         case PACKET_DIALOGUE_UPDATE:
             if (length >= (int)sizeof(DialogueUpdatePacket)) {
-                memcpy(&g_dialogue_update, data, sizeof(DialogueUpdatePacket));
-                g_dialogue_update_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.dialogue_update.data, data, sizeof(DialogueUpdatePacket));
+                g_net.dialogue_update.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
                 printf("[NET] Dialogue Update: Dialogue %u, Page %u\n",
-                       (uint32_t)ntohl(g_dialogue_update.dialogue_id),
-                       g_dialogue_update.page_num);
+                       (uint32_t)ntohl(g_net.dialogue_update.data.dialogue_id),
+                       g_net.dialogue_update.data.page_num);
             }
             break;
 
         case PACKET_DIALOGUE_CLOSE:
             if (length >= (int)sizeof(DialogueClosePacket)) {
-                memcpy(&g_dialogue_close, data, sizeof(DialogueClosePacket));
-                g_dialogue_close_ready = TRUE;
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.dialogue_close.data, data, sizeof(DialogueClosePacket));
+                g_net.dialogue_close.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
                 printf("[NET] Dialogue Close: NPC %u\n",
-                       (uint32_t)ntohl(g_dialogue_close.npc_id));
+                       (uint32_t)ntohl(g_net.dialogue_close.data.npc_id));
             }
             break;
 
@@ -837,9 +851,9 @@ static void process_packet(const char* data, int length) {
                         g_current_game->player.info.health = (uint32_t)new_hp;
                     }
                     if (new_mana >= 0) {
-                        ability_bar_on_mana_update(&g_current_game->ability_bar,
+                        ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
                                                     new_mana,
-                                                    g_current_game->ability_bar.max_mana);
+                                                    g_current_game->playing->ability_bar.max_mana);
                     }
                     // Remove consumed item from inventory
                     if (g_current_game->inventory) {
@@ -888,21 +902,21 @@ static void process_packet(const char* data, int length) {
                 claimed_count = MAX_NEARBY_PLAYERS;
             }
             
-            if (g_current_game) {
-                g_current_game->nearby_player_count = claimed_count;
+            if (g_current_game && g_current_game->playing) {
+                g_current_game->playing->nearby_player_count = claimed_count;
                 for (int i = 0; i < claimed_count; i++) {
                     NearbyPlayerData* src = &pkt->players[i];
-                    g_current_game->nearby_players[i].player_id = ntohl(src->player_id);
-                    g_current_game->nearby_players[i].pos_x = src->pos_x;
-                    g_current_game->nearby_players[i].pos_y = src->pos_y;
-                    g_current_game->nearby_players[i].health = (int32_t)ntohl(src->health);
-                    g_current_game->nearby_players[i].max_health = (int32_t)ntohl(src->max_health);
-                    g_current_game->nearby_players[i].player_class = src->player_class;
-                    g_current_game->nearby_players[i].player_race = src->player_race;
-                    g_current_game->nearby_players[i].level = src->level;
-                    g_current_game->nearby_players[i].is_dead = src->is_dead;
-                    g_current_game->nearby_players[i].ping_ms = ntohs(src->ping_ms);
-                    snprintf(g_current_game->nearby_players[i].name, 32,
+                    g_current_game->playing->nearby_players[i].player_id = ntohl(src->player_id);
+                    g_current_game->playing->nearby_players[i].pos_x = src->pos_x;
+                    g_current_game->playing->nearby_players[i].pos_y = src->pos_y;
+                    g_current_game->playing->nearby_players[i].health = (int32_t)ntohl(src->health);
+                    g_current_game->playing->nearby_players[i].max_health = (int32_t)ntohl(src->max_health);
+                    g_current_game->playing->nearby_players[i].player_class = src->player_class;
+                    g_current_game->playing->nearby_players[i].player_race = src->player_race;
+                    g_current_game->playing->nearby_players[i].level = src->level;
+                    g_current_game->playing->nearby_players[i].is_dead = src->is_dead;
+                    g_current_game->playing->nearby_players[i].ping_ms = ntohs(src->ping_ms);
+                    snprintf(g_current_game->playing->nearby_players[i].name, 32,
                              "Player_%u", (uint32_t)ntohl(src->player_id));
                 }
             }
@@ -912,16 +926,16 @@ static void process_packet(const char* data, int length) {
         case PACKET_PROJECTILE_SPAWN:
             if (length >= (int)sizeof(ProjectileSpawnPacket)) {
                 ProjectileSpawnPacket* pkt = (ProjectileSpawnPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_VISIBLE_PROJECTILES; i++) {
-                        if (!g_current_game->projectiles[i].active) {
-                            g_current_game->projectiles[i].id = ntohl(pkt->projectile_id);
-                            g_current_game->projectiles[i].pos_x = pkt->pos_x;
-                            g_current_game->projectiles[i].pos_y = pkt->pos_y;
-                            g_current_game->projectiles[i].dir_x = pkt->dir_x;
-                            g_current_game->projectiles[i].dir_y = pkt->dir_y;
-                            g_current_game->projectiles[i].speed = pkt->speed;
-                            g_current_game->projectiles[i].active = 1;
+                        if (!g_current_game->playing->projectiles[i].active) {
+                            g_current_game->playing->projectiles[i].id = ntohl(pkt->projectile_id);
+                            g_current_game->playing->projectiles[i].pos_x = pkt->pos_x;
+                            g_current_game->playing->projectiles[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->projectiles[i].dir_x = pkt->dir_x;
+                            g_current_game->playing->projectiles[i].dir_y = pkt->dir_y;
+                            g_current_game->playing->projectiles[i].speed = pkt->speed;
+                            g_current_game->playing->projectiles[i].active = 1;
                             break;
                         }
                     }
@@ -949,14 +963,14 @@ static void process_packet(const char* data, int length) {
                 claimed_count = MAX_PROJECTILES_PER_PACKET;
             }
             
-            if (g_current_game) {
+            if (g_current_game && g_current_game->playing) {
                 for (int p = 0; p < claimed_count; p++) {
                     uint32_t pid = ntohl(pkt->projectiles[p].projectile_id);
                     for (int i = 0; i < MAX_VISIBLE_PROJECTILES; i++) {
-                        if (g_current_game->projectiles[i].active &&
-                            g_current_game->projectiles[i].id == pid) {
-                            g_current_game->projectiles[i].pos_x = pkt->projectiles[p].pos_x;
-                            g_current_game->projectiles[i].pos_y = pkt->projectiles[p].pos_y;
+                        if (g_current_game->playing->projectiles[i].active &&
+                            g_current_game->playing->projectiles[i].id == pid) {
+                            g_current_game->playing->projectiles[i].pos_x = pkt->projectiles[p].pos_x;
+                            g_current_game->playing->projectiles[i].pos_y = pkt->projectiles[p].pos_y;
                             break;
                         }
                     }
@@ -968,12 +982,12 @@ static void process_packet(const char* data, int length) {
         case PACKET_PROJECTILE_DESTROY:
             if (length >= (int)sizeof(ProjectileDestroyPacket)) {
                 ProjectileDestroyPacket* pkt = (ProjectileDestroyPacket*)data;
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     uint32_t pid = ntohl(pkt->projectile_id);
                     for (int i = 0; i < MAX_VISIBLE_PROJECTILES; i++) {
-                        if (g_current_game->projectiles[i].active &&
-                            g_current_game->projectiles[i].id == pid) {
-                            g_current_game->projectiles[i].active = 0;
+                        if (g_current_game->playing->projectiles[i].active &&
+                            g_current_game->playing->projectiles[i].id == pid) {
+                            g_current_game->playing->projectiles[i].active = 0;
                             break;
                         }
                     }
@@ -987,9 +1001,9 @@ static void process_packet(const char* data, int length) {
                 uint32_t dead_id = ntohl(pkt->dead_player_id);
                 printf("[NET] Player %u died (killer: %u)\n",
                        dead_id, (uint32_t)ntohl(pkt->killer_id));
-                if (g_current_game && dead_id == g_character_id) {
-                    g_current_game->is_dead = 1;
-                    g_current_game->death_timer = 0.0f;
+                if (g_current_game && g_current_game->playing && dead_id == g_net.character_id) {
+                    g_current_game->playing->is_dead = 1;
+                    g_current_game->playing->death_timer = 0.0f;
                     g_current_game->player.info.health = 0;
                     audio_event_death();
                 }
@@ -1002,15 +1016,15 @@ static void process_packet(const char* data, int length) {
                 uint32_t respawn_id = ntohl(pkt->player_id);
                 printf("[NET] Player %u respawned at (%.1f, %.1f)\n",
                        respawn_id, pkt->pos_x, pkt->pos_y);
-                if (g_current_game && respawn_id == g_character_id) {
-                    g_current_game->is_dead = 0;
-                    g_current_game->death_timer = 0.0f;
+                if (g_current_game && g_current_game->playing && respawn_id == g_net.character_id) {
+                    g_current_game->playing->is_dead = 0;
+                    g_current_game->playing->death_timer = 0.0f;
                     g_current_game->player.x = pkt->pos_x;
                     g_current_game->player.y = pkt->pos_y;
                     g_current_game->player.info.health = (uint32_t)ntohl(pkt->health);
                     g_current_game->player.info.max_health = (uint32_t)ntohl(pkt->max_health);
                     g_current_game->player.needs_position_reset = 1;
-                    ability_bar_on_mana_update(&g_current_game->ability_bar,
+                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
                                                (int32_t)ntohl(pkt->mana),
                                                (int32_t)ntohl(pkt->max_mana));
                 }
@@ -1023,15 +1037,15 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Loot drop: ground_id=%u item=%u qty=%u at (%.1f, %.1f)\n",
                        (uint32_t)ntohl(pkt->ground_item_id), (uint32_t)ntohl(pkt->item_id),
                        pkt->quantity, pkt->pos_x, pkt->pos_y);
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
-                        if (!g_current_game->ground_items[i].active) {
-                            g_current_game->ground_items[i].ground_item_id = ntohl(pkt->ground_item_id);
-                            g_current_game->ground_items[i].item_id = ntohl(pkt->item_id);
-                            g_current_game->ground_items[i].quantity = pkt->quantity;
-                            g_current_game->ground_items[i].pos_x = pkt->pos_x;
-                            g_current_game->ground_items[i].pos_y = pkt->pos_y;
-                            g_current_game->ground_items[i].active = 1;
+                        if (!g_current_game->playing->ground_items[i].active) {
+                            g_current_game->playing->ground_items[i].ground_item_id = ntohl(pkt->ground_item_id);
+                            g_current_game->playing->ground_items[i].item_id = ntohl(pkt->item_id);
+                            g_current_game->playing->ground_items[i].quantity = pkt->quantity;
+                            g_current_game->playing->ground_items[i].pos_x = pkt->pos_x;
+                            g_current_game->playing->ground_items[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->ground_items[i].active = 1;
                             break;
                         }
                     }
@@ -1049,9 +1063,9 @@ static void process_packet(const char* data, int length) {
                     audio_event_pickup();
                     uint32_t gid = ntohl(pkt->ground_item_id);
                     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
-                        if (g_current_game->ground_items[i].active &&
-                            g_current_game->ground_items[i].ground_item_id == gid) {
-                            g_current_game->ground_items[i].active = 0;
+                        if (g_current_game->playing->ground_items[i].active &&
+                            g_current_game->playing->ground_items[i].ground_item_id == gid) {
+                            g_current_game->playing->ground_items[i].active = 0;
                             break;
                         }
                     }
@@ -1072,11 +1086,11 @@ static void process_packet(const char* data, int length) {
                 LootDespawnPacket* pkt = (LootDespawnPacket*)data;
                 uint32_t despawn_id = ntohl(pkt->ground_item_id);
                 printf("[NET] Loot despawned: %u\n", despawn_id);
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
-                        if (g_current_game->ground_items[i].active &&
-                            g_current_game->ground_items[i].ground_item_id == despawn_id) {
-                            g_current_game->ground_items[i].active = 0;
+                        if (g_current_game->playing->ground_items[i].active &&
+                            g_current_game->playing->ground_items[i].ground_item_id == despawn_id) {
+                            g_current_game->playing->ground_items[i].active = 0;
                             break;
                         }
                     }
@@ -1089,22 +1103,22 @@ static void process_packet(const char* data, int length) {
                 NPCTelegraphStartPacket* pkt = (NPCTelegraphStartPacket*)data;
                 printf("[NET] Telegraph start: npc %u, shape %u, cast %.1fs\n",
                        (uint32_t)ntohl(pkt->npc_id), pkt->shape, pkt->cast_time);
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
-                        if (!g_current_game->telegraphs[i].active) {
-                            g_current_game->telegraphs[i].npc_id = ntohl(pkt->npc_id);
-                            g_current_game->telegraphs[i].shape = pkt->shape;
-                            g_current_game->telegraphs[i].pos_x = pkt->pos_x;
-                            g_current_game->telegraphs[i].pos_y = pkt->pos_y;
-                            g_current_game->telegraphs[i].dir_x = pkt->dir_x;
-                            g_current_game->telegraphs[i].dir_y = pkt->dir_y;
-                            g_current_game->telegraphs[i].radius = pkt->radius;
-                            g_current_game->telegraphs[i].angle = pkt->angle;
-                            g_current_game->telegraphs[i].width = pkt->width;
-                            g_current_game->telegraphs[i].length = pkt->length;
-                            g_current_game->telegraphs[i].cast_time = pkt->cast_time;
-                            g_current_game->telegraphs[i].elapsed = 0.0f;
-                            g_current_game->telegraphs[i].active = 1;
+                        if (!g_current_game->playing->telegraphs[i].active) {
+                            g_current_game->playing->telegraphs[i].npc_id = ntohl(pkt->npc_id);
+                            g_current_game->playing->telegraphs[i].shape = pkt->shape;
+                            g_current_game->playing->telegraphs[i].pos_x = pkt->pos_x;
+                            g_current_game->playing->telegraphs[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->telegraphs[i].dir_x = pkt->dir_x;
+                            g_current_game->playing->telegraphs[i].dir_y = pkt->dir_y;
+                            g_current_game->playing->telegraphs[i].radius = pkt->radius;
+                            g_current_game->playing->telegraphs[i].angle = pkt->angle;
+                            g_current_game->playing->telegraphs[i].width = pkt->width;
+                            g_current_game->playing->telegraphs[i].length = pkt->length;
+                            g_current_game->playing->telegraphs[i].cast_time = pkt->cast_time;
+                            g_current_game->playing->telegraphs[i].elapsed = 0.0f;
+                            g_current_game->playing->telegraphs[i].active = 1;
                             break;
                         }
                     }
@@ -1117,11 +1131,11 @@ static void process_packet(const char* data, int length) {
                 NPCTelegraphResolvePacket* pkt = (NPCTelegraphResolvePacket*)data;
                 uint32_t resolve_npc = ntohl(pkt->npc_id);
                 printf("[NET] Telegraph resolve: npc %u\n", resolve_npc);
-                if (g_current_game) {
+                if (g_current_game && g_current_game->playing) {
                     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
-                        if (g_current_game->telegraphs[i].active &&
-                            g_current_game->telegraphs[i].npc_id == resolve_npc) {
-                            g_current_game->telegraphs[i].active = 0;
+                        if (g_current_game->playing->telegraphs[i].active &&
+                            g_current_game->playing->telegraphs[i].npc_id == resolve_npc) {
+                            g_current_game->playing->telegraphs[i].active = 0;
                             break;
                         }
                     }
@@ -1136,8 +1150,8 @@ static void process_packet(const char* data, int length) {
                 pkt->message[MAX_CHAT_MESSAGE - 1] = '\0';
                 printf("[CHAT] [ch%u] %s: %s\n",
                        pkt->channel, pkt->sender_name, pkt->message);
-                if (g_current_game) {
-                    ChatState* chat = &g_current_game->chat;
+                if (g_current_game && g_current_game->playing) {
+                    ChatState* chat = &g_current_game->playing->chat;
                     int idx = chat->line_count;
                     if (idx >= MAX_CHAT_LINES) {
                         memmove(&chat->lines[0], &chat->lines[1],
@@ -1169,12 +1183,12 @@ static void process_packet(const char* data, int length) {
                 PartyInviteNotifyPacket* pkt = (PartyInviteNotifyPacket*)data;
                 pkt->from_name[31] = '\0';
                 printf("[NET] Party invite from: %s\n", pkt->from_name);
-                if (g_current_game) {
-                    g_current_game->party.has_pending_invite = 1;
-                    g_current_game->party.invite_from_id = ntohl(pkt->from_id);
-                    strncpy(g_current_game->party.invite_from_name, pkt->from_name, 31);
-                    g_current_game->party.invite_from_name[31] = '\0';
-                    g_current_game->party.invite_timer = 30.0f;
+                if (g_current_game && g_current_game->playing) {
+                    g_current_game->playing->party.has_pending_invite = 1;
+                    g_current_game->playing->party.invite_from_id = ntohl(pkt->from_id);
+                    strncpy(g_current_game->playing->party.invite_from_name, pkt->from_name, 31);
+                    g_current_game->playing->party.invite_from_name[31] = '\0';
+                    g_current_game->playing->party.invite_timer = 30.0f;
                 }
             }
             break;
@@ -1201,8 +1215,8 @@ static void process_packet(const char* data, int length) {
             }
             
             printf("[NET] Party update: %u members\n", claimed_count);
-            if (g_current_game) {
-                PartyState* ps = &g_current_game->party;
+            if (g_current_game && g_current_game->playing) {
+                PartyState* ps = &g_current_game->playing->party;
                 ps->party_id = ntohl(pkt->party_id);
                 ps->leader_id = ntohl(pkt->leader_id);
                 ps->member_count = claimed_count;
@@ -1225,13 +1239,13 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_PARTY_DISBAND:
             printf("[NET] Party disbanded\n");
-            if (g_current_game) {
-                memset(&g_current_game->party, 0, sizeof(PartyState));
+            if (g_current_game && g_current_game->playing) {
+                memset(&g_current_game->playing->party, 0, sizeof(PartyState));
             }
             break;
 
         case PACKET_DISCONNECT:
-            g_connected = FALSE;
+            g_net.connected = FALSE;
             break;
 
         // ----------------------------------------------------------------
@@ -1239,9 +1253,9 @@ static void process_packet(const char* data, int length) {
         // ----------------------------------------------------------------
 
         case PACKET_SHOP_OPEN:
-            if (length >= (int)sizeof(ShopOpenPacket) && g_current_game) {
+            if (length >= (int)sizeof(ShopOpenPacket) && g_current_game && g_current_game->playing) {
                 ShopOpenPacket* pkt = (ShopOpenPacket*)data;
-                ShopState* shop = &g_current_game->shop;
+                ShopState* shop = &g_current_game->playing->shop;
                 shop->shop_id = ntohl(pkt->shop_id);
                 uint8_t count = pkt->item_count;
                 if (count > MAX_SHOP_ITEMS) count = MAX_SHOP_ITEMS;
@@ -1303,7 +1317,7 @@ static void process_packet(const char* data, int length) {
             // Server sends a variable-length packet: fixed header + count entries.
             // Minimum needed: up to (but not including) the entries array.
             int sl_base = (int)offsetof(SessionListResponsePacket, entries);
-            if (length < sl_base || !g_current_game) break;
+            if (length < sl_base || !g_current_game || !g_current_game->playing) break;
 
             SessionListResponsePacket* pkt = (SessionListResponsePacket*)data;
             uint8_t count = pkt->count;
@@ -1317,14 +1331,14 @@ static void process_packet(const char* data, int length) {
                 break;
             }
 
-            g_current_game->session_total_players = ntohl(pkt->total_players);
-            g_current_game->session_total_pages   = ntohs(pkt->total_pages);
-            g_current_game->session_current_page  = ntohs(pkt->current_page);
-            g_current_game->session_list_count    = (int)count;
+            g_current_game->playing->session_total_players = ntohl(pkt->total_players);
+            g_current_game->playing->session_total_pages   = ntohs(pkt->total_pages);
+            g_current_game->playing->session_current_page  = ntohs(pkt->current_page);
+            g_current_game->playing->session_list_count    = (int)count;
 
             for (int i = 0; i < (int)count; i++) {
                 SessionPlayerEntry* src = &pkt->entries[i];
-                SessionPlayer*      dst = &g_current_game->session_list[i];
+                SessionPlayer*      dst = &g_current_game->playing->session_list[i];
                 dst->player_id    = ntohl(src->player_id);
                 src->name[31]     = '\0';
                 memcpy(dst->name, src->name, 32);
@@ -1334,9 +1348,9 @@ static void process_packet(const char* data, int length) {
                 dst->ping_ms      = ntohs(src->ping_ms);
             }
             printf("[NET] Session list: page %u/%u, %u total players, %d on page\n",
-                   g_current_game->session_current_page + 1,
-                   g_current_game->session_total_pages,
-                   g_current_game->session_total_players,
+                   g_current_game->playing->session_current_page + 1,
+                   g_current_game->playing->session_total_pages,
+                   g_current_game->playing->session_total_players,
                    (int)count);
             break;
         }
@@ -1346,7 +1360,7 @@ static void process_packet(const char* data, int length) {
         // ----------------------------------------------------------------
 
         case PACKET_QUEST_ACCEPT:
-            if (length >= (int)sizeof(QuestAcceptPacket) && g_current_game) {
+            if (length >= (int)sizeof(QuestAcceptPacket) && g_current_game && g_current_game->playing) {
                 QuestAcceptPacket* pkt = (QuestAcceptPacket*)data;
                 uint32_t quest_id = ntohl(pkt->quest_id);
                 pkt->title[47] = '\0';
@@ -1361,7 +1375,7 @@ static void process_packet(const char* data, int length) {
                     reqs[i] = (int32_t)ntohl((uint32_t)pkt->objectives[i].required);
                 }
 
-                quest_log_add(&g_current_game->quest_log,
+                quest_log_add(&g_current_game->playing->quest_log,
                               quest_id, pkt->title,
                               obj_count, descs, reqs);
                 printf("[NET] Quest accepted: id=%u '%s'\n", quest_id, pkt->title);
@@ -1369,12 +1383,12 @@ static void process_packet(const char* data, int length) {
             break;
 
         case PACKET_QUEST_PROGRESS:
-            if (length >= (int)sizeof(QuestProgressPacket) && g_current_game) {
+            if (length >= (int)sizeof(QuestProgressPacket) && g_current_game && g_current_game->playing) {
                 QuestProgressPacket* pkt = (QuestProgressPacket*)data;
                 uint32_t quest_id = ntohl(pkt->quest_id);
                 int32_t current  = (int32_t)ntohl((uint32_t)pkt->current);
                 int32_t required = (int32_t)ntohl((uint32_t)pkt->required);
-                quest_log_update_progress(&g_current_game->quest_log,
+                quest_log_update_progress(&g_current_game->playing->quest_log,
                                           quest_id, pkt->obj_index,
                                           current, required);
                 printf("[NET] Quest progress: id=%u obj=%u %d/%d\n",
@@ -1383,21 +1397,21 @@ static void process_packet(const char* data, int length) {
             break;
 
         case PACKET_QUEST_COMPLETE:
-            if (length >= (int)sizeof(QuestCompletePacket) && g_current_game) {
+            if (length >= (int)sizeof(QuestCompletePacket) && g_current_game && g_current_game->playing) {
                 QuestCompletePacket* pkt = (QuestCompletePacket*)data;
                 uint32_t quest_id  = ntohl(pkt->quest_id);
                 uint32_t xp_reward = ntohl(pkt->xp_reward);
                 uint32_t gold_reward = ntohl(pkt->gold_reward);
 
-                quest_log_complete(&g_current_game->quest_log, quest_id);
+                quest_log_complete(&g_current_game->playing->quest_log, quest_id);
 
                 // Show reward notification (reuse existing kill-reward popup)
                 for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
-                    if (!g_current_game->reward_notifications[i].active) {
-                        g_current_game->reward_notifications[i].xp_gained   = xp_reward;
-                        g_current_game->reward_notifications[i].gold_gained = gold_reward;
-                        g_current_game->reward_notifications[i].age         = 0.0f;
-                        g_current_game->reward_notifications[i].active      = 1;
+                    if (!g_current_game->playing->reward_notifications[i].active) {
+                        g_current_game->playing->reward_notifications[i].xp_gained   = xp_reward;
+                        g_current_game->playing->reward_notifications[i].gold_gained = gold_reward;
+                        g_current_game->playing->reward_notifications[i].age         = 0.0f;
+                        g_current_game->playing->reward_notifications[i].active      = 1;
                         break;
                     }
                 }
@@ -1421,62 +1435,67 @@ static void process_packet(const char* data, int length) {
 // ============================================================================
 
 int network_init(uint32_t account_id) {
-    if (g_initialized) return 1;
-    
+    if (g_net.initialized) return 1;
+
+    memset(&g_net, 0, sizeof(g_net));
+    InitializeCriticalSection(&g_net.response_lock);
+    g_net.socket = INVALID_SOCKET;
+
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         printf("[NET] WSAStartup failed\n");
         return 0;
     }
-    
-    g_account_id = account_id;
-    g_initialized = TRUE;
-    g_last_ping_time = get_time();
-    
+
+    g_net.account_id = account_id;
+    g_net.initialized = TRUE;
+    g_net.last_ping_time = get_time();
+
     printf("[NET] Initialized (account %u)\n", account_id);
     return 1;
 }
 
 void network_cleanup(void) {
-    if (g_socket != INVALID_SOCKET) {
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+    if (g_net.socket != INVALID_SOCKET) {
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
     }
-    
-    if (g_initialized) {
+
+    if (g_net.initialized) {
         WSACleanup();
-        g_initialized = FALSE;
+        g_net.initialized = FALSE;
     }
-    
-    g_connected = FALSE;
-    g_recv_len = 0;
+
+    g_net.connected = FALSE;
+    g_net.recv_len = 0;
+    DeleteCriticalSection(&g_net.response_lock);
 }
 
 void network_disconnect(void) {
-    if (g_socket != INVALID_SOCKET) {
-        if (g_connected) {
+    if (g_net.socket != INVALID_SOCKET) {
+        if (g_net.connected) {
             // Send a clean logout before closing so the server can save immediately
             PacketHeader pkt;
             memset(&pkt, 0, sizeof(pkt));
             pkt.type = PACKET_LOGOUT;
-            pkt.player_id = htonl(g_account_id);
+            pkt.player_id = htonl(g_net.account_id);
             pkt.payload_size = 0;
-            send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+            send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
         }
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
     }
-    g_connected = FALSE;
-    g_pending_pings = 0;
-    g_recv_len = 0;
+    g_net.connected = FALSE;
+    g_net.pending_pings = 0;
+    g_net.recv_len = 0;
 }
 
 int network_is_connected(void) {
-    return g_connected;
+    return g_net.connected;
 }
 
 void network_set_character_id(uint32_t character_id) {
-    g_character_id = character_id;
+    g_net.character_id = character_id;
     printf("[NET] Character ID set to %u\n", character_id);
 }
 
@@ -1636,64 +1655,64 @@ static int get_packet_size(uint8_t type) {
 }
 
 void network_update(void) {
-    if (g_socket == INVALID_SOCKET || !g_connected) return;
-    
+    if (g_net.socket == INVALID_SOCKET || !g_net.connected) return;
+
     // Read as much as we can into the reassembly buffer
     while (1) {
-        int space = (int)sizeof(g_recv_buf) - g_recv_len;
+        int space = (int)sizeof(g_net.recv_buf) - g_net.recv_len;
         if (space <= 0) break;
-        
-        int bytes = recv(g_socket, g_recv_buf + g_recv_len, space, 0);
-        
+
+        int bytes = recv(g_net.socket, g_net.recv_buf + g_net.recv_len, space, 0);
+
         if (bytes > 0) {
-            g_recv_len += bytes;
-            NET_LOG("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_recv_len);
+            g_net.recv_len += bytes;
+            NET_LOG("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_net.recv_len);
         } else if (bytes == 0) {
             printf("[NET] Server closed connection\n");
-            g_connected = FALSE;
-            closesocket(g_socket);
-            g_socket = INVALID_SOCKET;
-            g_recv_len = 0;
+            g_net.connected = FALSE;
+            closesocket(g_net.socket);
+            g_net.socket = INVALID_SOCKET;
+            g_net.recv_len = 0;
             return;
         } else {
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK) break;
             printf("[NET] Socket error: %d\n", err);
-            g_connected = FALSE;
-            closesocket(g_socket);
-            g_socket = INVALID_SOCKET;
-            g_recv_len = 0;
+            g_net.connected = FALSE;
+            closesocket(g_net.socket);
+            g_net.socket = INVALID_SOCKET;
+            g_net.recv_len = 0;
             return;
         }
     }
-    
+
     // Process all complete packets in the buffer
     int offset = 0;
-    while (offset < g_recv_len) {
-        int remaining = g_recv_len - offset;
-        
+    while (offset < g_net.recv_len) {
+        int remaining = g_net.recv_len - offset;
+
         // Need at least a header
         if (remaining < (int)sizeof(PacketHeader)) {
             NET_LOG("[NET] Not enough bytes for header (have %d, need %zu)\n",
                    remaining, sizeof(PacketHeader));
             break;
         }
-        
-        uint8_t pkt_type = (uint8_t)g_recv_buf[offset];
-        PacketHeader* hdr = (PacketHeader*)(g_recv_buf + offset);
+
+        uint8_t pkt_type = (uint8_t)g_net.recv_buf[offset];
+        PacketHeader* hdr = (PacketHeader*)(g_net.recv_buf + offset);
         int pkt_size = (int)sizeof(PacketHeader) + (int)ntohs(hdr->payload_size);
 
         NET_LOG("[NET] Packet type %d (0x%02X) at offset %d — payload_size=%d, total=%d, remaining=%d\n",
                pkt_type, pkt_type, offset, (int)ntohs(hdr->payload_size), pkt_size, remaining);
 
         // Reject oversized packets (corrupted header guard)
-        if (pkt_size > (int)sizeof(g_recv_buf)) {
+        if (pkt_size > (int)sizeof(g_net.recv_buf)) {
             printf("[NET] ❌ Packet type %d (0x%02X) claims %d bytes — exceeds buffer, disconnecting\n",
                    pkt_type, pkt_type, pkt_size);
-            g_connected = FALSE;
-            closesocket(g_socket);
-            g_socket = INVALID_SOCKET;
-            g_recv_len = 0;
+            g_net.connected = FALSE;
+            closesocket(g_net.socket);
+            g_net.socket = INVALID_SOCKET;
+            g_net.recv_len = 0;
             return;
         }
 
@@ -1706,20 +1725,20 @@ void network_update(void) {
 
         // Process the complete packet
         NET_LOG("[NET] Processing complete packet type %d (%d bytes)\n", pkt_type, pkt_size);
-        process_packet(g_recv_buf + offset, pkt_size);
+        process_packet(g_net.recv_buf + offset, pkt_size);
         offset += pkt_size;
     }
-    
+
     // Shift remaining data to start of buffer
     if (offset > 0) {
-        if (offset < g_recv_len) {
-            int leftover = g_recv_len - offset;
+        if (offset < g_net.recv_len) {
+            int leftover = g_net.recv_len - offset;
             NET_LOG("[NET] Shifting %d leftover bytes to start of buffer\n", leftover);
-            memmove(g_recv_buf, g_recv_buf + offset, leftover);
-            g_recv_len = leftover;
+            memmove(g_net.recv_buf, g_net.recv_buf + offset, leftover);
+            g_net.recv_len = leftover;
         } else {
             // Processed all data
-            g_recv_len = 0;
+            g_net.recv_len = 0;
         }
     }
 }
@@ -1727,7 +1746,7 @@ void network_update(void) {
 void network_update_with_ping(int game_mode) {
     network_update();
 
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     // Send pings in all connected states
     if (game_mode == GAME_MODE_MAIN_MENU      ||
@@ -1736,16 +1755,16 @@ void network_update_with_ping(int game_mode) {
         game_mode == GAME_MODE_PLAYING) {
 
         double now = get_time();
-        if (now - g_last_ping_time >= PING_INTERVAL) {
+        if (now - g_net.last_ping_time >= PING_INTERVAL) {
             // Too many unanswered pings — server is unreachable
-            if (g_pending_pings >= PING_MAX_MISSED) {
+            if (g_net.pending_pings >= PING_MAX_MISSED) {
                 printf("[NET] Ping timeout: %d pings unanswered, disconnecting\n",
-                       g_pending_pings);
+                       g_net.pending_pings);
                 network_disconnect();
                 return;
             }
             network_send_ping();
-            g_last_ping_time = now;
+            g_net.last_ping_time = now;
         }
     }
 }
@@ -1756,42 +1775,42 @@ void network_update_with_ping(int game_mode) {
 
 int network_connect_to_realm(const char* ip, uint16_t port,
                             const char* session_key, uint32_t account_id) {
-    if (!g_initialized) return 0;
-    
-    g_recv_len = 0;  // Clear stream buffer for new connection
-    g_realm_connect_ack_ready = FALSE;  // Reset ACK flag
-    
+    if (!g_net.initialized) return 0;
+
+    g_net.recv_len = 0;  // Clear stream buffer for new connection
+    g_net.realm_connect_ack.ready = FALSE;  // Reset ACK flag
+
     printf("[NET] Connecting to realm %s:%u...\n", ip, port);
-    
-    g_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (g_socket == INVALID_SOCKET) {
+
+    g_net.socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (g_net.socket == INVALID_SOCKET) {
         printf("[NET] Failed to create socket\n");
         return 0;
     }
-    
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    
+
     if (inet_pton(AF_INET, ip, &addr.sin_addr) <= 0) {
         printf("[NET] Invalid IP address: %s\n", ip);
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
-    if (connect(g_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+
+    if (connect(g_net.socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         printf("[NET] Failed to connect to realm server\n");
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
+
     // Set non-blocking IMMEDIATELY
     u_long mode = 1;
-    ioctlsocket(g_socket, FIONBIO, &mode);
-    
+    ioctlsocket(g_net.socket, FIONBIO, &mode);
+
     // Send connect packet
     RealmConnectPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
@@ -1799,169 +1818,199 @@ int network_connect_to_realm(const char* ip, uint16_t port,
     pkt.header.player_id = htonl(account_id);
     pkt.header.payload_size = 0;
     memcpy(pkt.header.session_key, session_key, 32);
-    
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) != sizeof(pkt)) {
+
+    if (send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) != sizeof(pkt)) {
         printf("[NET] Failed to send realm connect packet\n");
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
+
     // Wait for ACK using network_update()
     printf("[NET] Waiting for realm server ACK...\n");
     double start_time = get_time();
     double timeout = 10.0;
-    
-    g_connected = TRUE;  // Temporarily set to allow network_update()
-    
-    while (!g_realm_connect_ack_ready) {
+
+    g_net.connected = TRUE;  // Temporarily set to allow network_update()
+
+    while (!g_net.realm_connect_ack.ready) {
         network_update();
-        
+
         if (get_time() - start_time > timeout) {
             printf("[NET] Timeout waiting for realm server ACK\n");
-            g_connected = FALSE;
-            closesocket(g_socket);
-            g_socket = INVALID_SOCKET;
+            g_net.connected = FALSE;
+            closesocket(g_net.socket);
+            g_net.socket = INVALID_SOCKET;
             return 0;
         }
-        
+
         Sleep(10);
     }
-    
-    if (!g_realm_connect_ack.success) {
-        printf("[NET] Realm server rejected connection: %s\n", 
-               g_realm_connect_ack.message);
-        g_connected = FALSE;
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+
+    if (!g_net.realm_connect_ack.data.success) {
+        printf("[NET] Realm server rejected connection: %s\n",
+               g_net.realm_connect_ack.data.message);
+        g_net.connected = FALSE;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
-    g_connected = TRUE;
-    g_pending_pings = 0;
-    g_last_ping_time = get_time();
-    printf("[NET] Connected to realm: %s\n", g_realm_connect_ack.message);
+
+    g_net.connected = TRUE;
+    g_net.pending_pings = 0;
+    g_net.last_ping_time = get_time();
+    printf("[NET] Connected to realm: %s\n", g_net.realm_connect_ack.data.message);
     return 1;
 }
 
 int network_request_world_list(void) {
-    if (!g_connected) return 0;
-    
-    g_world_list_ready = FALSE;
-    
+    if (!g_net.connected) return 0;
+
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.world_list.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
     WorldListRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_WORLD_LIST_REQUEST;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(WorldListRequestPacket) - sizeof(PacketHeader));
-    
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_world_list(WorldListResponsePacket* out) {
-    if (!g_world_list_ready) return 0;
-    
-    memcpy(out, &g_world_list, sizeof(WorldListResponsePacket));
-    g_world_list_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.world_list.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.world_list.data, sizeof(WorldListResponsePacket));
+    g_net.world_list.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 int network_request_character_list(uint32_t world_id) {
-    if (!g_connected) return 0;
-    
-    g_char_list_ready = FALSE;
-    
+    if (!g_net.connected) return 0;
+
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.char_list.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
     CharacterListRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_CHARACTER_LIST_REQUEST;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(CharacterListRequestPacket) - sizeof(PacketHeader));
     pkt.world_id = htonl(world_id);
-    
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_character_list(CharacterListResponsePacket* out) {
-    if (!g_char_list_ready) return 0;
-    
-    memcpy(out, &g_char_list, sizeof(CharacterListResponsePacket));
-    g_char_list_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.char_list.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.char_list.data, sizeof(CharacterListResponsePacket));
+    g_net.char_list.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 int network_create_character(uint32_t world_id, const char* name,
                             uint32_t class_id, uint32_t race_id) {
-    if (!g_connected) return 0;
-    
-    g_char_create_ready = FALSE;
-    
+    if (!g_net.connected) return 0;
+
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.char_create.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
     CharacterCreateRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_CHARACTER_CREATE_REQUEST;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(CharacterCreateRequestPacket) - sizeof(PacketHeader));
     pkt.world_id = htonl(world_id);
     strncpy(pkt.name, name, 31);
     pkt.class_id = htonl(class_id);
     pkt.race_id = htonl(race_id);
-    
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_character_create_response(CharacterCreateResponsePacket* out) {
-    if (!g_char_create_ready) return 0;
-
-    memcpy(out, &g_char_create, sizeof(CharacterCreateResponsePacket));
-    g_char_create_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.char_create.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.char_create.data, sizeof(CharacterCreateResponsePacket));
+    g_net.char_create.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 int network_delete_character(uint32_t world_id, uint32_t character_id) {
-    if (!g_connected) return 0;
+    if (!g_net.connected) return 0;
 
-    g_char_delete_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.char_delete.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
 
     CharacterDeleteRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_CHARACTER_DELETE_REQUEST;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(CharacterDeleteRequestPacket) - sizeof(PacketHeader));
     pkt.character_id = htonl(character_id);
     pkt.world_id = htonl(world_id);
 
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_character_delete_response(CharacterDeleteResponsePacket* out) {
-    if (!g_char_delete_ready) return 0;
-
-    memcpy(out, &g_char_delete, sizeof(CharacterDeleteResponsePacket));
-    g_char_delete_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.char_delete.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.char_delete.data, sizeof(CharacterDeleteResponsePacket));
+    g_net.char_delete.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 int network_request_enter_world(uint32_t character_id, uint32_t world_id) {
-    if (!g_connected) return 0;
-    
-    g_enter_world_ready = FALSE;
-    
+    if (!g_net.connected) return 0;
+
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.enter_world.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
     EnterWorldPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_ENTER_WORLD;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(EnterWorldPacket) - sizeof(PacketHeader));
     pkt.character_id = htonl(character_id);
     pkt.world_id = htonl(world_id);
-    
+
     printf("[NET] Requesting enter world (char %u, world %u)\n", character_id, world_id);
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_enter_world_response(EnterWorldResponsePacket* out) {
-    if (!g_enter_world_ready) return 0;
-    
-    memcpy(out, &g_enter_world, sizeof(EnterWorldResponsePacket));
-    g_enter_world_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.enter_world.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.enter_world.data, sizeof(EnterWorldResponsePacket));
+    g_net.enter_world.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
@@ -1971,47 +2020,47 @@ int network_get_enter_world_response(EnterWorldResponsePacket* out) {
 
 int network_connect_to_world(const char* ip, uint16_t port,
                             const char* game_ticket, uint32_t character_id) {
-    if (!g_initialized) return 0;
-    
-    g_recv_len = 0;  // Clear stream buffer for new connection
-    g_world_connect_ack_ready = FALSE;  // Reset ACK flag
-    
+    if (!g_net.initialized) return 0;
+
+    g_net.recv_len = 0;  // Clear stream buffer for new connection
+    g_net.world_connect_ack.ready = FALSE;  // Reset ACK flag
+
     printf("[NET] Connecting to world %s:%u...\n", ip, port);
-    
+
     // Close realm connection first
-    if (g_socket != INVALID_SOCKET) {
-        closesocket(g_socket);
+    if (g_net.socket != INVALID_SOCKET) {
+        closesocket(g_net.socket);
     }
-    
-    g_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (g_socket == INVALID_SOCKET) {
+
+    g_net.socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (g_net.socket == INVALID_SOCKET) {
         printf("[NET] Failed to create socket\n");
         return 0;
     }
-    
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    
+
     if (inet_pton(AF_INET, ip, &addr.sin_addr) <= 0) {
         printf("[NET] Invalid IP address: %s\n", ip);
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
-    if (connect(g_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+
+    if (connect(g_net.socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         printf("[NET] Failed to connect to world server\n");
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
+
     // Set non-blocking IMMEDIATELY (before any recv)
     u_long mode = 1;
-    ioctlsocket(g_socket, FIONBIO, &mode);
-    
+    ioctlsocket(g_net.socket, FIONBIO, &mode);
+
     // Send world connect packet
     WorldConnectPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
@@ -2020,74 +2069,81 @@ int network_connect_to_world(const char* ip, uint16_t port,
     pkt.header.payload_size = htons(sizeof(WorldConnectPacket) - sizeof(PacketHeader));
     memcpy(pkt.game_ticket, game_ticket, 64);
     pkt.character_id = htonl(character_id);
-    
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) != sizeof(pkt)) {
+
+    if (send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) != sizeof(pkt)) {
         printf("[NET] Failed to send world connect packet\n");
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
+
     // Wait for ACK by calling network_update() in a loop
     printf("[NET] Waiting for world server ACK...\n");
     double start_time = get_time();
     double timeout = 5.0;  // 5 second timeout
-    
-    g_connected = TRUE;  // Temporarily set to allow network_update() to work
-    
-    while (!g_world_connect_ack_ready) {
+
+    g_net.connected = TRUE;  // Temporarily set to allow network_update() to work
+
+    while (!g_net.world_connect_ack.ready) {
         network_update();  // This will process incoming packets including the ACK
-        
+
         if (get_time() - start_time > timeout) {
             printf("[NET] Timeout waiting for world server ACK\n");
-            g_connected = FALSE;
-            closesocket(g_socket);
-            g_socket = INVALID_SOCKET;
+            g_net.connected = FALSE;
+            closesocket(g_net.socket);
+            g_net.socket = INVALID_SOCKET;
             return 0;
         }
-        
+
         // Small sleep to avoid spinning CPU
         Sleep(10);
     }
-    
+
     // Check if ACK was successful
-    if (!g_world_connect_ack.success) {
-        printf("[NET] World server rejected connection: %s\n", 
-               g_world_connect_ack.welcome_message);
-        g_connected = FALSE;
-        closesocket(g_socket);
-        g_socket = INVALID_SOCKET;
+    if (!g_net.world_connect_ack.data.success) {
+        printf("[NET] World server rejected connection: %s\n",
+               g_net.world_connect_ack.data.welcome_message);
+        g_net.connected = FALSE;
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
         return 0;
     }
-    
-    g_connected = TRUE;
-    g_pending_pings = 0;
-    g_last_ping_time = get_time();
-    printf("[NET] Connected to world server: %s\n", g_world_connect_ack.welcome_message);
+
+    g_net.connected = TRUE;
+    g_net.pending_pings = 0;
+    g_net.last_ping_time = get_time();
+    printf("[NET] Connected to world server: %s\n", g_net.world_connect_ack.data.welcome_message);
     return 1;
 }
 
 int network_request_character_data(uint32_t character_id, uint32_t world_id) {
-    if (!g_connected) return 0;
-    
-    g_char_data_ready = FALSE;
-    
+    if (!g_net.connected) return 0;
+
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.char_data.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
     WorldPlayerDataRequest pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_REQUEST_PLAYER_DATA;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(WorldPlayerDataRequest) - sizeof(PacketHeader));
     pkt.character_id = htonl(character_id);
     pkt.world_id = htonl(world_id);
 
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_character_data(CharacterInfo* out) {
-    if (!g_char_data_ready) return 0;
-    
-    memcpy(out, &g_char_data, sizeof(CharacterInfo));
-    
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.char_data.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.char_data.data, sizeof(CharacterInfo));
+    g_net.char_data.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
     // Convert from network byte order
     out->level = ntohl(out->level);
     out->health = ntohl(out->health);
@@ -2108,43 +2164,46 @@ int network_get_character_data(CharacterInfo* out) {
     out->main_hand = ntohl(out->main_hand);
     out->second_hand = ntohl(out->second_hand);
     out->blessing = ntohs(out->blessing);
-    
+
     for (int i = 0; i < 150; i++) {
         out->inventory[i] = ntohl(out->inventory[i]);
     }
-    
-    g_char_data_ready = FALSE;
+
     return 1;
 }
 
 int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y) {
-    if (!g_connected) return 0;
-    
+    if (!g_net.connected) return 0;
+
     PlayerMovePacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_PLAYER_MOVE;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(PlayerMovePacket) - sizeof(PacketHeader));
     pkt.pos_x = x;
     pkt.pos_y = y;
     pkt.player_speed = speed;
     pkt.vel_x = vel_x;
     pkt.vel_y = vel_y;
-    
-    return send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
 int network_get_server_correction(float* out_x, float* out_y) {
-    if (!g_correction_ready) return 0;
-    
-    *out_x = g_correction_x;
-    *out_y = g_correction_y;
-    g_correction_ready = FALSE;
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.correction.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    *out_x = g_net.correction.x;
+    *out_y = g_net.correction.y;
+    g_net.correction.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 void network_send_ping(void) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     // Serialize into a flat byte array to avoid struct padding between
     // PacketHeader (7 bytes, packed) and uint16_t — the anonymous struct
@@ -2154,19 +2213,19 @@ void network_send_ping(void) {
     PacketHeader* hdr = (PacketHeader*)buf;
     memset(buf, 0, sizeof(buf));
     hdr->type         = PACKET_PING;
-    hdr->player_id    = htonl(g_account_id);
+    hdr->player_id    = htonl(g_net.account_id);
     hdr->payload_size = htons(sizeof(uint16_t));
-    uint16_t pm_net   = htons((uint16_t)g_ping_ms);
+    uint16_t pm_net   = htons((uint16_t)g_net.ping_ms);
     memcpy(buf + sizeof(PacketHeader), &pm_net, sizeof(uint16_t));
 
-    if (send(g_socket, (char*)buf, sizeof(buf), 0) == (int)sizeof(buf)) {
-        g_pending_pings++;
-        g_ping_send_time = get_time();
+    if (send(g_net.socket, (char*)buf, sizeof(buf), 0) == (int)sizeof(buf)) {
+        g_net.pending_pings++;
+        g_net.ping_send_time = get_time();
     }
 }
 
 int network_get_ping_ms(void) {
-    return g_ping_ms;
+    return g_net.ping_ms;
 }
 
 // ============================================================================
@@ -2175,58 +2234,58 @@ int network_get_ping_ms(void) {
 
 void network_update_facing_direction(float vel_x, float vel_y) {
     if (vel_x != 0.0f || vel_y != 0.0f) {
-        g_last_facing_angle = atan2f(vel_y, vel_x);
+        g_net.last_facing_angle = atan2f(vel_y, vel_x);
     }
 }
 
 void network_send_attack_intent(float aim_x, float aim_y) {
-    if (!g_connected) return;
-    
+    if (!g_net.connected) return;
+
     AttackIntentPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_ATTACK_INTENT;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(AttackIntentPacket) - sizeof(PacketHeader));
     pkt.aim_x = aim_x;
     pkt.aim_y = aim_y;
-    
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
+
+    if (send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
         printf("[NET] Attack intent sent: aim (%.1f, %.1f)\n", aim_x, aim_y);
     }
 }
 
 void network_send_ability_cast(uint16_t ability_id, float aim_x, float aim_y, uint32_t target_id) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     AbilityCastIntentPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_ABILITY_CAST_INTENT;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(AbilityCastIntentPacket) - sizeof(PacketHeader));
     pkt.ability_id = htons(ability_id);
     pkt.aim_x = aim_x;
     pkt.aim_y = aim_y;
     pkt.target_id = htonl(target_id);
 
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
+    if (send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
         printf("[NET] Ability cast intent sent: id=%u aim=(%.1f, %.1f)\n",
                ability_id, aim_x, aim_y);
     }
 }
 
 void network_send_ability_cancel(void) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     AbilityCastCancelPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_ABILITY_CAST_CANCEL;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(AbilityCastCancelPacket) - sizeof(PacketHeader));
-    pkt.caster_id = htonl(g_character_id);
+    pkt.caster_id = htonl(g_net.character_id);
     pkt.ability_id = 0;
     pkt.reason = 0;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
 }
 
 // ============================================================================
@@ -2234,30 +2293,30 @@ void network_send_ability_cancel(void) {
 // ============================================================================
 
 void network_request_player_stats(void) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     RequestPlayerStatsPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_REQUEST_PLAYER_STATS;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = 0; // Header-only packet
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Requested player stats refresh\n");
 }
 
 void network_request_player_data_refresh(void) {
-    if (!g_connected || g_character_id == 0) return;
+    if (!g_net.connected || g_net.character_id == 0) return;
 
     WorldPlayerDataRequest pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_REQUEST_PLAYER_DATA;
-    pkt.header.player_id = htonl(g_account_id);
+    pkt.header.player_id = htonl(g_net.account_id);
     pkt.header.payload_size = htons(sizeof(WorldPlayerDataRequest) - sizeof(PacketHeader));
-    pkt.character_id = htonl(g_character_id);
+    pkt.character_id = htonl(g_net.character_id);
     pkt.world_id = 0;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Requested player data refresh (XP/gold)\n");
 }
 
@@ -2266,66 +2325,72 @@ void network_request_player_data_refresh(void) {
 // ============================================================================
 
 void network_send_npc_interact_request(uint32_t npc_id) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     NPCInteractRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_NPC_INTERACT_REQUEST;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(NPCInteractRequestPacket) - sizeof(PacketHeader));
     pkt.npc_id = htonl(npc_id);
 
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
+    if (send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
         printf("[NET] NPC interact request sent for NPC %u\n", npc_id);
     }
 }
 
 void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, uint8_t current_page, uint8_t option_selected) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     DialogueOptionSelectPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_DIALOGUE_OPTION_SELECT;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(DialogueOptionSelectPacket) - sizeof(PacketHeader));
     pkt.npc_id = htonl(npc_id);
     pkt.dialogue_id = htonl(dialogue_id);
     pkt.current_page = current_page;
     pkt.option_selected = option_selected;
 
-    if (send(g_socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
+    if (send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt)) {
         printf("[NET] Dialogue option %u selected (page %u, dialogue %u)\n",
                option_selected, current_page, dialogue_id);
     }
 }
 
 int network_get_npc_interact_response(NPCInteractResponsePacket* out) {
-    if (!g_npc_interact_response_ready) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.npc_interact.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
         return 0;
     }
-
-    memcpy(out, &g_npc_interact_response, sizeof(NPCInteractResponsePacket));
-    g_npc_interact_response_ready = FALSE;
+    memcpy(out, &g_net.npc_interact.data, sizeof(NPCInteractResponsePacket));
+    g_net.npc_interact.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 int network_get_dialogue_update(DialogueUpdatePacket* out) {
-    if (!g_dialogue_update_ready) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.dialogue_update.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
         return 0;
     }
-
-    memcpy(out, &g_dialogue_update, sizeof(DialogueUpdatePacket));
-    g_dialogue_update_ready = FALSE;
+    memcpy(out, &g_net.dialogue_update.data, sizeof(DialogueUpdatePacket));
+    g_net.dialogue_update.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
 int network_get_dialogue_close(DialogueClosePacket* out) {
-    if (!g_dialogue_close_ready) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.dialogue_close.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
         return 0;
     }
-
-    memcpy(out, &g_dialogue_close, sizeof(DialogueClosePacket));
-    g_dialogue_close_ready = FALSE;
+    memcpy(out, &g_net.dialogue_close.data, sizeof(DialogueClosePacket));
+    g_net.dialogue_close.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
     return 1;
 }
 
@@ -2334,76 +2399,76 @@ int network_get_dialogue_close(DialogueClosePacket* out) {
 // ============================================================================
 
 void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t equip_slot) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     EquipItemPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_EQUIP_ITEM;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(EquipItemPacket) - sizeof(PacketHeader));
     pkt.item_id = htonl(item_id);
     pkt.inventory_slot = inventory_slot;
     pkt.equip_slot = equip_slot;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Equip item sent: item=%u inv_slot=%u equip_slot=%u\n",
            item_id, inventory_slot, equip_slot);
 }
 
 void network_send_unequip_item(uint8_t equip_slot) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     UnequipItemPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_UNEQUIP_ITEM;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(UnequipItemPacket) - sizeof(PacketHeader));
     pkt.equip_slot = equip_slot;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Unequip item sent: equip_slot=%u\n", equip_slot);
 }
 
 void network_send_use_item(uint8_t inventory_slot) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     UseItemPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_USE_ITEM;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(UseItemPacket) - sizeof(PacketHeader));
     pkt.inventory_slot = inventory_slot;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Use item sent: slot=%u\n", inventory_slot);
 }
 
 void network_send_drop_item(uint8_t inventory_slot) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     DropItemPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_DROP_ITEM;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(DropItemPacket) - sizeof(PacketHeader));
     pkt.inventory_slot = inventory_slot;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Drop item sent: slot=%u\n", inventory_slot);
 }
 
 void network_send_move_item(uint8_t from_slot, uint8_t to_slot) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     MoveItemPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_MOVE_ITEM;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(MoveItemPacket) - sizeof(PacketHeader));
     pkt.from_slot = from_slot;
     pkt.to_slot = to_slot;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
 }
 
 // ============================================================================
@@ -2411,17 +2476,17 @@ void network_send_move_item(uint8_t from_slot, uint8_t to_slot) {
 // ============================================================================
 
 void network_send_chat(uint8_t channel, const char* message) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     ChatSendPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_CHAT_SEND;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(ChatSendPacket) - sizeof(PacketHeader));
     pkt.channel = channel;
     strncpy(pkt.message, message, MAX_CHAT_MESSAGE - 1);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
 }
 
 // ============================================================================
@@ -2429,16 +2494,16 @@ void network_send_chat(uint8_t channel, const char* message) {
 // ============================================================================
 
 void network_send_loot_pickup(uint32_t ground_item_id) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     LootPickupRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_LOOT_PICKUP_REQUEST;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(LootPickupRequestPacket) - sizeof(PacketHeader));
     pkt.ground_item_id = htonl(ground_item_id);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Loot pickup request sent: ground_item=%u\n", ground_item_id);
 }
 
@@ -2447,66 +2512,66 @@ void network_send_loot_pickup(uint32_t ground_item_id) {
 // ============================================================================
 
 void network_send_party_invite(const char* target_name) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     PartyInvitePacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_PARTY_INVITE;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(PartyInvitePacket) - sizeof(PacketHeader));
     strncpy(pkt.target_name, target_name, 31);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Party invite sent to: %s\n", target_name);
 }
 
 void network_send_party_accept(void) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     PartyAcceptPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_PARTY_ACCEPT;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Party accept sent\n");
 }
 
 void network_send_party_decline(void) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     PartyDeclinePacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_PARTY_DECLINE;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Party decline sent\n");
 }
 
 void network_send_party_leave(void) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     PartyLeavePacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_PARTY_LEAVE;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Party leave sent\n");
 }
 
 void network_send_party_kick(uint32_t target_id) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     PartyKickPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_PARTY_KICK;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(PartyKickPacket) - sizeof(PacketHeader));
     pkt.target_id = htonl(target_id);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Party kick sent: %u\n", target_id);
 }
 
@@ -2515,45 +2580,45 @@ void network_send_party_kick(uint32_t target_id) {
 // ============================================================================
 
 void network_send_shop_buy(uint32_t shop_id, uint32_t item_id) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     ShopBuyPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_SHOP_BUY;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(ShopBuyPacket) - sizeof(PacketHeader));
     pkt.shop_id = htonl(shop_id);
     pkt.item_id = htonl(item_id);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Shop buy: shop=%u item=%u\n", shop_id, item_id);
 }
 
 void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     ShopSellPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_SHOP_SELL;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(ShopSellPacket) - sizeof(PacketHeader));
     pkt.shop_id = htonl(shop_id);
     pkt.inventory_slot = inventory_slot;
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Shop sell: shop=%u slot=%u\n", shop_id, inventory_slot);
 }
 
 void network_send_session_list_request(uint16_t page) {
-    if (!g_connected) return;
+    if (!g_net.connected) return;
 
     SessionListRequestPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_SESSION_LIST_REQUEST;
-    pkt.header.player_id = htonl(g_character_id);
+    pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(SessionListRequestPacket) - sizeof(PacketHeader));
     pkt.page = htons(page);
 
-    send(g_socket, (char*)&pkt, sizeof(pkt), 0);
+    send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
     printf("[NET] Session list request: page=%u\n", page);
 }

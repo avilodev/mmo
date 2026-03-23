@@ -174,8 +174,9 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
         }
         
         // Calculate file position for this row
-        size_t row_offset = header_size + 
-                          (world_y * world->world_width + tile_start_x) * sizeof(uint16_t);
+        // Cast to size_t before multiplying to prevent 32-bit int overflow on large worlds
+        size_t row_offset = header_size +
+                          ((size_t)world_y * (size_t)world->world_width + (size_t)tile_start_x) * sizeof(uint16_t);
         fseek(world->world_file, row_offset, SEEK_SET);
         
         // Read the row (or partial row if at edge)

@@ -446,38 +446,41 @@ void StartGame(HWND hwnd) {
     }
     sessionHex[64] = '\0';
     
+    // Pass session key via environment variable — not visible in process command line
+    // (tasklist /v, Process Explorer, etc. expose argv to all local users).
+    SetEnvironmentVariableA("MMO_SESSION", sessionHex);
+
     char commandLine[2048];
-    snprintf(commandLine, sizeof(commandLine), 
-             "\"%s\" --session=%s --playerid=%u --username=\"%s\" --server=%s:%d",
+    snprintf(commandLine, sizeof(commandLine),
+             "\"%s\" --playerid=%u --username=\"%s\" --server=%s:%d",
              gameExePath,
-             sessionHex,
              g_playerId,
              g_storedUsername,
              g_game_server_ip,
              g_game_server_port);
-    
-    printf("Launching game with console: %s\n", commandLine);
+
+    printf("Launching game: %s\n", commandLine);
     fflush(stdout);
-    
+
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
-    
+
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
-    
+
     char cmdLineCopy[2048];
     strncpy(cmdLineCopy, commandLine, sizeof(cmdLineCopy) - 1);
     cmdLineCopy[sizeof(cmdLineCopy) - 1] = '\0';
-    
+
     // Game gets its own console window
     DWORD creationFlags = CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP;
-    
-    if (CreateProcess(NULL, cmdLineCopy, 
-                      NULL,          
-                      NULL,        
-                      FALSE, 
-                      creationFlags,  
+
+    if (CreateProcess(NULL, cmdLineCopy,
+                      NULL,
+                      NULL,
+                      FALSE,
+                      creationFlags,
                       NULL, NULL, &si, &pi)) {
         printf("Game launched with new console!\n");
         printf("Launcher exiting...\n");
@@ -486,7 +489,10 @@ void StartGame(HWND hwnd) {
         // Close handles immediately - we don't manage the child
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
-        
+
+        // Clear the session key from our own environment now that the child has inherited it
+        SetEnvironmentVariableA("MMO_SESSION", NULL);
+
         // Small delay so you can see the message
         Sleep(500);
         

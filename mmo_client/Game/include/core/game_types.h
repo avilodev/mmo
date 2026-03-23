@@ -46,7 +46,9 @@ typedef enum {
     GAME_MODE_SERVER_LIST,
     GAME_MODE_CHARACTER_SELECT,
     GAME_MODE_PLAYING,
-    GAME_MODE_PAUSED,
+    // NOTE: pause is an overlay (game->is_paused flag) within GAME_MODE_PLAYING,
+    // not a separate state. GAME_MODE_PAUSED was removed to prevent the
+    // state_handler fallback silently dropping the player to the main menu.
     GAME_MODE_SETTINGS
 } GameMode;
 
@@ -494,6 +496,83 @@ typedef struct {
 } RewardNotification;
 
 // ============================================================================
+// PLAYING STATE — heap-allocated on entering gameplay, freed on exit.
+// Access via game->playing (NULL when not in GAME_MODE_PLAYING).
+// ============================================================================
+typedef struct {
+    // Visible world entities
+    VisibleNPC        visible_npcs[MAX_VISIBLE_NPCS];
+    int               visible_npc_count;
+    uint32_t          target_npc_id;
+
+    NearbyPlayer      nearby_players[MAX_NEARBY_PLAYERS];
+    int               nearby_player_count;
+
+    VisibleProjectile projectiles[MAX_VISIBLE_PROJECTILES];
+    int               projectile_count;
+
+    VisibleTelegraph  telegraphs[MAX_TELEGRAPHS];
+    VisibleZone       zones[MAX_ZONES];
+    GroundItem        ground_items[MAX_GROUND_ITEMS];
+    HealVFX           heal_vfxs[MAX_HEAL_VFXS];
+
+    // UI systems
+    ChatState         chat;
+    PartyState        party;
+    ShopState         shop;
+    QuestLogState     quest_log;
+    HUDLayout         hud;
+    CombatState       combat;
+    AbilityBarState   ability_bar;
+
+    // Session panel (O menu)
+    int               show_session_panel;
+    SessionPlayer     session_list[SESSION_LIST_PAGE_SIZE];
+    int               session_list_count;
+    uint32_t          session_total_players;
+    uint16_t          session_current_page;
+    uint16_t          session_total_pages;
+
+    // Reward notifications
+    RewardNotification reward_notifications[MAX_REWARD_POPUPS];
+
+    // Player death
+    int               is_dead;
+    float             death_timer;
+
+    // Level-up notification
+    int               show_level_up;
+    float             level_up_timer;
+    int               level_up_new_level;
+
+    // Server-authoritative stats
+    int32_t           player_strength;
+    int32_t           player_agility;
+    int32_t           player_intelligence;
+    int32_t           player_wisdom;
+    int32_t           player_defense;
+    int32_t           player_evasion;
+    int32_t           player_vitality;
+    int32_t           player_luck;
+    float             player_move_speed;
+    int32_t           player_weapon_damage;
+    uint64_t          player_xp_for_next;
+
+    // World enter response (needed during initial data load)
+    EnterWorldResponsePacket enter_world_response;
+
+    // Pause overlay
+    int               is_paused;
+
+    // Full map
+    int               show_map;
+    float             map_zoom;
+
+    // Player targeting
+    uint32_t          target_player_id;
+} PlayingState;
+
+// ============================================================================
 // MAIN GAME STATE
 // ============================================================================
 
@@ -505,21 +584,14 @@ struct GameState {
     PlayerState player;
     WorldState world;           // This is now the chunked WorldState from world.h
     Camera camera;
-    CombatState combat;
     MenuState main_menu;
     ServerListState server_list;
     CharacterSelectState char_select;
-    AbilityBarState ability_bar;
-
-    VisibleNPC visible_npcs[MAX_VISIBLE_NPCS];
-    int visible_npc_count;
-    uint32_t target_npc_id;     // 0 = no target
 
     GameTextures textures;
     int background_width;
     int background_height;
 
-    HUDLayout hud;
     InventoryState* inventory;
     CharacterScreenState* character_screen;
 
@@ -531,86 +603,12 @@ struct GameState {
     int network_connected;
     char network_status[128];
 
-    // --- Player Stats (from server) ---
-    int32_t     player_strength;
-    int32_t     player_agility;
-    int32_t     player_intelligence;
-    int32_t     player_wisdom;
-    int32_t     player_defense;
-    int32_t     player_evasion;
-    int32_t     player_vitality;
-    int32_t     player_luck;
-    float       player_move_speed;      // Server-authoritative speed
-    int32_t     player_weapon_damage;
-    uint64_t    player_xp_for_next;     // XP needed for next level
-
-    // --- Level-up notification ---
-    int         show_level_up;          // 1 = show notification
-    float       level_up_timer;         // Auto-dismiss timer
-    int         level_up_new_level;     // The level reached
-
-    // --- Death state ---
-    int         is_dead;                // 1 = player is dead
-    float       death_timer;            // Time since death (for UI)
-
-    // --- Pause state ---
-    int         is_paused;              // 1 = game is paused (overlay shown)
-
-    EnterWorldResponsePacket enter_world_response;
-
-    // --- Nearby Players ---
-    NearbyPlayer nearby_players[MAX_NEARBY_PLAYERS];
-    int nearby_player_count;
-
-    // --- Projectiles ---
-    VisibleProjectile projectiles[MAX_VISIBLE_PROJECTILES];
-    int projectile_count;
-
-    // --- NPC Telegraphs ---
-    VisibleTelegraph telegraphs[MAX_TELEGRAPHS];
-
-    // --- Zones ---
-    VisibleZone zones[MAX_ZONES];
-
-    // --- Ground Loot ---
-    GroundItem ground_items[MAX_GROUND_ITEMS];
-
-    // --- Chat ---
-    ChatState chat;
-
-    // --- Heal VFX ---
-    HealVFX heal_vfxs[MAX_HEAL_VFXS];
-
-    // --- Party ---
-    PartyState party;
-
-    // --- Reward Notifications ---
-    RewardNotification reward_notifications[MAX_REWARD_POPUPS];
-
     // --- Settings ---
     GameSettings settings;
     int          show_settings;  // 1 = in-game settings overlay visible
 
-    // --- Quest Log ---
-    QuestLogState quest_log;
-
-    // --- Full Map ---
-    int   show_map;
-    float map_zoom;   // 1.0 = default; higher = zoomed in, lower = zoomed out
-
-    // --- Session Panel ---
-    int show_session_panel;
-    SessionPlayer session_list[SESSION_LIST_PAGE_SIZE]; // Current page of online players
-    int           session_list_count;                   // Entries in current page
-    uint32_t      session_total_players;                // Total online right now
-    uint16_t      session_current_page;                 // 0-indexed
-    uint16_t      session_total_pages;
-
-    // --- Shop ---
-    ShopState shop;
-
-    // --- Player Targeting ---
-    uint32_t target_player_id;  // 0 = no player target (mutually exclusive with target_npc_id)
+    // Heap-allocated gameplay state (NULL when not in GAME_MODE_PLAYING)
+    PlayingState* playing;
 };
 
 #endif // GAME_TYPES_H

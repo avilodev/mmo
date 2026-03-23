@@ -38,8 +38,7 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     input_init(&game->input);
     player_init(&game->player);
     camera_init(&game->camera, viewport_width, viewport_height);
-    combat_init(&game->combat);
-    ability_bar_init(&game->ability_bar, viewport_width, viewport_height);
+    game->playing = NULL;
     
     // Initialize item database (once at startup)
     item_db_init();
@@ -78,9 +77,11 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
 
     // Initialize world with CHUNKED LOADING from binary file
     if (!world_init(&game->world, "Game/bin/world.dat", 16)) {
-        fprintf(stderr, "[GAME] Failed to initialize world!\n");
+        fprintf(stderr, "[GAME] FATAL: Failed to initialize world!\n");
         fprintf(stderr, "[GAME] Make sure world.dat exists in the game directory!\n");
         fprintf(stderr, "[GAME] Run world_generator to create it.\n");
+        game->is_running = 0;
+        return;
     }
     
     // Set initial player position (center of walkable area - top third)

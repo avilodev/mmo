@@ -22,6 +22,7 @@
 #include "core/keybinds.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <GLFW/glfw3.h>
@@ -51,9 +52,16 @@ static int s_move_state_init = 0;
 static void playing_enter(GameState* game) {
     printf("[STATE] Entering gameplay\n");
     s_move_state_init = 0;
-    game->show_map  = 0;
-    game->map_zoom  = 1.0f;
-    combat_init(&game->combat);
+
+    game->playing = calloc(1, sizeof(PlayingState));
+    if (!game->playing) {
+        fprintf(stderr, "[STATE] FATAL: Failed to allocate PlayingState\n");
+        game->is_running = 0;
+        return;
+    }
+    game->playing->map_zoom = 1.0f;
+
+    combat_init(&game->playing->combat);
 
     // Load gameplay-only textures
     game->textures.player = texture_load("Game/Sprites/Player/player.png");
@@ -68,11 +76,11 @@ static void playing_enter(GameState* game) {
     if (!game->textures.player)
         fprintf(stderr, "[GAME] Warning: failed to load player texture\n");
 
-    ability_bar_init(&game->ability_bar,
+    ability_bar_init(&game->playing->ability_bar,
                      game->camera.viewport_width,
                      game->camera.viewport_height);
 
-    hud_init(&game->hud, 1920, 1080);
+    hud_init(&game->playing->hud, 1920, 1080);
 
     // Initialize dialogue system with JSON data
     if (!dialogue_system_init("Game/Data/dialogues")) {
@@ -101,8 +109,12 @@ static void playing_exit(GameState* game) {
     if (game->textures.session_panel_bg) { texture_unload(game->textures.session_panel_bg); game->textures.session_panel_bg = 0; }
     if (game->textures.session_entry_bg) { texture_unload(game->textures.session_entry_bg); game->textures.session_entry_bg = 0; }
 
-    // Unload ability icon textures
-    ability_bar_cleanup(&game->ability_bar);
+    // Unload ability icon textures, then free the playing state
+    if (game->playing) {
+        ability_bar_cleanup(&game->playing->ability_bar);
+        free(game->playing);
+        game->playing = NULL;
+    }
 }
 
 // UPDATE
@@ -116,7 +128,7 @@ static void playing_update(GameState* game, float delta_time) {
             player_load_info(&game->player, &info);
 
             // Sync initial mana to ability bar
-            ability_bar_on_mana_update(&game->ability_bar,
+            ability_bar_on_mana_update(&game->playing->ability_bar,
                                        (int32_t)info.mana, (int32_t)info.max_mana);
 
             // Request full stats from server (includes move speed, xp_for_next, etc.)
@@ -158,7 +170,7 @@ static void playing_update(GameState* game, float delta_time) {
     }
     
     camera_update(&game->camera, game->player.x, game->player.y, delta_time);
-    combat_update(&game->combat, delta_time);
+    combat_update(&game->playing->combat, delta_time);
     
     // Update inventory
     if (game->inventory) {
@@ -208,8 +220,8 @@ static void playing_update(GameState* game, float delta_time) {
     dialogue_update_state(delta_time);
 
     // Interpolate NPC positions for smooth movement
-    for (int i = 0; i < game->visible_npc_count && i < MAX_VISIBLE_NPCS; i++) {
-        VisibleNPC* npc = &game->visible_npcs[i];
+    for (int i = 0; i < game->playing->visible_npc_count && i < MAX_VISIBLE_NPCS; i++) {
+        VisibleNPC* npc = &game->playing->visible_npcs[i];
         if (npc->interp_t < 1.0f) {
             // Interpolate over ~200ms (typical server tick interval)
             npc->interp_t += delta_time * 5.0f;
@@ -220,48 +232,48 @@ static void playing_update(GameState* game, float delta_time) {
     }
 
     // Clear target if targeted NPC has died
-    if (game->target_npc_id != 0) {
-        const VisibleNPC* t = npc_find_by_id(game->visible_npcs, game->visible_npc_count,
-                                              game->target_npc_id);
+    if (game->playing->target_npc_id != 0) {
+        const VisibleNPC* t = npc_find_by_id(game->playing->visible_npcs, game->playing->visible_npc_count,
+                                              game->playing->target_npc_id);
         if (!t || !t->is_alive) {
-            game->target_npc_id = 0;
+            game->playing->target_npc_id = 0;
         }
     }
 
     // Clear player target if targeted player is dead or no longer nearby
-    if (game->target_player_id != 0) {
+    if (game->playing->target_player_id != 0) {
         int still_alive = 0;
-        for (int i = 0; i < game->nearby_player_count; i++) {
-            if (game->nearby_players[i].player_id == game->target_player_id &&
-                !game->nearby_players[i].is_dead) {
+        for (int i = 0; i < game->playing->nearby_player_count; i++) {
+            if (game->playing->nearby_players[i].player_id == game->playing->target_player_id &&
+                !game->playing->nearby_players[i].is_dead) {
                 still_alive = 1;
                 break;
             }
         }
-        if (!still_alive) game->target_player_id = 0;
+        if (!still_alive) game->playing->target_player_id = 0;
     }
 
     // Update telegraph timers
     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
-        if (game->telegraphs[i].active) {
-            game->telegraphs[i].elapsed += delta_time;
-            if (game->telegraphs[i].elapsed >= game->telegraphs[i].cast_time) {
-                game->telegraphs[i].active = 0;
+        if (game->playing->telegraphs[i].active) {
+            game->playing->telegraphs[i].elapsed += delta_time;
+            if (game->playing->telegraphs[i].elapsed >= game->playing->telegraphs[i].cast_time) {
+                game->playing->telegraphs[i].active = 0;
             }
         }
     }
 
     // Kingdom Slime ground pound animation — bounce NPC up during circle telegraph
-    for (int i = 0; i < game->visible_npc_count; i++) {
-        VisibleNPC* npc = &game->visible_npcs[i];
+    for (int i = 0; i < game->playing->visible_npc_count; i++) {
+        VisibleNPC* npc = &game->playing->visible_npcs[i];
         if (npc->npc_type_id != 5) continue;
         npc->visual_y_offset = 0.0f;
         for (int t = 0; t < MAX_TELEGRAPHS; t++) {
-            if (!game->telegraphs[t].active) continue;
-            if (game->telegraphs[t].npc_id != npc->npc_id) continue;
-            if (game->telegraphs[t].shape != 0) continue; // circle only
-            float progress = (game->telegraphs[t].cast_time > 0.0f)
-                ? game->telegraphs[t].elapsed / game->telegraphs[t].cast_time
+            if (!game->playing->telegraphs[t].active) continue;
+            if (game->playing->telegraphs[t].npc_id != npc->npc_id) continue;
+            if (game->playing->telegraphs[t].shape != 0) continue; // circle only
+            float progress = (game->playing->telegraphs[t].cast_time > 0.0f)
+                ? game->playing->telegraphs[t].elapsed / game->playing->telegraphs[t].cast_time
                 : 1.0f;
             if (progress > 1.0f) progress = 1.0f;
             // Rise up then slam down: offset peaks (most negative = highest) at mid-cast
@@ -272,49 +284,49 @@ static void playing_update(GameState* game, float delta_time) {
 
     // Update zone timers
     for (int i = 0; i < MAX_ZONES; i++) {
-        if (game->zones[i].active) {
-            game->zones[i].elapsed += delta_time;
+        if (game->playing->zones[i].active) {
+            game->playing->zones[i].elapsed += delta_time;
             // Don't auto-expire - server sends REMOVE_ZONE
         }
     }
 
     // Update heal VFX timers
     for (int i = 0; i < MAX_HEAL_VFXS; i++) {
-        if (game->heal_vfxs[i].active) {
-            game->heal_vfxs[i].age += delta_time;
-            if (game->heal_vfxs[i].age >= game->heal_vfxs[i].duration) {
-                game->heal_vfxs[i].active = 0;
+        if (game->playing->heal_vfxs[i].active) {
+            game->playing->heal_vfxs[i].age += delta_time;
+            if (game->playing->heal_vfxs[i].age >= game->playing->heal_vfxs[i].duration) {
+                game->playing->heal_vfxs[i].active = 0;
             }
         }
     }
 
     // Update party invite timer
-    if (game->party.has_pending_invite) {
-        game->party.invite_timer -= delta_time;
-        if (game->party.invite_timer <= 0.0f) {
-            game->party.has_pending_invite = 0;
+    if (game->playing->party.has_pending_invite) {
+        game->playing->party.invite_timer -= delta_time;
+        if (game->playing->party.invite_timer <= 0.0f) {
+            game->playing->party.has_pending_invite = 0;
         }
     }
 
     // Update death timer
-    if (game->is_dead) {
-        game->death_timer += delta_time;
+    if (game->playing->is_dead) {
+        game->playing->death_timer += delta_time;
     }
 
     // Update level-up timer
-    if (game->show_level_up) {
-        game->level_up_timer -= delta_time;
-        if (game->level_up_timer <= 0.0f) {
-            game->show_level_up = 0;
+    if (game->playing->show_level_up) {
+        game->playing->level_up_timer -= delta_time;
+        if (game->playing->level_up_timer <= 0.0f) {
+            game->playing->show_level_up = 0;
         }
     }
 
     // Update reward notifications
     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
-        if (game->reward_notifications[i].active) {
-            game->reward_notifications[i].age += delta_time;
-            if (game->reward_notifications[i].age > 2.5f) {
-                game->reward_notifications[i].active = 0;
+        if (game->playing->reward_notifications[i].active) {
+            game->playing->reward_notifications[i].age += delta_time;
+            if (game->playing->reward_notifications[i].age > 2.5f) {
+                game->playing->reward_notifications[i].active = 0;
             }
         }
     }
@@ -346,8 +358,8 @@ static void playing_update(GameState* game, float delta_time) {
 
 static void render_nearby_players(GameState* game) {
     int size = game->world.tile_size * 2;
-    for (int i = 0; i < game->nearby_player_count; i++) {
-        NearbyPlayer* p = &game->nearby_players[i];
+    for (int i = 0; i < game->playing->nearby_player_count; i++) {
+        NearbyPlayer* p = &game->playing->nearby_players[i];
         if (p->is_dead) continue;
 
         // Class-based color
@@ -385,8 +397,8 @@ static void render_nearby_players(GameState* game) {
 
 static void render_projectiles(GameState* game) {
     for (int i = 0; i < MAX_VISIBLE_PROJECTILES; i++) {
-        if (!game->projectiles[i].active) continue;
-        VisibleProjectile* proj = &game->projectiles[i];
+        if (!game->playing->projectiles[i].active) continue;
+        VisibleProjectile* proj = &game->playing->projectiles[i];
         renderer_draw_rect(proj->pos_x - 3, proj->pos_y - 3,
                           6.0f, 6.0f, 1.0f, 0.8f, 0.2f, 1.0f);
     }
@@ -394,8 +406,8 @@ static void render_projectiles(GameState* game) {
 
 static void render_telegraphs(GameState* game) {
     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
-        if (!game->telegraphs[i].active) continue;
-        VisibleTelegraph* t = &game->telegraphs[i];
+        if (!game->playing->telegraphs[i].active) continue;
+        VisibleTelegraph* t = &game->playing->telegraphs[i];
 
         // Progress: 0.0 to 1.0 (more opaque as cast completes)
         float progress = (t->cast_time > 0) ? t->elapsed / t->cast_time : 1.0f;
@@ -459,8 +471,8 @@ static void render_telegraphs(GameState* game) {
 
 static void render_zones(GameState* game) {
     for (int i = 0; i < MAX_ZONES; i++) {
-        if (!game->zones[i].active) continue;
-        VisibleZone* z = &game->zones[i];
+        if (!game->playing->zones[i].active) continue;
+        VisibleZone* z = &game->playing->zones[i];
         renderer_draw_circle(z->pos_x, z->pos_y, z->radius,
                             0.3f, 0.8f, 0.3f, 0.2f, 24);
     }
@@ -468,7 +480,7 @@ static void render_zones(GameState* game) {
 
 static void render_heal_vfxs(GameState* game) {
     for (int i = 0; i < MAX_HEAL_VFXS; i++) {
-        HealVFX* vfx = &game->heal_vfxs[i];
+        HealVFX* vfx = &game->playing->heal_vfxs[i];
         if (!vfx->active) continue;
 
         float t = vfx->age / vfx->duration;
@@ -493,8 +505,8 @@ static void render_heal_vfxs(GameState* game) {
 
 static void render_ground_items(GameState* game) {
     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
-        if (!game->ground_items[i].active) continue;
-        GroundItem* item = &game->ground_items[i];
+        if (!game->playing->ground_items[i].active) continue;
+        GroundItem* item = &game->playing->ground_items[i];
         // Sparkle border (drawn first, behind item)
         renderer_draw_rect(item->pos_x - 7, item->pos_y - 7,
                           14.0f, 14.0f, 1.0f, 0.9f, 0.3f, 0.4f);
@@ -509,7 +521,7 @@ static void render_ground_items(GameState* game) {
 // ============================================================================
 
 static void render_chat(GameState* game) {
-    ChatState* chat = &game->chat;
+    ChatState* chat = &game->playing->chat;
 
     float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
     float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
@@ -592,7 +604,7 @@ static void render_chat(GameState* game) {
 }
 
 static void render_party_frames(GameState* game) {
-    PartyState* ps = &game->party;
+    PartyState* ps = &game->playing->party;
     if (!ps->has_party) return;
 
     float frame_x = 10.0f;
@@ -631,7 +643,7 @@ static void render_party_frames(GameState* game) {
 }
 
 static void render_party_invite(GameState* game) {
-    PartyState* ps = &game->party;
+    PartyState* ps = &game->playing->party;
     if (!ps->has_pending_invite) return;
 
     float w = 300.0f, h = 80.0f;
@@ -661,7 +673,7 @@ static void render_party_invite(GameState* game) {
 }
 
 static void render_death_screen(GameState* game) {
-    if (!game->is_dead) return;
+    if (!game->playing->is_dead) return;
 
     float vw = (float)game->camera.viewport_width;
     float vh = (float)game->camera.viewport_height;
@@ -686,17 +698,17 @@ static void render_death_screen(GameState* game) {
     renderer_draw_text(cx - 38, py + 16, "YOU DIED");
 
     // Animated "Respawning..." dots based on death_timer
-    int dots = (int)(game->death_timer * 2.0f) % 4;
+    int dots = (int)(game->playing->death_timer * 2.0f) % 4;
     static const char* dot_labels[] = { "Respawning", "Respawning.", "Respawning..", "Respawning..." };
     renderer_draw_text(cx - 52, py + 52, dot_labels[dots]);
 }
 
 static void render_level_up(GameState* game) {
-    if (!game->show_level_up) return;
+    if (!game->playing->show_level_up) return;
 
     float cx = (float)game->camera.viewport_width / 2.0f;
     char msg[64];
-    snprintf(msg, sizeof(msg), "LEVEL UP! You are now level %d!", game->level_up_new_level);
+    snprintf(msg, sizeof(msg), "LEVEL UP! You are now level %d!", game->playing->level_up_new_level);
     renderer_draw_rect(cx - 150, 100, 300, 40, 0.1f, 0.1f, 0.3f, 0.8f);
     renderer_draw_text(cx - 140, 126, msg);
 }
@@ -707,7 +719,7 @@ static void render_reward_notifications(GameState* game) {
     float base_y = (float)game->camera.viewport_height * 0.5f - 60.0f;
 
     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
-        RewardNotification* notif = &game->reward_notifications[i];
+        RewardNotification* notif = &game->playing->reward_notifications[i];
         if (!notif->active) continue;
 
         float t     = notif->age / 2.5f;          // 0..1 over lifetime
@@ -750,7 +762,7 @@ static int s_hovered_effect = -1;
 
 static void render_buff_tooltip(const GameState* game) {
     if (s_hovered_effect < 0 || s_hovered_effect >= MAX_CLIENT_EFFECTS) return;
-    const ClientStatusEffect* e = &game->ability_bar.effects[s_hovered_effect];
+    const ClientStatusEffect* e = &game->playing->ability_bar.effects[s_hovered_effect];
     if (!e->active) return;
 
     static const char* effect_names[] = {
@@ -835,7 +847,7 @@ static void render_settings_overlay(GameState* game) {
 }
 
 static void render_big_map(GameState* game) {
-    if (!game->show_map) return;
+    if (!game->playing->show_map) return;
 
     float vw = (float)game->camera.viewport_width;
     float vh = (float)game->camera.viewport_height;
@@ -877,7 +889,7 @@ static void render_big_map(GameState* game) {
 
     // view_radius in world units visible to the map edge
     float base_radius = 1050.0f;
-    float view_radius = base_radius / game->map_zoom;
+    float view_radius = base_radius / game->playing->map_zoom;
     float scale = (mw * 0.5f) / view_radius;
 
     // Grid lines every 200 world units
@@ -900,8 +912,8 @@ static void render_big_map(GameState* game) {
     }
 
     // NPC dots
-    for (int i = 0; i < game->visible_npc_count; i++) {
-        const VisibleNPC* npc = &game->visible_npcs[i];
+    for (int i = 0; i < game->playing->visible_npc_count; i++) {
+        const VisibleNPC* npc = &game->playing->visible_npcs[i];
         if (!npc->is_alive) continue;
         float sx = mcx + (npc->pos_x - player_wx) * scale;
         float sy = mcy + (npc->pos_y - player_wy) * scale;
@@ -916,8 +928,8 @@ static void render_big_map(GameState* game) {
     }
 
     // Nearby player dots
-    for (int i = 0; i < game->nearby_player_count; i++) {
-        const NearbyPlayer* p = &game->nearby_players[i];
+    for (int i = 0; i < game->playing->nearby_player_count; i++) {
+        const NearbyPlayer* p = &game->playing->nearby_players[i];
         if (p->is_dead) continue;
         float sx = mcx + (p->pos_x - player_wx) * scale;
         float sy = mcy + (p->pos_y - player_wy) * scale;
@@ -932,12 +944,12 @@ static void render_big_map(GameState* game) {
     float bar_y = py + ph - 22.0f;
     char info[64];
     snprintf(info, sizeof(info), "X: %.0f  Y: %.0f    Zoom: %.1fx",
-             player_wx, player_wy, game->map_zoom);
+             player_wx, player_wy, game->playing->map_zoom);
     renderer_draw_text(px + 10.0f, bar_y + 14.0f, info);
 }
 
 static void render_pause_overlay(GameState* game) {
-    if (!game->is_paused) return;
+    if (!game->playing->is_paused) return;
 
     float vw = (float)game->camera.viewport_width;
     float vh = (float)game->camera.viewport_height;
@@ -996,13 +1008,13 @@ static void playing_render(GameState* game) {
     render_heal_vfxs(game);
     render_telegraphs(game);
     render_ground_items(game);
-    npc_render_all(game->visible_npcs, game->visible_npc_count, game->world.tile_size);
-    npc_render_target_indicator(game->visible_npcs, game->visible_npc_count,
-                                 game->world.tile_size, game->target_npc_id);
+    npc_render_all(game->playing->visible_npcs, game->playing->visible_npc_count, game->world.tile_size);
+    npc_render_target_indicator(game->playing->visible_npcs, game->playing->visible_npc_count,
+                                 game->world.tile_size, game->playing->target_npc_id);
     render_nearby_players(game);
     render_projectiles(game);
-    combat_render_indicator(&game->combat);
-    combat_render_damage_numbers(&game->combat);
+    combat_render_indicator(&game->playing->combat);
+    combat_render_damage_numbers(&game->playing->combat);
     player_render(&game->player, game->textures.player, game->world.tile_size);
 
     renderer_end_2d();
@@ -1011,15 +1023,15 @@ static void playing_render(GameState* game) {
     render_big_map(game);
 
     // Screen-space UI
-    hud_render(&game->hud, game);
-    ability_bar_render(&game->ability_bar);
-    ability_bar_render_effects(&game->ability_bar,
-                               game->ability_bar.bar_x,
-                               game->ability_bar.bar_y - 40.0f);
-    ability_bar_render_cast_bar(&game->ability_bar,
+    hud_render(&game->playing->hud, game);
+    ability_bar_render(&game->playing->ability_bar);
+    ability_bar_render_effects(&game->playing->ability_bar,
+                               game->playing->ability_bar.bar_x,
+                               game->playing->ability_bar.bar_y - 40.0f);
+    ability_bar_render_cast_bar(&game->playing->ability_bar,
                                 (float)game->camera.viewport_width,
                                 (float)game->camera.viewport_height);
-    combat_render_cast_bar(&game->combat,
+    combat_render_cast_bar(&game->playing->combat,
                             (float)game->camera.viewport_width,
                             (float)game->camera.viewport_height);
 
@@ -1044,7 +1056,7 @@ static void playing_render(GameState* game) {
     render_reward_notifications(game);
 
     // Quest log panel (before overlays)
-    quest_log_render(&game->quest_log,
+    quest_log_render(&game->playing->quest_log,
                      game->camera.viewport_width,
                      game->camera.viewport_height);
 
@@ -1063,7 +1075,7 @@ static void playing_render(GameState* game) {
     char debug[128];
     snprintf(debug, sizeof(debug), "Pos: %.0f, %.0f  Mana: %d/%d",
              game->player.x, game->player.y,
-             game->ability_bar.mana, game->ability_bar.max_mana);
+             game->playing->ability_bar.mana, game->playing->ability_bar.max_mana);
     renderer_draw_text(10, 20, debug);
 }
 
@@ -1073,11 +1085,11 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     // -------------------------------------------------------------------------
     // PAUSE MENU  (handle first — blocks everything else)
     // -------------------------------------------------------------------------
-    if (game->is_paused) {
+    if (game->playing->is_paused) {
         // ESC or R unpause
         if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE) ||
             input_key_just_pressed(&game->input, GLFW_KEY_R)) {
-            game->is_paused = 0;
+            game->playing->is_paused = 0;
             return;
         }
         if (game->input.mouse_left_clicked) {
@@ -1093,16 +1105,16 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
             // Resume button
             if (mx >= bx && mx <= bx + bw && my >= py + 66 && my <= py + 66 + bh) {
-                game->is_paused = 0;
+                game->playing->is_paused = 0;
             }
             // Settings button — open in-game overlay, unpause so world keeps running
             if (mx >= bx && mx <= bx + bw && my >= py + 116 && my <= py + 116 + bh) {
-                game->is_paused = 0;
+                game->playing->is_paused = 0;
                 game->show_settings = 1;
             }
             // Quit to Menu button
             if (mx >= bx && mx <= bx + bw && my >= py + 166 && my <= py + 166 + bh) {
-                game->is_paused = 0;
+                game->playing->is_paused = 0;
                 game_change_state(game, GAME_MODE_MAIN_MENU);
             }
         }
@@ -1144,14 +1156,14 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     // BUFF ICON HOVER  (update each frame before gameplay input)
     // -------------------------------------------------------------------------
     {
-        float eff_x = game->ability_bar.bar_x;
-        float eff_y = game->ability_bar.bar_y - 40.0f;
+        float eff_x = game->playing->ability_bar.bar_x;
+        float eff_y = game->playing->ability_bar.bar_y - 40.0f;
         float icon_size = 28.0f, icon_pad = 4.0f;
         float mx = game->input.mouse_x, my = game->input.mouse_y;
         s_hovered_effect = -1;
         int drawn = 0;
         for (int i = 0; i < MAX_CLIENT_EFFECTS; i++) {
-            if (!game->ability_bar.effects[i].active) continue;
+            if (!game->playing->ability_bar.effects[i].active) continue;
             float ix = eff_x + drawn * (icon_size + icon_pad);
             if (mx >= ix && mx <= ix + icon_size &&
                 my >= eff_y && my <= eff_y + icon_size) {
@@ -1163,55 +1175,55 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     }
 
     // Quest log
-    quest_log_handle_input_full(&game->quest_log,
+    quest_log_handle_input_full(&game->playing->quest_log,
                                  game->input.mouse_x, game->input.mouse_y,
                                  game->input.mouse_left_clicked,
-                                 !game->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_quest_log),
-                                 !game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
+                                 !game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_quest_log),
+                                 !game->playing->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
                                  game->camera.viewport_width,
                                  game->camera.viewport_height);
-    if (game->quest_log.is_open) return; // Block gameplay input while quest log open
+    if (game->playing->quest_log.is_open) return; // Block gameplay input while quest log open
 
     // Shop window input (blocks gameplay input while open)
-    if (game->shop.is_open) {
+    if (game->playing->shop.is_open) {
         shop_ui_handle_input(game, game->input.mouse_x, game->input.mouse_y,
                              game->input.mouse_left_clicked);
         return;
     }
 
     // Toggle inventory
-    if (!game->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {
+    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {
         if (game->inventory) {
             inventory_toggle(game->inventory);
         }
     }
     
     // Toggle character screen
-    if (!game->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_character)) {
+    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_character)) {
         if (game->character_screen) {
             character_screen_toggle(game->character_screen);
         }
     }
 
     // Toggle session panel (O key)
-    if (!game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_O)) {
-        game->show_session_panel = !game->show_session_panel;
-        if (game->show_session_panel) {
-            game->session_current_page = 0;
+    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_O)) {
+        game->playing->show_session_panel = !game->playing->show_session_panel;
+        if (game->playing->show_session_panel) {
+            game->playing->session_current_page = 0;
             network_send_session_list_request(0);
         }
     }
 
     // Session panel pagination clicks
-    if (game->show_session_panel && game->input.mouse_left_clicked) {
+    if (game->playing->show_session_panel && game->input.mouse_left_clicked) {
         int dir = hud_session_panel_handle_click(game, game->input.mouse_x, game->input.mouse_y);
-        if (dir == -1 && game->session_current_page > 0) {
-            uint16_t next = game->session_current_page - 1;
-            game->session_current_page = next;
+        if (dir == -1 && game->playing->session_current_page > 0) {
+            uint16_t next = game->playing->session_current_page - 1;
+            game->playing->session_current_page = next;
             network_send_session_list_request(next);
-        } else if (dir == 1 && game->session_current_page + 1 < game->session_total_pages) {
-            uint16_t next = game->session_current_page + 1;
-            game->session_current_page = next;
+        } else if (dir == 1 && game->playing->session_current_page + 1 < game->playing->session_total_pages) {
+            uint16_t next = game->playing->session_current_page + 1;
+            game->playing->session_current_page = next;
             network_send_session_list_request(next);
         }
     }
@@ -1253,7 +1265,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         
         // Check inventory button
         if (game->inventory) {
-            if (hud_check_inventory_button_clicked(&game->hud, 
+            if (hud_check_inventory_button_clicked(&game->playing->hud, 
                                                    game->input.mouse_x, 
                                                    game->input.mouse_y)) {
                 inventory_toggle(game->inventory);
@@ -1262,7 +1274,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         
         // Check character button
         if (game->character_screen) {
-            if (hud_check_character_button_clicked(&game->hud,
+            if (hud_check_character_button_clicked(&game->playing->hud,
                                                    game->input.mouse_x,
                                                    game->input.mouse_y)) {
                 character_screen_toggle(game->character_screen);
@@ -1277,8 +1289,8 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         float world_y = (game->input.mouse_y - game->camera.viewport_height / 2.0f) / game->camera.zoom + game->camera.y;
 
         // Check if clicked on an NPC
-        for (int i = 0; i < game->visible_npc_count; i++) {
-            VisibleNPC* npc = &game->visible_npcs[i];
+        for (int i = 0; i < game->playing->visible_npc_count; i++) {
+            VisibleNPC* npc = &game->playing->visible_npcs[i];
             if (!npc->is_alive) continue;
 
             float dx = world_x - npc->pos_x;
@@ -1287,7 +1299,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             if (dx * dx + dy * dy < 32.0f * 32.0f) {
                 if (npc->category == 1) {
                     // Hostile NPC: target + basic attack
-                    game->target_npc_id = npc->npc_id;
+                    game->playing->target_npc_id = npc->npc_id;
                     printf("[INPUT] Attacking NPC %u at (%.1f, %.1f)\n",
                            npc->npc_id, npc->pos_x, npc->pos_y);
                     network_update_facing_direction(npc->pos_x - game->player.x,
@@ -1305,12 +1317,12 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     }
 
     // T key opens chat
-    if (!game->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_T)) {
-        game->chat.is_typing = 1;
+    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_T)) {
+        game->playing->chat.is_typing = 1;
     }
 
     // Click on chat area: input box opens chat; clicking a message line starts a whisper
-    if (!game->chat.is_typing && game->input.mouse_left_clicked) {
+    if (!game->playing->chat.is_typing && game->input.mouse_left_clicked) {
         float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
         float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
         float input_y = chat_y + chat_h;
@@ -1320,10 +1332,10 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         if (mx >= CHAT_X && mx <= CHAT_X + CHAT_W) {
             if (my >= input_y && my <= input_y + CHAT_INBOX_H) {
                 // Clicked the input box — just open chat
-                game->chat.is_typing = 1;
+                game->playing->chat.is_typing = 1;
             } else if (my >= chat_y && my < input_y) {
                 // Clicked a message line — pre-fill "/w SenderName " for that line
-                ChatState* chat = &game->chat;
+                ChatState* chat = &game->playing->chat;
                 int start = chat->line_count - CHAT_LINES;
                 if (start < 0) start = 0;
                 for (int i = start; i < chat->line_count; i++) {
@@ -1346,10 +1358,10 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
     // Chat input - Enter key toggles typing mode
     if (input_key_just_pressed(&game->input, GLFW_KEY_ENTER)) {
-        if (game->chat.is_typing) {
+        if (game->playing->chat.is_typing) {
             // Send message or handle slash commands
-            if (game->chat.input_len > 0) {
-                const char* msg = game->chat.input_buf;
+            if (game->playing->chat.input_len > 0) {
+                const char* msg = game->playing->chat.input_buf;
                 if (msg[0] == '/') {
                     // Slash command parsing
                     if (strncmp(msg, "/invite ", 8) == 0 && msg[8] != '\0') {
@@ -1364,10 +1376,10 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                         network_send_chat(2, msg + 3); // channel 2 = whisper
                     } else if (strncmp(msg, "/r ", 3) == 0 && msg[3] != '\0') {
                         // Reply to last whisper sender
-                        if (game->chat.whisper_reply_target[0] != '\0') {
+                        if (game->playing->chat.whisper_reply_target[0] != '\0') {
                             char whisper_msg[MAX_CHAT_INPUT_LEN + 32];
                             snprintf(whisper_msg, sizeof(whisper_msg), "%s %s",
-                                     game->chat.whisper_reply_target, msg + 3);
+                                     game->playing->chat.whisper_reply_target, msg + 3);
                             network_send_chat(2, whisper_msg);
                         }
                         // If no reply target yet, silently drop (no one has whispered us)
@@ -1376,67 +1388,67 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                 } else {
                     // When active channel is WHISPER, prepend the reply target so
                     // the server knows who to route to
-                    if (game->chat.active_channel == 2 &&
-                        game->chat.whisper_reply_target[0] != '\0') {
+                    if (game->playing->chat.active_channel == 2 &&
+                        game->playing->chat.whisper_reply_target[0] != '\0') {
                         char whisper_msg[MAX_CHAT_INPUT_LEN + 32];
                         snprintf(whisper_msg, sizeof(whisper_msg), "%s %s",
-                                 game->chat.whisper_reply_target, msg);
+                                 game->playing->chat.whisper_reply_target, msg);
                         network_send_chat(2, whisper_msg);
                     } else {
-                        network_send_chat(game->chat.active_channel, msg);
+                        network_send_chat(game->playing->chat.active_channel, msg);
                     }
                 }
             }
-            game->chat.is_typing = 0;
-            game->chat.input_len = 0;
-            game->chat.input_buf[0] = '\0';
+            game->playing->chat.is_typing = 0;
+            game->playing->chat.input_len = 0;
+            game->playing->chat.input_buf[0] = '\0';
         } else {
-            game->chat.is_typing = 1;
+            game->playing->chat.is_typing = 1;
         }
     }
 
     // Don't process movement/combat input while typing in chat
-    if (game->chat.is_typing) {
+    if (game->playing->chat.is_typing) {
         // Escape to cancel chat
         if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
-            game->chat.is_typing = 0;
-            game->chat.input_len = 0;
-            game->chat.input_buf[0] = '\0';
+            game->playing->chat.is_typing = 0;
+            game->playing->chat.input_len = 0;
+            game->playing->chat.input_buf[0] = '\0';
         }
         // Backspace (use held state for key repeat)
         if (input_key_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
             if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
-                if (game->chat.input_len > 0) {
-                    game->chat.input_len--;
-                    game->chat.input_buf[game->chat.input_len] = '\0';
+                if (game->playing->chat.input_len > 0) {
+                    game->playing->chat.input_len--;
+                    game->playing->chat.input_buf[game->playing->chat.input_len] = '\0';
                 }
-                game->chat.backspace_timer = 0.0f;
-                game->chat.backspace_first = 1;
+                game->playing->chat.backspace_timer = 0.0f;
+                game->playing->chat.backspace_first = 1;
             } else {
-                game->chat.backspace_timer += delta_time;
-                float threshold = game->chat.backspace_first ? 0.4f : 0.05f;
-                if (game->chat.backspace_timer >= threshold) {
-                    game->chat.backspace_timer = 0.0f;
-                    game->chat.backspace_first = 0;
-                    if (game->chat.input_len > 0) {
-                        game->chat.input_len--;
-                        game->chat.input_buf[game->chat.input_len] = '\0';
+                game->playing->chat.backspace_timer += delta_time;
+                float threshold = game->playing->chat.backspace_first ? 0.4f : 0.05f;
+                if (game->playing->chat.backspace_timer >= threshold) {
+                    game->playing->chat.backspace_timer = 0.0f;
+                    game->playing->chat.backspace_first = 0;
+                    if (game->playing->chat.input_len > 0) {
+                        game->playing->chat.input_len--;
+                        game->playing->chat.input_buf[game->playing->chat.input_len] = '\0';
                     }
                 }
             }
         }
         // Tab to cycle channels
         if (input_key_just_pressed(&game->input, GLFW_KEY_TAB)) {
-            game->chat.active_channel = (game->chat.active_channel + 1) % 4;
+            game->playing->chat.active_channel = (game->playing->chat.active_channel + 1) % 4;
         }
         return; // Don't process other input while typing
     }
 
     // Block gameplay input while dead (server auto-respawns)
-    if (game->is_dead) return;
+    if (game->playing->is_dead) return;
 
     // Party invite accept/decline clicks
-    if (game->party.has_pending_invite && game->input.mouse_left_clicked) {
+    if (game->playing->party.has_pending_invite && game->input.mouse_left_clicked) {
         float w = 300.0f;
         float x = ((float)game->camera.viewport_width - w) / 2.0f;
         float y = 200.0f;
@@ -1446,34 +1458,34 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         // Accept button: (x+30, y+50) to (x+110, y+74)
         if (mx >= x+30 && mx <= x+110 && my >= y+50 && my <= y+74) {
             network_send_party_accept();
-            game->party.has_pending_invite = 0;
+            game->playing->party.has_pending_invite = 0;
             return;
         }
         // Decline button: (x+190, y+50) to (x+270, y+74)
         if (mx >= x+190 && mx <= x+270 && my >= y+50 && my <= y+74) {
             network_send_party_decline();
-            game->party.has_pending_invite = 0;
+            game->playing->party.has_pending_invite = 0;
             return;
         }
     }
 
     // While map is open, eat all gameplay input except M and ESC
-    if (game->show_map) goto map_input_only;
+    if (game->playing->show_map) goto map_input_only;
 
     // Party frame click = target that member
-    if (game->input.mouse_left_clicked && game->party.has_party) {
+    if (game->input.mouse_left_clicked && game->playing->party.has_party) {
         const float FRAME_W  = 180.0f;
         const float FRAME_H  = 50.0f;
         const float FRAME_GAP = 5.0f;
         const float START_X  = 10.0f;
         const float START_Y  = 10.0f;
-        for (int i = 0; i < game->party.member_count; i++) {
+        for (int i = 0; i < game->playing->party.member_count; i++) {
             float fx = START_X;
             float fy = START_Y + i * (FRAME_H + FRAME_GAP);
             if (game->input.mouse_x >= fx && game->input.mouse_x <= fx + FRAME_W &&
                 game->input.mouse_y >= fy && game->input.mouse_y <= fy + FRAME_H) {
-                game->target_player_id = game->party.members[i].id;
-                game->target_npc_id    = 0;
+                game->playing->target_player_id = game->playing->party.members[i].id;
+                game->playing->target_npc_id    = 0;
                 goto done_click; // Skip world-coord click
             }
         }
@@ -1486,14 +1498,14 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
         // Check if clicked on a nearby player to target them
         int hit_target = 0;
-        for (int i = 0; i < game->nearby_player_count; i++) {
-            const NearbyPlayer* np = &game->nearby_players[i];
+        for (int i = 0; i < game->playing->nearby_player_count; i++) {
+            const NearbyPlayer* np = &game->playing->nearby_players[i];
             if (np->is_dead) continue;
             float dx = world_x - np->pos_x;
             float dy = world_y - np->pos_y;
             if (dx * dx + dy * dy < 32.0f * 32.0f) {
-                game->target_player_id = np->player_id;
-                game->target_npc_id    = 0;  // Clear NPC target
+                game->playing->target_player_id = np->player_id;
+                game->playing->target_npc_id    = 0;  // Clear NPC target
                 hit_target = 1;
                 break;
             }
@@ -1501,14 +1513,14 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
         // Check if clicked on an NPC to target it
         if (!hit_target) {
-            for (int i = 0; i < game->visible_npc_count; i++) {
-                VisibleNPC* npc = &game->visible_npcs[i];
+            for (int i = 0; i < game->playing->visible_npc_count; i++) {
+                VisibleNPC* npc = &game->playing->visible_npcs[i];
                 if (!npc->is_alive) continue;
                 float dx = world_x - npc->pos_x;
                 float dy = world_y - npc->pos_y;
                 if (dx * dx + dy * dy < 32.0f * 32.0f) {
-                    game->target_npc_id    = npc->npc_id;
-                    game->target_player_id = 0;  // Clear player target
+                    game->playing->target_npc_id    = npc->npc_id;
+                    game->playing->target_player_id = 0;  // Clear player target
                     hit_target = 1;
                     break;
                 }
@@ -1517,14 +1529,14 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
         // Click on empty space clears all targets
         if (!hit_target) {
-            game->target_npc_id    = 0;
-            game->target_player_id = 0;
+            game->playing->target_npc_id    = 0;
+            game->playing->target_player_id = 0;
         }
 
         // Ground item pickup
         for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
-            if (!game->ground_items[i].active) continue;
-            GroundItem* item = &game->ground_items[i];
+            if (!game->playing->ground_items[i].active) continue;
+            GroundItem* item = &game->playing->ground_items[i];
             float dx = world_x - item->pos_x;
             float dy = world_y - item->pos_y;
             if (dx*dx + dy*dy < 20.0f * 20.0f) {
@@ -1540,14 +1552,14 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     done_click:;
 
     // Leave party
-    if (input_key_just_pressed(&game->input, g_keybinds.party_leave) && game->party.has_party) {
+    if (input_key_just_pressed(&game->input, g_keybinds.party_leave) && game->playing->party.has_party) {
         network_send_party_leave();
     }
 
     player_update_movement(&game->player, &game->input, &game->world, delta_time);
 
     // Ability input (keys 1-5)
-    uint16_t ability_to_cast = ability_bar_update(&game->ability_bar, delta_time, 
+    uint16_t ability_to_cast = ability_bar_update(&game->playing->ability_bar, delta_time, 
                                            game->input.keys_just_pressed, 
                                            game->player.info.player_class);
 
@@ -1562,10 +1574,10 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     if (input_key_just_pressed(&game->input, g_keybinds.basic_attack)) {
         float aim_x = game->player.x;
         float aim_y = game->player.y;
-        if (game->target_npc_id != 0) {
+        if (game->playing->target_npc_id != 0) {
             float tx, ty;
-            if (npc_get_position(game->visible_npcs, game->visible_npc_count,
-                                 game->target_npc_id, &tx, &ty)) {
+            if (npc_get_position(game->playing->visible_npcs, game->playing->visible_npc_count,
+                                 game->playing->target_npc_id, &tx, &ty)) {
                 aim_x = tx;
                 aim_y = ty;
                 network_update_facing_direction(tx - game->player.x, ty - game->player.y);
@@ -1579,34 +1591,34 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     }
     
     // Cancel ability cast with right-click
-    if (game->input.mouse_right_clicked && game->ability_bar.is_casting) {
+    if (game->input.mouse_right_clicked && game->playing->ability_bar.is_casting) {
         network_send_ability_cancel();
-        ability_bar_on_cast_cancel(&game->ability_bar, game->ability_bar.casting_ability_id);
+        ability_bar_on_cast_cancel(&game->playing->ability_bar, game->playing->ability_bar.casting_ability_id);
     }
     
     map_input_only:;
     // M — toggle full map
     if (input_key_just_pressed(&game->input, GLFW_KEY_M)) {
-        game->show_map = !game->show_map;
-        if (game->show_map && game->map_zoom == 0.0f)
-            game->map_zoom = 1.0f;
+        game->playing->show_map = !game->playing->show_map;
+        if (game->playing->show_map && game->playing->map_zoom == 0.0f)
+            game->playing->map_zoom = 1.0f;
     }
 
     // ESC — close map first, then other windows, then pause
     if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
-        if (game->show_map) {
-            game->show_map = 0;
+        if (game->playing->show_map) {
+            game->playing->show_map = 0;
         } else if (dialogue_is_active()) {
             dialogue_close();
         } else if (game->character_screen && game->character_screen->is_open) {
             character_screen_toggle(game->character_screen);
         } else if (game->inventory && game->inventory->is_open) {
             inventory_toggle(game->inventory);
-        } else if (game->target_npc_id != 0 || game->target_player_id != 0) {
-            game->target_npc_id    = 0;
-            game->target_player_id = 0;
+        } else if (game->playing->target_npc_id != 0 || game->playing->target_player_id != 0) {
+            game->playing->target_npc_id    = 0;
+            game->playing->target_player_id = 0;
         } else {
-            game->is_paused = 1;
+            game->playing->is_paused = 1;
         }
     }
     (void)window;

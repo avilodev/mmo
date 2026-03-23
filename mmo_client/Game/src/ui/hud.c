@@ -101,7 +101,7 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     hud_render_player_target_bar(game, (float)hud->screen_width);
     hud_render_party_frames(game);
 
-    if (game->show_session_panel)
+    if (game->playing->show_session_panel)
         hud_render_session_panel(hud, game, own_ping);
 }
 
@@ -127,8 +127,8 @@ void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
     // We'll inline it below.
 
     // --- NPC dots ---
-    for (int i = 0; i < game->visible_npc_count; i++) {
-        const VisibleNPC* npc = &game->visible_npcs[i];
+    for (int i = 0; i < game->playing->visible_npc_count; i++) {
+        const VisibleNPC* npc = &game->playing->visible_npcs[i];
         if (!npc->is_alive) continue;
 
         float dx = (npc->pos_x - px) * scale;
@@ -148,8 +148,8 @@ void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
     }
 
     // --- Nearby player dots ---
-    for (int i = 0; i < game->nearby_player_count; i++) {
-        const NearbyPlayer* p = &game->nearby_players[i];
+    for (int i = 0; i < game->playing->nearby_player_count; i++) {
+        const NearbyPlayer* p = &game->playing->nearby_players[i];
         if (p->is_dead) continue;
 
         float dx = (p->pos_x - px) * scale;
@@ -221,8 +221,8 @@ void hud_render_mana_bar(const HUDLayout* hud, const GameState* game) {
     float height = hud->mana_bar_height;
     
     // Read from ability bar state instead of player info
-    int32_t current_mana = game->ability_bar.mana;
-    int32_t max_mana = game->ability_bar.max_mana;
+    int32_t current_mana = game->playing->ability_bar.mana;
+    int32_t max_mana = game->playing->ability_bar.max_mana;
     
     if (max_mana <= 0) return; // Don't draw if no max mana
     
@@ -268,7 +268,7 @@ void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     float height = hud->exp_bar_height;
     
     uint64_t current_exp = game->player.info.experience;
-    uint64_t exp_for_next = game->player_xp_for_next;
+    uint64_t exp_for_next = game->playing->player_xp_for_next;
 
     // Use server-provided XP threshold; fallback if not yet received
     if (exp_for_next == 0) exp_for_next = 1000;
@@ -386,10 +386,10 @@ void hud_render_character_button(const HUDLayout* hud, const GameState* game) {
 }
 
 void hud_render_target_bar(const GameState* game, float screen_width) {
-    if (game->target_npc_id == 0) return;
+    if (game->playing->target_npc_id == 0) return;
 
-    const VisibleNPC* npc = npc_find_by_id(game->visible_npcs, game->visible_npc_count,
-                                            game->target_npc_id);
+    const VisibleNPC* npc = npc_find_by_id(game->playing->visible_npcs, game->playing->visible_npc_count,
+                                            game->playing->target_npc_id);
     if (!npc || !npc->is_alive) return;
 
     float bar_width  = 300.0f;
@@ -437,13 +437,13 @@ void hud_render_target_bar(const GameState* game, float screen_width) {
 }
 
 void hud_render_player_target_bar(const GameState* game, float screen_width) {
-    if (game->target_player_id == 0) return;
+    if (game->playing->target_player_id == 0) return;
 
     // Find the targeted player in the nearby list
     const NearbyPlayer* np = NULL;
-    for (int i = 0; i < game->nearby_player_count; i++) {
-        if (game->nearby_players[i].player_id == game->target_player_id) {
-            np = &game->nearby_players[i];
+    for (int i = 0; i < game->playing->nearby_player_count; i++) {
+        if (game->playing->nearby_players[i].player_id == game->playing->target_player_id) {
+            np = &game->playing->nearby_players[i];
             break;
         }
     }
@@ -493,7 +493,7 @@ void hud_render_player_target_bar(const GameState* game, float screen_width) {
 }
 
 void hud_render_party_frames(const GameState* game) {
-    if (!game->party.has_party || game->party.member_count == 0) return;
+    if (!game->playing->party.has_party || game->playing->party.member_count == 0) return;
 
     const float FRAME_W  = 180.0f;
     const float FRAME_H  = 50.0f;
@@ -505,8 +505,8 @@ void hud_render_party_frames(const GameState* game) {
     const float START_X  = 10.0f;
     const float START_Y  = 10.0f;
 
-    for (int i = 0; i < game->party.member_count; i++) {
-        const PartyMember* m = &game->party.members[i];
+    for (int i = 0; i < game->playing->party.member_count; i++) {
+        const PartyMember* m = &game->playing->party.members[i];
 
         float fx = START_X;
         float fy = START_Y + i * (FRAME_H + FRAME_GAP);
@@ -520,7 +520,7 @@ void hud_render_party_frames(const GameState* game) {
 
         // Name + level
         char label[48];
-        int is_leader = (m->id == game->party.leader_id);
+        int is_leader = (m->id == game->playing->party.leader_id);
         snprintf(label, sizeof(label), "%s%s (%u)",
                  is_leader ? "* " : "", m->name, (unsigned)m->level);
         renderer_draw_text(fx + BAR_PAD, fy + 12.0f, label);
@@ -668,7 +668,7 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
 
     char header[64];
     snprintf(header, sizeof(header), "Players Online: %u",
-             game->session_total_players);
+             game->playing->session_total_players);
     renderer_draw_text(px + SESSION_PAD, py + SESSION_HEADER_H - 8, header);
 
     renderer_draw_text(px + SESSION_PANEL_W - 72.0f, py + SESSION_HEADER_H - 8, "[O] close");
@@ -691,8 +691,8 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
     // -----------------------------------------------------------------------
     float row_y = sep_y + 2.0f;
 
-    for (int i = 0; i < game->session_list_count; i++) {
-        const SessionPlayer* p = &game->session_list[i];
+    for (int i = 0; i < game->playing->session_list_count; i++) {
+        const SessionPlayer* p = &game->playing->session_list[i];
 
         // Entry background: texture if loaded, else alternating shaded rect
         if (game->textures.session_entry_bg) {
@@ -701,7 +701,7 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
                                  game->textures.session_entry_bg);
         } else {
             // Self highlight (page 0, first entry is self)
-            if (i == 0 && game->session_current_page == 0) {
+            if (i == 0 && game->playing->session_current_page == 0) {
                 renderer_draw_rect(px + 2, row_y, SESSION_PANEL_W - 4, SESSION_ROW_H - 1,
                                    0.08f, 0.18f, 0.10f, 0.70f);
             } else if (i % 2 == 1) {
@@ -737,7 +737,7 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
 
     // Prev button
     float prev_x = px + SESSION_PAD;
-    int can_prev = game->session_current_page > 0;
+    int can_prev = game->playing->session_current_page > 0;
     renderer_draw_rect(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H,
                        can_prev ? 0.15f : 0.08f,
                        can_prev ? 0.20f : 0.08f,
@@ -746,8 +746,8 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
 
     // Next button
     float next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
-    int can_next = game->session_total_pages > 0 &&
-                   game->session_current_page + 1 < game->session_total_pages;
+    int can_next = game->playing->session_total_pages > 0 &&
+                   game->playing->session_current_page + 1 < game->playing->session_total_pages;
     renderer_draw_rect(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H,
                        can_next ? 0.15f : 0.08f,
                        can_next ? 0.20f : 0.08f,
@@ -756,10 +756,10 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
 
     // Page indicator (centered)
     char page_buf[48];
-    if (game->session_total_pages > 0)
+    if (game->playing->session_total_pages > 0)
         snprintf(page_buf, sizeof(page_buf), "Page %u / %u",
-                 (unsigned)game->session_current_page + 1,
-                 (unsigned)game->session_total_pages);
+                 (unsigned)game->playing->session_current_page + 1,
+                 (unsigned)game->playing->session_total_pages);
     else
         snprintf(page_buf, sizeof(page_buf), "Loading...");
     renderer_draw_text_centered(prev_x + SESSION_BTN_W, btn_y,
@@ -769,8 +769,8 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
 
 int hud_session_panel_handle_click(const GameState* game, float mx, float my) {
     // Must mirror the footer layout in hud_render_session_panel
-    extern void hud_init(HUDLayout*, int, int);  // just to get screen_width via game->hud
-    float px = (float)game->hud.screen_width / 2.0f - SESSION_PANEL_W / 2.0f;
+    extern void hud_init(HUDLayout*, int, int);  // just to get screen_width via game->playing->hud
+    float px = (float)game->playing->hud.screen_width / 2.0f - SESSION_PANEL_W / 2.0f;
     float py = session_panel_y();
 
     float footer_y = py + SESSION_PANEL_H - SESSION_FOOTER_H;
