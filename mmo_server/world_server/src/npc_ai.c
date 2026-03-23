@@ -761,6 +761,12 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
         float best_dist = 1e9f;
         int best_target = -1;
 
+        // Once aggroed, keep chasing until the target is more than
+        // NPC_HOLD_AGGRO_RANGE units away from the NPC itself.
+        // This is intentionally larger than the initial aggro_range so the
+        // enemy feels relentless once it locks on.
+#define NPC_HOLD_AGGRO_RANGE 250.0f
+
         if (npc->ai_target_id > 0) {
             for (int t = 0; t < MAX_PLAYERS; t++) {
                 if (!targets[t].valid) continue;
@@ -768,7 +774,8 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                     if (!targets[t].is_dead) {
                         float d = dist2d(npc->pos_x, npc->pos_y,
                                          targets[t].pos_x, targets[t].pos_y);
-                        if (spawn_dist < prof->leash_range) {
+                        if (spawn_dist < prof->leash_range &&
+                            d < NPC_HOLD_AGGRO_RANGE) {
                             best_target = t;
                             best_dist = d;
                         }
