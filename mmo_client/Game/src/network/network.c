@@ -66,9 +66,9 @@ typedef struct {
     struct { BOOL ready; WorldConnectAckPacket         data; } world_connect_ack;
     struct { BOOL ready; RealmConnectAckPacket         data; } realm_connect_ack;
     struct { BOOL ready; float x; float y;                  } correction;
-} NetworkState;
+} NetContext;
 
-static NetworkState g_net;
+static NetContext g_net;
 
 // Ping tracking
 #define PING_INTERVAL    10.0
