@@ -29,8 +29,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
     }
 
     PacketHeader* header = (PacketHeader*)buffer;
-    
+
+#ifdef DEBUG
     printf("Processing packet type: %d from character %u\n", header->type, character_id);
+#endif
 
     // Reject most actions from dead players
     if (header->type == PACKET_PLAYER_MOVE ||

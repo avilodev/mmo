@@ -10,16 +10,17 @@
 #include <stdbool.h>
 #include <ctype.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <sys/socket.h>
-#include <netinet/in.h> 
-#include <arpa/inet.h> 
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 typedef struct {
     int tcp_sockfd;
     int running;
     pthread_t accept_thread;
- 
+
     char server_name[32];
     char region[32];
     char ip[16];
@@ -29,7 +30,7 @@ typedef struct {
 } ServerConfig;
 
 typedef struct {
-    sig_atomic_t current_players;
+    _Atomic int current_players;  // Incremented/decremented by client handler threads concurrently
 
     //ticks....
 } ServerState;

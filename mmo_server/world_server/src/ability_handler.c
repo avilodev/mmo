@@ -89,7 +89,9 @@ static int find_player_slot(uint32_t character_id) {
 }
 
 static int player_has_ability(ActivePlayer* player, uint16_t ability_id, int* out_slot) {
-    for (int i = 0; i < player->ability_count; i++) {
+    int count = player->ability_count;
+    if (count > MAX_ABILITY_SLOTS) count = MAX_ABILITY_SLOTS;
+    for (int i = 0; i < count; i++) {
         if (player->ability_slots[i] == ability_id) {
             if (out_slot) *out_slot = i;
             return 1;
@@ -102,27 +104,25 @@ static int player_has_ability(ActivePlayer* player, uint16_t ability_id, int* ou
 // Send helpers (unchanged)
 // ---------------------------------------------------------------------------
 
-// send_ability_cast_cancel - MISSING payload_size
 static void send_ability_cast_cancel(int client_fd, uint32_t caster_id,
                                      uint16_t ability_id, uint8_t reason) {
     AbilityCastCancelPacket pkt = {0};
-    pkt.header.type      = PACKET_ABILITY_CAST_CANCEL;
-    pkt.header.player_id = htonl(caster_id);
-    pkt.header.payload_size = htons(sizeof(AbilityCastCancelPacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.type         = PACKET_ABILITY_CAST_CANCEL;
+    pkt.header.player_id    = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(AbilityCastCancelPacket) - sizeof(PacketHeader));
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
     pkt.reason           = reason;
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// send_ability_cast_start - MISSING payload_size
 static void send_ability_cast_start(int client_fd, uint32_t caster_id,
                                     uint16_t ability_id, float cast_time,
                                     float ox, float oy, float ax, float ay) {
     AbilityCastStartPacket pkt = {0};
-    pkt.header.type      = PACKET_ABILITY_CAST_START;
-    pkt.header.player_id = htonl(caster_id);
-    pkt.header.payload_size = htons(sizeof(AbilityCastStartPacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.type         = PACKET_ABILITY_CAST_START;
+    pkt.header.player_id    = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(AbilityCastStartPacket) - sizeof(PacketHeader));
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
     pkt.cast_time        = cast_time;
@@ -133,7 +133,6 @@ static void send_ability_cast_start(int client_fd, uint32_t caster_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// send_ability_effect - MISSING payload_size
 static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t target_id,
                                 uint16_t ability_id, int damage, int healing,
                                 int target_new_hp, uint8_t is_kill, uint8_t is_crit) {
@@ -152,14 +151,13 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// send_status_effect_apply - MISSING payload_size
 static void send_status_effect_apply(int client_fd, uint32_t target_id,
                                      uint8_t effect_type, int value,
                                      float duration, uint32_t source_id) {
     StatusEffectApplyPacket pkt = {0};
-    pkt.header.type      = PACKET_STATUS_EFFECT_APPLY;
-    pkt.header.player_id = htonl(target_id);
-    pkt.header.payload_size = htons(sizeof(StatusEffectApplyPacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.type         = PACKET_STATUS_EFFECT_APPLY;
+    pkt.header.player_id    = htonl(target_id);
+    pkt.header.payload_size = htons(sizeof(StatusEffectApplyPacket) - sizeof(PacketHeader));
     pkt.target_id        = htonl(target_id);
     pkt.effect_type      = effect_type;
     pkt.value            = htonl((uint32_t)value);
@@ -168,26 +166,24 @@ static void send_status_effect_apply(int client_fd, uint32_t target_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// send_mana_update - MISSING payload_size
 static void send_mana_update(int client_fd, uint32_t player_id,
                              int32_t mana, int32_t max_mana) {
     ManaUpdatePacket pkt = {0};
-    pkt.header.type      = PACKET_MANA_UPDATE;
-    pkt.header.player_id = htonl(player_id);
-    pkt.header.payload_size = htons(sizeof(ManaUpdatePacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.type         = PACKET_MANA_UPDATE;
+    pkt.header.player_id    = htonl(player_id);
+    pkt.header.payload_size = htons(sizeof(ManaUpdatePacket) - sizeof(PacketHeader));
     pkt.mana             = htonl((uint32_t)mana);
     pkt.max_mana         = htonl((uint32_t)max_mana);
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// send_spawn_zone - MISSING payload_size
 static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
                             uint16_t ability_id, float px, float py,
                             float duration, float radius, uint8_t has_collision) {
     SpawnZonePacket pkt = {0};
-    pkt.header.type      = PACKET_SPAWN_ZONE;
-    pkt.header.player_id = htonl(caster_id);
-    pkt.header.payload_size = htons(sizeof(SpawnZonePacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.type         = PACKET_SPAWN_ZONE;
+    pkt.header.player_id    = htonl(caster_id);
+    pkt.header.payload_size = htons(sizeof(SpawnZonePacket) - sizeof(PacketHeader));
     pkt.zone_id          = htonl(zone_id);
     pkt.caster_id        = htonl(caster_id);
     pkt.ability_id       = htons(ability_id);
@@ -199,12 +195,11 @@ static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// send_remove_zone - MISSING payload_size
 static void send_remove_zone(int client_fd, uint32_t zone_id) {
     RemoveZonePacket pkt = {0};
-    pkt.header.type      = PACKET_REMOVE_ZONE;
-    pkt.header.player_id = 0;
-    pkt.header.payload_size = htons(sizeof(RemoveZonePacket) - sizeof(PacketHeader)); // ADD THIS
+    pkt.header.type         = PACKET_REMOVE_ZONE;
+    pkt.header.player_id    = 0;
+    pkt.header.payload_size = htons(sizeof(RemoveZonePacket) - sizeof(PacketHeader));
     pkt.zone_id          = htonl(zone_id);
     server_send(client_fd, &pkt, sizeof(pkt));
 }
@@ -1025,7 +1020,9 @@ void ability_tick(NPCWorld* world, double delta_time) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!active_players[i].is_loaded) continue;
         pthread_mutex_lock(&active_players[i].lock);
-        for (int s = 0; s < active_players[i].ability_count; s++) {
+        int acount = active_players[i].ability_count;
+        if (acount > MAX_ABILITY_SLOTS) acount = MAX_ABILITY_SLOTS;
+        for (int s = 0; s < acount; s++) {
             if (active_players[i].ability_cooldowns[s] > 0.0f) {
                 active_players[i].ability_cooldowns[s] -= dt;
                 if (active_players[i].ability_cooldowns[s] < 0.0f)

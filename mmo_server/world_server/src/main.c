@@ -79,7 +79,106 @@ static volatile int g_player_broadcast_running = 0;
 static volatile int g_npc_broadcast_running = 0;
 static volatile int g_projectile_broadcast_running = 0;
 
- 
+// ============================================================================
+// THREAD POOL
+// ============================================================================
+
+#define WORKER_POOL_SIZE  1024   // Pre-allocated workers — supports 500-800 players with headroom
+#define WORK_QUEUE_CAP    2048   // Ring-buffer capacity for accepted fds waiting for a worker
+
+typedef struct {
+    int             fds[WORK_QUEUE_CAP];
+    int             head;
+    int             tail;
+    int             count;
+    pthread_mutex_t lock;
+    pthread_cond_t  not_empty;
+    pthread_cond_t  not_full;
+} WorkQueue;
+
+static WorkQueue g_work_queue;
+static pthread_t g_worker_threads[WORKER_POOL_SIZE];
+
+static void work_queue_init(WorkQueue* q) {
+    memset(q, 0, sizeof(*q));
+    pthread_mutex_init(&q->lock, NULL);
+    pthread_cond_init(&q->not_empty, NULL);
+    pthread_cond_init(&q->not_full, NULL);
+}
+
+static void work_queue_destroy(WorkQueue* q) {
+    pthread_cond_destroy(&q->not_empty);
+    pthread_cond_destroy(&q->not_full);
+    pthread_mutex_destroy(&q->lock);
+}
+
+// Enqueue an accepted fd for a worker to pick up.
+// Blocks if the queue is full (backpressure).  Returns -1 only on shutdown.
+static int work_queue_enqueue(WorkQueue* q, int fd) {
+    pthread_mutex_lock(&q->lock);
+    while (q->count >= WORK_QUEUE_CAP) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 1;
+        pthread_cond_timedwait(&q->not_full, &q->lock, &ts);
+        if (!g_server.running) {
+            pthread_mutex_unlock(&q->lock);
+            return -1;
+        }
+    }
+    q->fds[q->tail] = fd;
+    q->tail = (q->tail + 1) % WORK_QUEUE_CAP;
+    q->count++;
+    pthread_cond_signal(&q->not_empty);
+    pthread_mutex_unlock(&q->lock);
+    return 0;
+}
+
+// Dequeue an fd.  Blocks until work is available or the server is shutting down.
+// Returns -1 as the shutdown sentinel.
+static int work_queue_dequeue(WorkQueue* q) {
+    pthread_mutex_lock(&q->lock);
+    while (q->count == 0) {
+        if (!g_server.running) {
+            pthread_mutex_unlock(&q->lock);
+            return -1;
+        }
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 1;
+        pthread_cond_timedwait(&q->not_empty, &q->lock, &ts);
+    }
+    int fd = q->fds[q->head];
+    q->head = (q->head + 1) % WORK_QUEUE_CAP;
+    q->count--;
+    pthread_cond_signal(&q->not_full);
+    pthread_mutex_unlock(&q->lock);
+    return fd;
+}
+
+// Wake all waiting workers so they can see g_server.running == 0 and exit.
+static void work_queue_broadcast_shutdown(WorkQueue* q) {
+    pthread_mutex_lock(&q->lock);
+    pthread_cond_broadcast(&q->not_empty);
+    pthread_cond_broadcast(&q->not_full);
+    pthread_mutex_unlock(&q->lock);
+}
+
+// Each worker blocks on the queue, then runs the full client_handler_thread
+// logic inline (no new thread per connection).
+static void* worker_thread_func(void* arg) {
+    (void)arg;
+    while (1) {
+        int fd = work_queue_dequeue(&g_work_queue);
+        if (fd < 0) break;   // Shutdown sentinel
+        int* fd_ptr = malloc(sizeof(int));
+        if (!fd_ptr) { close(fd); continue; }
+        *fd_ptr = fd;
+        client_handler_thread(fd_ptr);   // Runs inline — no nested pthread_create
+    }
+    return NULL;
+}
+
 // Global for tracking world server uptime
 time_t g_server_start_time = 0; 
 
@@ -542,17 +641,10 @@ void* accept_thread_func(void* arg) {
                 continue;
             }
         }
-        pthread_t thread;
-        int* client_fd_ptr = malloc(sizeof(int));
-        *client_fd_ptr = client_fd;
-        
-        if (pthread_create(&thread, NULL, client_handler_thread, client_fd_ptr) != 0) {
+        if (work_queue_enqueue(&g_work_queue, client_fd) != 0) {
+            printf("[POOL] Server shutting down — dropping connection fd=%d\n", client_fd);
             close(client_fd);
-            free(client_fd_ptr);
-            continue;
         }
-        
-        pthread_detach(thread);
     }
     
     return NULL;
@@ -1131,6 +1223,27 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    // INIT THREAD POOL — pre-create workers with reduced stack size (256KB vs 8MB default)
+    work_queue_init(&g_work_queue);
+    pthread_attr_t worker_attr;
+    pthread_attr_init(&worker_attr);
+    pthread_attr_setstacksize(&worker_attr, 256 * 1024);  // 256KB per worker
+    for (int i = 0; i < WORKER_POOL_SIZE; i++) {
+        if (pthread_create(&g_worker_threads[i], &worker_attr, worker_thread_func, NULL) != 0) {
+            fprintf(stderr, "FAILED - Worker thread %d\n", i);
+            g_server.running = 0;
+            // Wake any already-started workers so they exit
+            work_queue_broadcast_shutdown(&g_work_queue);
+            for (int j = 0; j < i; j++) pthread_join(g_worker_threads[j], NULL);
+            work_queue_destroy(&g_work_queue);
+            playerdata_close();
+            return 1;
+        }
+    }
+    pthread_attr_destroy(&worker_attr);
+    printf("✓ Thread pool: %d workers (256KB stack each, ~%dMB total)\n",
+           WORKER_POOL_SIZE, (WORKER_POOL_SIZE * 256) / 1024);
+
     // START ACCEPT THREAD
     if (pthread_create(&g_server.accept_thread, NULL, accept_thread_func, NULL) != 0) {
         fprintf(stderr, "FAILED - Accept thread\n");
@@ -1193,6 +1306,7 @@ int main(int argc, char** argv) {
     
     printf("✓ All systems online - server ready\n");
     printf("  - Accept thread: Running\n");
+    printf("  - Thread pool: %d workers\n", WORKER_POOL_SIZE);
     printf("  - Combat thread: 20Hz\n");
     printf("  - Player broadcast: 20Hz\n");
     printf("  - NPC broadcast: 10Hz\n");
@@ -1228,7 +1342,14 @@ int main(int argc, char** argv) {
     // Stop accept thread
     close(g_server.tcp_sockfd);
     pthread_join(g_server.accept_thread, NULL);
-    
+
+    // Drain and shut down worker pool
+    work_queue_broadcast_shutdown(&g_work_queue);
+    for (int i = 0; i < WORKER_POOL_SIZE; i++) {
+        pthread_join(g_worker_threads[i], NULL);
+    }
+    work_queue_destroy(&g_work_queue);
+
     // Cleanup
     npc_ai_cleanup();
     loot_cleanup();

@@ -77,49 +77,49 @@ void session_registry_remove(int fd) {
     pthread_rwlock_unlock(&g_session_registry.lock);
 }
 
-SessionEntry* session_find_by_fd(int fd) {
+// Returns 1 and copies entry into *out while holding the read lock.
+// Returns 0 if not found. The caller owns the copy — no pointer into the
+// live registry is ever exposed, so there is no use-after-unlock race.
+int session_find_by_fd(int fd, SessionEntry* out) {
     pthread_rwlock_rdlock(&g_session_registry.lock);
-    
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (g_session_registry.entries[i].active && 
+        if (g_session_registry.entries[i].active &&
             g_session_registry.entries[i].fd == fd) {
+            if (out) *out = g_session_registry.entries[i];
             pthread_rwlock_unlock(&g_session_registry.lock);
-            return &g_session_registry.entries[i];
+            return 1;
         }
     }
-    
     pthread_rwlock_unlock(&g_session_registry.lock);
-    return NULL;
+    return 0;
 }
 
-SessionEntry* session_find_by_account(uint32_t account_id) {
+int session_find_by_account(uint32_t account_id, SessionEntry* out) {
     pthread_rwlock_rdlock(&g_session_registry.lock);
-    
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (g_session_registry.entries[i].active && 
+        if (g_session_registry.entries[i].active &&
             g_session_registry.entries[i].account_id == account_id) {
+            if (out) *out = g_session_registry.entries[i];
             pthread_rwlock_unlock(&g_session_registry.lock);
-            return &g_session_registry.entries[i];
+            return 1;
         }
     }
-    
     pthread_rwlock_unlock(&g_session_registry.lock);
-    return NULL;
+    return 0;
 }
 
-SessionEntry* session_find_by_character(uint32_t character_id) {
+int session_find_by_character(uint32_t character_id, SessionEntry* out) {
     pthread_rwlock_rdlock(&g_session_registry.lock);
-    
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (g_session_registry.entries[i].active && 
+        if (g_session_registry.entries[i].active &&
             g_session_registry.entries[i].character_id == character_id) {
+            if (out) *out = g_session_registry.entries[i];
             pthread_rwlock_unlock(&g_session_registry.lock);
-            return &g_session_registry.entries[i];
+            return 1;
         }
     }
-    
     pthread_rwlock_unlock(&g_session_registry.lock);
-    return NULL;
+    return 0;
 }
 
 void session_update_activity(int fd) {
