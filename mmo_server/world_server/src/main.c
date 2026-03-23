@@ -164,6 +164,9 @@ static void work_queue_broadcast_shutdown(WorkQueue* q) {
     pthread_mutex_unlock(&q->lock);
 }
 
+// Forward declaration — defined later in this file.
+static void* client_handler_thread(void* arg);
+
 // Each worker blocks on the queue, then runs the full client_handler_thread
 // logic inline (no new thread per connection).
 static void* worker_thread_func(void* arg) {
@@ -184,7 +187,7 @@ time_t g_server_start_time = 0;
 
 NPCWorld g_npc_world;
 
-void* client_handler_thread(void* arg) { 
+static void* client_handler_thread(void* arg) {
     int client_fd = *(int*)arg;
     free(arg);
 
