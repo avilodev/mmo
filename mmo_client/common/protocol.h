@@ -149,7 +149,22 @@ typedef enum {
 
     PACKET_SESSION_LIST_REQUEST  = 210, // Client -> Server: request page of online players
     PACKET_SESSION_LIST_RESPONSE = 211, // Server -> Client: paginated list of online players
+
+    PACKET_ZONE_CHANGE = 220,           // Server -> Client: player crossed a zone boundary
 } PacketType;
+
+// Zone types (matches server zone_system.h)
+#define ZONE_TYPE_WILD    0
+#define ZONE_TYPE_SAFE    1
+#define ZONE_TYPE_DUNGEON 2
+#define ZONE_TYPE_PVP     3
+
+typedef struct {
+    PacketHeader header;
+    uint8_t      zone_id;
+    uint8_t      zone_type;
+    char         zone_name[48];
+} ZoneChangePacket;
 
 typedef enum {
     GLADIATOR = 1,

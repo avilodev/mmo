@@ -46,4 +46,7 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
 // Returns -1 (prev page), 1 (next page), 0 (nothing hit).
 int hud_session_panel_handle_click(const GameState* game, float mx, float my);
 
+// Render FF14-style zone entry banner (fades in/out over 4 seconds).
+void hud_render_zone_banner(const HUDLayout* hud, const GameState* game);
+
 #endif // HUD_H

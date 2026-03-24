@@ -1424,6 +1424,20 @@ static void process_packet(const char* data, int length) {
             }
             break;
 
+        case PACKET_ZONE_CHANGE:
+            if (length >= (int)sizeof(ZoneChangePacket) && g_current_game && g_current_game->playing) {
+                ZoneChangePacket* pkt = (ZoneChangePacket*)data;
+                PlayingState* ps = g_current_game->playing;
+                strncpy(ps->current_zone_name, pkt->zone_name, sizeof(ps->current_zone_name) - 1);
+                ps->current_zone_name[sizeof(ps->current_zone_name) - 1] = '\0';
+                strncpy(ps->zone_banner_name, pkt->zone_name, sizeof(ps->zone_banner_name) - 1);
+                ps->zone_banner_name[sizeof(ps->zone_banner_name) - 1] = '\0';
+                ps->zone_banner_timer = 4.0f;
+                printf("[NET] Zone change: %s (id=%u type=%u)\n",
+                       pkt->zone_name, pkt->zone_id, pkt->zone_type);
+            }
+            break;
+
         default:
             printf("[NET] ⚠️ Unknown packet type: %d (0x%02X)\n", header->type, header->type);
             break;

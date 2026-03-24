@@ -570,6 +570,11 @@ typedef struct {
 
     // Player targeting
     uint32_t          target_player_id;
+
+    // Zone system
+    char              current_zone_name[48]; // Name of zone player is currently in
+    char              zone_banner_name[48];  // Name shown in the entry banner
+    float             zone_banner_timer;     // Counts down from ZONE_BANNER_DURATION; 0 = hidden
 } PlayingState;
 
 // ============================================================================

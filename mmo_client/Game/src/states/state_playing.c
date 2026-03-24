@@ -321,6 +321,13 @@ static void playing_update(GameState* game, float delta_time) {
         }
     }
 
+    // Update zone banner timer
+    if (game->playing->zone_banner_timer > 0.0f) {
+        game->playing->zone_banner_timer -= delta_time;
+        if (game->playing->zone_banner_timer < 0.0f)
+            game->playing->zone_banner_timer = 0.0f;
+    }
+
     // Update reward notifications
     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
         if (game->playing->reward_notifications[i].active) {

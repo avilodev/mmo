@@ -5,6 +5,7 @@
 #include "network/network.h"
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 
 void hud_init(HUDLayout* hud, int screen_width, int screen_height) {
     printf("[HUD] Initializing %dx%d\n", screen_width, screen_height);
@@ -103,6 +104,8 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
 
     if (game->playing->show_session_panel)
         hud_render_session_panel(hud, game, own_ping);
+
+    hud_render_zone_banner(hud, game);
 }
 
 void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
@@ -175,6 +178,11 @@ void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
     char coords[64];
     snprintf(coords, sizeof(coords), "X: %.0f  Y: %.0f", px, py);
     renderer_draw_text(x + 10, y + size + 18, coords);
+
+    // Zone name below coordinates
+    if (game->playing->current_zone_name[0] != '\0') {
+        renderer_draw_text(x + 10, y + size + 34, game->playing->current_zone_name);
+    }
 }
 
 void hud_render_health_bar(const HUDLayout* hud, const GameState* game) {
@@ -765,6 +773,58 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
     renderer_draw_text_centered(prev_x + SESSION_BTN_W, btn_y,
                                 next_x - prev_x - SESSION_BTN_W, SESSION_BTN_H,
                                 page_buf);
+}
+
+// ============================================================================
+// ZONE ENTRY BANNER (FF14-style)
+// Fades in quickly, holds, then fades out. Total duration = 4.0s.
+// Timer starts at 4.0 and counts down to 0.
+//   0.0–0.5s : fade-out  (timer 0→0.5)   alpha = timer / 0.5
+//   0.5–3.5s : full      (timer 0.5→3.5)  alpha = 1.0
+//   3.5–4.0s : fade-in   (timer 3.5→4.0)  alpha = (4.0 - timer) / 0.5
+// ============================================================================
+#define ZONE_BANNER_DURATION   4.0f
+#define ZONE_BANNER_FADE_TIME  0.5f
+#define ZONE_BANNER_BAR_H      2.0f
+#define ZONE_BANNER_TEXT_Y_OFF 0.38f   // fraction of screen height
+
+void hud_render_zone_banner(const HUDLayout* hud, const GameState* game) {
+    if (!game->playing) return;
+    float t = game->playing->zone_banner_timer;
+    if (t <= 0.0f) return;
+
+    float alpha;
+    if (t < ZONE_BANNER_FADE_TIME) {
+        alpha = t / ZONE_BANNER_FADE_TIME;
+    } else if (t > ZONE_BANNER_DURATION - ZONE_BANNER_FADE_TIME) {
+        alpha = (ZONE_BANNER_DURATION - t) / ZONE_BANNER_FADE_TIME;
+    } else {
+        alpha = 1.0f;
+    }
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+
+    float sw = (float)hud->screen_width;
+    float sh = (float)hud->screen_height;
+
+    // Horizontal accent bars flanking the text
+    float bar_y = sh * ZONE_BANNER_TEXT_Y_OFF - 18.0f;
+    float bar_w = sw * 0.28f;
+    float gap    = sw * 0.06f;
+    float cx     = sw * 0.5f;
+    // Left bar
+    renderer_draw_rect(cx - gap - bar_w, bar_y, bar_w, ZONE_BANNER_BAR_H,
+                       0.78f, 0.68f, 0.45f, alpha);
+    // Right bar
+    renderer_draw_rect(cx + gap, bar_y, bar_w, ZONE_BANNER_BAR_H,
+                       0.78f, 0.68f, 0.45f, alpha);
+
+    // Zone name — gold-white tint, faded by alpha
+    float text_y = sh * ZONE_BANNER_TEXT_Y_OFF;
+    renderer_draw_text_primitive(cx - (float)(strlen(game->playing->zone_banner_name) * 4),
+                                 text_y,
+                                 game->playing->zone_banner_name,
+                                 0.95f * alpha, 0.88f * alpha, 0.55f * alpha);
 }
 
 int hud_session_panel_handle_click(const GameState* game, float mx, float my) {
