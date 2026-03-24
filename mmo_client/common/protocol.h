@@ -153,19 +153,6 @@ typedef enum {
     PACKET_ZONE_CHANGE = 220,           // Server -> Client: player crossed a zone boundary
 } PacketType;
 
-// Zone types (matches server zone_system.h)
-#define ZONE_TYPE_WILD    0
-#define ZONE_TYPE_SAFE    1
-#define ZONE_TYPE_DUNGEON 2
-#define ZONE_TYPE_PVP     3
-
-typedef struct {
-    PacketHeader header;
-    uint8_t      zone_id;
-    uint8_t      zone_type;
-    char         zone_name[48];
-} ZoneChangePacket;
-
 typedef enum {
     GLADIATOR = 1,
     NINJA = 2,
@@ -185,6 +172,19 @@ typedef struct {
     uint32_t player_id;     // 4 bytes
     uint16_t payload_size;  // 2 bytes
 } PacketHeader;             // Total: 7 bytes (no padding)
+
+// Zone types (matches server zone_system.h)
+#define ZONE_TYPE_WILD    0
+#define ZONE_TYPE_SAFE    1
+#define ZONE_TYPE_DUNGEON 2
+#define ZONE_TYPE_PVP     3
+
+typedef struct {
+    PacketHeader header;
+    uint8_t      zone_id;
+    uint8_t      zone_type;
+    char         zone_name[48];
+} ZoneChangePacket;
 
 // Auth packet header (with session key) - used when session key is needed
 typedef struct {

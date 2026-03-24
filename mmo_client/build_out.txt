@@ -1,0 +1,8 @@
+﻿mingw32-make : /usr/bin/sh: -c: line 2: syntax error: unexpected end of file
+At line:1 char:33
++ cd 'C:\Users\adamo\mmo_client'; mingw32-make 2>&1 | Out-File 'build_o ...
++                                 ~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (/usr/bin/sh: -c...ted end of file:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+mingw32-make: *** [Makefile:134: dirs] Error 2

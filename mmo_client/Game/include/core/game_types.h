@@ -264,14 +264,10 @@ typedef struct {
 
 typedef struct {
     unsigned int player;
-    unsigned int grass;
-    unsigned int water;
-    unsigned int rock;
     unsigned int background;
-    unsigned int tree1;
-    unsigned int shrub1;
     unsigned int session_panel_bg;  // Static panel frame texture (O menu background)
     unsigned int session_entry_bg;  // Per-row entry background texture (tiled per player)
+    // World tilesets are owned by WorldState (world->tileset_textures)
 } GameTextures;
 
 // One row in the session panel — mirrors SessionPlayerEntry in protocol.h

@@ -64,12 +64,7 @@ static void playing_enter(GameState* game) {
     combat_init(&game->playing->combat);
 
     // Load gameplay-only textures
-    game->textures.player = texture_load("Game/Sprites/Player/player.png");
-    game->textures.grass  = texture_load("Game/Sprites/World/grass.png");
-    game->textures.water  = texture_load("Game/Sprites/World/water.png");
-    game->textures.rock   = texture_load("Game/Sprites/World/rock.png");
-    game->textures.tree1             = texture_load("Game/Sprites/Decoration/Tree/tree1.png");
-    game->textures.shrub1            = texture_load("Game/Sprites/Decoration/Bush/bush1.png");
+    game->textures.player            = texture_load("Game/Sprites/Player/player.png");
     game->textures.session_panel_bg  = texture_load("Game/Sprites/UI/session_panel_bg.png");
     game->textures.session_entry_bg  = texture_load("Game/Sprites/UI/session_entry_bg.png");
 
@@ -100,14 +95,10 @@ static void playing_exit(GameState* game) {
     }
 
     // Unload gameplay-only textures
-    if (game->textures.player) { texture_unload(game->textures.player); game->textures.player = 0; }
-    if (game->textures.grass)  { texture_unload(game->textures.grass);  game->textures.grass  = 0; }
-    if (game->textures.water)  { texture_unload(game->textures.water);  game->textures.water  = 0; }
-    if (game->textures.rock)   { texture_unload(game->textures.rock);   game->textures.rock   = 0; }
-    if (game->textures.tree1)            { texture_unload(game->textures.tree1);            game->textures.tree1            = 0; }
-    if (game->textures.shrub1)           { texture_unload(game->textures.shrub1);           game->textures.shrub1           = 0; }
+    if (game->textures.player)           { texture_unload(game->textures.player);           game->textures.player           = 0; }
     if (game->textures.session_panel_bg) { texture_unload(game->textures.session_panel_bg); game->textures.session_panel_bg = 0; }
     if (game->textures.session_entry_bg) { texture_unload(game->textures.session_entry_bg); game->textures.session_entry_bg = 0; }
+    // World tileset textures are unloaded by world_cleanup
 
     // Unload ability icon textures, then free the playing state
     if (game->playing) {
@@ -1007,8 +998,17 @@ static void playing_render(GameState* game) {
     renderer_begin_2d();
     camera_apply(&game->camera);
 
-    world_render(&game->world, &game->camera, &game->textures);
-    world_render_decorations(&game->world, &game->camera, &game->textures);
+    world_render(&game->world, &game->camera);
+    world_render_overlay_floor(&game->world, &game->camera);
+
+    int player_inside = world_is_inside(&game->world, game->player.x, game->player.y);
+    int player_ty = (int)(game->player.y / game->world.tile_size);
+
+    if (player_inside) {
+        world_render_overlay_interior(&game->world, &game->camera);
+    } else {
+        world_render_overlay_above_north(&game->world, &game->camera, player_ty);
+    }
 
     // World-space entities
     render_zones(game);
@@ -1023,6 +1023,11 @@ static void playing_render(GameState* game) {
     combat_render_indicator(&game->playing->combat);
     combat_render_damage_numbers(&game->playing->combat);
     player_render(&game->player, game->textures.player, game->world.tile_size);
+
+    if (player_inside)
+        world_render_overlay_above(&game->world, &game->camera);
+    else
+        world_render_overlay_above_south(&game->world, &game->camera, player_ty);
 
     renderer_end_2d();
 

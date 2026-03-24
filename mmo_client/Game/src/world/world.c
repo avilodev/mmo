@@ -1,5 +1,7 @@
-#include "game_types.h"  // Includes world.h, camera.h, and defines GameTextures
+#include "game_types.h"
 #include "renderer.h"
+#include "texture/texture.h"
+#include <GLFW/glfw3.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,56 +12,88 @@
 
 int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     memset(world, 0, sizeof(WorldState));
-    
+
     world->world_file = fopen(world_file_path, "rb");
     if (!world->world_file) {
         fprintf(stderr, "[WORLD] Failed to open %s\n", world_file_path);
         return 0;
     }
-    
-    // Read header (width, height, tile_size from file)
-    fread(&world->world_width, sizeof(int), 1, world->world_file);
+
+    // Read header: width, height, tile_size
+    fread(&world->world_width,  sizeof(int), 1, world->world_file);
     fread(&world->world_height, sizeof(int), 1, world->world_file);
     int file_tile_size;
     fread(&file_tile_size, sizeof(int), 1, world->world_file);
-    
-    world->tile_size = tile_size;  // Use parameter, not file value
-    world->world_width_chunks = (world->world_width + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    (void)file_tile_size;
+
+    world->tile_size           = tile_size;
+    world->world_width_chunks  = (world->world_width  + CHUNK_SIZE - 1) / CHUNK_SIZE;
     world->world_height_chunks = (world->world_height + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    world->loaded_chunk_count = 0;
-    world->current_frame = 0;
-    world->modification_count = 0;
-    
-    // Initialize all chunks as unloaded
-    for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
-        world->chunks[i].is_loaded = 0;
+
+    // Read tileset table
+    uint8_t ts_count = 0;
+    fread(&ts_count, sizeof(uint8_t), 1, world->world_file);
+    world->tileset_count = ts_count;
+
+    for (int i = 0; i < ts_count && i < MAX_TILESETS - 1; i++) {
+        int slot = i + 1;  // slot 0 is reserved for "empty"
+
+        uint8_t path_len = 0;
+        fread(&path_len, sizeof(uint8_t), 1, world->world_file);
+
+        char path[128] = {0};
+        if (path_len > 0 && path_len < 128) {
+            fread(path, 1, path_len, world->world_file);
+        } else {
+            fseek(world->world_file, path_len, SEEK_CUR);
+        }
+        path[path_len] = '\0';
+        memcpy(world->tilesets[slot].path, path, path_len);
+        world->tilesets[slot].path[path_len] = '\0';
+
+        uint16_t cols = 1, rows = 1;
+        fread(&cols, sizeof(uint16_t), 1, world->world_file);
+        fread(&rows, sizeof(uint16_t), 1, world->world_file);
+        world->tilesets[slot].cols = cols;
+        world->tilesets[slot].rows = rows;
+
+        world->tileset_textures[slot] = texture_load(path);
+        if (!world->tileset_textures[slot])
+            fprintf(stderr, "[WORLD] Warning: failed to load tileset %s\n", path);
+        else
+            printf("[WORLD] Tileset [%d] loaded: %s (%dx%d tiles)\n", slot, path, cols, rows);
     }
-    
-    printf("[WORLD] Initialized %dx%d tiles (%dx%d chunks)\n",
+
+    // Record file offsets for the five data layers
+    world->base_layer_offset      = ftell(world->world_file);
+    long total_tiles              = (long)world->world_width * world->world_height;
+    world->overlay_floor_offset    = world->base_layer_offset       + total_tiles * (long)sizeof(uint16_t);
+    world->overlay_interior_offset = world->overlay_floor_offset    + total_tiles * (long)sizeof(uint16_t);
+    world->overlay_above_offset    = world->overlay_interior_offset + total_tiles * (long)sizeof(uint16_t);
+    world->collision_offset        = world->overlay_above_offset    + total_tiles * (long)sizeof(uint16_t);
+
+    for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
+        world->chunks[i].is_loaded = 0;
+
+    printf("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets\n",
            world->world_width, world->world_height,
-           world->world_width_chunks, world->world_height_chunks);
-    printf("[WORLD] File: %s, Tile size: %d pixels\n", world_file_path, tile_size);
-    printf("[WORLD] Memory usage: ~%d KB for %d chunks\n", 
-           (int)((sizeof(Chunk) * MAX_LOADED_CHUNKS) / 1024), MAX_LOADED_CHUNKS);
-    
+           world->world_width_chunks, world->world_height_chunks,
+           world->tileset_count);
     return 1;
 }
 
 void world_update_chunks(WorldState* world, float player_x, float player_y) {
     if (!world->world_file || world->tile_size == 0) return;
-
     world->current_frame++;
 
-    // Calculate which chunk player is in
     int player_chunk_x = (int)(player_x / world->tile_size) / CHUNK_SIZE;
     int player_chunk_y = (int)(player_y / world->tile_size) / CHUNK_SIZE;
-    
-    // Load chunks in radius around player
-    for (int cy = player_chunk_y - LOAD_RADIUS_CHUNKS; 
+
+    for (int cy = player_chunk_y - LOAD_RADIUS_CHUNKS;
          cy <= player_chunk_y + LOAD_RADIUS_CHUNKS; cy++) {
-        for (int cx = player_chunk_x - LOAD_RADIUS_CHUNKS; 
+        for (int cx = player_chunk_x - LOAD_RADIUS_CHUNKS;
              cx <= player_chunk_x + LOAD_RADIUS_CHUNKS; cx++) {
-            world_get_chunk(world, cx, cy);  // Loads if not already loaded
+            world_get_chunk(world, cx, cy);
         }
     }
 }
@@ -68,9 +102,7 @@ void world_update_modifications(WorldState* world, float delta_time) {
     for (int i = 0; i < world->modification_count; i++) {
         if (world->modifications[i].duration > 0) {
             world->modifications[i].time_remaining -= delta_time;
-            
             if (world->modifications[i].time_remaining <= 0) {
-                // Remove expired modification
                 world->modifications[i] = world->modifications[world->modification_count - 1];
                 world->modification_count--;
                 i--;
@@ -79,15 +111,30 @@ void world_update_modifications(WorldState* world, float delta_time) {
     }
 }
 
+static void chunk_free_display_lists(Chunk* c) {
+    if (c->dl_base)             { glDeleteLists(c->dl_base,             1); c->dl_base             = 0; }
+    if (c->dl_overlay_floor)    { glDeleteLists(c->dl_overlay_floor,    1); c->dl_overlay_floor    = 0; }
+    if (c->dl_overlay_interior) { glDeleteLists(c->dl_overlay_interior, 1); c->dl_overlay_interior = 0; }
+    if (c->dl_overlay_above)    { glDeleteLists(c->dl_overlay_above,    1); c->dl_overlay_above    = 0; }
+    c->dl_dirty = 1;
+}
+
 void world_cleanup(WorldState* world) {
     if (world->world_file) {
         fclose(world->world_file);
         world->world_file = NULL;
     }
-    
+    for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
+        if (world->chunks[i].is_loaded)
+            chunk_free_display_lists(&world->chunks[i]);
+    for (int i = 1; i < MAX_TILESETS; i++) {
+        if (world->tileset_textures[i]) {
+            texture_unload(world->tileset_textures[i]);
+            world->tileset_textures[i] = 0;
+        }
+    }
     world->loaded_chunk_count = 0;
     world->modification_count = 0;
-    
     printf("[WORLD] Cleaned up\n");
 }
 
@@ -96,13 +143,10 @@ void world_cleanup(WorldState* world) {
 // ============================================================================
 
 Chunk* world_get_chunk(WorldState* world, int chunk_x, int chunk_y) {
-    // Bounds check
     if (chunk_x < 0 || chunk_x >= world->world_width_chunks ||
-        chunk_y < 0 || chunk_y >= world->world_height_chunks) {
+        chunk_y < 0 || chunk_y >= world->world_height_chunks)
         return NULL;
-    }
-    
-    // Check if already loaded
+
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
         if (world->chunks[i].is_loaded &&
             world->chunks[i].chunk_x == chunk_x &&
@@ -111,18 +155,36 @@ Chunk* world_get_chunk(WorldState* world, int chunk_x, int chunk_y) {
             return &world->chunks[i];
         }
     }
-    
-    // Not loaded - need to load it
     return world_load_chunk(world, chunk_x, chunk_y);
+}
+
+static void load_layer_rows(WorldState* world, long layer_offset, int tile_start_x, int tile_start_y,
+                             uint16_t* dst, uint16_t fill_val) {
+    for (int ly = 0; ly < CHUNK_SIZE; ly++) {
+        int wy = tile_start_y + ly;
+        if (wy >= world->world_height) {
+            for (int lx = 0; lx < CHUNK_SIZE; lx++)
+                dst[ly * CHUNK_SIZE + lx] = fill_val;
+            continue;
+        }
+        size_t offset = (size_t)layer_offset +
+                        ((size_t)wy * world->world_width + tile_start_x) * sizeof(uint16_t);
+        fseek(world->world_file, (long)offset, SEEK_SET);
+
+        int n = CHUNK_SIZE;
+        if (tile_start_x + CHUNK_SIZE > world->world_width)
+            n = world->world_width - tile_start_x;
+        fread(&dst[ly * CHUNK_SIZE], sizeof(uint16_t), n, world->world_file);
+        for (int lx = n; lx < CHUNK_SIZE; lx++)
+            dst[ly * CHUNK_SIZE + lx] = fill_val;
+    }
 }
 
 Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     if (!world->world_file) return NULL;
 
     Chunk* target = NULL;
-
     if (world->loaded_chunk_count < MAX_LOADED_CHUNKS) {
-        // Use next empty slot
         for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
             if (!world->chunks[i].is_loaded) {
                 target = &world->chunks[i];
@@ -131,129 +193,62 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
             }
         }
     } else {
-        // Evict least recently used chunk
-        int oldest_frame = world->current_frame;
+        int oldest = world->current_frame;
         for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
-            if (world->chunks[i].last_access_frame < oldest_frame) {
-                oldest_frame = world->chunks[i].last_access_frame;
+            if (world->chunks[i].last_access_frame < oldest) {
+                oldest = world->chunks[i].last_access_frame;
                 target = &world->chunks[i];
             }
         }
+        if (target) chunk_free_display_lists(target);  // evict old display lists
     }
-    
     if (!target) {
-        fprintf(stderr, "[WORLD] Failed to find chunk slot!\n");
+        fprintf(stderr, "[WORLD] No chunk slot available!\n");
         return NULL;
     }
-    
-    // Initialize chunk
-    target->chunk_x = chunk_x;
-    target->chunk_y = chunk_y;
-    target->is_loaded = 1;
+
+    target->chunk_x           = chunk_x;
+    target->chunk_y           = chunk_y;
+    target->is_loaded         = 1;
     target->last_access_frame = world->current_frame;
-    target->decoration_count = 0;  // Initialize decorations
-    
-    // Calculate file offset for this chunk
-    size_t header_size = sizeof(int) * 3;
-    // We need to read the chunk's tiles from the file
-    // The file stores tiles sequentially by row, so we need to read
-    // CHUNK_SIZE rows, each containing CHUNK_SIZE tiles
-    
-    int tile_start_x = chunk_x * CHUNK_SIZE;
-    int tile_start_y = chunk_y * CHUNK_SIZE;
-    
-    // Read tiles for this chunk
-    for (int local_y = 0; local_y < CHUNK_SIZE; local_y++) {
-        int world_y = tile_start_y + local_y;
-        if (world_y >= world->world_height) {
-            // Fill with empty tiles if beyond world bounds
-            for (int local_x = 0; local_x < CHUNK_SIZE; local_x++) {
-                target->tiles[local_y * CHUNK_SIZE + local_x] = 0;
-            }
+    target->dl_base             = 0;
+    target->dl_overlay_floor    = 0;
+    target->dl_overlay_interior = 0;
+    target->dl_overlay_above    = 0;
+    target->dl_dirty            = 1;
+
+    int tx0 = chunk_x * CHUNK_SIZE;
+    int ty0 = chunk_y * CHUNK_SIZE;
+
+    // Base layer
+    load_layer_rows(world, world->base_layer_offset, tx0, ty0, target->tiles, TILE_EMPTY);
+
+    // Overlay floor (always visible)
+    load_layer_rows(world, world->overlay_floor_offset,    tx0, ty0, target->overlay_floor_tiles,    TILE_EMPTY);
+
+    // Overlay interior (only visible when inside)
+    load_layer_rows(world, world->overlay_interior_offset, tx0, ty0, target->overlay_interior_tiles, TILE_EMPTY);
+
+    // Overlay above (wall, roof — in front of player when inside)
+    load_layer_rows(world, world->overlay_above_offset,    tx0, ty0, target->overlay_above_tiles,    TILE_EMPTY);
+
+    // Collision layer
+    for (int ly = 0; ly < CHUNK_SIZE; ly++) {
+        int wy = ty0 + ly;
+        if (wy >= world->world_height) {
+            memset(&target->collision[ly * CHUNK_SIZE], 1, CHUNK_SIZE);
             continue;
         }
-        
-        // Calculate file position for this row
-        // Cast to size_t before multiplying to prevent 32-bit int overflow on large worlds
-        size_t row_offset = header_size +
-                          ((size_t)world_y * (size_t)world->world_width + (size_t)tile_start_x) * sizeof(uint16_t);
-        fseek(world->world_file, row_offset, SEEK_SET);
-        
-        // Read the row (or partial row if at edge)
-        int tiles_to_read = CHUNK_SIZE;
-        if (tile_start_x + CHUNK_SIZE > world->world_width) {
-            tiles_to_read = world->world_width - tile_start_x;
-        }
-        
-        fread(&target->tiles[local_y * CHUNK_SIZE], sizeof(uint16_t), 
-              tiles_to_read, world->world_file);
-        
-        // Fill remainder with empty if at edge
-        for (int local_x = tiles_to_read; local_x < CHUNK_SIZE; local_x++) {
-            target->tiles[local_y * CHUNK_SIZE + local_x] = 0;
-        }
+        size_t offset = (size_t)world->collision_offset +
+                        ((size_t)wy * world->world_width + tx0) * sizeof(uint8_t);
+        fseek(world->world_file, (long)offset, SEEK_SET);
+        int n = CHUNK_SIZE;
+        if (tx0 + CHUNK_SIZE > world->world_width)
+            n = world->world_width - tx0;
+        fread(&target->collision[ly * CHUNK_SIZE], sizeof(uint8_t), n, world->world_file);
+        memset(&target->collision[ly * CHUNK_SIZE + n], 1, CHUNK_SIZE - n);
     }
-    
-    // Read collision data
-    size_t total_tiles = world->world_width * world->world_height;
-    size_t collision_base = header_size + (total_tiles * sizeof(uint16_t));
-    
-    for (int local_y = 0; local_y < CHUNK_SIZE; local_y++) {
-        int world_y = tile_start_y + local_y;
-        if (world_y >= world->world_height) {
-            for (int local_x = 0; local_x < CHUNK_SIZE; local_x++) {
-                target->collision[local_y * CHUNK_SIZE + local_x] = 1;  // Solid
-            }
-            continue;
-        }
-        
-        size_t row_offset = collision_base + 
-                          (world_y * world->world_width + tile_start_x) * sizeof(uint8_t);
-        fseek(world->world_file, row_offset, SEEK_SET);
-        
-        int tiles_to_read = CHUNK_SIZE;
-        if (tile_start_x + CHUNK_SIZE > world->world_width) {
-            tiles_to_read = world->world_width - tile_start_x;
-        }
-        
-        fread(&target->collision[local_y * CHUNK_SIZE], sizeof(uint8_t), 
-              tiles_to_read, world->world_file);
-        
-        for (int local_x = tiles_to_read; local_x < CHUNK_SIZE; local_x++) {
-            target->collision[local_y * CHUNK_SIZE + local_x] = 1;  // Solid
-        }
-    }
-    
-    // Read decoration data
-    size_t decorations_base = header_size + 
-                             (total_tiles * sizeof(uint16_t)) + 
-                             (total_tiles * sizeof(uint8_t));
-    
-    // Calculate offset for this chunk's decorations
-    size_t chunk_index = chunk_y * world->world_width_chunks + chunk_x;
-    
-    // Each chunk has: 1 byte count + up to 16 decorations
-    size_t chunk_deco_offset = decorations_base;
-    for (size_t i = 0; i < chunk_index; i++) {
-        // Skip to this chunk by reading previous chunks' decoration counts
-        fseek(world->world_file, chunk_deco_offset, SEEK_SET);
-        uint8_t count;
-        fread(&count, sizeof(uint8_t), 1, world->world_file);
-        chunk_deco_offset += sizeof(uint8_t) + (count * sizeof(Decoration));
-    }
-    
-    // Read this chunk's decorations
-    fseek(world->world_file, chunk_deco_offset, SEEK_SET);
-    uint8_t deco_count;
-    fread(&deco_count, sizeof(uint8_t), 1, world->world_file);
-    
-    if (deco_count > 16) deco_count = 16;  // Safety clamp
-    target->decoration_count = deco_count;
-    
-    if (deco_count > 0) {
-        fread(target->decorations, sizeof(Decoration), deco_count, world->world_file);
-    }
-    
+
     return target;
 }
 
@@ -262,44 +257,26 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
 // ============================================================================
 
 int world_get_tile(const WorldState* world, int tx, int ty) {
-    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height) {
+    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
         return -1;
-    }
-    
-    // Check modifications first
+
     for (int i = 0; i < world->modification_count; i++) {
-        if (world->modifications[i].tile_x == tx && 
-            world->modifications[i].tile_y == ty) {
+        if (world->modifications[i].tile_x == tx &&
+            world->modifications[i].tile_y == ty)
             return world->modifications[i].modified_tile;
-        }
     }
-    
-    // Get from chunk
-    int chunk_x = tx / CHUNK_SIZE;
-    int chunk_y = ty / CHUNK_SIZE;
-    int local_x = tx % CHUNK_SIZE;
-    int local_y = ty % CHUNK_SIZE;
-    
-    Chunk* chunk = world_get_chunk((WorldState*)world, chunk_x, chunk_y);
+
+    Chunk* chunk = world_get_chunk((WorldState*)world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
     if (!chunk) return -1;
-    
-    return chunk->tiles[local_y * CHUNK_SIZE + local_x];
+    return chunk->tiles[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)];
 }
 
 void world_set_tile(WorldState* world, int tx, int ty, int tile_type) {
-    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height) {
+    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
         return;
-    }
-    
-    int chunk_x = tx / CHUNK_SIZE;
-    int chunk_y = ty / CHUNK_SIZE;
-    int local_x = tx % CHUNK_SIZE;
-    int local_y = ty % CHUNK_SIZE;
-    
-    Chunk* chunk = world_get_chunk(world, chunk_x, chunk_y);
+    Chunk* chunk = world_get_chunk(world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
     if (!chunk) return;
-    
-    chunk->tiles[local_y * CHUNK_SIZE + local_x] = tile_type;
+    chunk->tiles[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)] = (uint16_t)tile_type;
 }
 
 // ============================================================================
@@ -309,33 +286,21 @@ void world_set_tile(WorldState* world, int tx, int ty, int tile_type) {
 int world_check_tile_collision(const WorldState* world, float x, float y) {
     int tx = (int)(x / world->tile_size);
     int ty = (int)(y / world->tile_size);
-    
-    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height) {
-        return 1;  // Out of bounds = collision
-    }
-    
-    // Check modifications first
+    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
+        return 1;
+
     for (int i = 0; i < world->modification_count; i++) {
-        if (world->modifications[i].tile_x == tx && 
-            world->modifications[i].tile_y == ty) {
+        if (world->modifications[i].tile_x == tx &&
+            world->modifications[i].tile_y == ty)
             return world->modifications[i].modified_collision;
-        }
     }
-    
-    // Get from chunk
-    int chunk_x = tx / CHUNK_SIZE;
-    int chunk_y = ty / CHUNK_SIZE;
-    int local_x = tx % CHUNK_SIZE;
-    int local_y = ty % CHUNK_SIZE;
-    
-    Chunk* chunk = world_get_chunk((WorldState*)world, chunk_x, chunk_y);
+
+    Chunk* chunk = world_get_chunk((WorldState*)world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
     if (!chunk) return 1;
-    
-    return chunk->collision[local_y * CHUNK_SIZE + local_x];
+    return chunk->collision[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)];
 }
 
 int world_check_box_collision(const WorldState* world, float x, float y, float half_size) {
-    // Check all 4 corners
     if (world_check_tile_collision(world, x - half_size, y - half_size)) return 1;
     if (world_check_tile_collision(world, x + half_size, y - half_size)) return 1;
     if (world_check_tile_collision(world, x - half_size, y + half_size)) return 1;
@@ -361,36 +326,45 @@ void tile_to_world(const WorldState* world, int tx, int ty, float* wx, float* wy
 // DYNAMIC MODIFICATIONS
 // ============================================================================
 
-int world_add_modification(WorldState* world, int tile_x, int tile_y, 
-                          uint16_t tile_type, uint8_t collision, float duration) {
+// Mark the chunk containing (tile_x, tile_y) as needing a display list rebuild.
+static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
+    int cx = tile_x / CHUNK_SIZE;
+    int cy = tile_y / CHUNK_SIZE;
+    for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
+        if (world->chunks[i].is_loaded &&
+            world->chunks[i].chunk_x == cx &&
+            world->chunks[i].chunk_y == cy) {
+            world->chunks[i].dl_dirty = 1;
+            break;
+        }
+    }
+}
+
+int world_add_modification(WorldState* world, int tile_x, int tile_y,
+                            uint16_t tile_type, uint8_t collision, float duration) {
     if (world->modification_count >= MAX_MODIFICATIONS) {
         fprintf(stderr, "[WORLD] Max modifications reached!\n");
         return 0;
     }
-    
-    // Check if already modified at this position
     for (int i = 0; i < world->modification_count; i++) {
         if (world->modifications[i].tile_x == tile_x &&
             world->modifications[i].tile_y == tile_y) {
-            // Update existing modification
-            world->modifications[i].modified_tile = tile_type;
+            world->modifications[i].modified_tile      = tile_type;
             world->modifications[i].modified_collision = collision;
-            world->modifications[i].duration = duration;
-            world->modifications[i].time_remaining = duration;
+            world->modifications[i].duration           = duration;
+            world->modifications[i].time_remaining     = duration;
+            mark_chunk_dirty(world, tile_x, tile_y);
             return 1;
         }
     }
-    
-    // Add new modification
-    TileModification* mod = &world->modifications[world->modification_count];
-    mod->tile_x = tile_x;
-    mod->tile_y = tile_y;
-    mod->modified_tile = tile_type;
-    mod->modified_collision = collision;
-    mod->duration = duration;
-    mod->time_remaining = duration;
-    world->modification_count++;
-    
+    TileModification* m = &world->modifications[world->modification_count++];
+    m->tile_x             = tile_x;
+    m->tile_y             = tile_y;
+    m->modified_tile      = tile_type;
+    m->modified_collision = collision;
+    m->duration           = duration;
+    m->time_remaining     = duration;
+    mark_chunk_dirty(world, tile_x, tile_y);
     return 1;
 }
 
@@ -398,156 +372,274 @@ void world_remove_modification(WorldState* world, int tile_x, int tile_y) {
     for (int i = 0; i < world->modification_count; i++) {
         if (world->modifications[i].tile_x == tile_x &&
             world->modifications[i].tile_y == tile_y) {
-            // Remove by swapping with last
-            world->modifications[i] = world->modifications[world->modification_count - 1];
-            world->modification_count--;
+            world->modifications[i] = world->modifications[--world->modification_count];
+            mark_chunk_dirty(world, tile_x, tile_y);
             return;
         }
     }
 }
 
 void world_clear_modifications(WorldState* world) {
+    // Mark all loaded chunks dirty since any could have had modifications
+    for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
+        if (world->chunks[i].is_loaded)
+            world->chunks[i].dl_dirty = 1;
     world->modification_count = 0;
+}
+
+// ============================================================================
+// RENDERING HELPERS
+// ============================================================================
+
+// Compute visible chunk range from camera
+static void visible_chunk_range(const WorldState* world, const Camera* camera,
+                                 int* sc_x, int* ec_x, int* sc_y, int* ec_y) {
+    float half_w = camera->viewport_width  / (2.0f * camera->zoom);
+    float half_h = camera->viewport_height / (2.0f * camera->zoom);
+
+    int sx = (int)((camera->x - half_w) / world->tile_size) - 1;
+    int ex = (int)((camera->x + half_w) / world->tile_size) + 1;
+    int sy = (int)((camera->y - half_h) / world->tile_size) - 1;
+    int ey = (int)((camera->y + half_h) / world->tile_size) + 1;
+
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+    if (ex >= world->world_width)  ex = world->world_width  - 1;
+    if (ey >= world->world_height) ey = world->world_height - 1;
+
+    *sc_x = sx / CHUNK_SIZE;
+    *ec_x = ex / CHUNK_SIZE;
+    *sc_y = sy / CHUNK_SIZE;
+    *ec_y = ey / CHUNK_SIZE;
+}
+
+// Build (or rebuild) a chunk's display list for one layer.
+// Modifications are baked in so dynamic changes stay correct.
+// layer: 0=base, 1=floor, 2=interior, 3=above
+static void chunk_build_display_list(WorldState* world, Chunk* chunk, int layer) {
+    unsigned int* dl_id = (layer == 0) ? &chunk->dl_base
+                        : (layer == 1) ? &chunk->dl_overlay_floor
+                        : (layer == 2) ? &chunk->dl_overlay_interior
+                                       : &chunk->dl_overlay_above;
+
+    if (*dl_id == 0)
+        *dl_id = glGenLists(1);
+
+    int tx0 = chunk->chunk_x * CHUNK_SIZE;
+    int ty0 = chunk->chunk_y * CHUNK_SIZE;
+
+    glNewList(*dl_id, GL_COMPILE);
+    glEnable(GL_TEXTURE_2D);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+    unsigned int bound_tex = 0;
+
+    for (int ly = 0; ly < CHUNK_SIZE; ly++) {
+        for (int lx = 0; lx < CHUNK_SIZE; lx++) {
+            int wx = tx0 + lx;
+            int wy = ty0 + ly;
+            if (wx >= world->world_width || wy >= world->world_height) continue;
+
+            int slot = ly * CHUNK_SIZE + lx;
+            uint16_t packed = (layer == 0) ? chunk->tiles[slot]
+                            : (layer == 1) ? chunk->overlay_floor_tiles[slot]
+                            : (layer == 2) ? chunk->overlay_interior_tiles[slot]
+                                           : chunk->overlay_above_tiles[slot];
+
+            // Check dynamic modifications (bake them into the compiled list)
+            if (layer == 0) {
+                for (int m = 0; m < world->modification_count; m++) {
+                    if (world->modifications[m].tile_x == wx &&
+                        world->modifications[m].tile_y == wy) {
+                        packed = world->modifications[m].modified_tile;
+                        break;
+                    }
+                }
+            }
+
+            if (packed == TILE_EMPTY) continue;
+
+            int ts_id  = (packed >> 12) & 0xF;
+            int ts_idx =  packed        & 0xFFF;
+
+            unsigned int tex = world->tileset_textures[ts_id];
+            if (!tex) continue;
+
+            int cols = world->tilesets[ts_id].cols;
+            int rows = world->tilesets[ts_id].rows;
+            if (cols == 0 || rows == 0) continue;
+
+            int src_col = ts_idx % cols;
+            int src_row = ts_idx / cols;
+
+            float u0 = (float) src_col      / cols;
+            float v0 = (float) src_row      / rows;
+            float u1 = (float)(src_col + 1) / cols;
+            float v1 = (float)(src_row + 1) / rows;
+
+            float dx = (float)(wx * world->tile_size);
+            float dy = (float)(wy * world->tile_size);
+            float ds = (float)world->tile_size;
+
+            if (tex != bound_tex) {
+                glBindTexture(GL_TEXTURE_2D, tex);
+                bound_tex = tex;
+            }
+
+            glBegin(GL_QUADS);
+                glTexCoord2f(u0, v0); glVertex2f(dx,      dy);
+                glTexCoord2f(u1, v0); glVertex2f(dx + ds, dy);
+                glTexCoord2f(u1, v1); glVertex2f(dx + ds, dy + ds);
+                glTexCoord2f(u0, v1); glVertex2f(dx,      dy + ds);
+            glEnd();
+        }
+    }
+
+    glEndList();
+}
+
+static void render_tile_layer(const WorldState* world, const Camera* camera, int layer) {
+    int sc_x, ec_x, sc_y, ec_y;
+    visible_chunk_range(world, camera, &sc_x, &ec_x, &sc_y, &ec_y);
+
+    for (int cy = sc_y; cy <= ec_y; cy++) {
+        for (int cx = sc_x; cx <= ec_x; cx++) {
+            Chunk* chunk = world_get_chunk((WorldState*)world, cx, cy);
+            if (!chunk) continue;
+
+            unsigned int dl = (layer == 0) ? chunk->dl_base
+                            : (layer == 1) ? chunk->dl_overlay_floor
+                            : (layer == 2) ? chunk->dl_overlay_interior
+                                           : chunk->dl_overlay_above;
+
+            // Build or rebuild all four lists together when dirty
+            if (chunk->dl_dirty || dl == 0) {
+                chunk_build_display_list((WorldState*)world, chunk, 0);
+                chunk_build_display_list((WorldState*)world, chunk, 1);
+                chunk_build_display_list((WorldState*)world, chunk, 2);
+                chunk_build_display_list((WorldState*)world, chunk, 3);
+                chunk->dl_dirty = 0;
+                dl = (layer == 0) ? chunk->dl_base
+                   : (layer == 1) ? chunk->dl_overlay_floor
+                   : (layer == 2) ? chunk->dl_overlay_interior
+                                  : chunk->dl_overlay_above;
+            }
+
+            if (dl) glCallList(dl);
+        }
+    }
 }
 
 // ============================================================================
 // RENDERING
 // ============================================================================
 
-void world_render(const WorldState* world, const Camera* camera, const GameTextures* textures) {
-    // Calculate visible tile range
-    int start_x = (int)((camera->x - camera->viewport_width / (2.0f * camera->zoom)) / world->tile_size) - 1;
-    int end_x = (int)((camera->x + camera->viewport_width / (2.0f * camera->zoom)) / world->tile_size) + 1;
-    int start_y = (int)((camera->y - camera->viewport_height / (2.0f * camera->zoom)) / world->tile_size) - 1;
-    int end_y = (int)((camera->y + camera->viewport_height / (2.0f * camera->zoom)) / world->tile_size) + 1;
-    
-    // Clamp to world bounds
-    if (start_x < 0) start_x = 0;
-    if (end_x >= world->world_width) end_x = world->world_width - 1;
-    if (start_y < 0) start_y = 0;
-    if (end_y >= world->world_height) end_y = world->world_height - 1;
-    
-    // Calculate chunk range
-    int start_chunk_x = start_x / CHUNK_SIZE;
-    int end_chunk_x = end_x / CHUNK_SIZE;
-    int start_chunk_y = start_y / CHUNK_SIZE;
-    int end_chunk_y = end_y / CHUNK_SIZE;
-    
-    // Render visible chunks
-    for (int cy = start_chunk_y; cy <= end_chunk_y; cy++) {
-        for (int cx = start_chunk_x; cx <= end_chunk_x; cx++) {
-            Chunk* chunk = world_get_chunk((WorldState*)world, cx, cy);
-            if (!chunk) continue;
-            
-            // Render tiles in this chunk
-            int tile_start_x = cx * CHUNK_SIZE;
-            int tile_start_y = cy * CHUNK_SIZE;
-            
-            for (int local_y = 0; local_y < CHUNK_SIZE; local_y++) {
-                for (int local_x = 0; local_x < CHUNK_SIZE; local_x++) {
-                    int world_x = tile_start_x + local_x;
-                    int world_y = tile_start_y + local_y;
-                    
-                    // Skip if outside visible range or world bounds
-                    if (world_x < start_x || world_x > end_x ||
-                        world_y < start_y || world_y > end_y ||
-                        world_x >= world->world_width || world_y >= world->world_height) {
-                        continue;
-                    }
-                    
-                    // Check for modifications first
-                    uint16_t tile = chunk->tiles[local_y * CHUNK_SIZE + local_x];
-                    for (int i = 0; i < world->modification_count; i++) {
-                        if (world->modifications[i].tile_x == world_x &&
-                            world->modifications[i].tile_y == world_y) {
-                            tile = world->modifications[i].modified_tile;
-                            break;
-                        }
-                    }
-                    
-                    // Skip empty tiles
-                    if (tile == 0) continue;
-                    
-                    unsigned int texture;
-                    switch (tile) {
-                        case 1:  texture = textures->grass; break;
-                        case 2:  texture = textures->water; break;
-                        default: texture = textures->rock;  break;
-                    }
-                    
-                    renderer_draw_sprite(
-                        world_x * world->tile_size,
-                        world_y * world->tile_size,
-                        world->tile_size,
-                        world->tile_size,
-                        texture
-                    );
-                }
-            }
-        }
-    }
+void world_render(const WorldState* world, const Camera* camera) {
+    render_tile_layer(world, camera, 0);
 }
 
-// ============================================================================
-// DECORATION RENDERING
-// ============================================================================
+void world_render_overlay_floor(const WorldState* world, const Camera* camera) {
+    render_tile_layer(world, camera, 1);
+}
 
-void world_render_decorations(const WorldState* world, const Camera* camera, const GameTextures* textures) {
-    // Calculate visible tile range
-    int start_x = (int)((camera->x - camera->viewport_width / (2.0f * camera->zoom)) / world->tile_size) - 1;
-    int end_x = (int)((camera->x + camera->viewport_width / (2.0f * camera->zoom)) / world->tile_size) + 1;
-    int start_y = (int)((camera->y - camera->viewport_height / (2.0f * camera->zoom)) / world->tile_size) - 1;
-    int end_y = (int)((camera->y + camera->viewport_height / (2.0f * camera->zoom)) / world->tile_size) + 1;
-    
-    // Clamp to world bounds
-    if (start_x < 0) start_x = 0;
-    if (end_x >= world->world_width) end_x = world->world_width - 1;
-    if (start_y < 0) start_y = 0;
-    if (end_y >= world->world_height) end_y = world->world_height - 1;
-    
-    // Calculate chunk range
-    int start_chunk_x = start_x / CHUNK_SIZE;
-    int end_chunk_x = end_x / CHUNK_SIZE;
-    int start_chunk_y = start_y / CHUNK_SIZE;
-    int end_chunk_y = end_y / CHUNK_SIZE;
-    
-    // Render decorations from visible chunks
-    for (int cy = start_chunk_y; cy <= end_chunk_y; cy++) {
-        for (int cx = start_chunk_x; cx <= end_chunk_x; cx++) {
+void world_render_overlay_interior(const WorldState* world, const Camera* camera) {
+    render_tile_layer(world, camera, 2);
+}
+
+// Used when player is inside — all overlay_above tiles draw over player (display list)
+void world_render_overlay_above(const WorldState* world, const Camera* camera) {
+    render_tile_layer(world, camera, 3);
+}
+
+// Y-sorted overlay_above for exterior — renders tiles directly (no display list)
+// north_half=1: only rows < player_ty  (draw before player)
+// north_half=0: only rows >= player_ty (draw after player)
+static void render_overlay_above_half(const WorldState* world, const Camera* camera,
+                                       int player_ty, int north_half) {
+    int sc_x, ec_x, sc_y, ec_y;
+    visible_chunk_range(world, camera, &sc_x, &ec_x, &sc_y, &ec_y);
+
+    glEnable(GL_TEXTURE_2D);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    unsigned int bound_tex = 0;
+    int in_begin = 0;
+
+    for (int cy = sc_y; cy <= ec_y; cy++) {
+        for (int cx = sc_x; cx <= ec_x; cx++) {
             Chunk* chunk = world_get_chunk((WorldState*)world, cx, cy);
             if (!chunk) continue;
-            
-            int tile_start_x = cx * CHUNK_SIZE;
-            int tile_start_y = cy * CHUNK_SIZE;
-            
-            // Render each decoration in this chunk
-            for (int i = 0; i < chunk->decoration_count; i++) {
-                Decoration* deco = &chunk->decorations[i];
-                if (deco->decoration_id == 0) continue;
-                
-                // Calculate world position (decorations use chunk-relative coords)
-                float world_x = (tile_start_x + deco->offset_x) * world->tile_size;
-                float world_y = (tile_start_y + deco->offset_y) * world->tile_size;
-                
-                // Select texture (use placeholders until you add tree1/shrub1)
-                unsigned int texture = 0;
-                switch (deco->decoration_id) {
-                    case 1:  texture = textures->tree1;  break;
-                    case 2:  texture = textures->shrub1; break;
-                    default: continue;
+
+            int tx0 = cx * CHUNK_SIZE;
+            int ty0 = cy * CHUNK_SIZE;
+
+            for (int ly = 0; ly < CHUNK_SIZE; ly++) {
+                int wy = ty0 + ly;
+                if (wy >= world->world_height) continue;
+                if ( north_half && wy >= player_ty) continue;
+                if (!north_half && wy <  player_ty) continue;
+
+                for (int lx = 0; lx < CHUNK_SIZE; lx++) {
+                    int wx = tx0 + lx;
+                    if (wx >= world->world_width) continue;
+
+                    uint16_t packed = chunk->overlay_above_tiles[ly * CHUNK_SIZE + lx];
+                    if (packed == TILE_EMPTY) continue;
+
+                    int ts_id  = (packed >> 12) & 0xF;
+                    int ts_idx =  packed        & 0xFFF;
+                    unsigned int tex = world->tileset_textures[ts_id];
+                    if (!tex) continue;
+
+                    int cols = world->tilesets[ts_id].cols;
+                    int rows = world->tilesets[ts_id].rows;
+                    if (cols == 0 || rows == 0) continue;
+
+                    int src_col = ts_idx % cols;
+                    int src_row = ts_idx / cols;
+
+                    float u0 = (float) src_col      / cols;
+                    float v0 = (float) src_row      / rows;
+                    float u1 = (float)(src_col + 1) / cols;
+                    float v1 = (float)(src_row + 1) / rows;
+
+                    float dx = (float)(wx * world->tile_size);
+                    float dy = (float)(wy * world->tile_size);
+                    float ds = (float)world->tile_size;
+
+                    if (tex != bound_tex) {
+                        if (in_begin) { glEnd(); in_begin = 0; }
+                        glBindTexture(GL_TEXTURE_2D, tex);
+                        bound_tex = tex;
+                        glBegin(GL_QUADS);
+                        in_begin = 1;
+                    }
+
+                    glTexCoord2f(u0, v0); glVertex2f(dx,      dy);
+                    glTexCoord2f(u1, v0); glVertex2f(dx + ds, dy);
+                    glTexCoord2f(u1, v1); glVertex2f(dx + ds, dy + ds);
+                    glTexCoord2f(u0, v1); glVertex2f(dx,      dy + ds);
                 }
-                
-                if (texture == 0) continue;
-                
-                // Render decoration
-                renderer_draw_sprite(
-                    world_x,
-                    world_y,
-                    world->tile_size,
-                    world->tile_size,
-                    texture
-                );
             }
         }
     }
+    if (in_begin) glEnd();
+}
+
+void world_render_overlay_above_north(const WorldState* world, const Camera* camera, int player_ty) {
+    render_overlay_above_half(world, camera, player_ty, 1);
+}
+
+void world_render_overlay_above_south(const WorldState* world, const Camera* camera, int player_ty) {
+    render_overlay_above_half(world, camera, player_ty, 0);
+}
+
+int world_is_inside(const WorldState* world, float wx, float wy) {
+    int tx = (int)(wx / world->tile_size);
+    int ty = (int)(wy / world->tile_size);
+    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
+        return 0;
+    Chunk* chunk = world_get_chunk((WorldState*)world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
+    if (!chunk) return 0;
+    int slot = (ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE);
+    return chunk->overlay_floor_tiles[slot] != TILE_EMPTY;
 }
