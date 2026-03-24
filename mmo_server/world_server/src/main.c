@@ -23,6 +23,7 @@
 #include "shop.h"
 #include "utils.h"
 #include "world_collision.h"
+#include "zone_system.h"
 
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -42,6 +43,7 @@ static char QUESTS_PATH[512];
 static char SHOPS_PATH[512];
 static char QUEST_SAVE_DIR[512];
 static char WORLD_DAT_PATH[512];
+static char ZONES_PATH[512];
 
 static void init_data_paths(void) {
     char exe[512] = {0};
@@ -62,6 +64,7 @@ static void init_data_paths(void) {
     snprintf(ATTACK_PROFILES_PATH,  sizeof(ATTACK_PROFILES_PATH),  "%s/data/attack_profiles.json",  exe);
     snprintf(QUESTS_PATH,           sizeof(QUESTS_PATH),           "%s/data/quests.json",           exe);
     snprintf(SHOPS_PATH,            sizeof(SHOPS_PATH),            "%s/data/shops.json",            exe);
+    snprintf(ZONES_PATH,            sizeof(ZONES_PATH),            "%s/data/zones.json",            exe);
     snprintf(QUEST_SAVE_DIR,        sizeof(QUEST_SAVE_DIR),        "%s/data/quests",                exe);
     // world.dat lives in the game client's bin/ folder, three levels up from
     // the world server binary (mmo_server/world_server/bin/ → project root → Game/bin/)
@@ -1171,6 +1174,14 @@ int main(int argc, char** argv) {
     shop_init(SHOPS_PATH);
     printf("OK\n");
 
+    printf("Loading zone definitions... ");
+    fflush(stdout);
+    if (zone_system_init(ZONES_PATH) >= 0) {
+        printf("OK\n");
+    } else {
+        printf("SKIPPED (zones.json not found — zone notifications disabled)\n");
+    }
+
     printf("Loading world collision map... ");
     fflush(stdout);
     if (world_collision_init(WORLD_DAT_PATH)) {
@@ -1364,6 +1375,7 @@ int main(int argc, char** argv) {
     playerdata_stop_save_thread();
     playerdata_close();
     world_collision_shutdown();
+    zone_system_cleanup();
     
     if (g_redis) {
         redisFree(g_redis);

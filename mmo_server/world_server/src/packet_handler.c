@@ -1,5 +1,8 @@
 #include "packet_handler.h"
+#include "zone_system.h"
 #include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
 
 void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id) {
     // Extract client-reported ping_ms from payload if present
@@ -84,7 +87,26 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     player->last_move_tv = now;
     player->is_dirty = 1;
 
-    player_release(player);
+    // Zone boundary check — notify client if they crossed into a new zone
+    const WorldZone* zone = zone_lookup(client_x, client_y);
+    uint8_t new_zone_id = zone ? zone->id : 0;
+    if (new_zone_id != player->current_zone_id) {
+        player->current_zone_id = new_zone_id;
+        player_release(player);
+
+        if (zone) {
+            ZoneChangePacket zpkt = {0};
+            zpkt.header.type         = PACKET_ZONE_CHANGE;
+            zpkt.header.player_id    = htonl(character_id);
+            zpkt.header.payload_size = htons(sizeof(ZoneChangePacket) - sizeof(PacketHeader));
+            zpkt.zone_id   = zone->id;
+            zpkt.zone_type = zone->type;
+            strncpy(zpkt.zone_name, zone->name, sizeof(zpkt.zone_name) - 1);
+            server_send(client_fd, &zpkt, sizeof(zpkt));
+        }
+    } else {
+        player_release(player);
+    }
 }
 
 void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {

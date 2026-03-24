@@ -280,6 +280,8 @@ typedef struct {
     time_t last_activity;
     struct timespec last_move_tv;  // monotonic clock — no NTP drift (#16)
 
+    uint8_t current_zone_id;   // Last zone the server notified this player about (0 = unset)
+
     // Ability system
     float       ability_cooldowns[5];   // Remaining CD per slot (index = slot 0-4)
     uint16_t    ability_slots[5];       // Which ability IDs are equipped (by class)
@@ -977,6 +979,24 @@ typedef struct {
     uint8_t            padding[3];
     SessionPlayerEntry entries[SESSION_LIST_PAGE_SIZE];
 } SessionListResponsePacket;
+
+// ============================================================================
+// ZONE CHANGE PACKET
+// ============================================================================
+
+// Zone types
+#define ZONE_TYPE_WILD    0   // Open world — PvE, full combat
+#define ZONE_TYPE_SAFE    1   // Town / sanctuary — no combat
+#define ZONE_TYPE_DUNGEON 2   // Instanced area
+#define ZONE_TYPE_PVP     3   // Player vs player enabled
+
+// Server -> Client: player entered a new named zone
+typedef struct {
+    PacketHeader header;
+    uint8_t      zone_id;          // Numeric ID (matches zones.json)
+    uint8_t      zone_type;        // ZONE_TYPE_* constant above
+    char         zone_name[48];    // Display name, e.g. "Armeia"
+} ZoneChangePacket;
 
 // ============================================================================
 // NPC TELEGRAPH PACKETS (FF14-style ground indicators)

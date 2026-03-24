@@ -156,6 +156,9 @@ typedef enum {
     PACKET_SESSION_LIST_REQUEST  = 210,    // Client -> Server: request page of online players
     PACKET_SESSION_LIST_RESPONSE = 211,    // Server -> Client: paginated list of online players
 
+    // Zone system (220)
+    PACKET_ZONE_CHANGE = 220,              // Server -> Client: player crossed a zone boundary
+
     // SERVER-TO-SERVER PACKETS (200-219)
     PACKET_REALM_AUTH = 200,
     PACKET_REALM_AUTH_ACK = 201,
