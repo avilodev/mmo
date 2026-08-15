@@ -1,19 +1,58 @@
-# Build output
-Launcher/bin/
-Launcher/obj/
-Game/bin/
-Game/obj/
-
-# Compiled server binary (built separately)
+# Build output and compiled artifacts
+**/bin/
+**/obj/
+build/
+dist/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
 mmo_server
 
-# Config file — contains server IP, keep off repo
-Launcher/bin/server.conf
-server.conf
+# Vendored libraries required to build from a fresh clone
+!Game/lib/*.a
 
-# Windows executables and object files
-*.exe
-*.o
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+*.secret
+*credentials*
+*secrets*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+certs/
 
-# Logs
+# Local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Logs, dumps, and temporary files
 *.log
+*.dump
+*.tmp
+*.swp
+*.bak
+/core
+/core.*
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
