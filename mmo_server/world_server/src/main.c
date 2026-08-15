@@ -6,6 +6,7 @@
 #include "ability_def.h"
 #include "ability_handler.h"
 #include "class_stats.h"
+#include "connection_io.h"
 #include "config.h"
 #include "combat.h"
 #include "dialogue_system.h"
@@ -45,6 +46,21 @@ static char QUEST_SAVE_DIR[512];
 static char WORLD_DAT_PATH[512];
 static char ZONES_PATH[512];
 
+static void set_data_path(char* destination, size_t destination_size,
+                          const char* directory, const char* relative_path) {
+    size_t directory_length = strlen(directory);
+    size_t relative_length = strlen(relative_path);
+
+    if (directory_length + relative_length + 1 > destination_size) {
+        fprintf(stderr, "Runtime data path is too long: %s%s\n",
+                directory, relative_path);
+        exit(EXIT_FAILURE);
+    }
+
+    memcpy(destination, directory, directory_length);
+    memcpy(destination + directory_length, relative_path, relative_length + 1);
+}
+
 static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
     uint8_t* ptr = buffer;
     size_t total = 0;
@@ -70,18 +86,18 @@ static void init_data_paths(void) {
         exe[0] = '.';
         exe[1] = '\0';
     }
-    snprintf(DATA_PATH,             sizeof(DATA_PATH),             "%s/data/items.json",            exe);
-    snprintf(ABILITIES_PATH,        sizeof(ABILITIES_PATH),        "%s/data/abilities.json",        exe);
-    snprintf(DIALOGUES_PATH,        sizeof(DIALOGUES_PATH),        "%s/data/dialogues",             exe);
-    snprintf(NPC_TYPES_PATH,        sizeof(NPC_TYPES_PATH),        "%s/data/npc_types.json",        exe);
-    snprintf(SPAWNS_PATH,           sizeof(SPAWNS_PATH),           "%s/data/spawns.json",           exe);
-    snprintf(ATTACK_PROFILES_PATH,  sizeof(ATTACK_PROFILES_PATH),  "%s/data/attack_profiles.json",  exe);
-    snprintf(QUESTS_PATH,           sizeof(QUESTS_PATH),           "%s/data/quests.json",           exe);
-    snprintf(SHOPS_PATH,            sizeof(SHOPS_PATH),            "%s/data/shops.json",            exe);
-    snprintf(ZONES_PATH,            sizeof(ZONES_PATH),            "%s/data/zones.json",            exe);
-    snprintf(QUEST_SAVE_DIR,        sizeof(QUEST_SAVE_DIR),        "%s/data/quests",                exe);
+    set_data_path(DATA_PATH,            sizeof(DATA_PATH),            exe, "/data/items.json");
+    set_data_path(ABILITIES_PATH,       sizeof(ABILITIES_PATH),       exe, "/data/abilities.json");
+    set_data_path(DIALOGUES_PATH,       sizeof(DIALOGUES_PATH),       exe, "/data/dialogues");
+    set_data_path(NPC_TYPES_PATH,       sizeof(NPC_TYPES_PATH),       exe, "/data/npc_types.json");
+    set_data_path(SPAWNS_PATH,          sizeof(SPAWNS_PATH),          exe, "/data/spawns.json");
+    set_data_path(ATTACK_PROFILES_PATH, sizeof(ATTACK_PROFILES_PATH), exe, "/data/attack_profiles.json");
+    set_data_path(QUESTS_PATH,          sizeof(QUESTS_PATH),          exe, "/data/quests.json");
+    set_data_path(SHOPS_PATH,           sizeof(SHOPS_PATH),           exe, "/data/shops.json");
+    set_data_path(ZONES_PATH,           sizeof(ZONES_PATH),           exe, "/data/zones.json");
+    set_data_path(QUEST_SAVE_DIR,       sizeof(QUEST_SAVE_DIR),       exe, "/data/quests");
     // Runtime assets are packaged beside the binary by the Makefile.
-    snprintf(WORLD_DAT_PATH,        sizeof(WORLD_DAT_PATH),        "%s/data/world.dat",              exe);
+    set_data_path(WORLD_DAT_PATH,       sizeof(WORLD_DAT_PATH),       exe, "/data/world.dat");
     printf("[PATHS] Data directory: %s/data/\n", exe);
 }
 
@@ -221,6 +237,8 @@ static void* client_handler_thread(void* arg) {
     time_t last_recv_time = time(NULL);
 
     while (g_server.running) {
+        pfd.events = POLLIN;
+        if (authenticated && connection_io_has_pending(client_fd)) pfd.events |= POLLOUT;
         int ret = poll(&pfd, 1, 1000);
 
         if (ret < 0) {
@@ -246,8 +264,10 @@ static void* client_handler_thread(void* arg) {
             buf_len += bytes;
 
             if (!authenticated) {
-                // Handle authentication
-                if (buf_len >= (ssize_t)sizeof(WorldConnectPacket)) {
+                // TCP is a byte stream. Wait for the complete authentication
+                // packet instead of rejecting a valid fragmented write.
+                if (buf_len < (ssize_t)sizeof(WorldConnectPacket)) continue;
+                {
                     WorldConnectPacket* pkt = (WorldConnectPacket*)buffer;
                     
                     if (pkt->header.type == PACKET_WORLD_CONNECT) {
@@ -266,7 +286,7 @@ static void* client_handler_thread(void* arg) {
                                 response.success = 0;
                                 strncpy(response.welcome_message,
                                     "Character ownership verification failed", 127);
-                                send(client_fd, &response, sizeof(response), 0);
+                                server_send_direct(client_fd, &response, sizeof(response));
                                 break;  // Exit without adding to registry
                             }
 
@@ -280,12 +300,17 @@ static void* client_handler_thread(void* arg) {
                                 response.success = 0;
                                 strncpy(response.welcome_message,
                                     "Account already logged in", 127);
-                                send(client_fd, &response, sizeof(response), 0);
+                                server_send_direct(client_fd, &response, sizeof(response));
                                 break;
                             }
                             
                             // Load character data
                             if (player_add_active(character_id, client_fd)) {
+                                if (!connection_io_register(client_fd)) {
+                                    session_registry_remove(client_fd);
+                                    player_remove_active_if_fd(character_id, client_fd);
+                                    break;
+                                }
                                 authenticated = 1;
                                 g_state.current_players++;
                                 
@@ -297,7 +322,7 @@ static void* client_handler_thread(void* arg) {
                                 strncpy(response.welcome_message,
                                     "Welcome to the world!", 127);
 
-                                send(client_fd, &response, sizeof(response), 0);
+                                server_send(client_fd, &response, sizeof(response));
                                 player_send_data_response(client_fd, character_id);
 
                                 // Send stats once explicitly (no longer hidden inside data response)
@@ -313,8 +338,12 @@ static void* client_handler_thread(void* arg) {
                                 printf("Account %u, Character %u entered world\n",
                                     account_id, character_id);
                                 
-                                // Authentication packet consumed, reset buffer
-                                buf_len = 0;
+                                // Preserve any bytes coalesced after the auth packet.
+                                buf_len -= (ssize_t)sizeof(WorldConnectPacket);
+                                if (buf_len > 0) {
+                                    memmove(buffer, buffer + sizeof(WorldConnectPacket),
+                                            (size_t)buf_len);
+                                }
                                 continue;
                             } else {
                                 // Failed to load, remove session
@@ -328,7 +357,7 @@ static void* client_handler_thread(void* arg) {
                         response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
                         response.success = 0;
                         strncpy(response.welcome_message, "Invalid ticket", 127);
-                        send(client_fd, &response, sizeof(response), 0);
+                        server_send_direct(client_fd, &response, sizeof(response));
                         break;
                     }
                 }
@@ -374,6 +403,12 @@ static void* client_handler_thread(void* arg) {
                 buf_len = remaining;
             }
         }
+
+        if (authenticated && (pfd.revents & POLLOUT)) {
+            if (connection_io_flush(client_fd) != 0) break;
+        }
+
+        if (authenticated && connection_io_failed(client_fd)) break;
         
         if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
             break;
@@ -398,6 +433,8 @@ client_done:
         ActivePlayer* player = player_acquire(character_id);
         int do_save = 0;
         CharacterInfo save_data;  // Local copy for lock-free DB save
+        PlayerQuestEntry quest_save[MAX_PLAYER_QUESTS];
+        int quest_save_count = 0;
         if (player) {
             if (player->client_fd == client_fd) {
                 printf("[CLEANUP] fd=%d: we own the slot — copying save data for char=%u\n",
@@ -426,6 +463,9 @@ client_done:
                     save_data.second_hand   = player->second_hand;
                     save_data.blessing      = player->blessing;
                     memcpy(save_data.inventory, player->inventory, sizeof(save_data.inventory));
+                    quest_save_count = player->quest_count;
+                    memcpy(quest_save, player->quests,
+                           (size_t)quest_save_count * sizeof(*quest_save));
                     do_save = 1;
                     // Clear dirty flag so player_remove_active won't do a
                     // redundant DB write while holding active_players_lock.
@@ -454,11 +494,17 @@ client_done:
         // DB write happens AFTER all locks are released — doesn't block broadcast threads
         if (do_save) {
             printf("[CLEANUP] fd=%d: saving char=%u to DB (lock-free)\n", client_fd, character_id);
-            character_update_full_data(&save_data);
+            if (!character_update_full_data(&save_data)) {
+                fprintf(stderr, "[CLEANUP] failed to save character %u\n", character_id);
+            }
+            if (!quest_player_save(character_id, quest_save, quest_save_count)) {
+                fprintf(stderr, "[CLEANUP] failed to save quests for character %u\n", character_id);
+            }
         }
         printf("Account %u, Character %u disconnected (fd=%d)\n", account_id, character_id, client_fd);
     }
 
+    connection_io_unregister(client_fd);
     printf("[CLEANUP] fd=%d: closing socket\n", client_fd);
     close(client_fd);
     printf("[CLEANUP] fd=%d: thread exiting\n", client_fd);
@@ -508,7 +554,7 @@ void* realm_handler_thread(void* arg) {
         ack.success = 0;
         strncpy(ack.message, "Server key unavailable", 63);
         
-        send(realm_fd, &ack, sizeof(ack), 0);
+        server_send_direct(realm_fd, &ack, sizeof(ack));
         close(realm_fd);
         return NULL; 
     }
@@ -524,7 +570,7 @@ void* realm_handler_thread(void* arg) {
         ack.success = 0;
         strncpy(ack.message, "Invalid server key", 63);
         
-        send(realm_fd, &ack, sizeof(ack), 0);
+        server_send_direct(realm_fd, &ack, sizeof(ack));
         free(current_key);
         close(realm_fd);
         return NULL;
@@ -540,7 +586,7 @@ void* realm_handler_thread(void* arg) {
     ack.success = 1;
     strncpy(ack.message, "Authenticated successfully", 63);
     
-    if (send(realm_fd, &ack, sizeof(ack), 0) <= 0) {
+    if (server_send_direct(realm_fd, &ack, sizeof(ack)) <= 0) {
         printf("Failed to send auth ack\n");
         close(realm_fd);
         return NULL;
@@ -592,7 +638,7 @@ void* realm_handler_thread(void* arg) {
                 // Use server name from config
                 strncpy(status.server_name, g_server.server_name, 63);
                 
-                if (send(realm_fd, &status, sizeof(status), 0) <= 0) {
+                if (server_send_direct(realm_fd, &status, sizeof(status)) <= 0) {
                     printf("Failed to send status to realm server\n");
                     break;
                 }
@@ -811,7 +857,7 @@ void* player_broadcast_thread(void* arg) {
                 size_t send_size = offsetof(PlayerPositionBroadcastPacket, players) +
                                    pkt.count * sizeof(NearbyPlayerData);
                 pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-                send(snapshots[i].client_fd, &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
+                server_send(snapshots[i].client_fd, &pkt, send_size);
             }
         }
 
@@ -917,7 +963,7 @@ void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPC
         size_t send_size = offsetof(NPCPositionPacket, npcs) +
                            pkt.npc_count * sizeof(NPCPositionData);
         pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-        send(client_fd, &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
+        server_send(client_fd, &pkt, send_size);
     }
 }
 
@@ -1014,7 +1060,7 @@ void* npc_broadcast_thread(void* arg) {
                            pkt.npc_count, players_snapshot[i].character_id);
                     s_npc_send_logged = 1;
                 }
-                send(players_snapshot[i].client_fd, &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
+                server_send(players_snapshot[i].client_fd, &pkt, send_size);
             }
         }
         
@@ -1093,8 +1139,12 @@ int main(int argc, char** argv) {
     init_data_paths();
 
     g_server_start_time = time(NULL);
-    session_init();
+    if (!session_init()) {
+        fprintf(stderr, "Failed to initialize Redis session connection\n");
+        return 1;
+    }
     session_registry_init();
+    connection_io_init();
     
     memset(&g_server, 0, sizeof(g_server));
     memset(&g_state, 0, sizeof(g_state));
@@ -1117,29 +1167,6 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, NULL);  // kill command
 
     printf("[SIGNAL] Signal handlers installed\n");
-    
-    // Connect to Redis
-    const char* redis_host = getenv("REDIS_HOST");
-    if (!redis_host) redis_host = "127.0.0.1";
-    
-    int redis_port = 6379;
-    const char* redis_port_str = getenv("REDIS_PORT");
-    if (redis_port_str) redis_port = atoi(redis_port_str);
-    
-    printf("Connecting to Redis at %s:%d...\n", redis_host, redis_port);
-    g_redis = redisConnect(redis_host, redis_port);
-    
-    if (!g_redis || g_redis->err) {
-        if (g_redis) {
-            fprintf(stderr, "Redis connection error: %s\n", g_redis->errstr);
-            redisFree(g_redis);
-        } else {
-            fprintf(stderr, "Redis connection error: can't allocate context\n"); 
-        }
-        return 1;
-    }
-    
-    printf("✓ Connected to Redis\n");
     
     // Parse config file
     if(argv && argv[1]) {
@@ -1396,11 +1423,8 @@ int main(int argc, char** argv) {
     playerdata_close();
     world_collision_shutdown();
     zone_system_cleanup();
-    
-    if (g_redis) {
-        redisFree(g_redis);
-        g_redis = NULL;
-    }
+    connection_io_shutdown();
+    session_close();
 
     printf("World Server stopped\n");
     return 0;

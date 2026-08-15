@@ -1,4 +1,5 @@
 #include "realm_world_auth.h"
+#include "session.h"
 
 #include <time.h>
 #include <stdio.h>
@@ -16,7 +17,9 @@ char* get_server_auth_key_from_redis(const char* server_name) {
     char redis_key[128];
     snprintf(redis_key, sizeof(redis_key), "server_auth_key:%s", server_name);
     
+    pthread_mutex_lock(&g_redis_lock);
     redisReply* reply = redisCommand(g_redis, "GET %s", redis_key);
+    pthread_mutex_unlock(&g_redis_lock);
     
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         if (reply) freeReplyObject(reply);
@@ -39,6 +42,7 @@ int set_server_auth_key_in_redis(const char* server_name, const char* auth_key, 
     
     redisReply* reply;
     
+    pthread_mutex_lock(&g_redis_lock);
     if (ttl_seconds > 0) {
         // Set with expiration
         reply = redisCommand(g_redis, "SETEX %s %d %s", redis_key, ttl_seconds, auth_key);
@@ -46,6 +50,7 @@ int set_server_auth_key_in_redis(const char* server_name, const char* auth_key, 
         // Set without expiration
         reply = redisCommand(g_redis, "SET %s %s", redis_key, auth_key);
     }
+    pthread_mutex_unlock(&g_redis_lock);
     
     int success = 0;
     if (reply && (reply->type == REDIS_REPLY_STATUS || reply->type == REDIS_REPLY_STRING)) {
@@ -86,7 +91,9 @@ uint32_t get_account_from_ticket(const char* game_ticket) {
     snprintf(key, sizeof(key), "game_ticket:%s", game_ticket);
     
     // Get the account_id field from the hash
+    pthread_mutex_lock(&g_redis_lock);
     redisReply* reply = redisCommand(g_redis, "HGET %s account_id", key);
+    pthread_mutex_unlock(&g_redis_lock);
     if (!reply) {
         fprintf(stderr, "Redis error getting account_id from ticket\n");
         return 0;

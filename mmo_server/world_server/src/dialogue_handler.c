@@ -80,7 +80,7 @@ static void send_packet(int client_fd, void* packet, size_t size) {
 
 void handle_npc_interact_request(int client_fd, uint32_t character_id,
                                  uint8_t* buffer, ssize_t bytes) {
-    if (bytes < sizeof(NPCInteractRequestPacket)) {
+    if (bytes < 0 || (size_t)bytes < sizeof(NPCInteractRequestPacket)) {
         printf("[DIALOGUE] Malformed NPC interact request (size: %zd)\n", bytes);
         return;
     }
@@ -177,7 +177,7 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
 
 void handle_dialogue_option_select(int client_fd, uint32_t character_id,
                                    uint8_t* buffer, ssize_t bytes) {
-    if (bytes < sizeof(DialogueOptionSelectPacket)) {
+    if (bytes < 0 || (size_t)bytes < sizeof(DialogueOptionSelectPacket)) {
         printf("[DIALOGUE] Malformed option select packet (size: %zd)\n", bytes);
         return;
     }

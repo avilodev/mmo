@@ -233,7 +233,7 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 if (!gi) {
                     resp.success = 0;
                     strncpy(resp.message, "Item not found", sizeof(resp.message) - 1);
-                    send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
+                    server_send(client_fd, &resp, sizeof(resp));
                     break;
                 }
 
@@ -255,14 +255,14 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 if (dist > LOOT_PICKUP_RANGE) {
                     resp.success = 0;
                     strncpy(resp.message, "Too far away", sizeof(resp.message) - 1);
-                    send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
+                    server_send(client_fd, &resp, sizeof(resp));
                     break;
                 }
 
                 if (inv_slot < 0) {
                     resp.success = 0;
                     strncpy(resp.message, "Inventory full", sizeof(resp.message) - 1);
-                    send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
+                    server_send(client_fd, &resp, sizeof(resp));
                     break;
                 }
 
@@ -271,7 +271,7 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 if (!loot_try_pickup(ground_item_id, character_id, &item_id, &quantity)) {
                     resp.success = 0;
                     strncpy(resp.message, "Cannot pick up yet", sizeof(resp.message) - 1);
-                    send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
+                    server_send(client_fd, &resp, sizeof(resp));
                     break;
                 }
 
@@ -296,7 +296,7 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                     resp.success = 0;
                     strncpy(resp.message, "Player state changed", sizeof(resp.message) - 1);
                 }
-                send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
+                server_send(client_fd, &resp, sizeof(resp));
             }
             break;
         }

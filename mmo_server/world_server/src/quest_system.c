@@ -193,15 +193,22 @@ void quest_system_set_dir(const char* dir) {
     mkdir(g_quest_dir, 0755);
 }
 
-void quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count) {
-    if (g_quest_dir[0] == '\0') return;
-    char path[600];
+int quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count) {
+    if (g_quest_dir[0] == '\0' || count < 0 || count > MAX_PLAYER_QUESTS) return 0;
+    char path[600], temp_path[640];
     snprintf(path, sizeof(path), "%s/%u.bin", g_quest_dir, character_id);
-    FILE* f = fopen(path, "wb");
-    if (!f) return;
-    fwrite(&count, sizeof(int), 1, f);
-    fwrite(quests, sizeof(PlayerQuestEntry), count, f);
-    fclose(f);
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+    FILE* f = fopen(temp_path, "wb");
+    if (!f) return 0;
+    int ok = fwrite(&count, sizeof(int), 1, f) == 1;
+    if (ok && count > 0) {
+        ok = fwrite(quests, sizeof(PlayerQuestEntry), (size_t)count, f) == (size_t)count;
+    }
+    if (ok) ok = fflush(f) == 0;
+    if (fclose(f) != 0) ok = 0;
+    if (ok) ok = rename(temp_path, path) == 0;
+    if (!ok) remove(temp_path);
+    return ok;
 }
 
 int quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_count) {
@@ -211,9 +218,15 @@ int quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_c
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
     int count = 0;
-    fread(&count, sizeof(int), 1, f);
-    if (count > max_count) count = max_count;
-    fread(quests, sizeof(PlayerQuestEntry), count, f);
+    if (fread(&count, sizeof(int), 1, f) != 1 || count < 0 || count > max_count) {
+        fclose(f);
+        return 0;
+    }
+    if (count > 0 &&
+        fread(quests, sizeof(PlayerQuestEntry), (size_t)count, f) != (size_t)count) {
+        fclose(f);
+        return 0;
+    }
     fclose(f);
     return count;
 }

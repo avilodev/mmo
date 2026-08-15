@@ -18,4 +18,8 @@ double get_current_time(void);
 // Returns bytes sent on success, -1 on error.
 ssize_t server_send(int fd, void* buf, size_t len);
 
+// Complete a framed write on a socket that is not a registered player
+// connection, such as pre-authentication and realm-server sockets.
+ssize_t server_send_direct(int fd, void* buf, size_t len);
+
 #endif

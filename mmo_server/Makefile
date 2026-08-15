@@ -82,8 +82,8 @@ data:
 	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
 	@cp world_server/data/quests.json $(WORLD_BIN)/data/
 	@cp world_server/data/shops.json $(WORLD_BIN)/data/
-	@cp ../mmo_client/Game/data/zones.json $(WORLD_BIN)/data/
-	@cp ../mmo_client/Game/bin/world.dat $(WORLD_BIN)/data/
+	@cp world_server/data/zones.json $(WORLD_BIN)/data/
+	@cp world_server/data/world.dat $(WORLD_BIN)/data/
 	@echo "Data files copied -> $(WORLD_BIN)/data/"
 
 # Common object files
@@ -236,6 +236,12 @@ reset-all-characters:
 
 # Clean and rebuild
 rebuild: clean all
+
+# Rebuild every target from scratch and reject all compiler warnings.
+.PHONY: strict
+strict:
+	$(MAKE) clean
+	$(MAKE) CFLAGS="$(CFLAGS) -Werror" all
 
 # Full setup (databases + tables)
 setup-all: setup-postgres init-world-tables

@@ -688,7 +688,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
             // so the client renders it as "[W] → TargetName: message"
             ChatMessagePacket echo = msg;
             memset(echo.sender_name, 0, sizeof(echo.sender_name));
-            snprintf(echo.sender_name, sizeof(echo.sender_name), "-> %s", target_name);
+            snprintf(echo.sender_name, sizeof(echo.sender_name), "-> %.28s", target_name);
             server_send(client_fd, &echo, sizeof(echo));
         }
     } else {

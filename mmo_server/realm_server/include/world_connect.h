@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h> 
 #include <sys/types.h>
+#include <unistd.h>
 #include <ctype.h>
 
 #include <poll.h>
@@ -19,4 +20,4 @@
 int connect_to_world_server(const char* host, int port, const char* server_key, int silent);
 int load_world_servers_from_file(const char* filepath, WorldServer* servers, int max_servers);
 
-#endif 
+#endif

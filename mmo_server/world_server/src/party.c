@@ -1,5 +1,6 @@
 #include "party.h"
 #include "player_level.h"
+#include "utils.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,7 +33,7 @@ static void send_to_character(uint32_t character_id, void* packet, size_t size) 
     if (!p) return;
     int fd = p->client_fd;
     player_release(p);
-    if (fd > 0) send(fd, packet, size, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (fd > 0) server_send(fd, packet, size);
 }
 
 // ============================================================================
@@ -384,7 +385,7 @@ void party_broadcast_update(uint32_t party_id) {
     for (int i = 0; i < member_count; i++) {
         if (member_fds[i] < 0) continue;
         pkt.header.player_id = htonl(member_ids[i]);
-        send(member_fds[i], &pkt, send_size, MSG_NOSIGNAL | MSG_DONTWAIT);
+        server_send(member_fds[i], &pkt, send_size);
     }
 }
 

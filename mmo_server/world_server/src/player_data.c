@@ -54,14 +54,20 @@ void playerdata_close(void) {
     printf("Closing player data system...\n");
 
     // Snapshot all loaded players, clear slots, then save lock-free
-    CharacterInfo save_buf[MAX_PLAYERS];
+    typedef struct {
+        CharacterInfo data;
+        PlayerQuestEntry quests[MAX_PLAYER_QUESTS];
+        int quest_count;
+    } ShutdownSave;
+    ShutdownSave save_buf[MAX_PLAYERS];
     int save_count = 0;
 
     pthread_mutex_lock(&active_players_lock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (active_players[i].is_loaded) {
             pthread_mutex_lock(&active_players[i].lock);
-            CharacterInfo* d = &save_buf[save_count++];
+            ShutdownSave* entry = &save_buf[save_count++];
+            CharacterInfo* d = &entry->data;
             memset(d, 0, sizeof(*d));
             d->character_id = active_players[i].character_id;
             d->level        = active_players[i].level;
@@ -82,6 +88,9 @@ void playerdata_close(void) {
             d->second_hand  = active_players[i].second_hand;
             d->blessing     = active_players[i].blessing;
             memcpy(d->inventory, active_players[i].inventory, sizeof(d->inventory));
+            entry->quest_count = active_players[i].quest_count;
+            memcpy(entry->quests, active_players[i].quests,
+                   (size_t)entry->quest_count * sizeof(entry->quests[0]));
             pthread_mutex_unlock(&active_players[i].lock);
         }
         pthread_mutex_destroy(&active_players[i].lock);
@@ -89,7 +98,15 @@ void playerdata_close(void) {
     pthread_mutex_unlock(&active_players_lock);
 
     for (int i = 0; i < save_count; i++) {
-        character_update_full_data(&save_buf[i]);
+        if (!character_update_full_data(&save_buf[i].data)) {
+            fprintf(stderr, "Shutdown save failed for character %u\n",
+                    save_buf[i].data.character_id);
+        }
+        if (!quest_player_save(save_buf[i].data.character_id,
+                               save_buf[i].quests, save_buf[i].quest_count)) {
+            fprintf(stderr, "Shutdown quest save failed for character %u\n",
+                    save_buf[i].data.character_id);
+        }
     }
     
     // Close database connection
@@ -257,8 +274,12 @@ int playerdata_save(ActivePlayer* player) {
     memcpy(char_info.inventory, player->inventory, sizeof(char_info.inventory));
 
     // Save quest state to file
-    quest_player_save(player->character_id, (const PlayerQuestEntry*)player->quests,
-                      player->quest_count);
+    if (!quest_player_save(player->character_id,
+                           (const PlayerQuestEntry*)player->quests,
+                           player->quest_count)) {
+        fprintf(stderr, "Failed to save quests for character %u\n", player->character_id);
+        return 0;
+    }
 
     // DEBUG — print what we're about to save
     printf("[SAVE DEBUG] char %u: player->pos = (%f, %f), char_info->pos = (%f, %f)\n",
@@ -545,7 +566,7 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     pthread_mutex_unlock(&player->lock);
 
     // Send packet
-    send(client_fd, response, sizeof(CharacterInfo), MSG_NOSIGNAL | MSG_DONTWAIT);
+    server_send(client_fd, response, sizeof(CharacterInfo));
     free(response);
 
     printf("Sent player data for character %u\n", character_id);
@@ -574,7 +595,12 @@ void* periodic_save_thread(void* arg) {
         // Do the save pass.
         // Copy dirty players out while holding locks (fast), then save to DB
         // without holding any lock so broadcast threads aren't starved.
-        typedef struct { uint32_t character_id; CharacterInfo data; } SaveEntry;
+        typedef struct {
+            uint32_t character_id;
+            CharacterInfo data;
+            PlayerQuestEntry quests[MAX_PLAYER_QUESTS];
+            int quest_count;
+        } SaveEntry;
         SaveEntry save_queue[MAX_PLAYERS];
         int save_count = 0;
 
@@ -604,6 +630,9 @@ void* periodic_save_thread(void* arg) {
                 e->data.second_hand         = active_players[i].second_hand;
                 e->data.blessing            = active_players[i].blessing;
                 memcpy(e->data.inventory, active_players[i].inventory, sizeof(e->data.inventory));
+                e->quest_count = active_players[i].quest_count;
+                memcpy(e->quests, active_players[i].quests,
+                       (size_t)e->quest_count * sizeof(e->quests[0]));
                 active_players[i].is_dirty = 0;  // Clear dirty flag while we have the lock
             }
             pthread_mutex_unlock(&active_players[i].lock);
@@ -613,7 +642,21 @@ void* periodic_save_thread(void* arg) {
         // Now write to DB without holding any locks
         for (int i = 0; i < save_count; i++) {
             printf("Periodic save: character %u\n", save_queue[i].character_id);
-            character_update_full_data(&save_queue[i].data);
+            int db_ok = character_update_full_data(&save_queue[i].data);
+            int quest_ok = quest_player_save(save_queue[i].character_id,
+                                             save_queue[i].quests,
+                                             save_queue[i].quest_count);
+            if (!db_ok || !quest_ok) {
+                // The dirty bit was cleared while taking the snapshot. Restore
+                // it on failure so the next save pass retries this character.
+                ActivePlayer* player = player_acquire(save_queue[i].character_id);
+                if (player) {
+                    player->is_dirty = 1;
+                    player_release(player);
+                }
+                fprintf(stderr, "Periodic save failed for character %u; queued for retry\n",
+                        save_queue[i].character_id);
+            }
         }
     }
 

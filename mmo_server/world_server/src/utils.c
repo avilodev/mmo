@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "utils.h"
+#include "connection_io.h"
 #include <errno.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -27,13 +28,28 @@ ssize_t server_send(int fd, void* buf, size_t len) {
         PacketHeader* hdr = (PacketHeader*)buf;
         hdr->payload_size = htons((uint16_t)(len - sizeof(PacketHeader)));
     }
-    ssize_t sent = send(fd, buf, len, MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (sent < 0) {
-        // EPIPE/ECONNRESET = client disconnected; EAGAIN/EWOULDBLOCK = buffer full (dead/slow client)
-        if (errno != EPIPE && errno != ECONNRESET &&
-            errno != EAGAIN && errno != EWOULDBLOCK) {
+    ssize_t accepted = connection_io_send(fd, buf, len);
+    return accepted == -2 ? -1 : accepted;
+}
+
+ssize_t server_send_direct(int fd, void* buf, size_t len) {
+    if (fd < 0 || !buf || len == 0) return -1;
+    if (len >= sizeof(PacketHeader)) {
+        PacketHeader* hdr = (PacketHeader*)buf;
+        hdr->payload_size = htons((uint16_t)(len - sizeof(PacketHeader)));
+    }
+    size_t offset = 0;
+    while (offset < len) {
+        ssize_t sent = send(fd, (uint8_t*)buf + offset, len - offset, MSG_NOSIGNAL);
+        if (sent > 0) {
+            offset += (size_t)sent;
+            continue;
+        }
+        if (sent < 0 && errno == EINTR) continue;
+        if (sent < 0 && errno != EPIPE && errno != ECONNRESET) {
             fprintf(stderr, "[NET] send() failed on fd %d: %s\n", fd, strerror(errno));
         }
+        return -1;
     }
-    return sent;
+    return (ssize_t)offset;
 }

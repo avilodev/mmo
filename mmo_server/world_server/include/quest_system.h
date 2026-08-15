@@ -71,7 +71,7 @@ void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_i
 void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_id);
 
 // Save/load quest state for a character (file-based)
-void quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count);
+int quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count);
 int  quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_count);
 
 // Send the full quest log to a client (called on login)

@@ -115,7 +115,8 @@ int dialogue_parse_single(const char* json_content, DialogueDef** dialogue_table
 
     parse_dialogue_object(json_content, dialogue);
 
-    if (dialogue->dialogue_id > 0 && dialogue->dialogue_id < max_dialogues) {
+    if (max_dialogues > 0 && dialogue->dialogue_id > 0 &&
+        dialogue->dialogue_id < (uint32_t)max_dialogues) {
         if (dialogue_table[dialogue->dialogue_id]) {
             free(dialogue_table[dialogue->dialogue_id]);
         }
@@ -153,7 +154,8 @@ int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, 
 
         parse_dialogue_object(dialogue_obj, dialogue);
 
-        if (dialogue->dialogue_id > 0 && dialogue->dialogue_id < max_dialogues) {
+        if (max_dialogues > 0 && dialogue->dialogue_id > 0 &&
+            dialogue->dialogue_id < (uint32_t)max_dialogues) {
             dialogue_table[dialogue->dialogue_id] = dialogue;
             loaded++;
             printf("[DIALOGUE] Loaded dialogue %u '%s' with %u pages\n",

@@ -2,6 +2,7 @@
 #define ITEM_DEFINITIONS_H
 
 #include <stdint.h>
+#include "protocol.h"
 
 // Maximum items the system can handle
 #define MAX_ITEMS 100000
@@ -16,19 +17,6 @@ typedef enum {
     ITEM_TYPE_CONSUMABLE = 4,  // Potions, food, etc
     ITEM_TYPE_QUEST = 5        // Quest items
 } ItemType;
-
-// Equipment slots
-typedef enum {
-    SLOT_NONE = 0,
-    SLOT_HELMET = 1,
-    SLOT_GLOVES = 2,
-    SLOT_CHEST = 3,
-    SLOT_LEGGINGS = 4,
-    SLOT_BOOTS = 5,
-    SLOT_MAIN_HAND = 6,
-    SLOT_OFF_HAND = 7,         // Shield or second weapon
-    SLOT_TWO_HANDED = 8        // Two-handed weapons
-} EquipSlot;
 
 // Consumable effect types
 typedef enum {
@@ -69,7 +57,7 @@ typedef struct {
     
     // Type and slot
     ItemType type;
-    EquipSlot slot;
+    EquipSlotType slot;
     
     // Stats
     uint32_t damage;           // For weapons
@@ -137,6 +125,6 @@ const char* race_get_name(uint8_t race_id);
 const char* rarity_get_name(ItemRarity rarity);
 
 // Helper: Get slot name
-const char* slot_get_name(EquipSlot slot);
+const char* slot_get_name(EquipSlotType slot);
 
 #endif // ITEM_DEFINITIONS_H

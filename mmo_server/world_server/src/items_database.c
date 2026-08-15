@@ -11,10 +11,7 @@ static int items_loaded = 0;
 
 // Forward declarations for JSON parsing
 static char* read_file(const char* filepath);
-static int parse_items_json(const char* json_content); 
-static char* json_get_string(const char* json, const char* key);
-static int json_get_int(const char* json, const char* key);
-static int json_get_array(const char* json, const char* key, uint8_t* array, int max_size);
+static int parse_items_json(const char* json_content);
 
 int items_init(const char* json_filepath) {
     printf("Loading items from: %s\n", json_filepath);
@@ -135,7 +132,7 @@ const char* rarity_get_name(ItemRarity rarity) {
     }
 }
 
-const char* slot_get_name(EquipSlot slot) {
+const char* slot_get_name(EquipSlotType slot) {
     switch (slot) {
         case SLOT_HELMET: return "Helmet";
         case SLOT_GLOVES: return "Gloves";
@@ -174,7 +171,7 @@ static char* read_file(const char* filepath) {
     return buffer;
 }
 
-static EquipSlot parse_slot(const char* slot_str) {
+static EquipSlotType parse_slot(const char* slot_str) {
     if (strcmp(slot_str, "helmet") == 0) return SLOT_HELMET;
     if (strcmp(slot_str, "gloves") == 0) return SLOT_GLOVES;
     if (strcmp(slot_str, "chest") == 0) return SLOT_CHEST;

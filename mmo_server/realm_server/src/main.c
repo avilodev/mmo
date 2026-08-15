@@ -20,6 +20,18 @@
 
 static char g_world_file_path[PATH_MAX];
 
+static int append_path(char* destination, size_t destination_size,
+                       const char* base, const char* suffix) {
+    size_t base_length = strlen(base);
+    size_t suffix_length = strlen(suffix);
+
+    if (base_length + suffix_length + 1 > destination_size) return 0;
+
+    memcpy(destination, base, base_length);
+    memcpy(destination + base_length, suffix, suffix_length + 1);
+    return 1;
+}
+
 static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
     uint8_t* ptr = buffer;
     size_t total = 0;
@@ -46,8 +58,11 @@ static void init_runtime_paths(void) {
     exe_path[len] = '\0';
     char* slash = strrchr(exe_path, '/');
     if (slash) *slash = '\0';
-    snprintf(g_world_file_path, sizeof(g_world_file_path),
-             "%s/../worlds/worlds.txt", exe_path);
+    if (!append_path(g_world_file_path, sizeof(g_world_file_path), exe_path,
+                     "/../worlds/worlds.txt")) {
+        fprintf(stderr, "Realm world-list path is too long\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 void* client_handler_thread(void* arg) {
@@ -367,7 +382,10 @@ int main(int argc, char** argv) {
 
     init_runtime_paths();
     
-    session_init();
+    if (!session_init()) {
+        fprintf(stderr, "Failed to initialize Redis session connection\n");
+        return 1;
+    }
 
     char* key = get_server_auth_key_from_redis("global");
     if (!key) {
@@ -397,12 +415,14 @@ int main(int argc, char** argv) {
     g_server.tcp_sockfd = create_tcp_server_socket(g_server.port);
     if (g_server.tcp_sockfd < 0) {
         character_database_close();
+        session_close();
         return 1;
     }
     
     if (pthread_create(&g_server.accept_thread, NULL, accept_thread_func, NULL) != 0) {
         close(g_server.tcp_sockfd);
         character_database_close();
+        session_close();
         return 1;
     }
     
@@ -413,6 +433,7 @@ int main(int argc, char** argv) {
         pthread_join(g_server.accept_thread, NULL);
         close(g_server.tcp_sockfd);
         character_database_close();
+        session_close();
         return 1;
     }
     
@@ -427,6 +448,7 @@ int main(int argc, char** argv) {
     pthread_join(g_server.accept_thread, NULL);
     pthread_join(g_server.world_monitor_thread, NULL);
     world_databases_cleanup();
+    session_close();
     pthread_mutex_destroy(&g_server.world_servers_lock);
     
     printf("Realm Server stopped\n");

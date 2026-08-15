@@ -1,0 +1,46 @@
+{
+  "zones": [
+    {
+      "id": 1,
+      "name": "Armeia",
+      "type": 1,
+      "x": 1600, "y": 800, "w": 512, "h": 512
+    },
+    {
+      "id": 2,
+      "name": "Armeia Fields",
+      "type": 0,
+      "x": 0, "y": 0, "w": 3200, "h": 3200
+    },
+    {
+      "id": 3,
+      "name": "The Bosteuis Reaches",
+      "type": 0,
+      "x": 3200, "y": 0, "w": 3200, "h": 3200
+    },
+    {
+      "id": 4,
+      "name": "Cardinal Pass",
+      "type": 0,
+      "x": 6400, "y": 0, "w": 3200, "h": 3200
+    },
+    {
+      "id": 5,
+      "name": "Derive Lowlands",
+      "type": 0,
+      "x": 0, "y": 3200, "w": 3200, "h": 3200
+    },
+    {
+      "id": 6,
+      "name": "Exodus Wastes",
+      "type": 3,
+      "x": 3200, "y": 3200, "w": 3200, "h": 3200
+    },
+    {
+      "id": 7,
+      "name": "Jatrus Caverns",
+      "type": 2,
+      "x": 1800, "y": 1400, "w": 400, "h": 400
+    }
+  ]
+}
