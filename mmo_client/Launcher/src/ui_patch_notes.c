@@ -19,7 +19,7 @@ static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
     uint8_t response_buffer[4096];  // Manual buffer for response
     int wsaError; 
     
-    printf("[PATCH NOTES] Starting fetch from 192.168.1.2:7776\n");
+    printf("[PATCH NOTES] Starting fetch from 127.0.0.1:7776\n");
     
     // Create socket
     sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -122,7 +122,7 @@ static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
 
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
+    int received = tls_client_recv_packet(ssl, (char*)response_buffer, sizeof(response_buffer));
     printf("[PATCH NOTES] Received %d bytes\n", received);
 
     if (received <= 0) {

@@ -76,6 +76,7 @@ static void playing_enter(GameState* game) {
                      game->camera.viewport_height);
 
     hud_init(&game->playing->hud, 1920, 1080);
+    quest_log_init(&game->playing->quest_log);
 
     // Initialize dialogue system with JSON data
     if (!dialogue_system_init("Game/Data/dialogues")) {

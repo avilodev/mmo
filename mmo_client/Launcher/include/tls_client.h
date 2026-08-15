@@ -21,6 +21,8 @@ SSL* tls_client_connect(SOCKET sock);
 // (bytes transferred, or <= 0 on error).
 int tls_client_send(SSL* ssl, const void* buf, int len);
 int tls_client_recv(SSL* ssl, void* buf, int len);
+// Receive one complete 7-byte-header framed MMO packet.
+int tls_client_recv_packet(SSL* ssl, void* buf, int capacity);
 
 // Shut down and free a TLS session. Does NOT close the socket.
 void tls_client_close(SSL* ssl);

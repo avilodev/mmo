@@ -1,4 +1,5 @@
 #include "state_handler.h"
+#include "game.h"
 #include "renderer.h"
 #include "input/input.h"
 #include "network/network.h"
@@ -139,7 +140,7 @@ static void server_list_render(GameState* game) {
                     printf("[SERVER_LIST] Cannot select offline server\n");
                 } else {
                     game->server_list.selected_index = i;
-                    game->mode = GAME_MODE_CHARACTER_SELECT;
+                    game_change_state(game, GAME_MODE_CHARACTER_SELECT);
                     printf("[SERVER_LIST] Selected: %s\n", world->name);
                 }
             }
@@ -156,7 +157,7 @@ static void server_list_render(GameState* game) {
     renderer_draw_text(back_x + 25, back_y + 35, "Back");
 
     if (back_hovered && game->input.mouse_left_clicked) {
-        game->mode = GAME_MODE_MAIN_MENU;
+        game_change_state(game, GAME_MODE_MAIN_MENU);
     }
 }
 
@@ -164,7 +165,7 @@ static void server_list_input(GameState* game, GLFWwindow* window, float delta_t
     (void)delta_time;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        game->mode = GAME_MODE_MAIN_MENU;
+        game_change_state(game, GAME_MODE_MAIN_MENU);
     }
 }
 

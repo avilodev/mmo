@@ -120,9 +120,11 @@ static void process_packet(const char* data, int length) {
             WorldListResponsePacket* pkt = (WorldListResponsePacket*)data;
             uint8_t claimed_count = pkt->count;
             
-            if (length < (int)sizeof(WorldListResponsePacket)) {
+            size_t wire_size = base_size +
+                               (size_t)claimed_count * sizeof(WorldInfo);
+            if (length < (int)wire_size) {
                 printf("[NET] WORLD_LIST incomplete: have %d bytes, need %zu\n",
-                       length, sizeof(WorldListResponsePacket));
+                       length, wire_size);
                 return;
             }
 
@@ -133,8 +135,12 @@ static void process_packet(const char* data, int length) {
                 claimed_count = MAX_WORLDS;
             }
 
+            size_t copy_size = base_size +
+                               (size_t)claimed_count * sizeof(WorldInfo);
+
             EnterCriticalSection(&g_net.response_lock);
-            memcpy(&g_net.world_list.data, data, sizeof(WorldListResponsePacket));
+            memset(&g_net.world_list.data, 0, sizeof(WorldListResponsePacket));
+            memcpy(&g_net.world_list.data, data, copy_size);
             g_net.world_list.data.count = claimed_count;
 
             for (int i = 0; i < claimed_count; i++) {
@@ -1502,6 +1508,19 @@ void network_disconnect(void) {
     g_net.connected = FALSE;
     g_net.pending_pings = 0;
     g_net.recv_len = 0;
+    g_net.character_id = 0;
+    g_net.last_facing_angle = 0.0f;
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.world_list.ready = FALSE;
+    g_net.char_list.ready = FALSE;
+    g_net.char_create.ready = FALSE;
+    g_net.char_delete.ready = FALSE;
+    g_net.enter_world.ready = FALSE;
+    g_net.char_data.ready = FALSE;
+    g_net.world_connect_ack.ready = FALSE;
+    g_net.realm_connect_ack.ready = FALSE;
+    g_net.correction.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
 }
 
 int network_is_connected(void) {
@@ -2038,6 +2057,7 @@ int network_connect_to_world(const char* ip, uint16_t port,
 
     g_net.recv_len = 0;  // Clear stream buffer for new connection
     g_net.world_connect_ack.ready = FALSE;  // Reset ACK flag
+    g_net.character_id = character_id;
 
     printf("[NET] Connecting to world %s:%u...\n", ip, port);
 

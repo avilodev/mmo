@@ -30,7 +30,8 @@ void NetworkCleanup(void) {
 }
 
 // STAGE 1: Validate credentials (returns player_id if successful, no session created)
-BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_player_id, char* errorMsg, int errorMsgSize) {
+BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_player_id,
+                      char out_auth_token[32], char* errorMsg, int errorMsgSize) {
     SOCKET sock = INVALID_SOCKET;
     struct sockaddr_in server_addr;
     AuthLoginPacket loginPacket;
@@ -102,16 +103,8 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
 
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
+    int received = tls_client_recv_packet(ssl, (char*)response_buffer, sizeof(response_buffer));
 
-    // ADD THIS:
-    printf("[LOGIN] Raw response bytes:\n");
-    for (int i = 0; i < received && i < 32; i++) {
-        printf("%02x ", response_buffer[i]);
-        if ((i + 1) % 16 == 0) printf("\n");
-    }
-    printf("\n");
-    
     printf("[LOGIN] Received %d bytes from server\n", received);
     
     if (received <= 0) {
@@ -154,7 +147,15 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
     offset += 4;
     // We don't actually need this duplicate player_id
 
-    // Message (rest of packet) 
+    // Single-use proof required by the separate start-game connection.
+    if (received < offset + 32) {
+        snprintf(errorMsg, errorMsgSize, "Login response missing authentication token");
+        return FALSE;
+    }
+    memcpy(out_auth_token, &response_buffer[offset], 32);
+    offset += 32;
+
+    // Message (rest of packet)
     char message[256] = {0};
     int message_len = received - offset;
     if (message_len < 0) message_len = 0;
@@ -195,7 +196,8 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
 }
 
 // STAGE 2: Request game start (creates session and returns key)
-BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_session_key, char* errorMsg, int errorMsgSize) {
+BOOL SendStartGameRequest(uint32_t player_id, const char* username, const char auth_token[32],
+                          char* out_session_key, char* errorMsg, int errorMsgSize) {
     SOCKET sock = INVALID_SOCKET;
     struct sockaddr_in server_addr;
     StartGameRequestPacket request;
@@ -247,6 +249,7 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_se
     request.player_id = htonl(player_id);
     strncpy(request.username, username, 31);
     request.username[31] = '\0';
+    memcpy(request.auth_token, auth_token, 32);
     
     printf("[START GAME] Requesting session creation for player %u...\n", player_id);
     
@@ -261,7 +264,7 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_se
 
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
+    int received = tls_client_recv_packet(ssl, (char*)response_buffer, sizeof(response_buffer));
 
     printf("[START GAME] Received %d bytes from server\n", received);
 
@@ -309,11 +312,7 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_se
     
     // Check if successful
     if (success) {
-        printf("[START GAME] Session created! Key: ");
-        for (int i = 0; i < 32; i++) {
-            printf("%02x", (unsigned char)out_session_key[i]);
-        }
-        printf("\n");
+        printf("[START GAME] Session created successfully\n");
         
         if (message_len > 0) {
             strncpy(errorMsg, message, errorMsgSize - 1);
@@ -449,7 +448,7 @@ BOOL SendRegisterRequest(const char* username, const char* password, const char*
 
     // Receive response
     memset(response_buffer, 0, sizeof(response_buffer));
-    int received = tls_client_recv(ssl, (char*)response_buffer, sizeof(response_buffer));
+    int received = tls_client_recv_packet(ssl, (char*)response_buffer, sizeof(response_buffer));
 
     printf("[REGISTER] Received %d bytes from server\n", received);
 

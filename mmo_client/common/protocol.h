@@ -220,6 +220,7 @@ typedef struct {
     PacketHeader header;
     uint8_t success;
     uint32_t player_id;
+    char auth_token[32];     // Single-use token required by START_GAME_REQUEST
     char message[128];
 } AuthLoginResponsePacket;
 
@@ -249,8 +250,9 @@ typedef struct {
 
 typedef struct {
     PacketHeader header;
-    uint32_t player_id;
-    char username[32];
+    uint32_t player_id;      // Informational only; server trusts auth_token
+    char username[32];       // Informational only
+    char auth_token[32];     // Single-use proof of successful login
 } StartGameRequestPacket;
 
 typedef struct {

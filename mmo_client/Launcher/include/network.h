@@ -18,10 +18,12 @@ BOOL NetworkInit(void);
 // Cleanup Winsock
 void NetworkCleanup(void);
 
-BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_player_id, char* errorMsg, int errorMsgSize);
+BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_player_id,
+                      char out_auth_token[32], char* errorMsg, int errorMsgSize);
 
 BOOL SendRegisterRequest(const char* username, const char* password, const char* email, const char* birthday,
                          uint32_t* out_player_id, char* errorMsg, int errorMsgSize);
-BOOL SendStartGameRequest(uint32_t player_id, const char* username, char* out_session_key, char* errorMsg, int errorMsgSize);
+BOOL SendStartGameRequest(uint32_t player_id, const char* username, const char auth_token[32],
+                          char* out_session_key, char* errorMsg, int errorMsgSize);
 
 #endif // NETWORK_H

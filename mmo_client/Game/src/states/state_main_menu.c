@@ -76,7 +76,7 @@ static void main_menu_render(GameState* game) {
         if (hovered && game->input.mouse_left_clicked) {
             switch (i) {
                 case 0: // Play
-                    game->mode = GAME_MODE_SERVER_LIST;
+                    game_change_state(game, GAME_MODE_SERVER_LIST);
                     break;
                 case 1: // Settings
                     game_change_state(game, GAME_MODE_SETTINGS);

@@ -375,7 +375,7 @@ static void char_select_render(GameState* game) {
     renderer_draw_text(back_x + 25, back_y + 35, "Back");
     
     if (back_hovered && game->input.mouse_left_clicked) {
-        game->mode = GAME_MODE_SERVER_LIST;
+        game_change_state(game, GAME_MODE_SERVER_LIST);
     }
 }
 
@@ -386,7 +386,7 @@ static void char_select_input(GameState* game, GLFWwindow* window, float delta_t
         if (game->char_select.show_creation) {
             game->char_select.show_creation = 0;
         } else {
-            game->mode = GAME_MODE_SERVER_LIST;
+            game_change_state(game, GAME_MODE_SERVER_LIST);
         }
     }
     

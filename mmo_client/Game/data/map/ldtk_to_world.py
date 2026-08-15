@@ -12,7 +12,7 @@ GRID = 16  # tile size in pixels
 BASE_LAYERS       = {'Ground', 'Path'}
 OVERLAY_FLOOR     = {'Floor'}                  # always visible, behind player
 OVERLAY_INTERIOR  = {'Interior', 'Decoration'} # only visible when player is inside, behind player
-OVERLAY_ABOVE     = {'Wall', 'Roof'}           # in front of player when inside
+OVERLAY_ABOVE     = {'Wall', 'Roof', 'Door'}    # in front of player when inside
 COLLISION_LAYERS  = {'Wall'}
 
 

@@ -17,6 +17,7 @@ static HBRUSH g_hEditBrush = NULL;
 
 // Store session info for game connection
 static char g_sessionKey[32] = {0};
+static char g_loginToken[32] = {0};
 static uint32_t g_playerId = 0;
 
 // Store actual password text
@@ -352,7 +353,9 @@ void HandleLoginCommand(HWND hwnd, WORD controlId) {
         SetWindowText(g_hwndLoginButton, "VALIDATING...");
         
         // STAGE 1: Just validate credentials (no session created yet)
-        BOOL success = SendLoginRequest(username, password, &playerId, errorMsg, sizeof(errorMsg));
+        memset(g_loginToken, 0, sizeof(g_loginToken));
+        BOOL success = SendLoginRequest(username, password, &playerId, g_loginToken,
+                                        errorMsg, sizeof(errorMsg));
         
         // Re-enable button
         EnableWindow(g_hwndLoginButton, TRUE);
@@ -395,7 +398,9 @@ void HandleLoginCommand(HWND hwnd, WORD controlId) {
         SetWindowText(g_hwndStartGameButton, "STARTING...");
         
         // STAGE 2: Request session creation
-        BOOL success = SendStartGameRequest(g_playerId, g_storedUsername, sessionKey, errorMsg, sizeof(errorMsg));
+        BOOL success = SendStartGameRequest(g_playerId, g_storedUsername, g_loginToken,
+                                            sessionKey, errorMsg, sizeof(errorMsg));
+        memset(g_loginToken, 0, sizeof(g_loginToken));
         
         if (success) {
             printf("Session created successfully!\n");

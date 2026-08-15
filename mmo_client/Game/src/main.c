@@ -119,7 +119,7 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
         }
     }
     
-    printf("[ARGS] Session: %s\n", game->session_key[0] ? game->session_key : "(none)");
+    printf("[ARGS] Session: %s\n", game->session_key[0] ? "provided" : "(none)");
     printf("[ARGS] Account: %u\n", game->account_id);
     printf("[ARGS] Username: %s\n", game->username[0] ? game->username : "(none)");
     printf("[ARGS] Server: %s:%d\n", game->realm_ip[0] ? game->realm_ip : "(none)", game->realm_port);

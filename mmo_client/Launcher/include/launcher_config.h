@@ -3,9 +3,9 @@
 
 // Runtime server configuration loaded from server.conf next to Launcher.exe.
 // If the file is missing, the compile-time defaults below are used.
-#define DEFAULT_LOGIN_IP   "192.168.1.2"
+#define DEFAULT_LOGIN_IP   "127.0.0.1"
 #define DEFAULT_LOGIN_PORT 7776
-#define DEFAULT_GAME_IP    "192.168.1.2"
+#define DEFAULT_GAME_IP    "127.0.0.1"
 #define DEFAULT_GAME_PORT  7777
 
 extern char g_login_server_ip[64];
