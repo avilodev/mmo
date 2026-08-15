@@ -243,6 +243,34 @@ strict:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="$(CFLAGS) -Werror" all
 
+# ---------------------------------------------------------------------------
+# Tests
+#
+# These run standalone against stubbed dependencies — no PostgreSQL or Redis
+# needed, so they are safe to run in CI or before a commit.
+# ---------------------------------------------------------------------------
+TEST_BIN = tests/bin
+TEST_CFLAGS = -Wall -Wextra -g -pthread $(PG_INCLUDE) \
+              -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$(WORLD_DIR)/include
+
+.PHONY: test
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/login_concurrency_test
+	@echo "=== Running packet limiter test ==="
+	@./$(TEST_BIN)/packet_limiter_test
+	@echo ""
+	@echo "=== Running login concurrency test ==="
+	@./$(TEST_BIN)/login_concurrency_test
+	@echo ""
+	@echo "=== All tests passed ==="
+
+$(TEST_BIN)/packet_limiter_test: tests/packet_limiter_test.c $(WORLD_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+$(TEST_BIN)/login_concurrency_test: tests/login_concurrency_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
 # Full setup (databases + tables)
 setup-all: setup-postgres init-world-tables
 	@echo "=== Full database setup complete ==="

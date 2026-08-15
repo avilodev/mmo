@@ -54,3 +54,6 @@ database/databases/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Test binaries
+tests/bin/
