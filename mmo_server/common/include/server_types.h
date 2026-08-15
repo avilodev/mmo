@@ -40,6 +40,11 @@ typedef struct {
     float attack_cooldown;
 
     int is_loaded;
+    // Slot is claimed by a login that is still loading from the database.
+    // Gameplay scans test is_loaded and so correctly ignore a reserved slot,
+    // but slot allocation must test is_reserved too or two concurrent logins
+    // will claim the same slot while the first one is still loading.
+    int is_reserved;
     int is_ready;
     int is_dirty;
     time_t last_save;

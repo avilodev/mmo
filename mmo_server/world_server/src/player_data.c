@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "types.h"
+#include "log.h"
 
 #include "ability_def.h"
 #include "items_database.h"
@@ -16,6 +17,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <stddef.h>   // offsetof
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
@@ -30,13 +32,26 @@ static pthread_mutex_t g_save_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_save_cond = PTHREAD_COND_INITIALIZER;
 static volatile int g_save_thread_running = 0;
 
+// Reset a slot to "free" without disturbing its mutex.
+//
+// The mutex is the final member of ActivePlayer, so clearing exactly the
+// bytes before it wipes every data field and leaves the lock intact. The
+// previous approach copied the pthread_mutex_t out to a local, memset the
+// whole struct, then copied it back — copying a held mutex by value is not
+// something POSIX defines, so this avoids the question entirely.
+//
+// Caller must hold both active_players_lock and the slot's own lock.
+static void player_slot_clear(int slot) {
+    memset(&active_players[slot], 0, offsetof(ActivePlayer, lock));
+}
+
 int playerdata_init(const char* conn_str) {
-    printf("Initializing player data system...\n");
-    printf("PostgreSQL connection: %s\n", conn_str);
+    LOG_DEBUG("Initializing player data system...");
+    LOG_DEBUG("PostgreSQL connection: %s", conn_str);
     
     // Initialize the character database
     if (!character_database_init(conn_str)) {
-        fprintf(stderr, "Failed to initialize character database\n");
+        LOG_ERROR("Failed to initialize character database");
         return 0;
     }
     
@@ -46,12 +61,12 @@ int playerdata_init(const char* conn_str) {
         pthread_mutex_init(&active_players[i].lock, NULL);
     }
     
-    printf("Player data system initialized successfully\n");
+    LOG_INFO("Player data system initialized successfully");
     return 1;
 }
 
 void playerdata_close(void) {
-    printf("Closing player data system...\n");
+    LOG_DEBUG("Closing player data system...");
 
     // Snapshot all loaded players, clear slots, then save lock-free
     typedef struct {
@@ -99,25 +114,23 @@ void playerdata_close(void) {
 
     for (int i = 0; i < save_count; i++) {
         if (!character_update_full_data(&save_buf[i].data)) {
-            fprintf(stderr, "Shutdown save failed for character %u\n",
-                    save_buf[i].data.character_id);
+            LOG_ERROR("Shutdown save failed for character %u", save_buf[i].data.character_id);
         }
         if (!quest_player_save(save_buf[i].data.character_id,
                                save_buf[i].quests, save_buf[i].quest_count)) {
-            fprintf(stderr, "Shutdown quest save failed for character %u\n",
-                    save_buf[i].data.character_id);
+            LOG_ERROR("Shutdown quest save failed for character %u", save_buf[i].data.character_id);
         }
     }
     
     // Close database connection
     character_database_close();
     
-    printf("Player data system closed\n");
+    LOG_DEBUG("Player data system closed");
 }
 
 int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     if (!player) {
-        fprintf(stderr, "playerdata_load: NULL player pointer\n"); 
+        LOG_ERROR("playerdata_load: NULL player pointer"); 
         return 0;
     }
     
@@ -126,12 +139,11 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     memset(&char_info, 0, sizeof(char_info));
     
     if (!character_get_full_data(character_id, &char_info)) {
-        fprintf(stderr, "Failed to load character %u from database\n", character_id); 
+        LOG_ERROR("Failed to load character %u from database", character_id); 
         return 0;
     }
 
-    printf("[LOAD DEBUG] char_id=%u from DB: pos_x=%f, pos_y=%f\n",
-       character_id, char_info.pos_x, char_info.pos_y);
+    LOG_DEBUG("[LOAD DEBUG] char_id=%u from DB: pos_x=%f, pos_y=%f", character_id, char_info.pos_x, char_info.pos_y);
     
     // Copy data into ActivePlayer structure
     player->character_id = char_info.character_id;
@@ -150,8 +162,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
         player->pos_x = 1608.0f;  // Or wherever your spawn should be
         player->pos_y = 1108.0f;
         player->is_dirty = 1;  // Mark for save so this persists
-        printf("[SPAWN] New character %u spawned at default location (%.1f, %.1f)\n",
-               character_id, player->pos_x, player->pos_y);
+        LOG_DEBUG("[SPAWN] New character %u spawned at default location (%.1f, %.1f)", character_id, player->pos_x, player->pos_y);
     }
 
     player->vel_x = 0.0f;
@@ -201,9 +212,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
             }
         }
 
-        printf("[ABILITIES] Player %u (class %u, level %d): %d abilities assigned\n",
-               player->character_id, player->player_class, player->level,
-               player->ability_count);
+        LOG_DEBUG("[ABILITIES] Player %u (class %u, level %d): %d abilities assigned", player->character_id, player->player_class, player->level, player->ability_count);
     }
 
     player->player_race = char_info.player_race;
@@ -234,15 +243,14 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     player->last_activity = time(NULL);
     clock_gettime(CLOCK_MONOTONIC, &player->last_move_tv);
     
-    printf("Loaded character %u: %s (level %d) at pos=(%.2f, %.2f)\n", 
-           character_id, player->username, player->level, player->pos_x, player->pos_y);
+    LOG_INFO("Loaded character %u: %s (level %d) at pos=(%.2f, %.2f)", character_id, player->username, player->level, player->pos_x, player->pos_y);
     
     return 1;
 }
 
 int playerdata_save(ActivePlayer* player) {
     if (!player || !player->is_loaded) {
-        fprintf(stderr, "playerdata_save: Invalid player or not loaded\n");
+        LOG_ERROR("playerdata_save: Invalid player or not loaded");
         return 0;
     }
     
@@ -277,55 +285,55 @@ int playerdata_save(ActivePlayer* player) {
     if (!quest_player_save(player->character_id,
                            (const PlayerQuestEntry*)player->quests,
                            player->quest_count)) {
-        fprintf(stderr, "Failed to save quests for character %u\n", player->character_id);
+        LOG_ERROR("Failed to save quests for character %u", player->character_id);
         return 0;
     }
 
     // DEBUG — print what we're about to save
-    printf("[SAVE DEBUG] char %u: player->pos = (%f, %f), char_info->pos = (%f, %f)\n",
-           player->character_id,
-           player->pos_x, player->pos_y,
-           char_info.pos_x, char_info.pos_y);
+    LOG_DEBUG("[SAVE DEBUG] char %u: player->pos = (%f, %f), char_info->pos = (%f, %f)", player->character_id, player->pos_x, player->pos_y, char_info.pos_x, char_info.pos_y);
     
     // Save to database
     if (!character_update_full_data(&char_info)) {
-        fprintf(stderr, "Failed to save character %u to database\n", player->character_id);
+        LOG_ERROR("Failed to save character %u to database", player->character_id);
         return 0;
     }
     
     player->is_dirty = 0;
     player->last_save = time(NULL);
     
-    printf("Saved character %u to database\n", player->character_id);
+    LOG_DEBUG("Saved character %u to database", player->character_id);
     return 1;
 }
 
 int player_add_active(uint32_t character_id, int client_fd) {
-    printf("[PLAYER_ADD] char=%u fd=%d: acquiring active_players_lock\n", character_id, client_fd);
+    // ------------------------------------------------------------------
+    // Phase 1 — reserve a slot. The global lock is held only for this
+    // scan, never across I/O.
+    // ------------------------------------------------------------------
     pthread_mutex_lock(&active_players_lock);
-    printf("[PLAYER_ADD] char=%u fd=%d: lock acquired, searching for empty slot\n", character_id, client_fd);
 
     // A fast reconnect can arrive before the old socket handler has completed
     // cleanup. Rebind the existing in-memory player atomically instead of
-    // creating a duplicate character slot and loading stale DB state.
+    // creating a duplicate character slot and loading stale DB state. A slot
+    // still being loaded (is_reserved) counts as existing, so a reconnect that
+    // races the initial load rebinds rather than starting a second load.
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded &&
+        if ((active_players[i].is_loaded || active_players[i].is_reserved) &&
             active_players[i].character_id == character_id) {
             pthread_mutex_lock(&active_players[i].lock);
             active_players[i].client_fd = client_fd;
             active_players[i].is_ready = 0;
             pthread_mutex_unlock(&active_players[i].lock);
             pthread_mutex_unlock(&active_players_lock);
-            printf("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d\n",
-                   character_id, client_fd, i);
+            LOG_DEBUG("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d", character_id, client_fd, i);
             return 1;
         }
     }
 
-    // Find an empty slot
+    // Find an empty slot — must skip slots reserved by an in-flight login.
     int slot = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!active_players[i].is_loaded) {
+        if (!active_players[i].is_loaded && !active_players[i].is_reserved) {
             slot = i;
             break;
         }
@@ -333,45 +341,64 @@ int player_add_active(uint32_t character_id, int client_fd) {
 
     if (slot == -1) {
         pthread_mutex_unlock(&active_players_lock);
-        fprintf(stderr, "[PLAYER_ADD] char=%u fd=%d: no available slots!\n", character_id, client_fd);
+        LOG_ERROR("[PLAYER_ADD] char=%u fd=%d: no available slots!", character_id, client_fd);
         return 0;
     }
 
-    printf("[PLAYER_ADD] char=%u fd=%d: using slot=%d, loading from DB\n", character_id, client_fd, slot);
+    pthread_mutex_lock(&active_players[slot].lock);
+    player_slot_clear(slot);
+    active_players[slot].is_reserved  = 1;   // claimed, not yet visible to gameplay
+    active_players[slot].character_id = character_id;
+    active_players[slot].client_fd    = client_fd;
+    pthread_mutex_unlock(&active_players[slot].lock);
 
-    // Initialize the player slot
+    pthread_mutex_unlock(&active_players_lock);
+
+    // ------------------------------------------------------------------
+    // Phase 2 — the slow part (PostgreSQL query + quest file read) runs
+    // with NO locks held, so broadcast and combat threads keep ticking
+    // while this player logs in. Loading into a staging struct means a
+    // partially-populated player is never visible in the table.
+    // ------------------------------------------------------------------
+    LOG_DEBUG("[PLAYER_ADD] char=%u fd=%d: slot=%d loading from DB (unlocked)", character_id, client_fd, slot);
+
+    ActivePlayer staging;
+    memset(&staging, 0, sizeof(staging));
+    staging.character_id = character_id;
+    staging.client_fd    = client_fd;
+
+    int loaded = playerdata_load(character_id, &staging);
+
+    // ------------------------------------------------------------------
+    // Phase 3 — publish the result under the lock.
+    // ------------------------------------------------------------------
+    pthread_mutex_lock(&active_players_lock);
     pthread_mutex_lock(&active_players[slot].lock);
 
-    // Save the mutex, clear everything else, restore the mutex
-    pthread_mutex_t saved_lock = active_players[slot].lock;
-    memset(&active_players[slot], 0, sizeof(ActivePlayer));
-    active_players[slot].lock = saved_lock;
-
-    active_players[slot].character_id = character_id;
-    active_players[slot].client_fd = client_fd;
-    // is_loaded stays 0 until load succeeds — other threads skip this slot
-
-    // NOTE: active_players_lock is held for the entire DB load to prevent the
-    // broadcast thread from seeing is_loaded=1 (set by playerdata_load) and
-    // trying to take the slot lock while we still hold it — that would deadlock.
-    // Broadcasts simply wait until login completes (<2s typically).
-    printf("[PLAYER_ADD] char=%u fd=%d: starting DB load (holding global lock)\n", character_id, client_fd);
-
-    if (!playerdata_load(character_id, &active_players[slot])) {
-        // Clear the slot on failure so it's available again
-        pthread_mutex_t fail_lock = active_players[slot].lock;
-        memset(&active_players[slot], 0, sizeof(ActivePlayer));
-        active_players[slot].lock = fail_lock;
+    if (!loaded) {
+        player_slot_clear(slot);   // drops the reservation, frees the slot
         pthread_mutex_unlock(&active_players[slot].lock);
         pthread_mutex_unlock(&active_players_lock);
-        fprintf(stderr, "[PLAYER_ADD] char=%u fd=%d: DB load failed!\n", character_id, client_fd);
+        LOG_ERROR("[PLAYER_ADD] char=%u fd=%d: DB load failed!", character_id, client_fd);
         return 0;
     }
+
+    // A reconnect may have rebound the slot to a newer socket while we were
+    // loading; that fd wins, otherwise we would publish a stale descriptor.
+    int current_fd = active_players[slot].client_fd;
+
+    // Copy every field except the trailing mutex, which must stay the one
+    // this thread currently holds.
+    memcpy(&active_players[slot], &staging, offsetof(ActivePlayer, lock));
+
+    active_players[slot].client_fd   = current_fd;
+    active_players[slot].is_reserved = 0;
+    active_players[slot].is_loaded   = 1;   // now visible to gameplay scans
 
     pthread_mutex_unlock(&active_players[slot].lock);
     pthread_mutex_unlock(&active_players_lock);
 
-    printf("[PLAYER_ADD] char=%u fd=%d: slot=%d loaded successfully\n", character_id, client_fd, slot);
+    LOG_INFO("[PLAYER_ADD] char=%u fd=%d: slot=%d loaded successfully", character_id, client_fd, slot);
     return 1;
 }
 
@@ -420,7 +447,7 @@ void player_release(ActivePlayer* player) {
 }
 
 void player_remove_active(uint32_t character_id) {
-    printf("[PLAYER_REMOVE] char=%u: acquiring active_players_lock\n", character_id);
+    LOG_DEBUG("[PLAYER_REMOVE] char=%u: acquiring active_players_lock", character_id);
     pthread_mutex_lock(&active_players_lock);
 
     CharacterInfo save_data;
@@ -431,13 +458,12 @@ void player_remove_active(uint32_t character_id) {
             active_players[i].character_id == character_id) {
 
             int slot_fd = active_players[i].client_fd;
-            printf("[PLAYER_REMOVE] char=%u: found in slot=%d (fd=%d), clearing\n",
-                   character_id, i, slot_fd);
+            LOG_DEBUG("[PLAYER_REMOVE] char=%u: found in slot=%d (fd=%d), clearing", character_id, i, slot_fd);
             pthread_mutex_lock(&active_players[i].lock);
 
             if (active_players[i].is_dirty) {
                 // Copy data out while we hold the lock, then save after releasing
-                printf("[PLAYER_REMOVE] char=%u: slot is dirty — copying for lock-free save\n", character_id);
+                LOG_DEBUG("[PLAYER_REMOVE] char=%u: slot is dirty — copying for lock-free save", character_id);
                 memset(&save_data, 0, sizeof(save_data));
                 save_data.character_id = active_players[i].character_id;
                 save_data.level        = active_players[i].level;
@@ -461,12 +487,10 @@ void player_remove_active(uint32_t character_id) {
                 do_save = 1;
             }
 
-            pthread_mutex_t saved_lock = active_players[i].lock;
-            memset(&active_players[i], 0, sizeof(ActivePlayer));
-            active_players[i].lock = saved_lock;
+            player_slot_clear(i);
 
             pthread_mutex_unlock(&active_players[i].lock);
-            printf("[PLAYER_REMOVE] char=%u: slot=%d cleared (was fd=%d)\n", character_id, i, slot_fd);
+            LOG_DEBUG("[PLAYER_REMOVE] char=%u: slot=%d cleared (was fd=%d)", character_id, i, slot_fd);
             break;
         }
     }
@@ -475,11 +499,11 @@ void player_remove_active(uint32_t character_id) {
 
     // DB write is done after all locks are released
     if (do_save) {
-        printf("[PLAYER_REMOVE] char=%u: writing to DB (lock-free)\n", character_id);
+        LOG_DEBUG("[PLAYER_REMOVE] char=%u: writing to DB (lock-free)", character_id);
         character_update_full_data(&save_data);
     }
 
-    printf("[PLAYER_REMOVE] char=%u: done\n", character_id);
+    LOG_DEBUG("[PLAYER_REMOVE] char=%u: done", character_id);
 }
 
 int player_remove_active_if_fd(uint32_t character_id, int client_fd) {
@@ -495,9 +519,7 @@ int player_remove_active_if_fd(uint32_t character_id, int client_fd) {
             if (active_players[i].is_loaded &&
                 active_players[i].character_id == character_id &&
                 active_players[i].client_fd == client_fd) {
-                pthread_mutex_t saved_lock = active_players[i].lock;
-                memset(&active_players[i], 0, sizeof(ActivePlayer));
-                active_players[i].lock = saved_lock;
+                player_slot_clear(i);
                 removed = 1;
             }
             pthread_mutex_unlock(&active_players[i].lock);
@@ -511,7 +533,7 @@ int player_remove_active_if_fd(uint32_t character_id, int client_fd) {
 void player_send_data_response(int client_fd, uint32_t character_id) {
     ActivePlayer* player = player_find_active(character_id);
     if (!player) {
-        fprintf(stderr, "Cannot send data for inactive player %u\n", character_id);
+        LOG_ERROR("Cannot send data for inactive player %u", character_id);
         return;
     }
     
@@ -520,7 +542,7 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     // ALLOCATE ON HEAP instead of stack
     CharacterInfo* response = malloc(sizeof(CharacterInfo));
     if (!response) {
-        fprintf(stderr, "Failed to allocate response packet\n");
+        LOG_ERROR("Failed to allocate response packet");
         pthread_mutex_unlock(&player->lock);
         return;
     }
@@ -569,7 +591,7 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     server_send(client_fd, response, sizeof(CharacterInfo));
     free(response);
 
-    printf("Sent player data for character %u\n", character_id);
+    LOG_DEBUG("Sent player data for character %u", character_id);
 }
 
 void* periodic_save_thread(void* arg) {
@@ -641,7 +663,7 @@ void* periodic_save_thread(void* arg) {
 
         // Now write to DB without holding any locks
         for (int i = 0; i < save_count; i++) {
-            printf("Periodic save: character %u\n", save_queue[i].character_id);
+            LOG_DEBUG("Periodic save: character %u", save_queue[i].character_id);
             int db_ok = character_update_full_data(&save_queue[i].data);
             int quest_ok = quest_player_save(save_queue[i].character_id,
                                              save_queue[i].quests,
@@ -654,13 +676,12 @@ void* periodic_save_thread(void* arg) {
                     player->is_dirty = 1;
                     player_release(player);
                 }
-                fprintf(stderr, "Periodic save failed for character %u; queued for retry\n",
-                        save_queue[i].character_id);
+                LOG_ERROR("Periodic save failed for character %u; queued for retry", save_queue[i].character_id);
             }
         }
     }
 
-    printf("Periodic save thread exiting\n");
+    LOG_DEBUG("Periodic save thread exiting");
     return NULL;
 }
 
@@ -668,7 +689,7 @@ int playerdata_start_save_thread(void) {
     if (g_save_thread_running) return 1;
 
     if (pthread_create(&g_save_thread, NULL, periodic_save_thread, NULL) != 0) {
-        fprintf(stderr, "Failed to create periodic save thread\n");
+        LOG_ERROR("Failed to create periodic save thread");
         return 0;
     }
     return 1;
