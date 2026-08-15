@@ -1,4 +1,5 @@
 #include "connection_io.h"
+#include "log.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -168,7 +169,7 @@ ssize_t connection_io_send(int fd, const void* data, size_t len) {
         return sent;
     }
     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        fprintf(stderr, "[NET] queued send failed on fd %d: %s\n", fd, strerror(errno));
+        LOG_ERROR("[NET] queued send failed on fd %d: %s", fd, strerror(errno));
         output->failed = 1;
         pthread_mutex_unlock(&output->lock);
         return -1;
@@ -208,7 +209,7 @@ int connection_io_flush(int fd) {
         if (sent < 0 && errno == EINTR) continue;
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
         if (sent < 0) {
-            fprintf(stderr, "[NET] queued flush failed on fd %d: %s\n", fd, strerror(errno));
+            LOG_ERROR("[NET] queued flush failed on fd %d: %s", fd, strerror(errno));
         }
         output->failed = 1;
     }

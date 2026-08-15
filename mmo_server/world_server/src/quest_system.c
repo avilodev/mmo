@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "quest_system.h"
+#include "log.h"
 #include "player_data.h"
 #include "items_database.h"
 #include "utils.h"
@@ -93,7 +94,7 @@ int quest_system_init(const char* json_path) {
 
     FILE* f = fopen(json_path, "r");
     if (!f) {
-        fprintf(stderr, "[QUEST] Cannot open %s: %s\n", json_path, strerror(errno));
+        LOG_ERROR("[QUEST] Cannot open %s: %s", json_path, strerror(errno));
         return 1;  // non-fatal — server can run without quests
     }
 
@@ -109,7 +110,7 @@ int quest_system_init(const char* json_path) {
 
     const char* quests_arr = qs_find_array(buf, "quests");
     if (!quests_arr) {
-        fprintf(stderr, "[QUEST] No 'quests' array in JSON\n");
+        LOG_ERROR("[QUEST] No 'quests' array in JSON");
         free(buf);
         return 1;
     }
@@ -158,15 +159,14 @@ int quest_system_init(const char* json_path) {
         if (q->quest_id > 0 && q->quest_id < MAX_QUESTS) {
             g_quest_table[q->quest_id] = q;
             g_quest_count++;
-            printf("[QUEST] Loaded quest %u '%s' (%u objectives)\n",
-                   q->quest_id, q->title, q->obj_count);
+            LOG_INFO("[QUEST] Loaded quest %u '%s' (%u objectives)", q->quest_id, q->title, q->obj_count);
         } else {
             free(q);
         }
     }
 
     free(buf);
-    printf("[QUEST] %d quests loaded from %s\n", g_quest_count, json_path);
+    LOG_INFO("[QUEST] %d quests loaded from %s", g_quest_count, json_path);
     return 1;
 }
 
@@ -281,7 +281,7 @@ static void send_quest_accept_packet(int client_fd, uint32_t character_id,
 int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id) {
     const QuestDef* q = quest_get(quest_id);
     if (!q) {
-        printf("[QUEST] quest_player_accept: unknown quest %u\n", quest_id);
+        LOG_DEBUG("[QUEST] quest_player_accept: unknown quest %u", quest_id);
         return 0;
     }
 
@@ -291,7 +291,7 @@ int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id)
     // Already accepted?
     if (find_player_quest(p, quest_id)) {
         player_release(p);
-        printf("[QUEST] Player %u already has quest %u\n", character_id, quest_id);
+        LOG_WARN_RL(5, 60, "[QUEST] Player %u already has quest %u", character_id, quest_id);
         return 0;
     }
 
@@ -311,7 +311,7 @@ int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id)
     player_release(p);
 
     send_quest_accept_packet(client_fd, character_id, q, (const PlayerQuestEntry*)&pq_copy);
-    printf("[QUEST] Player %u accepted quest %u '%s'\n", character_id, quest_id, q->title);
+    LOG_DEBUG("[QUEST] Player %u accepted quest %u '%s'", character_id, quest_id, q->title);
     return 1;
 }
 
@@ -370,7 +370,7 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
     player_release(p);
 
     server_send(client_fd, &cpkt, sizeof(cpkt));
-    printf("[QUEST] Player %u completed quest %u '%s'\n", character_id, quest_id, q->title);
+    LOG_DEBUG("[QUEST] Player %u completed quest %u '%s'", character_id, quest_id, q->title);
     return 1;
 }
 

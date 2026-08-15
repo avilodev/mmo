@@ -1,4 +1,5 @@
 #include "session_registry.h"
+#include "log.h"
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -21,8 +22,7 @@ int session_registry_add(int fd, uint32_t account_id, uint32_t character_id) {
         if (g_session_registry.entries[i].active &&
             g_session_registry.entries[i].account_id == account_id) {
             int old_fd = g_session_registry.entries[i].fd;
-            printf("Account %u already logged in (fd=%d) — kicking stale session for new login (fd=%d)\n",
-                   account_id, old_fd, fd);
+            LOG_WARN_RL(5, 60, "Account %u already logged in (fd=%d) — kicking stale session for new login (fd=%d)", account_id, old_fd, fd);
             // Mark inactive before closing so the old handler's client_done
             // sees nothing to clean up (session already gone).
             g_session_registry.entries[i].active = 0;
@@ -47,14 +47,13 @@ int session_registry_add(int fd, uint32_t account_id, uint32_t character_id) {
             g_session_registry.entries[i].active = 1;
             
             pthread_rwlock_unlock(&g_session_registry.lock);
-            printf("Session added: fd=%d, account=%u, character=%u\n",
-                   fd, account_id, character_id);
+            LOG_DEBUG("Session added: fd=%d, account=%u, character=%u", fd, account_id, character_id);
             return 0;
         }
     }
     
     pthread_rwlock_unlock(&g_session_registry.lock);
-    printf("Session registry full!\n");
+    LOG_DEBUG("Session registry full!");
     return -1;  // Server full
 }
 
@@ -64,10 +63,7 @@ void session_registry_remove(int fd) {
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (g_session_registry.entries[i].active && 
             g_session_registry.entries[i].fd == fd) {
-            printf("Session removed: fd=%d, account=%u, character=%u\n",
-                   fd, 
-                   g_session_registry.entries[i].account_id,
-                   g_session_registry.entries[i].character_id);
+            LOG_DEBUG("Session removed: fd=%d, account=%u, character=%u", fd, g_session_registry.entries[i].account_id, g_session_registry.entries[i].character_id);
             g_session_registry.entries[i].active = 0;
             break;
         }

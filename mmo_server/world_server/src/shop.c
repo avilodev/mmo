@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "shop.h"
+#include "log.h"
 #include "player_data.h"
 #include "items_database.h"
 #include "utils.h"
@@ -82,7 +83,7 @@ int shop_init(const char* json_path) {
 
     FILE* f = fopen(json_path, "r");
     if (!f) {
-        fprintf(stderr, "[SHOP] Cannot open %s: %s\n", json_path, strerror(errno));
+        LOG_ERROR("[SHOP] Cannot open %s: %s", json_path, strerror(errno));
         return 1;  // non-fatal
     }
 
@@ -125,14 +126,13 @@ int shop_init(const char* json_path) {
         }
 
         if (s->shop_id > 0) {
-            printf("[SHOP] Loaded shop %u '%s' (%u items)\n",
-                   s->shop_id, s->name, s->item_count);
+            LOG_INFO("[SHOP] Loaded shop %u '%s' (%u items)", s->shop_id, s->name, s->item_count);
             g_shop_count++;
         }
     }
 
     free(buf);
-    printf("[SHOP] %d shops loaded\n", g_shop_count);
+    LOG_INFO("[SHOP] %d shops loaded", g_shop_count);
     return 1;
 }
 
@@ -145,7 +145,7 @@ void shop_cleanup(void) { g_shop_count = 0; }
 void shop_open(uint32_t character_id, int client_fd, uint32_t shop_id) {
     ShopDef* s = shop_find(shop_id);
     if (!s) {
-        printf("[SHOP] shop_open: unknown shop %u\n", shop_id);
+        LOG_DEBUG("[SHOP] shop_open: unknown shop %u", shop_id);
         return;
     }
 
@@ -162,7 +162,7 @@ void shop_open(uint32_t character_id, int client_fd, uint32_t shop_id) {
         pkt.items[i].buy_price = htonl(s->items[i].buy_price);
     }
     server_send(client_fd, &pkt, sizeof(pkt));
-    printf("[SHOP] Opened shop %u for player %u\n", shop_id, character_id);
+    LOG_DEBUG("[SHOP] Opened shop %u for player %u", shop_id, character_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,8 +238,7 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
     resp.inventory_slot = (uint8_t)slot;
     snprintf(resp.message, sizeof(resp.message), "Purchased for %u gold", price);
     server_send(client_fd, &resp, sizeof(resp));
-    printf("[SHOP] Player %u bought item %u for %u gold (slot %d)\n",
-           character_id, item_id, price, slot);
+    LOG_DEBUG("[SHOP] Player %u bought item %u for %u gold (slot %d)", character_id, item_id, price, slot);
 }
 
 // ---------------------------------------------------------------------------
@@ -300,5 +299,5 @@ void shop_handle_sell(uint32_t character_id, int client_fd, uint8_t* buffer, int
     resp.new_gold    = htonl(new_gold);
     snprintf(resp.message, sizeof(resp.message), "Sold for %u gold", sell_price);
     server_send(client_fd, &resp, sizeof(resp));
-    printf("[SHOP] Player %u sold item %u for %u gold\n", character_id, item_id, sell_price);
+    LOG_DEBUG("[SHOP] Player %u sold item %u for %u gold", character_id, item_id, sell_price);
 }

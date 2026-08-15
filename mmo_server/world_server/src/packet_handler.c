@@ -1,4 +1,5 @@
 #include "packet_handler.h"
+#include "log.h"
 #include "zone_system.h"
 #include <stdlib.h>
 #include <string.h>
@@ -54,8 +55,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     float max_distance = max_speed * time_delta;
 
     if (distance > max_distance) {
-        printf("[MOVE DEBUG] REJECTED - distance %f > max %f (delta=%f, speed=%f)\n", 
-               distance, max_distance, time_delta, pkt->player_speed);
+        LOG_WARN_RL(5, 60, "[MOVE DEBUG] REJECTED - distance %f > max %f (delta=%f, speed=%f)", distance, max_distance, time_delta, pkt->player_speed);
         
         PlayerMoveAckPacket correction;
         memset(&correction, 0, sizeof(correction));
@@ -111,7 +111,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
 
 void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(EquipItemPacket)) {
-        printf("Invalid equip packet size\n");
+        LOG_WARN_RL(5, 60, "Invalid equip packet size");
         return;
     }
     
@@ -122,14 +122,14 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     
     ActivePlayer* player = player_acquire(character_id);
     if (!player) {
-        printf("Player not found for equip\n");
+        LOG_WARN_RL(5, 60, "Player not found for equip");
         return;
     }
     if (!player->is_loaded) { player_release(player); return; }
 
     // Verify item is in inventory
     if (inventory_slot >= 150 || player->inventory[inventory_slot] != item_id) {
-        printf("Item %u not in inventory slot %u\n", item_id, inventory_slot);
+        LOG_WARN_RL(5, 60, "Item %u not in inventory slot %u", item_id, inventory_slot);
         player_release(player);
         
         // Send error response
@@ -146,7 +146,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     // Get item definition
     const ItemDefinition* item = item_get(item_id);
     if (!item) {
-        printf("Item %u does not exist\n", item_id);
+        LOG_WARN_RL(5, 60, "Item %u does not exist", item_id);
         player_release(player);
         
         EquipItemResponsePacket response = {0};
@@ -161,7 +161,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     
     // Validate slot
     if (item->slot != equip_slot && !(item->is_two_handed && equip_slot == SLOT_MAIN_HAND)) {
-        printf("Item %s cannot be equipped in slot %u\n", item->name, equip_slot);
+        LOG_WARN_RL(5, 60, "Item %s cannot be equipped in slot %u", item->name, equip_slot);
         player_release(player);
         
         EquipItemResponsePacket response = {0};
@@ -175,7 +175,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     
     // Check if player meets requirements
     if (!item_can_equip(item_id, player->level, player->player_class, player->player_race)) {
-        printf("Player cannot equip item: %s\n", item->name);
+        LOG_WARN_RL(5, 60, "Player cannot equip item: %s", item->name);
         player_release(player);
         
         EquipItemResponsePacket response = {0};
@@ -296,12 +296,12 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     // Send updated stats to client
     player_send_stats(client_fd, player);
 
-    printf("Character %u equipped %s\n", character_id, item->name);
+    LOG_DEBUG("Character %u equipped %s", character_id, item->name);
 }
 
 void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(UnequipItemPacket)) {
-        printf("Invalid unequip packet size\n");
+        LOG_WARN_RL(5, 60, "Invalid unequip packet size");
         return;
     }
     
@@ -399,12 +399,12 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     // Send updated stats to client
     player_send_stats(client_fd, player);
 
-    printf("Character %u unequipped item from slot %u\n", character_id, equip_slot);
+    LOG_DEBUG("Character %u unequipped item from slot %u", character_id, equip_slot);
 }
 
 void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(UseItemPacket)) {
-        printf("Invalid use item packet size\n");
+        LOG_WARN_RL(5, 60, "Invalid use item packet size");
         return;
     }
     
@@ -514,13 +514,12 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
 
     snprintf(response.message, sizeof(response.message), "Used %s", item->name);
     server_send(client_fd, &response, sizeof(response));
-    printf("Character %u used %s (HP+%d, MP+%d)\n",
-           character_id, item->name, hp_changed, mp_changed);
+    LOG_DEBUG("Character %u used %s (HP+%d, MP+%d)", character_id, item->name, hp_changed, mp_changed);
 }
 
 void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(DropItemPacket)) {
-        printf("Invalid drop packet size\n");
+        LOG_WARN_RL(5, 60, "Invalid drop packet size");
         return;
     }
     
@@ -546,7 +545,7 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
     // Spawn item on the ground near the player
     loot_drop_item(item_id, 1, drop_x, drop_y, character_id);
-    printf("Character %u dropped item %u\n", character_id, item_id);
+    LOG_DEBUG("Character %u dropped item %u", character_id, item_id);
     
     DropItemResponsePacket response = {0};
     response.header.type = PACKET_DROP_ITEM_RESPONSE;
@@ -559,7 +558,7 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
 void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(MoveItemPacket)) {
-        printf("Invalid move item packet size\n");
+        LOG_WARN_RL(5, 60, "Invalid move item packet size");
         return;
     }
     
@@ -590,7 +589,7 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     response.to_slot = to_slot;
     
     server_send(client_fd, &response, sizeof(response));
-    printf("Character %u moved item from slot %u to %u\n", character_id, from_slot, to_slot);
+    LOG_DEBUG("Character %u moved item from slot %u to %u", character_id, from_slot, to_slot);
 }
 
 #define CHAT_LOCAL_RANGE 800.0f
@@ -599,7 +598,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     (void)client_fd;  // Sender receives via broadcast loop
 
     if (bytes < (ssize_t)sizeof(ChatSendPacket)) {
-        printf("Invalid chat packet size\n");
+        LOG_WARN_RL(5, 60, "Invalid chat packet size");
         return;
     }
 
@@ -634,7 +633,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     strncpy(msg.sender_name, sender_name, sizeof(msg.sender_name) - 1);
     strncpy(msg.message, chat->message, sizeof(msg.message) - 1);
 
-    printf("[CHAT] %s (ch=%u): %s\n", msg.sender_name, channel, msg.message);
+    LOG_DEBUG("[CHAT] %s (ch=%u): %s", msg.sender_name, channel, msg.message);
 
     // Broadcast based on channel
     extern ActivePlayer active_players[];
@@ -664,7 +663,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
         memset(msg.message, 0, sizeof(msg.message));
         strncpy(msg.message, body, sizeof(msg.message) - 1);
 
-        printf("[WHISPER] %s -> %s: %s\n", sender_name, target_name, msg.message);
+        LOG_DEBUG("[WHISPER] %s -> %s: %s", sender_name, target_name, msg.message);
 
         // Find target and deliver
         int target_fd = -1;
@@ -682,7 +681,7 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
         }
 
         if (target_fd == -1) {
-            printf("[WHISPER] Target '%s' not online\n", target_name);
+            LOG_WARN_RL(5, 60, "[WHISPER] Target '%s' not online", target_name);
         } else {
             // Echo back to sender: sender_name field shows "→ TargetName"
             // so the client renders it as "[W] → TargetName: message"
@@ -765,20 +764,20 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     pthread_mutex_unlock(&active_players_lock);
 
     if (target_id == 0) {
-        printf("[PARTY] Invite failed: player '%s' not found\n", target_name);
+        LOG_WARN_RL(5, 60, "[PARTY] Invite failed: player '%s' not found", target_name);
         return;
     }
 
     // Can't invite yourself
     if (target_id == character_id) {
-        printf("[PARTY] Invite failed: can't invite yourself\n");
+        LOG_WARN_RL(5, 60, "[PARTY] Invite failed: can't invite yourself");
         return;
     }
 
     // Check if target is already in a party
     Party* target_party = party_find_by_player(target_id);
     if (target_party) {
-        printf("[PARTY] Invite failed: '%s' already in a party\n", target_name);
+        LOG_WARN_RL(5, 60, "[PARTY] Invite failed: '%s' already in a party", target_name);
         return;
     }
 
@@ -789,12 +788,12 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
             pthread_mutex_lock(&p->lock);
             if (p->leader_id != character_id) {
                 pthread_mutex_unlock(&p->lock);
-                printf("[PARTY] Invite failed: not party leader\n");
+                LOG_WARN_RL(5, 60, "[PARTY] Invite failed: not party leader");
                 return;
             }
             if (p->member_count >= MAX_PARTY_SIZE) {
                 pthread_mutex_unlock(&p->lock);
-                printf("[PARTY] Invite failed: party full\n");
+                LOG_WARN_RL(5, 60, "[PARTY] Invite failed: party full");
                 return;
             }
             pthread_mutex_unlock(&p->lock);
@@ -803,7 +802,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
 
     // Create the invite
     if (!party_invite_create(character_id, target_id, inviter_party_id)) {
-        printf("[PARTY] Invite failed: target already has pending invite or no slots\n");
+        LOG_WARN_RL(5, 60, "[PARTY] Invite failed: target already has pending invite or no slots");
         return;
     }
 
@@ -822,7 +821,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
         server_send(fd, &notify, sizeof(notify));
     }
 
-    printf("[PARTY] Player %u invited '%s' (%u) to party\n", character_id, target_name, target_id);
+    LOG_DEBUG("[PARTY] Player %u invited '%s' (%u) to party", character_id, target_name, target_id);
     (void)client_fd;
 }
 
@@ -831,7 +830,7 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
 
     PendingInvite* inv = party_invite_find_for_player(character_id);
     if (!inv) {
-        printf("[PARTY] Accept failed: no pending invite for player %u\n", character_id);
+        LOG_WARN_RL(5, 60, "[PARTY] Accept failed: no pending invite for player %u", character_id);
         return;
     }
 
@@ -844,7 +843,7 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
     // Check if acceptor is already in a party
     Party* already = party_find_by_player(character_id);
     if (already) {
-        printf("[PARTY] Accept failed: player %u already in a party\n", character_id);
+        LOG_WARN_RL(5, 60, "[PARTY] Accept failed: player %u already in a party", character_id);
         return;
     }
 
@@ -854,7 +853,7 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
         // Join existing party
         Party* p = party_find(existing_party);
         if (!p) {
-            printf("[PARTY] Accept failed: party %u no longer exists\n", existing_party);
+            LOG_WARN_RL(5, 60, "[PARTY] Accept failed: party %u no longer exists", existing_party);
             return;
         }
         party_id = existing_party;
@@ -867,7 +866,7 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
         } else {
             party_id = party_create(from_id);
             if (party_id == 0) {
-                printf("[PARTY] Accept failed: couldn't create party\n");
+                LOG_WARN_RL(5, 60, "[PARTY] Accept failed: couldn't create party");
                 return;
             }
             party_broadcast_update(party_id);
@@ -875,25 +874,24 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
     }
 
     if (!party_add_member(party_id, character_id)) {
-        printf("[PARTY] Accept failed: couldn't add player %u to party %u\n",
-               character_id, party_id);
+        LOG_WARN_RL(5, 60, "[PARTY] Accept failed: couldn't add player %u to party %u", character_id, party_id);
         return;
     }
 
-    printf("[PARTY] Player %u accepted invite, joined party %u\n", character_id, party_id);
+    LOG_DEBUG("[PARTY] Player %u accepted invite, joined party %u", character_id, party_id);
     party_broadcast_update(party_id);
 }
 
 void handle_party_decline(int client_fd, uint32_t character_id) {
     (void)client_fd;
     party_invite_remove(character_id);
-    printf("[PARTY] Player %u declined party invite\n", character_id);
+    LOG_DEBUG("[PARTY] Player %u declined party invite", character_id);
 }
 
 void handle_party_leave(int client_fd, uint32_t character_id) {
     (void)client_fd;
     party_remove_member(character_id);
-    printf("[PARTY] Player %u left their party\n", character_id);
+    LOG_DEBUG("[PARTY] Player %u left their party", character_id);
 }
 
 void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
@@ -929,7 +927,7 @@ void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ss
 
     if (!found) return;
 
-    printf("[PARTY] Player %u kicked player %u from party\n", character_id, target_id);
+    LOG_DEBUG("[PARTY] Player %u kicked player %u from party", character_id, target_id);
     party_remove_member(target_id);
 }
 void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) {
@@ -1032,6 +1030,5 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
     size_t send_size = offsetof(SessionListResponsePacket, entries) +
                        (size_t)page_count * sizeof(SessionPlayerEntry);
     server_send(client_fd, &resp, send_size);
-    printf("[SESSION] Sent page %u/%u (%d entries, %u total) to fd=%d\n",
-           requested_page + 1, total_pages, page_count, total_players, client_fd);
+    LOG_DEBUG("[SESSION] Sent page %u/%u (%d entries, %u total) to fd=%d", requested_page + 1, total_pages, page_count, total_players, client_fd);
 }

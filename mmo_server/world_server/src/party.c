@@ -1,4 +1,5 @@
 #include "party.h"
+#include "log.h"
 #include "player_level.h"
 #include "utils.h"
 
@@ -46,8 +47,7 @@ void party_init(void) {
         pthread_mutex_init(&g_parties[i].lock, NULL);
     }
     memset(g_invites, 0, sizeof(g_invites));
-    printf("[PARTY] Party system initialized (%d max parties, %d max size)\n",
-           MAX_PARTIES, MAX_PARTY_SIZE);
+    LOG_INFO("[PARTY] Party system initialized (%d max parties, %d max size)", MAX_PARTIES, MAX_PARTY_SIZE);
 }
 
 // ============================================================================
@@ -95,7 +95,7 @@ uint32_t party_create(uint32_t leader_id) {
 
     if (slot < 0) {
         pthread_mutex_unlock(&g_parties_lock);
-        printf("[PARTY] Cannot create party: all slots full\n");
+        LOG_WARN_RL(5, 60, "[PARTY] Cannot create party: all slots full");
         return 0;
     }
 
@@ -119,7 +119,7 @@ uint32_t party_create(uint32_t leader_id) {
         player_release(player);
     }
 
-    printf("[PARTY] Party %u created by player %u\n", pid, leader_id);
+    LOG_DEBUG("[PARTY] Party %u created by player %u", pid, leader_id);
     return pid;
 }
 
@@ -153,8 +153,7 @@ int party_add_member(uint32_t party_id, uint32_t character_id) {
                 player_release(player);
             }
 
-            printf("[PARTY] Player %u joined party %u (%u members)\n",
-                   character_id, party_id, p->member_count);
+            LOG_DEBUG("[PARTY] Player %u joined party %u (%u members)", character_id, party_id, p->member_count);
             return 1;
         }
     }
@@ -191,8 +190,7 @@ void party_remove_member(uint32_t character_id) {
         player_release(player);
     }
 
-    printf("[PARTY] Player %u left party %u (%u members remaining)\n",
-           character_id, party_id, p->member_count);
+    LOG_DEBUG("[PARTY] Player %u left party %u (%u members remaining)", character_id, party_id, p->member_count);
 
     // If party is now empty or has 1 member, disband
     if (p->member_count <= 1) {
@@ -234,7 +232,7 @@ void party_remove_member(uint32_t character_id) {
         }
         pthread_mutex_unlock(&g_parties_lock);
 
-        printf("[PARTY] Party %u disbanded (too few members)\n", party_id);
+        LOG_DEBUG("[PARTY] Party %u disbanded (too few members)", party_id);
         return;
     }
 
@@ -243,8 +241,7 @@ void party_remove_member(uint32_t character_id) {
         for (int i = 0; i < MAX_PARTY_SIZE; i++) {
             if (p->members[i] != 0) {
                 p->leader_id = p->members[i];
-                printf("[PARTY] Player %u promoted to leader of party %u\n",
-                       p->leader_id, party_id);
+                LOG_DEBUG("[PARTY] Player %u promoted to leader of party %u", p->leader_id, party_id);
                 break;
             }
         }
@@ -291,7 +288,7 @@ void party_disband(uint32_t party_id) {
         }
     }
 
-    printf("[PARTY] Party %u disbanded\n", party_id);
+    LOG_DEBUG("[PARTY] Party %u disbanded", party_id);
 
     memset(p->members, 0, sizeof(p->members));
     p->party_id = 0;
@@ -549,6 +546,5 @@ void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
         }
     }
 
-    printf("[PARTY] XP %lu split among %d members (%lu each) in party %u\n",
-           (unsigned long)xp_amount, nearby_count, (unsigned long)share, pid);
+    LOG_DEBUG("[PARTY] XP %lu split among %d members (%lu each) in party %u", (unsigned long)xp_amount, nearby_count, (unsigned long)share, pid);
 }

@@ -1,4 +1,5 @@
 #include "types.h"
+#include "log.h"
 #include "session.h"
 #include "auth.h"
 #include "rate_limiter.h"
@@ -151,6 +152,8 @@ int main(int argc, char** argv) {
             chdir(".."); // bin/ -> login_server/
         }
     }
+
+    log_init();   // reads MMO_LOG_LEVEL; must run before any thread starts
 
     printf("=== LOGIN SERVER (Two-Stage Auth) ===\n");
     printf("PID: %d\n", getpid());

@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "projectile.h"
+#include "log.h"
 #include "combat_stats.h"
 #include "player_data.h"
 #include "player_level.h"
@@ -275,8 +276,7 @@ static int calc_projectile_damage(const Projectile* proj,
 static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
                                 uint32_t source_id) {
     (void)source_id;
-    printf("[PROJ] Applied effect %d to NPC %u (val=%d, dur=%.1fs)\n",
-           effect->type, npc->id, effect->value, effect->duration);
+    LOG_DEBUG("[PROJ] Applied effect %d to NPC %u (val=%d, dur=%.1fs)", effect->type, npc->id, effect->value, effect->duration);
 }
 
 // ============================================================================
@@ -286,14 +286,14 @@ static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
 void projectile_init(void) {
     memset(g_projectiles, 0, sizeof(g_projectiles));
     g_next_projectile_id = 1;
-    printf("[PROJECTILE] System initialized\n");
+    LOG_INFO("[PROJECTILE] System initialized");
 }
 
 void projectile_cleanup(void) {
     pthread_mutex_lock(&g_projectiles_lock);
     memset(g_projectiles, 0, sizeof(g_projectiles));
     pthread_mutex_unlock(&g_projectiles_lock);
-    printf("[PROJECTILE] System cleaned up\n");
+    LOG_DEBUG("[PROJECTILE] System cleaned up");
 }
 
 // ============================================================================
@@ -321,7 +321,7 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
 
     if (slot == -1) {
         pthread_mutex_unlock(&g_projectiles_lock);
-        printf("[PROJ] No free projectile slots\n");
+        LOG_WARN_RL(5, 60, "[PROJ] No free projectile slots");
         return 0;
     }
 
@@ -389,10 +389,7 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
                                    info->speed);
     }
 
-    printf("[PROJ] Spawned projectile %u (ability=%u, owner=%s %u) at (%.1f, %.1f) dir=(%.2f, %.2f)\n",
-           id, info->ability_id,
-           info->owner_type == PROJECTILE_OWNER_PLAYER ? "player" : "npc",
-           info->owner_id, info->origin_x, info->origin_y, dir_x, dir_y);
+    LOG_DEBUG("[PROJ] Spawned projectile %u (ability=%u, owner=%s %u) at (%.1f, %.1f) dir=(%.2f, %.2f)", id, info->ability_id, info->owner_type == PROJECTILE_OWNER_PLAYER ? "player" : "npc", info->owner_id, info->origin_x, info->origin_y, dir_x, dir_y);
 
     return id;
 }

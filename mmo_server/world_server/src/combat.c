@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include "combat.h"
+#include "log.h"
 #include "combat_stats.h"
 #include "player_level.h"
 #include "player_data.h"
@@ -95,7 +96,7 @@ static const char* ap_find_value(const char* json, const char* key) {
 int combat_profiles_load(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "[COMBAT] Could not open %s — using compiled defaults\n", path);
+        LOG_ERROR("[COMBAT] Could not open %s — using compiled defaults", path);
         return 0;
     }
     fseek(f, 0, SEEK_END);
@@ -159,17 +160,14 @@ int combat_profiles_load(const char* path) {
         v = ap_find_value(obj_start, "projectile_damage_type");
         if (v) p->projectile_damage_type = (uint8_t)atoi(v);
 
-        printf("[COMBAT] Loaded attack profile for class %d: "
-               "dmg=%d ±%d%% cast=%.2fs cd=%.2fs range=%.0f%s\n",
-               class_id, p->base_damage, p->damage_variance,
-               p->cast_time, p->cooldown, p->range,
-               p->is_ranged ? " [RANGED]" : "");
+        LOG_INFO("[COMBAT] Loaded attack profile for class %d: "
+               "dmg=%d ±%d%% cast=%.2fs cd=%.2fs range=%.0f%s", class_id, p->base_damage, p->damage_variance, p->cast_time, p->cooldown, p->range, p->is_ranged ? " [RANGED]" : "");
         loaded++;
         cur++;
     }
 
     free(buf);
-    printf("[COMBAT] %d attack profile(s) loaded from %s\n", loaded, path);
+    LOG_INFO("[COMBAT] %d attack profile(s) loaded from %s", loaded, path);
     return loaded;
 }
 
@@ -238,7 +236,7 @@ void combat_npc_init(NPCWorld* world) {
     memset(world->npcs, 0, sizeof(world->npcs));
     world->count = 0;
     pthread_mutex_init(&world->lock, NULL);
-    printf("[COMBAT] NPC world initialized\n");
+    LOG_INFO("[COMBAT] NPC world initialized");
 }
 
 uint32_t combat_npc_spawn(NPCWorld* world,
@@ -255,7 +253,7 @@ uint32_t combat_npc_spawn(NPCWorld* world,
 
     if (world->count >= MAX_NPCS) {
         pthread_mutex_unlock(&world->lock);
-        fprintf(stderr, "[COMBAT] NPC pool full (%d/%d)\n", world->count, MAX_NPCS);
+        LOG_ERROR("[COMBAT] NPC pool full (%d/%d)", world->count, MAX_NPCS);
         return 0;
     }
 
@@ -276,7 +274,7 @@ uint32_t combat_npc_spawn(NPCWorld* world,
     }
     if (slot == -1) {
         pthread_mutex_unlock(&world->lock);
-        fprintf(stderr, "[COMBAT] No reclaimable NPC slot\n");
+        LOG_ERROR("[COMBAT] No reclaimable NPC slot");
         return 0;
     }
 
@@ -309,8 +307,7 @@ uint32_t combat_npc_spawn(NPCWorld* world,
     pthread_mutex_unlock(&world->lock);
 
     const char* cat_names[] = {"passive", "hostile", "quest"};
-    printf("[COMBAT] Spawned NPC '%s' id=%u at (%.1f, %.1f) hp=%d category=%s\n",
-           name, id, x, y, health, cat_names[category < 3 ? category : 0]);
+    LOG_DEBUG("[COMBAT] Spawned NPC '%s' id=%u at (%.1f, %.1f) hp=%d category=%s", name, id, x, y, health, cat_names[category < 3 ? category : 0]);
     return id;
 }
 
@@ -328,7 +325,7 @@ void combat_npc_remove(NPCWorld* world, uint32_t npc_id) {
     for (int i = 0; i < MAX_NPCS; i++) {
         if (world->npcs[i].id == npc_id) {
             memset(&world->npcs[i], 0, sizeof(NPCEntity));
-            printf("[COMBAT] Removed NPC id=%u\n", npc_id);
+            LOG_DEBUG("[COMBAT] Removed NPC id=%u", npc_id);
             break;
         }
     }
@@ -392,7 +389,7 @@ void combat_handle_attack_intent(NPCWorld* world,
 
     ActivePlayer* attacker = player_acquire(attacker_id);
     if (!attacker) {
-        printf("[COMBAT] Attack intent from unknown attacker %u\n", attacker_id);
+        LOG_DEBUG("[COMBAT] Attack intent from unknown attacker %u", attacker_id);
         return;
     }
 
@@ -585,8 +582,7 @@ void combat_handle_attack_intent(NPCWorld* world,
 
     server_send(client_fd, &cast_pkt, sizeof(cast_pkt));
 
-    printf("[COMBAT] Player %u cast started: type=%d, targets=%d, cast_time=%.2fs\n",
-           attacker_id, profile->attack_type, hit_count, profile->cast_time);
+    LOG_INFO("[COMBAT] Player %u cast started: type=%d, targets=%d, cast_time=%.2fs", attacker_id, profile->attack_type, hit_count, profile->cast_time);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,7 +606,7 @@ void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
         cancel.reason              = 0;
 
         server_send(client_fd, &cancel, sizeof(cancel));
-        printf("[COMBAT] Player %u cancelled cast\n", attacker_id);
+        LOG_DEBUG("[COMBAT] Player %u cancelled cast", attacker_id);
     }
     pthread_mutex_unlock(&g_pending_casts_lock);
 }
@@ -740,7 +736,7 @@ void combat_tick(NPCWorld* world) {
                     hits[hit_count].is_kill     = 0;
                     hits[hit_count].xp_reward   = 0;
                     hit_count++;
-                    printf("[COMBAT] %u MISSED NPC %u (evasion)\n", attacker_id, best->id);
+                    LOG_DEBUG("[COMBAT] %u MISSED NPC %u (evasion)", attacker_id, best->id);
                 } else {
                     int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
                                                        a_str, a_agi, a_int, a_wis, a_class,
@@ -769,10 +765,7 @@ void combat_tick(NPCWorld* world) {
                     hits[hit_count].npc_y       = best->pos_y;
                     hit_count++;
 
-                    printf("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s\n",
-                           attacker_id, best->id, best->name, damage,
-                           is_crit ? " (CRIT)" : "",
-                           best->health, is_kill ? " — KILLED" : "");
+                    LOG_DEBUG("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s", attacker_id, best->id, best->name, damage, is_crit ? " (CRIT)" : "", best->health, is_kill ? " — KILLED" : "");
                 }
             }
 
@@ -876,7 +869,7 @@ void combat_tick(NPCWorld* world) {
                 hits[hit_count].is_kill     = 0;
                 hits[hit_count].xp_reward   = 0;
                 hit_count++;
-                printf("[COMBAT] %u MISSED NPC %u (evasion)\n", attacker_id, npc->id);
+                LOG_DEBUG("[COMBAT] %u MISSED NPC %u (evasion)", attacker_id, npc->id);
                 continue;
             }
 
@@ -907,10 +900,7 @@ void combat_tick(NPCWorld* world) {
             hits[hit_count].npc_y       = npc->pos_y;
             hit_count++;
 
-            printf("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s\n",
-                   attacker_id, npc->id, npc->name, damage,
-                   is_crit ? " (CRIT)" : "",
-                   npc->health, is_kill ? " — KILLED" : "");
+            LOG_DEBUG("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s", attacker_id, npc->id, npc->name, damage, is_crit ? " (CRIT)" : "", npc->health, is_kill ? " — KILLED" : "");
         }
 
         pthread_mutex_unlock(&world->lock);
@@ -1020,7 +1010,7 @@ void combat_tick(NPCWorld* world) {
                     death_count++;
                 }
 
-                printf("[COMBAT] Player %u has died!\n", active_players[i].character_id);
+                LOG_DEBUG("[COMBAT] Player %u has died!", active_players[i].character_id);
             }
 
             pthread_mutex_unlock(&active_players[i].lock);
@@ -1086,8 +1076,7 @@ void combat_tick(NPCWorld* world) {
                     respawn_count++;
                 }
 
-                printf("[COMBAT] Player %u respawned at (%.0f, %.0f)\n",
-                       active_players[i].character_id, RESPAWN_X, RESPAWN_Y);
+                LOG_DEBUG("[COMBAT] Player %u respawned at (%.0f, %.0f)", active_players[i].character_id, RESPAWN_X, RESPAWN_Y);
             }
 
             pthread_mutex_unlock(&active_players[i].lock);
@@ -1138,8 +1127,7 @@ void combat_tick(NPCWorld* world) {
             }
             npc->ai_cd_seeded = 0; // Re-seed phases on next npc_ai_tick entry
 
-            printf("[COMBAT] NPC '%s' (id=%u) respawned at (%.1f, %.1f)\n",
-                   npc->name, npc->id, npc->spawn_x, npc->spawn_y);
+            LOG_DEBUG("[COMBAT] NPC '%s' (id=%u) respawned at (%.1f, %.1f)", npc->name, npc->id, npc->spawn_x, npc->spawn_y);
         }
     }
     pthread_mutex_unlock(&world->lock);

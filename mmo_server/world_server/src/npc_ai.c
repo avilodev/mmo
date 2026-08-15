@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "npc_ai.h"
+#include "log.h"
 #include "projectile.h"
 #include "player_data.h"
 #include "combat_stats.h"
@@ -116,7 +117,7 @@ static void parse_string_val(const char* json, const char* key, char* out, int m
 static int parse_npc_types(const char* json) {
     const char* types_start = strstr(json, "\"npc_types\"");
     if (!types_start) {
-        printf("[NPC_AI] No npc_types section found\n");
+        LOG_DEBUG("[NPC_AI] No npc_types section found");
         return 1;
     }
 
@@ -128,7 +129,7 @@ static int parse_npc_types(const char* json) {
     int arr_len = (int)(arr_end - arr_start + 1);
     char* arr_json = malloc(arr_len + 1);
     if (!arr_json) {
-        fprintf(stderr, "[NPC_AI] malloc failed while parsing npc_types\n");
+        LOG_ERROR("[NPC_AI] malloc failed while parsing npc_types");
         return 0;
     }
     memcpy(arr_json, arr_start, arr_len);
@@ -146,7 +147,7 @@ static int parse_npc_types(const char* json) {
         int obj_len = (int)(obj_end - pos + 1);
         char* obj = malloc(obj_len + 1);
         if (!obj) {
-            fprintf(stderr, "[NPC_AI] malloc failed while parsing NPC type object\n");
+            LOG_ERROR("[NPC_AI] malloc failed while parsing NPC type object");
             free(arr_json);
             return 0;
         }
@@ -204,7 +205,7 @@ static int parse_npc_types(const char* json) {
                         int ae_len = (int)(ae - ap + 1);
                         char* ab_obj = malloc(ae_len + 1);
                         if (!ab_obj) {
-                            fprintf(stderr, "[NPC_AI] malloc failed while parsing ability object\n");
+                            LOG_ERROR("[NPC_AI] malloc failed while parsing ability object");
                             free(obj);
                             free(arr_json);
                             return 0;
@@ -289,8 +290,7 @@ static int parse_npc_types(const char* json) {
         }
 
         if (prof->npc_type_id > 0) {
-            printf("[NPC_AI] Loaded profile npc_type_id=%u: movement=%s, aggro=%.0f, %d abilities\n",
-                   prof->npc_type_id, move_str, prof->aggro_range, prof->ability_count);
+            LOG_INFO("[NPC_AI] Loaded profile npc_type_id=%u: movement=%s, aggro=%.0f, %d abilities", prof->npc_type_id, move_str, prof->aggro_range, prof->ability_count);
             g_ai_profile_count++;
         }
 
@@ -313,20 +313,20 @@ int npc_ai_init(const char* json_path) {
 
     char* json = read_file(json_path);
     if (!json) {
-        fprintf(stderr, "[NPC_AI] Failed to read %s\n", json_path);
+        LOG_ERROR("[NPC_AI] Failed to read %s", json_path);
         return 0;
     }
 
     int result = parse_npc_types(json);
     free(json);
 
-    printf("[NPC_AI] Initialized with %d NPC type profiles\n", g_ai_profile_count);
+    LOG_INFO("[NPC_AI] Initialized with %d NPC type profiles", g_ai_profile_count);
     return result;
 }
 
 void npc_ai_cleanup(void) {
     g_ai_profile_count = 0;
-    printf("[NPC_AI] Cleaned up\n");
+    LOG_DEBUG("[NPC_AI] Cleaned up");
 }
 
 const NPCAIProfile* npc_ai_get_profile(uint16_t npc_type_id) {
@@ -572,8 +572,7 @@ static void dq_flush(DeferredQueue* q) {
                     epkt.is_kill           = is_kill;
                     server_send(client_fd, &epkt, sizeof(epkt));
 
-                    printf("[NPC_AI] Telegraph hit player %u for %d dmg (hp=%d)%s\n",
-                           char_id, damage, new_hp, is_kill ? " — KILLED" : "");
+                    LOG_DEBUG("[NPC_AI] Telegraph hit player %u for %d dmg (hp=%d)%s", char_id, damage, new_hp, is_kill ? " — KILLED" : "");
                 }
                 pthread_mutex_unlock(&active_players_lock);
                 break;
@@ -702,8 +701,7 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                 if (ab->teleport_on_resolve) {
                     npc->pos_x = npc->ai_cast_pos_x + npc->ai_cast_dir_x * ab->telegraph_length;
                     npc->pos_y = npc->ai_cast_pos_y + npc->ai_cast_dir_y * ab->telegraph_length;
-                    printf("[NPC_AI] NPC %u (%s) teleported to (%.1f, %.1f)\n",
-                           npc->id, npc->name, npc->pos_x, npc->pos_y);
+                    LOG_DEBUG("[NPC_AI] NPC %u (%s) teleported to (%.1f, %.1f)", npc->id, npc->name, npc->pos_x, npc->pos_y);
                 }
 
                 DeferredAction da = {0};
@@ -724,8 +722,7 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                 da.tresolve.npc_y      = npc->pos_y;
                 dq_push(&q, &da);
 
-                printf("[NPC_AI] NPC %u (%s) telegraph resolved — ability %u\n",
-                       npc->id, npc->name, ab->ability_id);
+                LOG_DEBUG("[NPC_AI] NPC %u (%s) telegraph resolved — ability %u", npc->id, npc->name, ab->ability_id);
             }
             // While casting, NPC is locked — no movement, no other abilities
             continue;
@@ -964,8 +961,7 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                     da.tstart.npc_y      = npc->pos_y;
                     dq_push(&q, &da);
 
-                    printf("[NPC_AI] NPC %u (%s) started telegraph — ability %u, shape=%d, cast=%.1fs\n",
-                           npc->id, npc->name, ab->ability_id, ab->telegraph_shape, ab->cast_time);
+                    LOG_INFO("[NPC_AI] NPC %u (%s) started telegraph — ability %u, shape=%d, cast=%.1fs", npc->id, npc->name, ab->ability_id, ab->telegraph_shape, ab->cast_time);
 
                 } else if (ab->delivery == NPC_DELIVERY_PROJECTILE && ab->projectile_speed > 0.0f) {
                     // ----- Fire projectile -----

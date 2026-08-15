@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "loot.h"
+#include "log.h"
 #include "types.h"
 #include "player_data.h"
 
@@ -105,7 +106,7 @@ static const char* find_matching(const char* start, char open, char close) {
 static int parse_loot_tables(const char* json) {
     const char* tables_start = strstr(json, "\"loot_tables\"");
     if (!tables_start) {
-        printf("[LOOT] No loot_tables section found in JSON\n");
+        LOG_DEBUG("[LOOT] No loot_tables section found in JSON");
         return 1; // Not an error — just no loot tables defined
     }
 
@@ -118,7 +119,7 @@ static int parse_loot_tables(const char* json) {
     int arr_len = (int)(arr_end - arr_start + 1);
     char* arr_json = malloc(arr_len + 1);
     if (!arr_json) {
-        fprintf(stderr, "[LOOT] malloc failed while parsing loot_tables\n");
+        LOG_ERROR("[LOOT] malloc failed while parsing loot_tables");
         return 0;
     }
     memcpy(arr_json, arr_start, arr_len);
@@ -137,7 +138,7 @@ static int parse_loot_tables(const char* json) {
         int obj_len = (int)(obj_end - pos + 1);
         char* obj = malloc(obj_len + 1);
         if (!obj) {
-            fprintf(stderr, "[LOOT] malloc failed while parsing loot table object\n");
+            LOG_ERROR("[LOOT] malloc failed while parsing loot table object");
             free(arr_json);
             return 0;
         }
@@ -172,7 +173,7 @@ static int parse_loot_tables(const char* json) {
                         int de_len = (int)(de - dp + 1);
                         char* drop_obj = malloc(de_len + 1);
                         if (!drop_obj) {
-                            fprintf(stderr, "[LOOT] malloc failed while parsing drop entry\n");
+                            LOG_ERROR("[LOOT] malloc failed while parsing drop entry");
                             free(obj);
                             free(arr_json);
                             return 0;
@@ -209,8 +210,7 @@ static int parse_loot_tables(const char* json) {
         }
 
         if (lt->npc_type_id > 0 && lt->entry_count > 0) {
-            printf("[LOOT] Loaded loot table for npc_type_id=%u (%d drops)\n",
-                   lt->npc_type_id, lt->entry_count);
+            LOG_INFO("[LOOT] Loaded loot table for npc_type_id=%u (%d drops)", lt->npc_type_id, lt->entry_count);
             g_loot_table_count++;
         }
 
@@ -235,14 +235,14 @@ int loot_init(const char* json_path) {
 
     char* json = read_file(json_path);
     if (!json) {
-        fprintf(stderr, "[LOOT] Failed to read %s\n", json_path);
+        LOG_ERROR("[LOOT] Failed to read %s", json_path);
         return 0;
     }
 
     int result = parse_loot_tables(json);
     free(json);
 
-    printf("[LOOT] Initialized with %d loot tables\n", g_loot_table_count);
+    LOG_INFO("[LOOT] Initialized with %d loot tables", g_loot_table_count);
     return result;
 }
 
@@ -251,7 +251,7 @@ void loot_cleanup(void) {
     memset(g_ground_items, 0, sizeof(g_ground_items));
     pthread_mutex_unlock(&g_ground_items_lock);
     g_loot_table_count = 0;
-    printf("[LOOT] Cleaned up\n");
+    LOG_DEBUG("[LOOT] Cleaned up");
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
             if (!g_ground_items[i].active) { slot = i; break; }
         }
         if (slot == -1) {
-            printf("[LOOT] Ground item pool full!\n");
+            LOG_WARN_RL(5, 60, "[LOOT] Ground item pool full!");
             break;
         }
 
@@ -327,8 +327,7 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
         }
 
         dropped++;
-        printf("[LOOT] Dropped item %u (qty=%u) at (%.1f, %.1f) for killer %u\n",
-               entry->item_id, qty, gi->pos_x, gi->pos_y, killer_id);
+        LOG_DEBUG("[LOOT] Dropped item %u (qty=%u) at (%.1f, %.1f) for killer %u", entry->item_id, qty, gi->pos_x, gi->pos_y, killer_id);
     }
 
     pthread_mutex_unlock(&g_ground_items_lock);
@@ -402,7 +401,7 @@ uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, ui
     pthread_mutex_unlock(&g_ground_items_lock);
 
     if (ground_id == 0) {
-        printf("[LOOT] Ground item pool full, cannot drop item %u\n", item_id);
+        LOG_WARN_RL(5, 60, "[LOOT] Ground item pool full, cannot drop item %u", item_id);
         return 0;
     }
 
@@ -427,8 +426,7 @@ uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, ui
     }
     pthread_mutex_unlock(&active_players_lock);
 
-    printf("[LOOT] Player %u dropped item %u (qty=%u) at (%.1f, %.1f) ground_id=%u\n",
-           owner_id, item_id, quantity, x, y, ground_id);
+    LOG_DEBUG("[LOOT] Player %u dropped item %u (qty=%u) at (%.1f, %.1f) ground_id=%u", owner_id, item_id, quantity, x, y, ground_id);
     return ground_id;
 }
 

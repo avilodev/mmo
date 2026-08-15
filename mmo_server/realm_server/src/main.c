@@ -1,4 +1,5 @@
 #include "types.h"
+#include "log.h"
 #include "session.h"
 
 #include "players_database.h"
@@ -377,6 +378,8 @@ void* world_monitor_thread_func(void* arg) {
 }
 
 int main(int argc, char** argv) {
+    log_init();   // reads MMO_LOG_LEVEL; must run before any thread starts
+
     printf("=== REALM SERVER ===\n");
     printf("PID: %d\n", getpid());
 
