@@ -1,23 +1,56 @@
-# Build output
-login_server/bin/
-login_server/obj/
-realm_server/bin/
-realm_server/obj/
-world_server/bin/
-world_server/obj/
-common/bin/
-common/obj/
-database/bin/
-database/obj/
-
-# TLS certificate and private key — generate locally, never commit
-login_server/certs/
-
-# SQLite databases
-database/databases/
-
-# Object files
+# Build output and compiled artifacts
+**/bin/
+**/obj/
+build/
+dist/
+out/
 *.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
 
-# Logs
+# Secrets, certificates, and local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+*.secret
+*credentials*
+*secrets*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+certs/
+**/certs/
+
+# Local databases
+database/databases/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Logs, dumps, and temporary files
 *.log
+*.dump
+*.tmp
+*.swp
+*.bak
+/core
+/core.*
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
