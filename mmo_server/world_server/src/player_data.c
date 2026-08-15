@@ -284,6 +284,23 @@ int player_add_active(uint32_t character_id, int client_fd) {
     pthread_mutex_lock(&active_players_lock);
     printf("[PLAYER_ADD] char=%u fd=%d: lock acquired, searching for empty slot\n", character_id, client_fd);
 
+    // A fast reconnect can arrive before the old socket handler has completed
+    // cleanup. Rebind the existing in-memory player atomically instead of
+    // creating a duplicate character slot and loading stale DB state.
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (active_players[i].is_loaded &&
+            active_players[i].character_id == character_id) {
+            pthread_mutex_lock(&active_players[i].lock);
+            active_players[i].client_fd = client_fd;
+            active_players[i].is_ready = 0;
+            pthread_mutex_unlock(&active_players[i].lock);
+            pthread_mutex_unlock(&active_players_lock);
+            printf("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d\n",
+                   character_id, client_fd, i);
+            return 1;
+        }
+    }
+
     // Find an empty slot
     int slot = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -442,6 +459,32 @@ void player_remove_active(uint32_t character_id) {
     }
 
     printf("[PLAYER_REMOVE] char=%u: done\n", character_id);
+}
+
+int player_remove_active_if_fd(uint32_t character_id, int client_fd) {
+    int removed = 0;
+    pthread_mutex_lock(&active_players_lock);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (active_players[i].is_loaded &&
+            active_players[i].character_id == character_id &&
+            active_players[i].client_fd == client_fd) {
+            pthread_mutex_lock(&active_players[i].lock);
+            // Recheck after acquiring the slot lock; a reconnect may have
+            // rebound it while this cleanup thread was waiting.
+            if (active_players[i].is_loaded &&
+                active_players[i].character_id == character_id &&
+                active_players[i].client_fd == client_fd) {
+                pthread_mutex_t saved_lock = active_players[i].lock;
+                memset(&active_players[i], 0, sizeof(ActivePlayer));
+                active_players[i].lock = saved_lock;
+                removed = 1;
+            }
+            pthread_mutex_unlock(&active_players[i].lock);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&active_players_lock);
+    return removed;
 }
 
 void player_send_data_response(int client_fd, uint32_t character_id) {

@@ -27,11 +27,10 @@ int session_registry_add(int fd, uint32_t account_id, uint32_t character_id) {
             // sees nothing to clean up (session already gone).
             g_session_registry.entries[i].active = 0;
             pthread_rwlock_unlock(&g_session_registry.lock);
-            // Closing the old fd causes the old client_handler_thread's
-            // recv() to return an error, which breaks its poll loop and
-            // triggers player save + player_remove_active.
+            // shutdown() wakes the old handler.  That handler owns the fd and
+            // is solely responsible for close(); closing it here as well can
+            // close an unrelated connection if Linux reuses the fd first.
             shutdown(old_fd, SHUT_RDWR);
-            close(old_fd);
             pthread_rwlock_wrlock(&g_session_registry.lock);
             break;
         }

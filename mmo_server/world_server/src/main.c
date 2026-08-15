@@ -45,6 +45,20 @@ static char QUEST_SAVE_DIR[512];
 static char WORLD_DAT_PATH[512];
 static char ZONES_PATH[512];
 
+static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
+    uint8_t* ptr = buffer;
+    size_t total = 0;
+    while (total < length) {
+        struct pollfd wait_fd = {.fd = fd, .events = POLLIN};
+        int ready = poll(&wait_fd, 1, timeout_ms);
+        if (ready <= 0 || !(wait_fd.revents & POLLIN)) return -1;
+        ssize_t got = recv(fd, ptr + total, length - total, 0);
+        if (got <= 0) return -1;
+        total += (size_t)got;
+    }
+    return (ssize_t)total;
+}
+
 static void init_data_paths(void) {
     char exe[512] = {0};
     ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -66,9 +80,8 @@ static void init_data_paths(void) {
     snprintf(SHOPS_PATH,            sizeof(SHOPS_PATH),            "%s/data/shops.json",            exe);
     snprintf(ZONES_PATH,            sizeof(ZONES_PATH),            "%s/data/zones.json",            exe);
     snprintf(QUEST_SAVE_DIR,        sizeof(QUEST_SAVE_DIR),        "%s/data/quests",                exe);
-    // world.dat lives in the game client's bin/ folder, three levels up from
-    // the world server binary (mmo_server/world_server/bin/ → project root → Game/bin/)
-    snprintf(WORLD_DAT_PATH,        sizeof(WORLD_DAT_PATH),        "%s/../../../Game/bin/world.dat", exe);
+    // Runtime assets are packaged beside the binary by the Makefile.
+    snprintf(WORLD_DAT_PATH,        sizeof(WORLD_DAT_PATH),        "%s/data/world.dat",              exe);
     printf("[PATHS] Data directory: %s/data/\n", exe);
 }
 
@@ -295,6 +308,7 @@ static void* client_handler_thread(void* arg) {
                                     p->is_ready = 1;  // Handshake complete, allow broadcasts
                                     player_release(p);
                                 }
+                                quest_send_all(character_id, client_fd);
 
                                 printf("Account %u, Character %u entered world\n",
                                     account_id, character_id);
@@ -376,9 +390,6 @@ client_done:
         session_registry_remove(client_fd);
         g_state.current_players--;
 
-        printf("[CLEANUP] fd=%d: session removed, handling party disconnect\n", client_fd);
-        party_handle_disconnect(character_id);
-
         // Only save/remove if WE still own the active player slot.
         // When a stale session is kicked, the new connection may have already
         // loaded the same character by the time we reach here.  If the slot's
@@ -421,7 +432,16 @@ client_done:
                     player->is_dirty = 0;
                 }
                 player_release(player);   // Release slot lock NOW, before DB write
-                player_remove_active(character_id);
+                if (player_remove_active_if_fd(character_id, client_fd)) {
+                    printf("[CLEANUP] fd=%d: handling party disconnect\n", client_fd);
+                    party_handle_disconnect(character_id);
+                } else {
+                    // A reconnect rebound the slot after our snapshot. Do not
+                    // save the stale snapshot over the live session.
+                    do_save = 0;
+                    printf("[CLEANUP] fd=%d: slot rebound during cleanup — preserving new session\n",
+                           client_fd);
+                }
             } else {
                 printf("[CLEANUP] fd=%d: slot now owned by fd=%d (new session for char=%u) — skipping save/remove\n",
                        client_fd, player->client_fd, character_id);
@@ -462,7 +482,7 @@ void* realm_handler_thread(void* arg) {
         return NULL;
     }
     
-    if (recv(realm_fd, &auth, sizeof(auth), 0) <= 0) {
+    if (recv_exact_timeout(realm_fd, &auth, sizeof(auth), 10000) != (ssize_t)sizeof(auth)) {
         printf("Failed to receive realm auth\n");
         close(realm_fd);
         return NULL;
@@ -549,7 +569,7 @@ void* realm_handler_thread(void* arg) {
         
         if (pfd.revents & POLLIN) {
             WorldHeartbeatPacket hb;
-            ssize_t bytes = recv(realm_fd, &hb, sizeof(hb), 0);
+            ssize_t bytes = recv_exact_timeout(realm_fd, &hb, sizeof(hb), 15000);
             
             if (bytes <= 0) {
                 printf("Realm server disconnected\n");

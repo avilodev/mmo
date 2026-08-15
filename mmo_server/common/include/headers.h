@@ -54,6 +54,7 @@ typedef struct {
     PacketHeader header;           // Use PacketHeader, not AuthPacketHeader
     uint8_t success;
     uint32_t player_id;            // Rename from assigned_player_id
+    char auth_token[32];           // Single-use token required by stage 2
     char message[128];             // Rename from error_message and match size
 } AuthLoginResponsePacket;
 
@@ -91,8 +92,9 @@ typedef struct {
 // STAGE 2: Start game (creates session)
 typedef struct {
     PacketHeader header;
-    uint32_t player_id;  // From stage 1 response
-    char username[32];   // For verification
+    uint32_t player_id;  // Informational only; server trusts auth_token
+    char username[32];   // Informational only
+    char auth_token[32]; // Single-use proof of successful stage 1 login
 } StartGameRequestPacket;
  
 typedef struct {

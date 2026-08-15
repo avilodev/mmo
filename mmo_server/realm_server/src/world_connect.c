@@ -1,5 +1,29 @@
 #include "world_connect.h"
 
+static int send_exact(int fd, const void* buffer, size_t length) {
+    const uint8_t* ptr = buffer;
+    size_t total = 0;
+    while (total < length) {
+        ssize_t sent = send(fd, ptr + total, length - total, 0);
+        if (sent <= 0) return 0;
+        total += (size_t)sent;
+    }
+    return 1;
+}
+
+static int recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
+    uint8_t* ptr = buffer;
+    size_t total = 0;
+    while (total < length) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        if (poll(&pfd, 1, timeout_ms) <= 0 || !(pfd.revents & POLLIN)) return 0;
+        ssize_t got = recv(fd, ptr + total, length - total, 0);
+        if (got <= 0) return 0;
+        total += (size_t)got;
+    }
+    return 1;
+}
+
 // Connect to a world server
 int connect_to_world_server(const char* host, int port, const char* server_key, int silent) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -32,7 +56,7 @@ int connect_to_world_server(const char* host, int port, const char* server_key, 
     strncpy(auth.server_key, server_key, 63);
     snprintf(auth.server_key, sizeof(auth.server_key), "%s", server_key);
     
-    if (send(sockfd, &auth, sizeof(auth), 0) <= 0) {
+    if (!send_exact(sockfd, &auth, sizeof(auth))) {
         if (!silent) perror("send auth");
         close(sockfd);
         return -1;
@@ -47,7 +71,7 @@ int connect_to_world_server(const char* host, int port, const char* server_key, 
         return -1;
     }
     
-    if (recv(sockfd, &ack, sizeof(ack), 0) <= 0) {
+    if (!recv_exact_timeout(sockfd, &ack, sizeof(ack), 5000)) {
         if (!silent) perror("recv auth ack");
         close(sockfd);
         return -1;

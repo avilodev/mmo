@@ -8,7 +8,7 @@
 #include <time.h>
 #include <errno.h>
 
-#define CONN_PER_WORLD 20
+#define CONN_PER_WORLD 4
 #define MAX_WORLDS 10
 
 typedef struct {
@@ -29,6 +29,7 @@ typedef struct {
 
 int world_character_get_list(uint32_t account_id, uint32_t world_id,
                              CharacterInfo* characters, int max_count);
+int world_character_count(uint32_t account_id, uint32_t world_id);
 
 int world_character_create(uint32_t account_id, uint32_t world_id,
                            const char* name, int class_id, int race_id,

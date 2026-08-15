@@ -212,6 +212,31 @@ int world_character_get_list(uint32_t account_id, uint32_t world_id,
     return count;
 }
 
+int world_character_count(uint32_t account_id, uint32_t world_id) {
+    PGconn* conn = acquire_world_connection(world_id);
+    if (!conn) return -1;
+
+    char account_id_str[32];
+    snprintf(account_id_str, sizeof(account_id_str), "%u", account_id);
+    const char* params[1] = {account_id_str};
+
+    PGresult* res = PQexecParams(conn,
+        "SELECT COUNT(*) FROM characters WHERE account_id = $1",
+        1, NULL, params, NULL, NULL, 0);
+
+    int count = -1;
+    if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
+        count = atoi(PQgetvalue(res, 0, 0));
+    } else {
+        fprintf(stderr, "Failed to count characters for world %u: %s\n",
+                world_id, PQerrorMessage(conn));
+    }
+
+    PQclear(res);
+    release_world_connection(world_id, conn);
+    return count;
+}
+
 /**
  * PUBLIC API: Create character in a world
  */

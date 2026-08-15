@@ -8,9 +8,13 @@
 #include <stdint.h>
 
 // world.dat binary layout (matches client world.c):
-//   Header:    3 × int32_t  (world_width, world_height, tile_size_px)
-//   Tile data: world_width × world_height × uint16_t
-//   Collision: world_width × world_height × uint8_t   (1 = solid, 0 = open)
+//   Header:      3 × int32_t  (world_width, world_height, tile_size_px)
+//   Tilesets:    uint8_t count; for each: uint8_t path_len, char path[], uint16_t cols, uint16_t rows
+//   base_tiles:          world_width × world_height × uint16_t
+//   overlay_floor:       world_width × world_height × uint16_t
+//   overlay_interior:    world_width × world_height × uint16_t
+//   overlay_above:       world_width × world_height × uint16_t
+//   Collision:           world_width × world_height × uint8_t  (1 = solid, 0 = open)
 
 static uint8_t* g_collision = NULL;   // flat [world_height * world_width] array
 static int      g_width     = 0;
@@ -37,8 +41,30 @@ int world_collision_init(const char* path) {
 
     g_tile_size = (ts > 0) ? (float)ts : 16.0f;
 
-    // Skip tile data
-    long tile_bytes = (long)w * h * (long)sizeof(uint16_t);
+    // Skip tileset table (variable length)
+    uint8_t ts_count = 0;
+    if (fread(&ts_count, 1, 1, f) != 1) {
+        fprintf(stderr, "[COLLISION] Failed to read tileset count\n");
+        fclose(f);
+        return 0;
+    }
+    for (int i = 0; i < ts_count; i++) {
+        uint8_t path_len = 0;
+        if (fread(&path_len, 1, 1, f) != 1) {
+            fprintf(stderr, "[COLLISION] Failed to read tileset path_len\n");
+            fclose(f);
+            return 0;
+        }
+        // skip path + cols (uint16) + rows (uint16)
+        if (fseek(f, path_len + 4, SEEK_CUR) != 0) {
+            fprintf(stderr, "[COLLISION] Failed to seek past tileset entry\n");
+            fclose(f);
+            return 0;
+        }
+    }
+
+    // Skip 4 tile layers: base, overlay_floor, overlay_interior, overlay_above
+    long tile_bytes = (long)w * h * (long)sizeof(uint16_t) * 4;
     if (fseek(f, tile_bytes, SEEK_CUR) != 0) {
         fprintf(stderr, "[COLLISION] Failed to seek past tile data\n");
         fclose(f);

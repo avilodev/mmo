@@ -455,8 +455,13 @@ uint32_t auth_token_consume(const char* token) {
 
     pthread_mutex_lock(&g_redis_lock);
 
-    // Fetch the player_id stored under this token
-    redisReply* reply = redisCommand(g_redis, "GET %s", key);
+    // Fetch and delete atomically. A mutex alone is insufficient when more
+    // than one login-server process shares Redis.
+    static const char consume_script[] =
+        "local v=redis.call('GET',KEYS[1]); "
+        "if v then redis.call('DEL',KEYS[1]) end; return v";
+    redisReply* reply = redisCommand(g_redis, "EVAL %b 1 %s",
+                                     consume_script, strlen(consume_script), key);
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         if (reply) freeReplyObject(reply);
         pthread_mutex_unlock(&g_redis_lock);
@@ -465,10 +470,6 @@ uint32_t auth_token_consume(const char* token) {
 
     uint32_t player_id = (uint32_t)strtoul(reply->str, NULL, 10);
     freeReplyObject(reply);
-
-    // Delete immediately — single-use token
-    reply = redisCommand(g_redis, "DEL %s", key);
-    if (reply) freeReplyObject(reply);
 
     pthread_mutex_unlock(&g_redis_lock);
 

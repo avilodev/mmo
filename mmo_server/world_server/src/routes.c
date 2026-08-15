@@ -57,7 +57,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             return -1;  // Signal caller to break the recv loop cleanly
 
         case PACKET_PING:
-            handle_ping(client_fd, buffer, character_id);
+            if (bytes >= (ssize_t)(sizeof(PacketHeader) + sizeof(uint16_t)))
+                handle_ping(client_fd, buffer, character_id);
+            else
+                printf("[PING] Malformed ping packet (size: %zd)\n", bytes);
             break;
 
         case PACKET_REQUEST_PLAYER_DATA:
@@ -65,7 +68,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             break;
 
         case PACKET_PLAYER_MOVE:
-            handle_player_move(client_fd, character_id, (PlayerMovePacket*)buffer);
+            if (bytes >= (ssize_t)sizeof(PlayerMovePacket))
+                handle_player_move(client_fd, character_id, (PlayerMovePacket*)buffer);
+            else
+                printf("[MOVE] Malformed move packet (size: %zd)\n", bytes);
             break;
             
         case PACKET_EQUIP_ITEM:
@@ -166,6 +172,10 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
            ActivePlayer* player = player_acquire(character_id);
            if (player) {
                player_send_stats_locked(client_fd, player);
+               // The initial ability packet may arrive while the client is
+               // still constructing PlayingState.  Stats refresh is the
+               // post-enter synchronization point, so resend abilities too.
+               ability_send_data(client_fd, player);
                player_release(player);
            }
            break;
@@ -233,11 +243,25 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 float dx = player->pos_x - gi->pos_x;
                 float dy = player->pos_y - gi->pos_y;
                 float dist = sqrtf(dx * dx + dy * dy);
+                int inv_slot = -1;
+                for (int s = 0; s < 150; s++) {
+                    if (player->inventory[s] == 0) {
+                        inv_slot = s;
+                        break;
+                    }
+                }
                 player_release(player);
 
                 if (dist > LOOT_PICKUP_RANGE) {
                     resp.success = 0;
                     strncpy(resp.message, "Too far away", sizeof(resp.message) - 1);
+                    send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
+                    break;
+                }
+
+                if (inv_slot < 0) {
+                    resp.success = 0;
+                    strncpy(resp.message, "Inventory full", sizeof(resp.message) - 1);
                     send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
                     break;
                 }
@@ -251,19 +275,14 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                     break;
                 }
 
-                // Add to player inventory
-                pthread_mutex_lock(&player->lock);
-                int inv_slot = -1;
-                for (int s = 0; s < 150; s++) {
-                    if (player->inventory[s] == 0) {
-                        inv_slot = s;
-                        break;
-                    }
-                }
-                if (inv_slot >= 0) {
+                // Reacquire after loot_try_pickup: disconnect/reconnect cleanup
+                // may have cleared or rebound the slot while its lock was free.
+                player = player_acquire(character_id);
+                if (player && player->client_fd == client_fd &&
+                    player->inventory[inv_slot] == 0) {
                     player->inventory[inv_slot] = item_id;
                     player->is_dirty = 1;
-                    pthread_mutex_unlock(&player->lock);
+                    player_release(player);
 
                     quest_on_item_collect(character_id, client_fd, item_id);
 
@@ -273,9 +292,9 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                     resp.inventory_slot = (uint8_t)inv_slot;
                     strncpy(resp.message, "Item picked up", sizeof(resp.message) - 1);
                 } else {
-                    pthread_mutex_unlock(&player->lock);
+                    if (player) player_release(player);
                     resp.success = 0;
-                    strncpy(resp.message, "Inventory full", sizeof(resp.message) - 1);
+                    strncpy(resp.message, "Player state changed", sizeof(resp.message) - 1);
                 }
                 send(client_fd, &resp, sizeof(resp), MSG_NOSIGNAL | MSG_DONTWAIT);
             }

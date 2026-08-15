@@ -22,6 +22,7 @@ ActivePlayer* player_acquire(uint32_t character_id);
 void player_release(ActivePlayer* player);
 
 void player_remove_active(uint32_t character_id);
+int player_remove_active_if_fd(uint32_t character_id, int client_fd);
 void player_send_data_response(int client_fd, uint32_t character_id);
 
 void* periodic_save_thread(void* arg);

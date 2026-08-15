@@ -82,6 +82,8 @@ data:
 	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
 	@cp world_server/data/quests.json $(WORLD_BIN)/data/
 	@cp world_server/data/shops.json $(WORLD_BIN)/data/
+	@cp ../mmo_client/Game/data/zones.json $(WORLD_BIN)/data/
+	@cp ../mmo_client/Game/bin/world.dat $(WORLD_BIN)/data/
 	@echo "Data files copied -> $(WORLD_BIN)/data/"
 
 # Common object files
@@ -245,33 +247,25 @@ run-login: $(LOGIN_EXEC)
 
 # Run Realm server
 run-realm: $(REALM_EXEC)
-	./$(REALM_EXEC)
+	./$(REALM_EXEC) realm_server/realm_config/realm_1.conf
 
 # Run World server
 run-world: $(WORLD_EXEC)
-	./$(WORLD_EXEC)
+	./$(WORLD_EXEC) world_server/world_config/Armeia.conf
 
-# Run all servers (in background)
-run-all: $(LOGIN_EXEC) $(REALM_EXEC) $(WORLD_EXEC)
-	@echo "Starting login server..."
-	./$(LOGIN_EXEC) &
-	@sleep 1
-	@echo "Starting realm server..."
-	./$(REALM_EXEC) &
-	@sleep 1
-	@echo "Starting world server..."
-	./$(WORLD_EXEC) &
-	@echo "All servers running. Use 'make stop' to stop them."
+# Run the complete stack under one foreground supervisor. Ctrl+C performs a
+# graceful exact-PID shutdown; no broad pkill is used.
+run-all: all
+	@bash scripts/start_servers.sh
+
+run: run-all
 
 # Runs all 3
 run-both: run-all
 
 # Stop all servers
 stop:
-	@pkill -f login_server || true
-	@pkill -f realm_server || true
-	@pkill -f world_server || true
-	@echo "All servers stopped"
+	@bash scripts/stop_servers.sh
 
 # Help
 help:
@@ -298,11 +292,12 @@ help:
 	@echo "  make run-realm        - Build and run realm server"
 	@echo "  make run-world        - Build and run world server"
 	@echo "  make run-all          - Build and run all servers"
-	@echo "  make stop             - Stop all running servers"
+	@echo "  make run              - Same as run-all; Ctrl+C stops the full stack"
+	@echo "  make stop             - Gracefully stop a supervised stack"
 	@echo ""
 	@echo "World Servers:"
 	@echo "  North America: armeia, bosteuis, cardinal, derive, exodus, prototype"
 	@echo "  Europe: karmel, longevity, nervow"
 	@echo "  Asia: jatrus"
 
-.PHONY: all data clean clean-db rebuild run-login run-realm run-world run-all run-both stop help setup-postgres init-world-tables show-dbs reset-world reset-all-characters setup-all
+.PHONY: all data clean clean-db rebuild run-login run-realm run-world run-all run run-both stop help setup-postgres init-world-tables show-dbs reset-world reset-all-characters setup-all

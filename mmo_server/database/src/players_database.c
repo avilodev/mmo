@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 // Connection pool configuration
-#define CONN_POOL_SIZE 10 
+#define CONN_POOL_SIZE 4
 #define CONN_ACQUIRE_TIMEOUT_MS 5000
 
 typedef struct {
@@ -54,7 +54,10 @@ int character_database_init(const char* connection_string) {
             fprintf(stderr, "PostgreSQL connection %d failed: %s\n", 
                     i, PQerrorMessage(g_pool.connections[i].conn));
             
-            // Clean up already created connections
+            // Clean up the failed connection and all previously created ones.
+            PQfinish(g_pool.connections[i].conn);
+            g_pool.connections[i].conn = NULL;
+            pthread_mutex_destroy(&g_pool.connections[i].lock);
             for (int j = 0; j < i; j++) {
                 if (g_pool.connections[j].conn) {
                     PQfinish(g_pool.connections[j].conn);

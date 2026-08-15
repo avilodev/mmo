@@ -53,7 +53,13 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     response.world_id = htonl(world_id);
     
     // Check character limit per world
-    int current_count = character_count_in_world(account_id, world_id);
+    int current_count = world_character_count(account_id, world_id);
+    if (current_count < 0) {
+        response.success = 0;
+        strncpy(response.message, "Character database unavailable", 127);
+        send(client_fd, &response, sizeof(response), 0);
+        return;
+    }
     if (current_count >= MAX_CHARACTERS_PER_WORLD) {
         response.success = 0;
         strncpy(response.message, "Character limit reached for this world", 127);

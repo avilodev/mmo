@@ -14,8 +14,41 @@
 #include <errno.h>
 #include <poll.h>
 #include <arpa/inet.h>
+#include <limits.h>
 
 #define WORLD_QUERY_TIMEOUT 15
+
+static char g_world_file_path[PATH_MAX];
+
+static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
+    uint8_t* ptr = buffer;
+    size_t total = 0;
+    while (total < length) {
+        struct pollfd wait_fd = {.fd = fd, .events = POLLIN};
+        int ready = poll(&wait_fd, 1, timeout_ms);
+        if (ready <= 0 || !(wait_fd.revents & POLLIN)) return -1;
+        ssize_t got = recv(fd, ptr + total, length - total, 0);
+        if (got <= 0) return -1;
+        total += (size_t)got;
+    }
+    return (ssize_t)total;
+}
+
+static void init_runtime_paths(void) {
+    char exe_path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len <= 0) {
+        snprintf(g_world_file_path, sizeof(g_world_file_path),
+                 "realm_server/worlds/worlds.txt");
+        return;
+    }
+
+    exe_path[len] = '\0';
+    char* slash = strrchr(exe_path, '/');
+    if (slash) *slash = '\0';
+    snprintf(g_world_file_path, sizeof(g_world_file_path),
+             "%s/../worlds/worlds.txt", exe_path);
+}
 
 void* client_handler_thread(void* arg) {
     int client_fd = *(int*)arg;
@@ -68,8 +101,6 @@ void* client_handler_thread(void* arg) {
                         account_id = ntohl(pkt->header.player_id);
                         
                         printf("Client fd %d: Player ID: %u\n", client_fd, account_id);
-                        printf("Client fd %d: Session key: %.32s\n", client_fd, pkt->header.session_key);
-                        
                         printf("Client fd %d: Validating session...\n", client_fd);
                         
                         if (session_validate(account_id, pkt->header.session_key)) {
@@ -194,7 +225,7 @@ void* world_monitor_thread_func(void* arg) {
     pthread_mutex_lock(&g_server.world_servers_lock);
     
     g_server.num_world_servers = load_world_servers_from_file(
-        WORLD_FILE_PATH, 
+        g_world_file_path,
         g_server.world_servers, 
         MAX_WORLDS
     );
@@ -289,7 +320,7 @@ void* world_monitor_thread_func(void* arg) {
                 continue;
             }
             
-            ssize_t recv_ret = recv(ws->fd, &status, sizeof(status), 0);
+            ssize_t recv_ret = recv_exact_timeout(ws->fd, &status, sizeof(status), 5000);
             if (recv_ret <= 0) {
                 //printf("World server %s disconnected (recv failed)\n", ws->name);
                 close(ws->fd);
@@ -333,6 +364,8 @@ void* world_monitor_thread_func(void* arg) {
 int main(int argc, char** argv) {
     printf("=== REALM SERVER ===\n");
     printf("PID: %d\n", getpid());
+
+    init_runtime_paths();
     
     session_init();
 

@@ -19,7 +19,10 @@ void route_packet(int client_fd, void* packet_data, ssize_t bytes) {
         case PACKET_AUTH_LOGIN:
             printf("-> Handling AUTH_LOGIN (validation only)\n");
             if (bytes >= (ssize_t)sizeof(AuthLoginPacket)) {
-                auth_handle_login(client_fd, (AuthLoginPacket*)packet_data);
+                AuthLoginPacket* packet = (AuthLoginPacket*)packet_data;
+                packet->username[sizeof(packet->username) - 1] = '\0';
+                packet->password[sizeof(packet->password) - 1] = '\0';
+                auth_handle_login(client_fd, packet);
             } else {
                 printf("Invalid login packet size: %zd\n", bytes);
             }
@@ -38,7 +41,12 @@ void route_packet(int client_fd, void* packet_data, ssize_t bytes) {
         case PACKET_AUTH_REGISTER:
             printf("-> Handling AUTH_REGISTER\n");
             if (bytes >= AUTH_REGISTER_SIZE) { 
-                auth_handle_register(client_fd, (AuthRegisterPacket*)packet_data);
+                AuthRegisterPacket* packet = (AuthRegisterPacket*)packet_data;
+                packet->username[sizeof(packet->username) - 1] = '\0';
+                packet->password[sizeof(packet->password) - 1] = '\0';
+                packet->email[sizeof(packet->email) - 1] = '\0';
+                packet->birthday[sizeof(packet->birthday) - 1] = '\0';
+                auth_handle_register(client_fd, packet);
             } else {
                 printf("Invalid register packet size: %zd (expected 215)\n", bytes);
             }
