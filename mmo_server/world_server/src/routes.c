@@ -1,4 +1,6 @@
 #include "ability_handler.h"
+#include "log.h"
+#include "packet_limiter.h"
 #include "player_level.h"
 #include "routes.h"
 #include "combat.h"
@@ -23,16 +25,29 @@ extern NPCWorld g_npc_world;
 
 int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t* buffer) {
     if (bytes < (ssize_t)sizeof(PacketHeader)) {
-        printf("Packet too small (got %zd bytes, need at least %zu)\n", 
-               bytes, sizeof(PacketHeader));
+        LOG_WARN_RL(5, 60, "Packet too small (got %zd bytes, need at least %zu)", bytes, sizeof(PacketHeader));
         return 0;
     }
 
     PacketHeader* header = (PacketHeader*)buffer;
 
 #ifdef DEBUG
-    printf("Processing packet type: %d from character %u\n", header->type, character_id);
+    // Fires once per inbound packet — TRACE so that even DEBUG-level
+    // troubleshooting isn't drowned by movement traffic.
+    LOG_TRACE("Processing packet type: %d from character %u", header->type, character_id);
 #endif
+
+    // Spend this connection's packet budget before doing any real work, so a
+    // flood is rejected here rather than in the database or broadcast path.
+    switch (packet_limiter_check(client_fd, header->type)) {
+        case PACKET_LIMIT_DROP:
+            return 0;    // over budget: ignore, keep the connection open
+        case PACKET_LIMIT_KICK:
+            return -1;   // sustained abuse: caller closes the socket
+        case PACKET_LIMIT_ALLOW:
+        default:
+            break;
+    }
 
     // Reject most actions from dead players
     if (header->type == PACKET_PLAYER_MOVE ||
@@ -53,14 +68,14 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
     // Route to appropriate handler
     switch (header->type) {
         case PACKET_LOGOUT:
-            printf("[LOGOUT] Character %u requested clean disconnect\n", character_id);
+            LOG_DEBUG("[LOGOUT] Character %u requested clean disconnect", character_id);
             return -1;  // Signal caller to break the recv loop cleanly
 
         case PACKET_PING:
             if (bytes >= (ssize_t)(sizeof(PacketHeader) + sizeof(uint16_t)))
                 handle_ping(client_fd, buffer, character_id);
             else
-                printf("[PING] Malformed ping packet (size: %zd)\n", bytes);
+                LOG_WARN_RL(5, 60, "[PING] Malformed ping packet (size: %zd)", bytes);
             break;
 
         case PACKET_REQUEST_PLAYER_DATA:
@@ -71,7 +86,7 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             if (bytes >= (ssize_t)sizeof(PlayerMovePacket))
                 handle_player_move(client_fd, character_id, (PlayerMovePacket*)buffer);
             else
-                printf("[MOVE] Malformed move packet (size: %zd)\n", bytes);
+                LOG_WARN_RL(5, 60, "[MOVE] Malformed move packet (size: %zd)", bytes);
             break;
             
         case PACKET_EQUIP_ITEM:
@@ -101,32 +116,29 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
                 // Validate packet is for this character
                 uint32_t packet_char_id = ntohl(intent->header.player_id);
                 if (packet_char_id != character_id) {
-                    printf("[ATTACK] Character ID mismatch: packet=%u, session=%u\n",
-                           packet_char_id, character_id);
+                    LOG_WARN_RL(5, 60, "[ATTACK] Character ID mismatch: packet=%u, session=%u", packet_char_id, character_id);
                     break;
                 }
                 
                 if (!valid_coord(intent->aim_x, intent->aim_y)) {
-                    printf("[ATTACK] Rejected: invalid aim coords from character %u\n",
-                           character_id);
+                    LOG_WARN_RL(5, 60, "[ATTACK] Rejected: invalid aim coords from character %u", character_id);
                     break;
                 }
 
-                printf("[ATTACK] Character %u attacking at (%.1f, %.1f)\n",
-                       character_id, intent->aim_x, intent->aim_y);
+                LOG_DEBUG("[ATTACK] Character %u attacking at (%.1f, %.1f)", character_id, intent->aim_x, intent->aim_y);
 
                 combat_handle_attack_intent(&g_npc_world,
                                            client_fd,
                                            character_id,
                                            intent);
             } else {
-                printf("[ATTACK] Malformed attack intent packet (size: %zd)\n", bytes);
+                LOG_WARN_RL(5, 60, "[ATTACK] Malformed attack intent packet (size: %zd)", bytes);
             }
             break;
         }
             
         case PACKET_CAST_CANCEL: {
-            printf("[ATTACK] Character %u cancelled cast\n", character_id);
+            LOG_DEBUG("[ATTACK] Character %u cancelled cast", character_id);
             combat_handle_cast_cancel(client_fd, character_id);
             break;
         }
@@ -137,33 +149,29 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
 
                 uint32_t packet_char_id = ntohl(intent->header.player_id);
                 if (packet_char_id != character_id) {
-                    printf("[ABILITY] Character ID mismatch: packet=%u, session=%u\n",
-                           packet_char_id, character_id);
+                    LOG_WARN_RL(5, 60, "[ABILITY] Character ID mismatch: packet=%u, session=%u", packet_char_id, character_id);
                     break;
                 }
 
                 if (!valid_coord(intent->aim_x, intent->aim_y)) {
-                    printf("[ABILITY] Rejected: invalid aim coords from character %u\n",
-                           character_id);
+                    LOG_WARN_RL(5, 60, "[ABILITY] Rejected: invalid aim coords from character %u", character_id);
                     break;
                 }
 
-                printf("[ABILITY] Character %u casting ability %u at (%.1f, %.1f)\n",
-                       character_id, ntohs(intent->ability_id),
-                       intent->aim_x, intent->aim_y);
+                LOG_DEBUG("[ABILITY] Character %u casting ability %u at (%.1f, %.1f)", character_id, ntohs(intent->ability_id), intent->aim_x, intent->aim_y);
 
                 ability_handle_cast_intent(&g_npc_world,
                                            client_fd,
                                            character_id,
                                            intent);
             } else {
-                printf("[ABILITY] Malformed cast intent packet (size: %zd)\n", bytes);
+                LOG_WARN_RL(5, 60, "[ABILITY] Malformed cast intent packet (size: %zd)", bytes);
             }
             break;
         }
 
         case PACKET_ABILITY_CAST_CANCEL: {
-            printf("[ABILITY] Character %u cancelled ability cast\n", character_id);
+            LOG_DEBUG("[ABILITY] Character %u cancelled ability cast", character_id);
             ability_handle_cast_cancel(client_fd, character_id);
             break;
         }
@@ -313,11 +321,19 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             handle_session_list_request(client_fd, buffer, bytes);
             break;
 
-        default:
-            printf("Unknown packet type: %d (0x%02X), size=%zd, bytes: ", header->type, header->type, bytes);
-            for (ssize_t _i = 0; _i < bytes && _i < 16; _i++) printf("%02X ", buffer[_i]);
-            printf("\n");
+        default: {
+            // Unknown opcodes are fully client-controlled, so build the hex
+            // preview into one buffer and emit a single rate-limited line.
+            char hex[16 * 3 + 1];
+            int hex_len = 0;
+            for (ssize_t _i = 0; _i < bytes && _i < 16; _i++)
+                hex_len += snprintf(hex + hex_len, sizeof(hex) - (size_t)hex_len,
+                                    "%02X ", buffer[_i]);
+            if (hex_len == 0) hex[0] = '\0';
+            LOG_WARN_RL(5, 60, "Unknown packet type: %d (0x%02X), size=%zd, bytes: %s",
+                        header->type, header->type, bytes, hex);
             return 0;
+        }
     }
 
     return 1;

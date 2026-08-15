@@ -1,4 +1,6 @@
 #include "types.h"
+#include "log.h"
+#include "packet_limiter.h"
 #include "session.h"
 #include "realm_world_auth.h"
 #include "world_database_config.h"
@@ -306,6 +308,7 @@ static void* client_handler_thread(void* arg) {
                             
                             // Load character data
                             if (player_add_active(character_id, client_fd)) {
+                                packet_limiter_reset(client_fd);   // fresh budget for this connection
                                 if (!connection_io_register(client_fd)) {
                                     session_registry_remove(client_fd);
                                     player_remove_active_if_fd(character_id, client_fd);
@@ -505,7 +508,8 @@ client_done:
     }
 
     connection_io_unregister(client_fd);
-    printf("[CLEANUP] fd=%d: closing socket\n", client_fd);
+    packet_limiter_reset(client_fd);   // don't let a recycled fd inherit this budget
+    LOG_DEBUG("[CLEANUP] fd=%d: closing socket", client_fd);
     close(client_fd);
     printf("[CLEANUP] fd=%d: thread exiting\n", client_fd);
     return NULL;
@@ -1133,6 +1137,8 @@ void signal_handler(int signum) {
 int main(int argc, char** argv) {
     (void)argc;
 
+    log_init();   // reads MMO_LOG_LEVEL; must run before any thread starts
+
     printf("=== WORLD SERVER ===\n");
     printf("PID: %d\n", getpid());
 
@@ -1145,6 +1151,7 @@ int main(int argc, char** argv) {
     }
     session_registry_init();
     connection_io_init();
+    packet_limiter_init();
     
     memset(&g_server, 0, sizeof(g_server));
     memset(&g_state, 0, sizeof(g_state));
