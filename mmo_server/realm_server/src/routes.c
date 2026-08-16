@@ -1,18 +1,54 @@
 #include "routes.h"
+#include "packet_limiter.h"
+#include "net_notify.h"
+
+#include <sys/socket.h>
+
+// The realm server writes straight to the socket, so these send inline. The
+// world server has a queued-write path and uses its own equivalents.
+static void realm_send_rate_limited(int fd, uint8_t rejected_type) {
+    uint8_t buf[sizeof(RateLimitedPacket)];
+    size_t n = net_build_rate_limited(buf, sizeof(buf), rejected_type,
+                                      (uint8_t)packet_limiter_class_of(rejected_type),
+                                      packet_limiter_retry_after_ms(fd, rejected_type));
+    if (n) send(fd, buf, n, MSG_NOSIGNAL);
+}
+
+static void realm_send_disconnect(int fd, uint8_t reason) {
+    uint8_t buf[sizeof(DisconnectPacket)];
+    size_t n = net_build_disconnect(buf, sizeof(buf), reason, NULL);
+    if (n) send(fd, buf, n, MSG_NOSIGNAL);
+}
 
 int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {
-    printf("Processing packet from account %u (fd: %d), %zd bytes\n", 
+    printf("Processing packet from account %u (fd: %d), %zd bytes\n",
            account_id, client_fd, bytes);
 
     if (bytes < (ssize_t)sizeof(PacketHeader)) {
-        printf("Packet too small (got %zd bytes, need at least %zu)\n", 
-               bytes, sizeof(PacketHeader)); 
+        printf("Packet too small (got %zd bytes, need at least %zu)\n",
+               bytes, sizeof(PacketHeader));
         return 0;
     }
 
-    PacketHeader* header = (PacketHeader*)buffer; 
-    
+    PacketHeader* header = (PacketHeader*)buffer;
+
     printf("Packet type: %d (0x%02X)\n", header->type, header->type);
+
+    // Spend the connection's budget before doing any real work. Every opcode
+    // below is a database round trip, so a flood has to die here rather than in
+    // the connection pool.
+    switch (packet_limiter_check(client_fd, header->type)) {
+        case PACKET_LIMIT_DROP:
+            if (packet_limiter_wants_rejection(header->type))
+                realm_send_rate_limited(client_fd, header->type);
+            return 0;    // over budget: ignore, keep the connection open
+        case PACKET_LIMIT_KICK:
+            realm_send_disconnect(client_fd, DISCONNECT_REASON_RATE_LIMIT);
+            return -1;   // sustained abuse: caller closes the socket
+        case PACKET_LIMIT_ALLOW:
+        default:
+            break;
+    }
 
     switch (header->type) {
         case PACKET_CHARACTER_LIST_REQUEST: {

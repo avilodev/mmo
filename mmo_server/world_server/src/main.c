@@ -1,6 +1,9 @@
 #include "types.h"
 #include "log.h"
 #include "packet_limiter.h"
+#include "limit_profiles.h"
+#include "net_notify.h"
+#include "net_loop.h"
 #include "session.h"
 #include "realm_world_auth.h"
 #include "world_database_config.h"
@@ -113,407 +116,10 @@ static volatile int g_player_broadcast_running = 0;
 static volatile int g_npc_broadcast_running = 0;
 static volatile int g_projectile_broadcast_running = 0;
 
-// ============================================================================
-// THREAD POOL
-// ============================================================================
-
-#define WORKER_POOL_SIZE  1024   // Pre-allocated workers — supports 500-800 players with headroom
-#define WORK_QUEUE_CAP    2048   // Ring-buffer capacity for accepted fds waiting for a worker
-
-typedef struct {
-    int             fds[WORK_QUEUE_CAP];
-    int             head;
-    int             tail;
-    int             count;
-    pthread_mutex_t lock;
-    pthread_cond_t  not_empty;
-    pthread_cond_t  not_full;
-} WorkQueue;
-
-static WorkQueue g_work_queue;
-static pthread_t g_worker_threads[WORKER_POOL_SIZE];
-
-static void work_queue_init(WorkQueue* q) {
-    memset(q, 0, sizeof(*q));
-    pthread_mutex_init(&q->lock, NULL);
-    pthread_cond_init(&q->not_empty, NULL);
-    pthread_cond_init(&q->not_full, NULL);
-}
-
-static void work_queue_destroy(WorkQueue* q) {
-    pthread_cond_destroy(&q->not_empty);
-    pthread_cond_destroy(&q->not_full);
-    pthread_mutex_destroy(&q->lock);
-}
-
-// Enqueue an accepted fd for a worker to pick up.
-// Blocks if the queue is full (backpressure).  Returns -1 only on shutdown.
-static int work_queue_enqueue(WorkQueue* q, int fd) {
-    pthread_mutex_lock(&q->lock);
-    while (q->count >= WORK_QUEUE_CAP) {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += 1;
-        pthread_cond_timedwait(&q->not_full, &q->lock, &ts);
-        if (!g_server.running) {
-            pthread_mutex_unlock(&q->lock);
-            return -1;
-        }
-    }
-    q->fds[q->tail] = fd;
-    q->tail = (q->tail + 1) % WORK_QUEUE_CAP;
-    q->count++;
-    pthread_cond_signal(&q->not_empty);
-    pthread_mutex_unlock(&q->lock);
-    return 0;
-}
-
-// Dequeue an fd.  Blocks until work is available or the server is shutting down.
-// Returns -1 as the shutdown sentinel.
-static int work_queue_dequeue(WorkQueue* q) {
-    pthread_mutex_lock(&q->lock);
-    while (q->count == 0) {
-        if (!g_server.running) {
-            pthread_mutex_unlock(&q->lock);
-            return -1;
-        }
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += 1;
-        pthread_cond_timedwait(&q->not_empty, &q->lock, &ts);
-    }
-    int fd = q->fds[q->head];
-    q->head = (q->head + 1) % WORK_QUEUE_CAP;
-    q->count--;
-    pthread_cond_signal(&q->not_full);
-    pthread_mutex_unlock(&q->lock);
-    return fd;
-}
-
-// Wake all waiting workers so they can see g_server.running == 0 and exit.
-static void work_queue_broadcast_shutdown(WorkQueue* q) {
-    pthread_mutex_lock(&q->lock);
-    pthread_cond_broadcast(&q->not_empty);
-    pthread_cond_broadcast(&q->not_full);
-    pthread_mutex_unlock(&q->lock);
-}
-
-// Forward declaration — defined later in this file.
-static void* client_handler_thread(void* arg);
-
-// Each worker blocks on the queue, then runs the full client_handler_thread
-// logic inline (no new thread per connection).
-static void* worker_thread_func(void* arg) {
-    (void)arg;
-    while (1) {
-        int fd = work_queue_dequeue(&g_work_queue);
-        if (fd < 0) break;   // Shutdown sentinel
-        int* fd_ptr = malloc(sizeof(int));
-        if (!fd_ptr) { close(fd); continue; }
-        *fd_ptr = fd;
-        client_handler_thread(fd_ptr);   // Runs inline — no nested pthread_create
-    }
-    return NULL;
-}
-
 // Global for tracking world server uptime
 time_t g_server_start_time = 0; 
 
 NPCWorld g_npc_world;
-
-static void* client_handler_thread(void* arg) {
-    int client_fd = *(int*)arg;
-    free(arg);
-
-    printf("World client handler started: fd %d\n", client_fd);
-    
-    uint8_t buffer[MAX_PACKET_SIZE * 2];  // Reassembly buffer (room for carry-over + new data)
-    ssize_t buf_len = 0;                  // Bytes currently in buffer
-    struct pollfd pfd = {.fd = client_fd, .events = POLLIN};
-
-    int authenticated = 0;
-    uint32_t character_id = 0;
-    uint32_t account_id = 0;
-
-#define PING_TIMEOUT_SECS 35   // ~3 missed 10s pings before server drops the connection
-    time_t last_recv_time = time(NULL);
-
-    while (g_server.running) {
-        pfd.events = POLLIN;
-        if (authenticated && connection_io_has_pending(client_fd)) pfd.events |= POLLOUT;
-        int ret = poll(&pfd, 1, 1000);
-
-        if (ret < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (ret == 0) {
-            // Check for ping timeout on authenticated players
-            if (authenticated && (time(NULL) - last_recv_time) > PING_TIMEOUT_SECS) {
-                printf("[TIMEOUT] Character %u timed out (no data for %ds)\n",
-                       character_id, PING_TIMEOUT_SECS);
-                break;
-            }
-            continue;
-        }
-
-        if (pfd.revents & POLLIN) {
-            ssize_t bytes = recv(client_fd, buffer + buf_len,
-                                 sizeof(buffer) - (size_t)buf_len, 0);
-
-            if (bytes <= 0) break;
-            last_recv_time = time(NULL);
-            buf_len += bytes;
-
-            if (!authenticated) {
-                // TCP is a byte stream. Wait for the complete authentication
-                // packet instead of rejecting a valid fragmented write.
-                if (buf_len < (ssize_t)sizeof(WorldConnectPacket)) continue;
-                {
-                    WorldConnectPacket* pkt = (WorldConnectPacket*)buffer;
-                    
-                    if (pkt->header.type == PACKET_WORLD_CONNECT) {
-                        uint32_t world_id;
-                        // Validate ticket and get account_id, character_id, world_id all at once
-                        if (validate_game_ticket(pkt->game_ticket, &account_id, &character_id, &world_id)) {
-                            // VERIFY OWNERSHIP FIRST (before adding to registry)
-                            uint32_t owner = character_get_owner(character_id);
-                            if (owner != account_id) {
-                                printf("Character %u doesn't belong to account %u (owner=%u)!\n",
-                                    character_id, account_id, owner);
-                                
-                                WorldConnectAckPacket response = {0};
-                                response.header.type = PACKET_WORLD_CONNECT_ACK;
-                                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
-                                response.success = 0;
-                                strncpy(response.welcome_message,
-                                    "Character ownership verification failed", 127);
-                                server_send_direct(client_fd, &response, sizeof(response));
-                                break;  // Exit without adding to registry
-                            }
-
-                            // PREVENT DUAL-LOGIN (only add to registry if ownership is valid)
-                            if (session_registry_add(client_fd, account_id, character_id) != 0) {
-                                printf("Account %u already logged in\n", account_id);
-                                
-                                WorldConnectAckPacket response = {0};
-                                response.header.type = PACKET_WORLD_CONNECT_ACK;
-                                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
-                                response.success = 0;
-                                strncpy(response.welcome_message,
-                                    "Account already logged in", 127);
-                                server_send_direct(client_fd, &response, sizeof(response));
-                                break;
-                            }
-                            
-                            // Load character data
-                            if (player_add_active(character_id, client_fd)) {
-                                packet_limiter_reset(client_fd);   // fresh budget for this connection
-                                if (!connection_io_register(client_fd)) {
-                                    session_registry_remove(client_fd);
-                                    player_remove_active_if_fd(character_id, client_fd);
-                                    break;
-                                }
-                                authenticated = 1;
-                                g_state.current_players++;
-                                
-                                WorldConnectAckPacket response = {0};
-                                response.header.type = PACKET_WORLD_CONNECT_ACK;
-                                response.header.player_id = htonl(character_id);
-                                response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
-                                response.success = 1;
-                                strncpy(response.welcome_message,
-                                    "Welcome to the world!", 127);
-
-                                server_send(client_fd, &response, sizeof(response));
-                                player_send_data_response(client_fd, character_id);
-
-                                // Send stats once explicitly (no longer hidden inside data response)
-                                ActivePlayer* p = player_acquire(character_id);
-                                if (p) {
-                                    player_send_stats_locked(client_fd, p);
-                                    ability_send_data(client_fd, p);
-                                    p->is_ready = 1;  // Handshake complete, allow broadcasts
-                                    player_release(p);
-                                }
-                                quest_send_all(character_id, client_fd);
-
-                                printf("Account %u, Character %u entered world\n",
-                                    account_id, character_id);
-                                
-                                // Preserve any bytes coalesced after the auth packet.
-                                buf_len -= (ssize_t)sizeof(WorldConnectPacket);
-                                if (buf_len > 0) {
-                                    memmove(buffer, buffer + sizeof(WorldConnectPacket),
-                                            (size_t)buf_len);
-                                }
-                                continue;
-                            } else {
-                                // Failed to load, remove session
-                                session_registry_remove(client_fd);
-                            }
-                        }
-                        
-                        // Authentication failed - send error and disconnect
-                        WorldConnectAckPacket response = {0};
-                        response.header.type = PACKET_WORLD_CONNECT_ACK;
-                        response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
-                        response.success = 0;
-                        strncpy(response.welcome_message, "Invalid ticket", 127);
-                        server_send_direct(client_fd, &response, sizeof(response));
-                        break;
-                    }
-                }
-                
-                // Not a valid auth packet or wrong packet type - disconnect
-                printf("Invalid authentication attempt from fd %d\n", client_fd);
-                break;
-            } else {
-                uint8_t* ptr = buffer;
-                ssize_t remaining = buf_len;
-
-                while (remaining >= (ssize_t)sizeof(PacketHeader)) {
-                    PacketHeader* header = (PacketHeader*)ptr;
-
-                    // Calculate full packet size (header + payload)
-                    size_t packet_size = sizeof(PacketHeader) + ntohs(header->payload_size);
-
-                    if (packet_size > MAX_PACKET_SIZE) {
-                        printf("[ERROR] Client %u sent oversized packet (type=%d, claimed size=%zu) — disconnecting\n",
-                               character_id, header->type, packet_size);
-                        goto client_done;
-                    }
-
-                    if (remaining < (ssize_t)packet_size) {
-                        break;  // Incomplete packet, carry over
-                    }
-
-                    // Process this packet
-                    session_update_activity(client_fd);
-                    int pkt_result = process_packet(client_fd, character_id, packet_size, ptr);
-
-                    // Move to next packet
-                    ptr += packet_size;
-                    remaining -= packet_size;
-
-                    if (pkt_result == -1) goto client_done;  // Clean logout requested
-                }
-
-                // Carry over any leftover bytes to the start of the buffer
-                if (remaining > 0 && ptr != buffer) {
-                    memmove(buffer, ptr, (size_t)remaining);
-                }
-                buf_len = remaining;
-            }
-        }
-
-        if (authenticated && (pfd.revents & POLLOUT)) {
-            if (connection_io_flush(client_fd) != 0) break;
-        }
-
-        if (authenticated && connection_io_failed(client_fd)) break;
-        
-        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            break;
-        }
-    }
-    
-client_done:
-    printf("[CLEANUP] fd=%d: cleanup starting (authenticated=%d, char=%u, account=%u)\n",
-           client_fd, authenticated, character_id, account_id);
-
-    if (authenticated) {
-        // Remove from registry FIRST so a fast reconnect isn't blocked
-        // while the (potentially slow) database save runs below.
-        session_registry_remove(client_fd);
-        g_state.current_players--;
-
-        // Only save/remove if WE still own the active player slot.
-        // When a stale session is kicked, the new connection may have already
-        // loaded the same character by the time we reach here.  If the slot's
-        // client_fd no longer matches ours, the new session owns it — leave it alone.
-        printf("[CLEANUP] fd=%d: acquiring player slot for char=%u\n", client_fd, character_id);
-        ActivePlayer* player = player_acquire(character_id);
-        int do_save = 0;
-        CharacterInfo save_data;  // Local copy for lock-free DB save
-        PlayerQuestEntry quest_save[MAX_PLAYER_QUESTS];
-        int quest_save_count = 0;
-        if (player) {
-            if (player->client_fd == client_fd) {
-                printf("[CLEANUP] fd=%d: we own the slot — copying save data for char=%u\n",
-                       client_fd, character_id);
-                if (player->is_loaded) {
-                    // Copy data out quickly while holding the slot lock,
-                    // then release the lock so broadcast threads aren't blocked
-                    // for the entire duration of the DB write (~1-2s).
-                    memset(&save_data, 0, sizeof(save_data));
-                    save_data.character_id  = player->character_id;
-                    save_data.level         = player->level;
-                    save_data.pos_x         = player->pos_x;
-                    save_data.pos_y         = player->pos_y;
-                    save_data.health        = player->health;
-                    save_data.max_health    = player->max_health;
-                    save_data.mana          = player->mana;
-                    save_data.max_mana      = player->max_mana;
-                    save_data.experience    = player->experience;
-                    save_data.gold          = player->gold;
-                    save_data.helmet        = player->helmet;
-                    save_data.gloves        = player->gloves;
-                    save_data.chest_armor   = player->chest_armor;
-                    save_data.leggings      = player->leggings;
-                    save_data.boots         = player->boots;
-                    save_data.main_hand     = player->main_hand;
-                    save_data.second_hand   = player->second_hand;
-                    save_data.blessing      = player->blessing;
-                    memcpy(save_data.inventory, player->inventory, sizeof(save_data.inventory));
-                    quest_save_count = player->quest_count;
-                    memcpy(quest_save, player->quests,
-                           (size_t)quest_save_count * sizeof(*quest_save));
-                    do_save = 1;
-                    // Clear dirty flag so player_remove_active won't do a
-                    // redundant DB write while holding active_players_lock.
-                    player->is_dirty = 0;
-                }
-                player_release(player);   // Release slot lock NOW, before DB write
-                if (player_remove_active_if_fd(character_id, client_fd)) {
-                    printf("[CLEANUP] fd=%d: handling party disconnect\n", client_fd);
-                    party_handle_disconnect(character_id);
-                } else {
-                    // A reconnect rebound the slot after our snapshot. Do not
-                    // save the stale snapshot over the live session.
-                    do_save = 0;
-                    printf("[CLEANUP] fd=%d: slot rebound during cleanup — preserving new session\n",
-                           client_fd);
-                }
-            } else {
-                printf("[CLEANUP] fd=%d: slot now owned by fd=%d (new session for char=%u) — skipping save/remove\n",
-                       client_fd, player->client_fd, character_id);
-                player_release(player);
-            }
-        } else {
-            printf("[CLEANUP] fd=%d: player slot not found for char=%u (already removed?)\n",
-                   client_fd, character_id);
-        }
-        // DB write happens AFTER all locks are released — doesn't block broadcast threads
-        if (do_save) {
-            printf("[CLEANUP] fd=%d: saving char=%u to DB (lock-free)\n", client_fd, character_id);
-            if (!character_update_full_data(&save_data)) {
-                fprintf(stderr, "[CLEANUP] failed to save character %u\n", character_id);
-            }
-            if (!quest_player_save(character_id, quest_save, quest_save_count)) {
-                fprintf(stderr, "[CLEANUP] failed to save quests for character %u\n", character_id);
-            }
-        }
-        printf("Account %u, Character %u disconnected (fd=%d)\n", account_id, character_id, client_fd);
-    }
-
-    connection_io_unregister(client_fd);
-    packet_limiter_reset(client_fd);   // don't let a recycled fd inherit this budget
-    LOG_DEBUG("[CLEANUP] fd=%d: closing socket", client_fd);
-    close(client_fd);
-    printf("[CLEANUP] fd=%d: thread exiting\n", client_fd);
-    return NULL;
-}
 
 void* realm_handler_thread(void* arg) {
     int realm_fd = *(int*)arg;
@@ -717,10 +323,9 @@ void* accept_thread_func(void* arg) {
                 continue;
             }
         }
-        if (work_queue_enqueue(&g_work_queue, client_fd) != 0) {
-            printf("[POOL] Server shutting down — dropping connection fd=%d\n", client_fd);
-            close(client_fd);
-        }
+        // Hand the socket to an event loop. It is pinned to loop (fd % N) for
+        // its whole life, so exactly one thread ever services it.
+        net_loop_submit(client_fd);
     }
     
     return NULL;
@@ -1151,8 +756,9 @@ int main(int argc, char** argv) {
     }
     session_registry_init();
     connection_io_init();
-    packet_limiter_init();
-    
+    // packet_limiter_init runs after set_config below, so a world's .conf can
+    // override the compiled budgets before the table is built.
+
     memset(&g_server, 0, sizeof(g_server));
     memset(&g_state, 0, sizeof(g_state));
     
@@ -1184,6 +790,15 @@ int main(int argc, char** argv) {
     } else {
         printf("Usage: ./world_server <server>.conf\n");
         exit(1);
+    }
+
+    // Budgets come from the compiled world profile, with any per-world override
+    // from the .conf applied on top. Must happen before the accept loop starts.
+    {
+        PacketLimitProfile profile;
+        packet_limiter_apply_overrides(&profile, limit_profile_world(),
+                                       &g_server.limits);
+        packet_limiter_init(&profile);
     }
 
     if (!items_init(DATA_PATH)) {
@@ -1241,7 +856,13 @@ int main(int argc, char** argv) {
     if (world_collision_init(WORLD_DAT_PATH)) {
         printf("OK\n");
     } else {
-        printf("SKIPPED (world.dat not found — movement will not be collision-validated)\n");
+        // Fatal on purpose. Without a collision map the server cannot tell open
+        // ground from a wall, and starting anyway would mean running a world
+        // where movement is unvalidated — which is worse than not running.
+        printf("FAILED\n");
+        fprintf(stderr, "Cannot start without a collision map at '%s'. "
+                        "Movement validation depends on it.\n", WORLD_DAT_PATH);
+        return 1;
     }
 
     // Connect to database
@@ -1291,26 +912,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // INIT THREAD POOL — pre-create workers with reduced stack size (256KB vs 8MB default)
-    work_queue_init(&g_work_queue);
-    pthread_attr_t worker_attr;
-    pthread_attr_init(&worker_attr);
-    pthread_attr_setstacksize(&worker_attr, 256 * 1024);  // 256KB per worker
-    for (int i = 0; i < WORKER_POOL_SIZE; i++) {
-        if (pthread_create(&g_worker_threads[i], &worker_attr, worker_thread_func, NULL) != 0) {
-            fprintf(stderr, "FAILED - Worker thread %d\n", i);
-            g_server.running = 0;
-            // Wake any already-started workers so they exit
-            work_queue_broadcast_shutdown(&g_work_queue);
-            for (int j = 0; j < i; j++) pthread_join(g_worker_threads[j], NULL);
-            work_queue_destroy(&g_work_queue);
-            playerdata_close();
-            return 1;
-        }
+    // INIT EVENT LOOPS — connection count is no longer bounded by thread count.
+    if (net_loop_start() != 0) {
+        fprintf(stderr, "FAILED - could not start event loops\n");
+        g_server.running = 0;
+        playerdata_close();
+        return 1;
     }
-    pthread_attr_destroy(&worker_attr);
-    printf("✓ Thread pool: %d workers (256KB stack each, ~%dMB total)\n",
-           WORKER_POOL_SIZE, (WORKER_POOL_SIZE * 256) / 1024);
 
     // START ACCEPT THREAD
     if (pthread_create(&g_server.accept_thread, NULL, accept_thread_func, NULL) != 0) {
@@ -1374,7 +982,7 @@ int main(int argc, char** argv) {
     
     printf("✓ All systems online - server ready\n");
     printf("  - Accept thread: Running\n");
-    printf("  - Thread pool: %d workers\n", WORKER_POOL_SIZE);
+    printf("  - Event loops: epoll (see [NET] line above for counts)\n");
     printf("  - Combat thread: 20Hz\n");
     printf("  - Player broadcast: 20Hz\n");
     printf("  - NPC broadcast: 10Hz\n");
@@ -1411,12 +1019,8 @@ int main(int argc, char** argv) {
     close(g_server.tcp_sockfd);
     pthread_join(g_server.accept_thread, NULL);
 
-    // Drain and shut down worker pool
-    work_queue_broadcast_shutdown(&g_work_queue);
-    for (int i = 0; i < WORKER_POOL_SIZE; i++) {
-        pthread_join(g_worker_threads[i], NULL);
-    }
-    work_queue_destroy(&g_work_queue);
+    // Drain and shut down the event loops and their blocking workers
+    net_loop_stop();
 
     // Cleanup
     npc_ai_cleanup();

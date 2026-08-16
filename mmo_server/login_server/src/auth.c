@@ -10,18 +10,27 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-// Retrieve the dotted-decimal IP of the remote end of client_fd.
-static void get_peer_ip(int fd, char* out, size_t out_size) {
-    struct sockaddr_in addr;
-    socklen_t len = sizeof(addr);
-    out[0] = '\0';
-    if (getpeername(fd, (struct sockaddr*)&addr, &len) == 0)
-        strncpy(out, inet_ntoa(addr.sin_addr), out_size - 1);
-}
-
 void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
     printf("[STAGE 1] Login validation: username=%s\n", packet->username);
-    
+
+    char peer_ip[RL_IP_MAXLEN] = {0};
+    rate_limiter_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+
+    // Re-check the block here, not just at accept(). Credential verification
+    // hashes the password, so a blocked address must be turned away before it
+    // can spend that CPU.
+    if (rate_limiter_check(peer_ip)) {
+        AuthLoginResponsePacket blocked;
+        memset(&blocked, 0, sizeof(blocked));
+        blocked.header.type         = PACKET_AUTH_RESPONSE;
+        blocked.header.payload_size = htons(sizeof(blocked) - sizeof(PacketHeader));
+        blocked.success             = 0;
+        strncpy(blocked.message, "Too many failed attempts. Try again later.", 127);
+        tls_send(client_fd, &blocked, sizeof(blocked), 0);
+        printf("[STAGE 1] REJECTED: blocked address %s\n", peer_ip);
+        return;
+    }
+
     // Verify credentials
     uint32_t db_player_id = db_verify_user(packet->username, packet->password);
     printf("DEBUG: db_verify_user returned: %u\n", db_player_id); 
@@ -50,6 +59,9 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
         }
         
         if (response.success) {
+            // Clear accumulated failures so an honest user who mistyped a few
+            // times is not left one slip away from a block.
+            rate_limiter_note_success(peer_ip);
             printf("[STAGE 1] SUCCESS: user=%s, player_id=%u (one-time token issued)\n",
                    packet->username, db_player_id);
         } else {
@@ -62,9 +74,8 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
         response.player_id = 0;
         strncpy(response.message, "Invalid credentials", 127);
 
-        char peer_ip[16] = {0};
-        get_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
-        rate_limiter_record_failure(peer_ip);
+        if (rate_limiter_record_failure(peer_ip))
+            strncpy(response.message, "Too many failed attempts. Try again later.", 127);
 
         printf("[STAGE 1] FAILED: invalid credentials for user=%s (ip=%s)\n",
                packet->username, peer_ip);
@@ -99,8 +110,8 @@ void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
         return;
     }
 
-    char peer_ip[16] = {0};
-    get_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+    char peer_ip[RL_IP_MAXLEN] = {0};
+    rate_limiter_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
 
     // Create session in Redis
     char session_key[SESSION_KEY_LENGTH];
@@ -140,7 +151,19 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     memset(&response, 0, sizeof(response));
     response.header.type = PACKET_AUTH_RESPONSE;
     response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
-    
+
+    {
+        char peer_ip[RL_IP_MAXLEN] = {0};
+        rate_limiter_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        if (rate_limiter_check(peer_ip)) {
+            response.success = 0;
+            strncpy(response.message, "Too many failed attempts. Try again later.", 127);
+            tls_send(client_fd, &response, sizeof(response), 0);
+            printf("[REGISTER] REJECTED: blocked address %s\n", peer_ip);
+            return;
+        }
+    }
+
     // Validate username
     if (!validate_username(packet->username)) {
         response.success = 0;
@@ -187,9 +210,10 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
         response.success = 0;
         strncpy(response.message, "Username already exists", 127);
 
-        char peer_ip[16] = {0};
-        get_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
-        rate_limiter_record_failure(peer_ip);
+        char peer_ip[RL_IP_MAXLEN] = {0};
+        rate_limiter_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
+        if (rate_limiter_record_failure(peer_ip))
+            strncpy(response.message, "Too many failed attempts. Try again later.", 127);
 
         printf("[REGISTER] FAILED: username exists (ip=%s)\n", peer_ip);
     }

@@ -1,0 +1,153 @@
+// Verifies that world .conf files can override packet budgets, and — just as
+// importantly — that config files written before named settings existed still
+// parse exactly as they did.
+//
+// Build:
+//   gcc -Wall -Wextra -pthread -Icommon/include -Iworld_server/include
+//       -o config_limits_test tests/config_limits_test.c
+//       world_server/src/config.c common/src/packet_limiter.c
+//       common/src/limit_profiles.c common/src/log.c
+
+#include "config.h"
+#include "packet_limiter.h"
+#include "limit_profiles.h"
+#include "log.h"
+
+#include <assert.h>
+#include <stdio.h>
+
+static const char* write_conf(const char* name, const char* body) {
+    static char path[256];
+    snprintf(path, sizeof(path), "/tmp/%s", name);
+    FILE* f = fopen(path, "w");
+    assert(f);
+    fputs(body, f);
+    fclose(f);
+    return path;
+}
+
+int main(void) {
+    log_init();
+    log_set_level(LOG_LEVEL_ERROR);
+
+    // ------------------------------------------------------------------
+    printf("TEST 1: a legacy positional config still loads unchanged\n");
+    const char* legacy = write_conf("limits_legacy.conf",
+        "# Server Name\n"
+        "Legacyworld\n"
+        "# Region\n"
+        "North America\n"
+        "# IP:Port\n"
+        "127.0.0.1:7778\n"
+        "# Max Players\n"
+        "800\n"
+        "# Hardcore\n"
+        "0\n");
+
+    assert(set_config(legacy) == 1);
+    printf("  name=%s port=%u max_players=%u\n",
+           g_server.server_name, g_server.port, g_server.max_players);
+    assert(g_server.port == 7778);
+    assert(g_server.max_players == 800);
+
+    // No named settings present, so every override must be left at zero and the
+    // compiled defaults must survive untouched.
+    PacketLimitProfile profile;
+    packet_limiter_apply_overrides(&profile, limit_profile_world(), &g_server.limits);
+    printf("  overall rate=%.0f (expect compiled default 200)\n", profile.overall.rate);
+    printf("  social  rate=%.0f (expect compiled default 5)\n",
+           profile.classes[LIMIT_CLASS_SOCIAL].rate);
+    assert(profile.overall.rate == 200.0);
+    assert(profile.classes[LIMIT_CLASS_SOCIAL].rate == 5.0);
+    assert(profile.violation_limit == 200);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 2: named settings after the positional block are applied\n");
+    const char* tuned = write_conf("limits_tuned.conf",
+        "# Server Name\n"
+        "Tunedworld\n"
+        "# Region\n"
+        "Europe\n"
+        "# IP:Port\n"
+        "127.0.0.1:7779\n"
+        "# Max Players\n"
+        "400\n"
+        "# Hardcore\n"
+        "1\n"
+        "\n"
+        "limit_overall_rate     = 90\n"
+        "limit_overall_burst    = 180\n"
+        "limit_social_rate      = 2\n"
+        "limit_social_burst     = 6\n"
+        "limit_violation_limit  = 50\n"
+        "limit_violation_window = 5\n");
+
+    assert(set_config(tuned) == 1);
+    printf("  name=%s port=%u hardcore=%d\n",
+           g_server.server_name, g_server.port, (int)g_server.hardcore);
+    assert(g_server.port == 7779);
+    assert(g_server.hardcore == true);
+
+    packet_limiter_apply_overrides(&profile, limit_profile_world(), &g_server.limits);
+    printf("  overall %.0f/s burst %.0f | social %.0f/s burst %.0f | kick %u in %.0fs\n",
+           profile.overall.rate, profile.overall.capacity,
+           profile.classes[LIMIT_CLASS_SOCIAL].rate,
+           profile.classes[LIMIT_CLASS_SOCIAL].capacity,
+           profile.violation_limit, profile.violation_window);
+    assert(profile.overall.rate     == 90.0);
+    assert(profile.overall.capacity == 180.0);
+    assert(profile.classes[LIMIT_CLASS_SOCIAL].rate     == 2.0);
+    assert(profile.classes[LIMIT_CLASS_SOCIAL].capacity == 6.0);
+    assert(profile.violation_limit  == 50);
+    assert(profile.violation_window == 5.0);
+
+    // Untouched classes must keep their compiled values.
+    printf("  movement left alone: %.0f/s (expect 150)\n",
+           profile.classes[LIMIT_CLASS_MOVEMENT].rate);
+    assert(profile.classes[LIMIT_CLASS_MOVEMENT].rate == 150.0);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 3: overridden budgets actually bind at runtime\n");
+    packet_limiter_init(&profile);
+    packet_limiter_reset(30);
+    int allowed = 0;
+    for (int i = 0; i < 100; i++)
+        if (packet_limiter_check(30, PACKET_CHAT_SEND) == PACKET_LIMIT_ALLOW) allowed++;
+    // Social burst is now 6 and a chat costs 3, so two messages get through
+    // instead of the five the compiled default would have allowed.
+    printf("  chats allowed under the tuned budget: %d (expect 2)\n", allowed);
+    assert(allowed == 2);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 4: an unknown key is reported but does not fail the load\n");
+    const char* unknown = write_conf("limits_unknown.conf",
+        "# Server Name\n"
+        "Unknownworld\n"
+        "# Region\n"
+        "Asia\n"
+        "# IP:Port\n"
+        "127.0.0.1:7780\n"
+        "# Max Players\n"
+        "100\n"
+        "# Hardcore\n"
+        "0\n"
+        "limit_nonsense_rate = 5\n"
+        "totally_made_up     = 1\n");
+    printf("  (two 'Unknown config key' warnings are expected here)\n");
+    assert(set_config(unknown) == 1);
+    assert(g_server.port == 7780);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 5: a burst below its own rate is corrected, not obeyed\n");
+    PacketLimitOverrides bad = {0};
+    bad.class_rate[LIMIT_CLASS_QUERY]     = 40.0;
+    bad.class_capacity[LIMIT_CLASS_QUERY] = 10.0;   // nonsensical
+    packet_limiter_apply_overrides(&profile, limit_profile_world(), &bad);
+    printf("  query rate=%.0f burst=%.0f (burst raised to meet rate)\n",
+           profile.classes[LIMIT_CLASS_QUERY].rate,
+           profile.classes[LIMIT_CLASS_QUERY].capacity);
+    assert(profile.classes[LIMIT_CLASS_QUERY].capacity >= profile.classes[LIMIT_CLASS_QUERY].rate);
+
+    printf("\nALL ASSERTIONS PASSED\n");
+    return 0;
+}

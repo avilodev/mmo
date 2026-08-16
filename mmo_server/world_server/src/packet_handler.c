@@ -28,6 +28,17 @@ void handle_request_player_data(int client_fd, uint32_t character_id) {
     player_send_data_response(client_fd, character_id);
 }
 
+// Snap the client back to the position the server still believes in.
+static void send_move_correction(int client_fd, float pos_x, float pos_y) {
+    PlayerMoveAckPacket correction;
+    memset(&correction, 0, sizeof(correction));
+    correction.header.type = PACKET_PLAYER_MOVE_ACK;
+    correction.header.payload_size = htons(sizeof(PlayerMoveAckPacket) - sizeof(PacketHeader));
+    correction.pos_x = pos_x;
+    correction.pos_y = pos_y;
+    server_send(client_fd, &correction, sizeof(correction));
+}
+
 void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* pkt) {
     ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
@@ -39,52 +50,28 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
-    double time_delta = (now.tv_sec  - player->last_move_tv.tv_sec) +
-                        (now.tv_nsec - player->last_move_tv.tv_nsec) / 1e9;
-     
-    if (time_delta < 0.001 || time_delta > 5.0) time_delta = 0.1;
-    
-    float dx = client_x - player->pos_x;
-    float dy = client_y - player->pos_y;
-    float distance = sqrtf(dx * dx + dy * dy);
+    // pkt->player_speed is deliberately never read: the budget is built from
+    // the server's own move_speed.
+    MoveVerdict verdict = move_validate(&player->move_budget,
+                                        player->pos_x, player->pos_y,
+                                        client_x, client_y,
+                                        player->move_speed, &now);
 
-    // Use SERVER-SIDE move speed (anti-cheat: ignore client speed)
-    float server_speed = player->move_speed;
-    if (server_speed <= 0.0f) server_speed = 200.0f;  
-    float max_speed = server_speed * 3.0f;
-    float max_distance = max_speed * time_delta;
+    if (verdict != MOVE_ACCEPT) {
+        LOG_WARN_RL(5, 60,
+                    "[MOVE] rejected (%s) character %u: (%.1f, %.1f) -> (%.1f, %.1f)",
+                    move_verdict_name(verdict), character_id,
+                    player->pos_x, player->pos_y, client_x, client_y);
 
-    if (distance > max_distance) {
-        LOG_WARN_RL(5, 60, "[MOVE DEBUG] REJECTED - distance %f > max %f (delta=%f, speed=%f)", distance, max_distance, time_delta, pkt->player_speed);
-        
-        PlayerMoveAckPacket correction;
-        memset(&correction, 0, sizeof(correction));
-        correction.header.type = PACKET_PLAYER_MOVE_ACK;
-        correction.header.payload_size = htons(sizeof(PlayerMoveAckPacket) - sizeof(PacketHeader)); 
-        correction.pos_x = player->pos_x;
-        correction.pos_y = player->pos_y;
-        
-        server_send(client_fd, &correction, sizeof(correction));
+        float server_x = player->pos_x;
+        float server_y = player->pos_y;
         player_release(player);
-        return;
-    }
-
-    // Collision check — reject moves into solid tiles (player box = 16px half-size)
-    if (world_collision_check_box(client_x, client_y, 16.0f)) {
-        PlayerMoveAckPacket correction;
-        memset(&correction, 0, sizeof(correction));
-        correction.header.type = PACKET_PLAYER_MOVE_ACK;
-        correction.header.payload_size = htons(sizeof(PlayerMoveAckPacket) - sizeof(PacketHeader));
-        correction.pos_x = player->pos_x;
-        correction.pos_y = player->pos_y;
-        server_send(client_fd, &correction, sizeof(correction));
-        player_release(player);
+        send_move_correction(client_fd, server_x, server_y);
         return;
     }
 
     player->pos_x = client_x;
     player->pos_y = client_y;
-    player->last_move_tv = now;
     player->is_dirty = 1;
 
     // Zone boundary check — notify client if they crossed into a new zone

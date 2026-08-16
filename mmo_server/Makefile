@@ -250,26 +250,70 @@ strict:
 # needed, so they are safe to run in CI or before a commit.
 # ---------------------------------------------------------------------------
 TEST_BIN = tests/bin
-TEST_CFLAGS = -Wall -Wextra -g -pthread $(PG_INCLUDE) \
-              -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$(WORLD_DIR)/include
+TEST_CFLAGS_BASE = $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$(WORLD_DIR)/include
+TEST_CFLAGS = -Wall -Wextra -g -pthread $(TEST_CFLAGS_BASE)
 
 .PHONY: test
-test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/login_concurrency_test
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/move_validator_test
 	@echo "=== Running packet limiter test ==="
 	@./$(TEST_BIN)/packet_limiter_test
+	@echo ""
+	@echo "=== Running move validator test ==="
+	@./$(TEST_BIN)/move_validator_test
+	@echo ""
+	@echo "=== Running config limits test ==="
+	@./$(TEST_BIN)/config_limits_test
+	@echo ""
+	@echo "=== Running event loop test ==="
+	@./$(TEST_BIN)/net_loop_test
 	@echo ""
 	@echo "=== Running login concurrency test ==="
 	@./$(TEST_BIN)/login_concurrency_test
 	@echo ""
 	@echo "=== All tests passed ==="
 
-$(TEST_BIN)/packet_limiter_test: tests/packet_limiter_test.c $(WORLD_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/log.c
+$(TEST_BIN)/packet_limiter_test: tests/packet_limiter_test.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+$(TEST_BIN)/config_limits_test: tests/config_limits_test.c $(WORLD_DIR)/src/config.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# Drives real loopback sockets through the epoll loops with the database and
+# gameplay layers stubbed out.
+$(TEST_BIN)/net_loop_test: tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# The event loop is concurrent code; compiling it is not the same as proving it.
+# Run this when touching net_loop.c. TSan needs ASLR off on some kernels.
+.PHONY: net-loop-sanitize
+net-loop-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/net_loop_tsan tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/net_loop_tsan > /tmp/net_loop_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/net_loop_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/net_loop_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/net_loop_asan tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/net_loop_asan > /tmp/net_loop_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/net_loop_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
 
 $(TEST_BIN)/login_concurrency_test: tests/login_concurrency_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# Drives the movement rules against a synthetic collision map — no sockets, no
+# database, so this runs anywhere.
+$(TEST_BIN)/move_validator_test: tests/move_validator_test.c $(WORLD_DIR)/src/move_validator.c $(WORLD_DIR)/src/world_collision.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 # Full setup (databases + tables)
 setup-all: setup-postgres init-world-tables

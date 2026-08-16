@@ -8,6 +8,7 @@
 #include "player_data.h"
 #include "players_database.h"
 #include "class_stats.h"
+#include "move_validator.h"
 #include "player_level.h"
 #include "quest_system.h"
 
@@ -241,7 +242,9 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     player->is_dirty = player->is_dirty ? 1 : 0;  // Keep dirty flag if we set spawn
     player->last_save = time(NULL);
     player->last_activity = time(NULL);
-    clock_gettime(CLOCK_MONOTONIC, &player->last_move_tv);
+    struct timespec load_tv;
+    clock_gettime(CLOCK_MONOTONIC, &load_tv);
+    move_budget_reset(&player->move_budget, &load_tv);
     
     LOG_INFO("Loaded character %u: %s (level %d) at pos=(%.2f, %.2f)", character_id, player->username, player->level, player->pos_x, player->pos_y);
     
@@ -559,7 +562,7 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     response->max_health = htonl(player->max_health);
     response->mana = htonl((uint32_t)player->mana);
     response->max_mana = htonl((uint32_t)player->max_mana);
-    response->experience = htonll(player->experience);
+    response->experience = mmo_htonll(player->experience);
     response->gold = htonl(player->gold);
     
     response->pos_x = player->pos_x;

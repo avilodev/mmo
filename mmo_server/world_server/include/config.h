@@ -2,6 +2,7 @@
 #define CONFIG_H
 
 #include "types.h"
+#include "packet_limiter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,10 @@ typedef struct {
     uint16_t port;
     uint16_t max_players;
     bool hardcore;
+
+    // Per-world packet budget tuning. Anything left at 0 keeps the compiled
+    // default from limit_profiles.c, so a world only states what it changes.
+    PacketLimitOverrides limits;
 } ServerConfig;
 
 typedef struct {

@@ -175,7 +175,7 @@ The default local stack uses these files:
 - `realm_server/realm_config/realm_1.conf` sets the realm name and port.
 - `realm_server/worlds/worlds.txt` lists the worlds shown to clients.
 - `world_server/world_config/*.conf` sets each world's name, region, address, capacity, and hardcore flag.
-- `world_server/data/world.dat` contains the collision grid used for server-side movement validation.
+- `world_server/data/world.dat` contains the collision grid used for server-side movement validation. A world server will not start without it: with no collision grid it cannot tell open ground from a wall, so movement would go unvalidated.
 - `world_server/data/zones.json` defines the regions used for zone-change notifications.
 - `login_server/server_files/patch_notes.txt` contains the launcher patch notes.
 

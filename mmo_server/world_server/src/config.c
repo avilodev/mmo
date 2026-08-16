@@ -39,6 +39,63 @@ int create_tcp_server_socket(int port) {
     return sock;
 }
 
+// Strip trailing whitespace in place.
+static void rtrim(char* s) {
+    size_t n = strlen(s);
+    while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
+}
+
+// Apply one `key = value` pair. Returns 1 if the key was recognized.
+//
+// Only the limiter budgets are addressable this way. The positional fields
+// below predate it and are left alone so every existing world .conf keeps
+// working untouched.
+static int apply_keyed_setting(const char* key, const char* value) {
+    // limit_overall_rate / limit_overall_burst
+    if (strcmp(key, "limit_overall_rate") == 0) {
+        g_server.limits.overall_rate = atof(value);
+        return 1;
+    }
+    if (strcmp(key, "limit_overall_burst") == 0) {
+        g_server.limits.overall_capacity = atof(value);
+        return 1;
+    }
+    if (strcmp(key, "limit_violation_limit") == 0) {
+        g_server.limits.violation_limit = (uint32_t)atoi(value);
+        return 1;
+    }
+    if (strcmp(key, "limit_violation_window") == 0) {
+        g_server.limits.violation_window = atof(value);
+        return 1;
+    }
+
+    // limit_<class>_rate / limit_<class>_burst
+    if (strncmp(key, "limit_", 6) == 0) {
+        const char* rest = key + 6;
+        const char* suffix = strrchr(rest, '_');
+        if (suffix) {
+            char class_name[32] = {0};
+            size_t len = (size_t)(suffix - rest);
+            if (len < sizeof(class_name)) {
+                memcpy(class_name, rest, len);
+                int cls = packet_limiter_class_from_name(class_name);
+                if (cls >= 0) {
+                    if (strcmp(suffix, "_rate") == 0) {
+                        g_server.limits.class_rate[cls] = atof(value);
+                        return 1;
+                    }
+                    if (strcmp(suffix, "_burst") == 0) {
+                        g_server.limits.class_capacity[cls] = atof(value);
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
 int set_config(const char* filepath) {
     FILE* file = fopen(filepath, "r");
     if (!file) {
@@ -48,7 +105,7 @@ int set_config(const char* filepath) {
 
     char line[256];
     int field_count = 0;
-    
+
     // Initialize defaults
     memset(g_server.server_name, 0, sizeof(g_server.server_name));
     memset(g_server.region, 0, sizeof(g_server.region));
@@ -56,24 +113,44 @@ int set_config(const char* filepath) {
     g_server.port = 0;
     g_server.max_players = 0;
     g_server.hardcore = false;
-    
+    memset(&g_server.limits, 0, sizeof(g_server.limits));
+
     while (fgets(line, sizeof(line), file)) {
         // Remove trailing newline/whitespace
         line[strcspn(line, "\r\n")] = 0;
-        
+
         // Skip empty lines
         if (strlen(line) == 0) continue;
-        
+
         // Skip comment lines that start with #
         if (line[0] == '#') continue;
-        
+
         // Trim leading whitespace
         char* value = line;
         while (*value && isspace(*value)) value++;
-        
+
         // Skip if empty after trimming
         if (strlen(value) == 0) continue;
-        
+
+        // A line containing '=' is a named setting. Everything else falls
+        // through to the original positional parsing, so config files written
+        // before named settings existed still load exactly as they did.
+        char* eq = strchr(value, '=');
+        if (eq) {
+            *eq = '\0';
+            char* key = value;
+            char* val = eq + 1;
+
+            rtrim(key);
+            while (*val && isspace((unsigned char)*val)) val++;
+            rtrim(val);
+
+            if (!apply_keyed_setting(key, val))
+                fprintf(stderr, "Unknown config key '%s' in %s (ignored)\n",
+                        key, filepath);
+            continue;
+        }
+
         // Parse based on field order
         if (field_count == 0) {
             // Server Name
@@ -116,13 +193,14 @@ int set_config(const char* filepath) {
             }
             g_server.hardcore = (hardcore == 1);
             field_count++;
-            break;  // All fields parsed
+            // Deliberately does not break: named settings may follow the
+            // positional block, and stopping here would silently ignore them.
         }
     }
     
     fclose(file);
     
-    // Verify all fields were read
+    // Verify all positional fields were read
     if (field_count != 5) {
         fprintf(stderr, "Incomplete config file. Expected 5 fields, got %d\n", field_count);
         return 0;

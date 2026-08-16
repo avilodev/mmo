@@ -186,7 +186,8 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
         pkt.evasion             = htonl(player->evasion);
         pkt.vitality            = htonl(player->vitality);
         pkt.luck                = htonl(player->luck);
-        pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
+        uint64_t xp_next = class_stats_xp_for_level(player->level + 1);
+    pkt.xp_for_next_level   = mmo_htonll(xp_next);
 
         pthread_mutex_unlock(&player->lock);
         server_send(fd, &pkt, sizeof(pkt));
@@ -255,7 +256,8 @@ void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
         pkt.evasion             = htonl(player->evasion);
         pkt.vitality            = htonl(player->vitality);
         pkt.luck                = htonl(player->luck);
-        pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
+        uint64_t xp_next = class_stats_xp_for_level(player->level + 1);
+    pkt.xp_for_next_level   = mmo_htonll(xp_next);
 
         // Lock still held by caller — send while holding is fine (non-blocking MSG_NOSIGNAL)
         server_send(fd, &pkt, sizeof(pkt));
@@ -290,7 +292,7 @@ void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, u
     pkt.header.payload_size = htons(sizeof(KillRewardPacket) - sizeof(PacketHeader));
     pkt.xp_gained           = htonl(xp);
     pkt.gold_gained         = htonl(gold);
-    pkt.total_xp            = htonll(player->experience);
+    pkt.total_xp            = mmo_htonll(player->experience);
     pkt.total_gold          = htonl(player->gold);
 
     pthread_mutex_unlock(&player->lock);
@@ -307,7 +309,7 @@ void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_
     pkt.header.payload_size = htons(sizeof(KillRewardPacket) - sizeof(PacketHeader));
     pkt.xp_gained           = htonl(xp);
     pkt.gold_gained         = htonl(gold);
-    pkt.total_xp            = htonll(player->experience);
+    pkt.total_xp            = mmo_htonll(player->experience);
     pkt.total_gold          = htonl(player->gold);
 
     server_send(client_fd, &pkt, sizeof(pkt));
@@ -337,7 +339,8 @@ void player_send_stats(int client_fd, ActivePlayer* player) {
     pkt.current_mana        = htonl(player->mana);
     pkt.move_speed          = player->move_speed;
     pkt.weapon_damage       = htonl(player->weapon_damage);
-    pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
+    uint64_t xp_next = class_stats_xp_for_level(player->level + 1);
+    pkt.xp_for_next_level   = mmo_htonll(xp_next);
 
     pthread_mutex_unlock(&player->lock);
 
@@ -366,7 +369,8 @@ void player_send_stats_locked(int client_fd, ActivePlayer* player) {
     pkt.current_mana        = htonl(player->mana);
     pkt.move_speed          = player->move_speed;
     pkt.weapon_damage       = htonl(player->weapon_damage);
-    pkt.xp_for_next_level   = htonll(class_stats_xp_for_level(player->level + 1));
+    uint64_t xp_next = class_stats_xp_for_level(player->level + 1);
+    pkt.xp_for_next_level   = mmo_htonll(xp_next);
 
     server_send(client_fd, &pkt, sizeof(pkt));
 }

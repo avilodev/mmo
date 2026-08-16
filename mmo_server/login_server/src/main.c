@@ -110,12 +110,23 @@ void* accept_thread_func(void* arg) {
             continue;
         }
         
-        const char* peer_ip = inet_ntoa(client_addr.sin_addr);
+        // Resolved from the socket rather than formatted here: inet_ntoa
+        // returns a shared static buffer and only understands IPv4.
+        char peer_ip[RL_IP_MAXLEN] = {0};
+        rate_limiter_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
         printf("New login from %s:%d (fd: %d)\n",
-               peer_ip, ntohs(client_addr.sin_port), client_fd);
+               peer_ip[0] ? peer_ip : "?", ntohs(client_addr.sin_port), client_fd);
 
         if (rate_limiter_check(peer_ip)) {
             printf("[RATE_LIMIT] Rejected blocked IP %s\n", peer_ip);
+            close(client_fd);
+            continue;
+        }
+
+        // Bound connection churn. Each connection costs a TLS handshake and a
+        // thread, both of which are spent before any packet is even read.
+        if (rate_limiter_record_connection(peer_ip)) {
+            printf("[RATE_LIMIT] Refused connection from %s (rate)\n", peer_ip);
             close(client_fd);
             continue;
         }

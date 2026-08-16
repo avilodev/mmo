@@ -2,6 +2,7 @@
 
 #include "routes.h"
 #include "world_collision.h"
+#include "move_validator.h"
 #include "player_data.h"
 #include "player_level.h"
 #include "items_database.h"

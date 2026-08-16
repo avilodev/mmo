@@ -1,6 +1,9 @@
 #include "types.h"
 #include "log.h"
 #include "session.h"
+#include "packet_limiter.h"
+#include "limit_profiles.h"
+#include "net_notify.h"
 
 #include "players_database.h"
 #include "character_connect.h"
@@ -71,7 +74,10 @@ void* client_handler_thread(void* arg) {
     free(arg);
 
     printf("Realm client connected: fd %d\n", client_fd);
-    
+
+    // Fresh budget for this connection, before a single packet is read.
+    packet_limiter_reset(client_fd);
+
     uint8_t buffer[MAX_PACKET_SIZE];
     ssize_t buf_len = 0;
     struct pollfd pfd = {.fd = client_fd, .events = POLLIN};
@@ -170,6 +176,10 @@ void* client_handler_thread(void* arg) {
 
                 if (pkt_size > (ssize_t)MAX_PACKET_SIZE) {
                     printf("Client fd %d: oversized packet (%zd bytes), disconnecting\n", client_fd, pkt_size);
+                    uint8_t dc[sizeof(DisconnectPacket)];
+                    size_t dn = net_build_disconnect(dc, sizeof(dc),
+                                                     DISCONNECT_REASON_PROTOCOL, NULL);
+                    if (dn) send(client_fd, dc, dn, MSG_NOSIGNAL);
                     goto disconnect;
                 }
 
@@ -177,7 +187,8 @@ void* client_handler_thread(void* arg) {
                     break;  // incomplete — wait for more data
 
                 printf("Client fd %d: Processing authenticated packet (%zd bytes)\n", client_fd, pkt_size);
-                process_packet(client_fd, account_id, ptr, pkt_size);
+                if (process_packet(client_fd, account_id, ptr, pkt_size) < 0)
+                    goto disconnect;   // limiter asked for the socket to close
 
                 ptr += pkt_size;
                 remaining -= pkt_size;
@@ -195,6 +206,8 @@ void* client_handler_thread(void* arg) {
     }
     
 disconnect:
+    // Release the budget so a recycled descriptor never inherits it.
+    packet_limiter_reset(client_fd);
     close(client_fd);
     printf("Realm client handler exiting for fd %d\n", client_fd);
     return NULL;
@@ -382,6 +395,10 @@ int main(int argc, char** argv) {
 
     printf("=== REALM SERVER ===\n");
     printf("PID: %d\n", getpid());
+
+    // Sizes its slot table from RLIMIT_NOFILE, so it must run after any
+    // descriptor limit changes and before the accept loop starts.
+    packet_limiter_init(limit_profile_realm());
 
     init_runtime_paths();
     

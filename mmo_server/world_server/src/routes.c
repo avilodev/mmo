@@ -1,6 +1,8 @@
 #include "ability_handler.h"
 #include "log.h"
 #include "packet_limiter.h"
+#include "net_notify.h"
+#include "connection_io.h"
 #include "player_level.h"
 #include "routes.h"
 #include "combat.h"
@@ -23,6 +25,22 @@ static int valid_coord(float x, float y) {
 
 extern NPCWorld g_npc_world;
 
+// Written through the queued-write path rather than send(), so these never
+// interleave with data already buffered for this connection.
+static void world_send_rate_limited(int fd, uint8_t rejected_type) {
+    uint8_t buf[sizeof(RateLimitedPacket)];
+    size_t n = net_build_rate_limited(buf, sizeof(buf), rejected_type,
+                                      (uint8_t)packet_limiter_class_of(rejected_type),
+                                      packet_limiter_retry_after_ms(fd, rejected_type));
+    if (n) connection_io_send(fd, buf, n);
+}
+
+static void world_send_disconnect(int fd, uint8_t reason) {
+    uint8_t buf[sizeof(DisconnectPacket)];
+    size_t n = net_build_disconnect(buf, sizeof(buf), reason, NULL);
+    if (n) connection_io_send(fd, buf, n);
+}
+
 int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t* buffer) {
     if (bytes < (ssize_t)sizeof(PacketHeader)) {
         LOG_WARN_RL(5, 60, "Packet too small (got %zd bytes, need at least %zu)", bytes, sizeof(PacketHeader));
@@ -41,8 +59,15 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
     // flood is rejected here rather than in the database or broadcast path.
     switch (packet_limiter_check(client_fd, header->type)) {
         case PACKET_LIMIT_DROP:
+            // Movement and combat drop in silence — the next packet of that
+            // kind supersedes the one lost, and a legitimate client never
+            // notices. Anything the UI is waiting on gets told, so it can stop
+            // waiting on a response that is not coming.
+            if (packet_limiter_wants_rejection(header->type))
+                world_send_rate_limited(client_fd, header->type);
             return 0;    // over budget: ignore, keep the connection open
         case PACKET_LIMIT_KICK:
+            world_send_disconnect(client_fd, DISCONNECT_REASON_RATE_LIMIT);
             return -1;   // sustained abuse: caller closes the socket
         case PACKET_LIMIT_ALLOW:
         default:
@@ -83,10 +108,19 @@ int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t*
             break;
 
         case PACKET_PLAYER_MOVE:
-            if (bytes >= (ssize_t)sizeof(PlayerMovePacket))
-                handle_player_move(client_fd, character_id, (PlayerMovePacket*)buffer);
-            else
+            if (bytes >= (ssize_t)sizeof(PlayerMovePacket)) {
+                PlayerMovePacket* move = (PlayerMovePacket*)buffer;
+                // Same boundary check the aim coordinates get. A NaN here
+                // survives every ordered comparison in the speed check, so it
+                // must not reach the handler in the first place.
+                if (!valid_coord(move->pos_x, move->pos_y)) {
+                    LOG_WARN_RL(5, 60, "[MOVE] Rejected: invalid coords from character %u", character_id);
+                    break;
+                }
+                handle_player_move(client_fd, character_id, move);
+            } else {
                 LOG_WARN_RL(5, 60, "[MOVE] Malformed move packet (size: %zd)", bytes);
+            }
             break;
             
         case PACKET_EQUIP_ITEM:

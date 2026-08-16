@@ -6,6 +6,16 @@
 #include <pthread.h>
 #include <time.h>
 
+// Movement allowance, in world pixels, accrued since the last move packet.
+// Credit accrues with elapsed real time and is capped, so a client that queues
+// up packets and releases them at once cannot bank more travel than the cap —
+// the burst is spent against one shared allowance rather than granting each
+// packet its own. See move_validator.h.
+typedef struct {
+    float           credit;
+    struct timespec last_tv;
+} MoveBudget;
+
 // Server-only in-memory player state. This structure is never sent on the wire.
 typedef struct {
     uint32_t character_id;
@@ -49,7 +59,7 @@ typedef struct {
     int is_dirty;
     time_t last_save;
     time_t last_activity;
-    struct timespec last_move_tv;
+    MoveBudget move_budget;
 
     uint8_t current_zone_id;
 

@@ -1,11 +1,12 @@
-// Unit test for the world server's per-connection packet budget.
+// Unit test for the shared per-connection packet budget.
 //
 // Build:
-//   gcc -Wall -Wextra -pthread -Icommon/include -Iworld_server/include
+//   gcc -Wall -Wextra -pthread -Icommon/include
 //       -o packet_limiter_test tests/packet_limiter_test.c
-//       world_server/src/packet_limiter.c common/src/log.c
+//       common/src/packet_limiter.c common/src/limit_profiles.c common/src/log.c
 
 #include "packet_limiter.h"
+#include "limit_profiles.h"
 #include "protocol.h"
 #include "log.h"
 
@@ -29,9 +30,10 @@ static int count_verdicts(int fd, uint8_t opcode, int n,
 int main(void) {
     log_init();
     log_set_level(LOG_LEVEL_ERROR);
-    packet_limiter_init();
+    packet_limiter_init(limit_profile_world());
 
     int a, d, k;
+    int a2, d2, k2;
 
     // ------------------------------------------------------------------
     printf("TEST 1: legitimate client at 60Hz movement is never throttled\n");
@@ -48,7 +50,7 @@ int main(void) {
     printf("\nTEST 2: movement flood is capped at the burst capacity\n");
     packet_limiter_reset(11);
     count_verdicts(11, PACKET_PLAYER_MOVE, 1000, &a, &d, &k);
-    // Past VIOLATION_LIMIT the verdict escalates from DROP to KICK, so the
+    // Past the violation limit the verdict escalates from DROP to KICK, so the
     // rejected packets are split across both counters. In the real server the
     // first KICK closes the socket; here we keep calling to see the split.
     printf("  allowed=%d dropped=%d kicked=%d (expect allowed≈300, rest rejected)\n", a, d, k);
@@ -58,17 +60,18 @@ int main(void) {
 
     // ------------------------------------------------------------------
     printf("\nTEST 3: chat flood is capped much tighter than movement\n");
+    // Social capacity is 15 tokens and a chat packet costs 3, so a client gets
+    // five messages out of a full bucket, not fifteen.
     packet_limiter_reset(12);
     count_verdicts(12, PACKET_CHAT_SEND, 200, &a, &d, &k);
-    printf("  chat allowed=%d (expect ≈15, the social burst capacity)\n", a);
-    assert(a >= 10 && a <= 20);
+    printf("  chat allowed=%d (expect ≈5: capacity 15 / cost 3)\n", a);
+    assert(a >= 4 && a <= 7);
 
     // ------------------------------------------------------------------
     printf("\nTEST 4: budgets are independent per connection\n");
     packet_limiter_reset(13);
     packet_limiter_reset(14);
     count_verdicts(13, PACKET_CHAT_SEND, 200, &a, &d, &k);   // exhaust fd 13
-    int a2, d2, k2;
     count_verdicts(14, PACKET_CHAT_SEND, 5, &a2, &d2, &k2);  // fd 14 untouched
     printf("  fd13 exhausted (allowed=%d), fd14 still allowed=%d/5\n", a, a2);
     assert(a2 == 5);
@@ -87,8 +90,8 @@ int main(void) {
     count_verdicts(16, PACKET_CHAT_SEND, 200, &a, &d, &k);   // drain
     sleep(2);                                                 // 5/s * 2s = 10 tokens
     count_verdicts(16, PACKET_CHAT_SEND, 20, &a2, &d2, &k2);
-    printf("  after 2s idle, chat allowed=%d (expect ≈10)\n", a2);
-    assert(a2 >= 7 && a2 <= 13);
+    printf("  after 2s idle, chat allowed=%d (expect ≈3: 10 tokens / cost 3)\n", a2);
+    assert(a2 >= 2 && a2 <= 5);
 
     // ------------------------------------------------------------------
     printf("\nTEST 7: sustained abuse eventually demands a disconnect\n");
@@ -103,6 +106,96 @@ int main(void) {
     count_verdicts(18, 250, 500, &a, &d, &k);   // opcode 250 is not routed
     printf("  unknown-opcode allowed=%d of 500 (expect ≈40)\n", a);
     assert(a >= 30 && a <= 50);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 9: cost weighting — an expensive opcode drains its bucket faster\n");
+    // Both draw on the query bucket (capacity 40). A player-data request costs
+    // 2, a shop purchase costs 5, so the same bucket affords far fewer of the
+    // latter. This is what lets new expensive opcodes be priced instead of
+    // needing a class of their own.
+    packet_limiter_reset(19);
+    count_verdicts(19, PACKET_REQUEST_PLAYER_DATA, 100, &a, &d, &k);
+    packet_limiter_reset(20);
+    count_verdicts(20, PACKET_SHOP_BUY, 100, &a2, &d2, &k2);
+    printf("  cheap query allowed=%d (≈20), expensive query allowed=%d (≈8)\n", a, a2);
+    assert(a > a2);
+    assert(a  >= 16 && a  <= 24);
+    assert(a2 >= 6  && a2 <= 11);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 10: the overall bucket catches a spread across classes\n");
+    // Every class bucket on its own would still permit this traffic. The
+    // overall bucket is what stops an attacker rotating through classes to stay
+    // under each individual cap while flooding in aggregate.
+    packet_limiter_reset(21);
+    count_verdicts(21, PACKET_PLAYER_MOVE,  400, &a,  &d,  &k);   // drain movement
+    count_verdicts(21, PACKET_ATTACK_INTENT, 200, &a2, &d2, &k2); // drain combat
+    int a3, d3, k3;
+    count_verdicts(21, PACKET_EQUIP_ITEM,    100, &a3, &d3, &k3); // drain item
+
+    // Social has not been touched at all — its own bucket is full — but the
+    // overall budget is spent, so it must still be refused.
+    int a4, d4, k4;
+    count_verdicts(21, PACKET_CHAT_SEND, 5, &a4, &d4, &k4);
+    printf("  movement=%d combat=%d item=%d, then untouched social allowed=%d/5\n",
+           a, a2, a3, a4);
+    printf("  (social class bucket is full; the overall bucket is what refuses it)\n");
+    assert(a4 <= 1);   // at most one packet's worth of drift from refill
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 11: a descriptor outside the slot table fails closed\n");
+    // The table is sized from RLIMIT_NOFILE so this cannot happen for a live
+    // connection. If the invariant ever breaks, the unbudgeted connection must
+    // be closed rather than waved through.
+    PacketLimitVerdict v = packet_limiter_check(2000000, PACKET_PLAYER_MOVE);
+    printf("  verdict for fd=2000000: %d (expect %d = KICK)\n", v, PACKET_LIMIT_KICK);
+    assert(v == PACKET_LIMIT_KICK);
+
+    v = packet_limiter_check(-1, PACKET_PLAYER_MOVE);
+    printf("  verdict for fd=-1: %d (expect %d = KICK)\n", v, PACKET_LIMIT_KICK);
+    assert(v == PACKET_LIMIT_KICK);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 12: only classes that can strand the UI ask for a rejection\n");
+    printf("  move=%d ping=%d attack=%d | equip=%d chat=%d shop=%d\n",
+           packet_limiter_wants_rejection(PACKET_PLAYER_MOVE),
+           packet_limiter_wants_rejection(PACKET_PING),
+           packet_limiter_wants_rejection(PACKET_ATTACK_INTENT),
+           packet_limiter_wants_rejection(PACKET_EQUIP_ITEM),
+           packet_limiter_wants_rejection(PACKET_CHAT_SEND),
+           packet_limiter_wants_rejection(PACKET_SHOP_BUY));
+    assert(packet_limiter_wants_rejection(PACKET_PLAYER_MOVE)   == 0);
+    assert(packet_limiter_wants_rejection(PACKET_PING)          == 0);
+    assert(packet_limiter_wants_rejection(PACKET_ATTACK_INTENT) == 0);
+    assert(packet_limiter_wants_rejection(PACKET_EQUIP_ITEM)    == 1);
+    assert(packet_limiter_wants_rejection(PACKET_CHAT_SEND)     == 1);
+    assert(packet_limiter_wants_rejection(PACKET_SHOP_BUY)      == 1);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 13: retry hint is non-zero once a bucket is empty\n");
+    packet_limiter_reset(22);
+    count_verdicts(22, PACKET_CHAT_SEND, 100, &a, &d, &k);   // drain social
+    uint16_t retry = packet_limiter_retry_after_ms(22, PACKET_CHAT_SEND);
+    printf("  retry_after_ms once social is empty: %u (expect >0)\n", retry);
+    assert(retry > 0);
+
+    packet_limiter_reset(23);
+    retry = packet_limiter_retry_after_ms(23, PACKET_CHAT_SEND);
+    printf("  retry_after_ms on a fresh connection: %u (expect 0)\n", retry);
+    assert(retry == 0);
+
+    // ------------------------------------------------------------------
+    printf("\nTEST 14: the realm profile is far tighter than the world profile\n");
+    packet_limiter_init(limit_profile_realm());
+    packet_limiter_reset(24);
+    count_verdicts(24, PACKET_CHARACTER_CREATE_REQUEST, 50, &a, &d, &k);
+    printf("  realm character creates allowed=%d (expect ≈1-2 at cost 20)\n", a);
+    assert(a >= 1 && a <= 3);
+
+    packet_limiter_reset(25);
+    count_verdicts(25, PACKET_CHARACTER_LIST_REQUEST, 50, &a2, &d2, &k2);
+    printf("  realm character lists allowed=%d (expect ≈4 at cost 5)\n", a2);
+    assert(a2 >= 3 && a2 <= 6);
 
     printf("\nALL ASSERTIONS PASSED\n");
     return 0;
