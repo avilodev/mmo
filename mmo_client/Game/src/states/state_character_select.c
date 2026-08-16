@@ -30,8 +30,38 @@ static void char_select_exit(GameState* game) {
     printf("[STATE] Exiting character select\n");
 }
 
+// A pending request can end without ever producing a response: the server may
+// have dropped it as over budget, or it may be lost for reasons the client
+// cannot see. Both leave the UI stuck in a NET_STATE_WAITING_* state, so both
+// are resolved here rather than waiting on a reply that is not coming.
+static void resolve_stalled_request(GameState* game, float delta_time,
+                                    char* error_out, size_t error_size) {
+    if (game->net_state == NET_STATE_IDLE) return;
+
+    game->net_wait_seconds += delta_time;
+
+    uint8_t  rejected_type = 0;
+    uint16_t retry_ms      = 0;
+
+    if (network_get_rate_limit_notice(&rejected_type, &retry_ms)) {
+        game->net_state        = NET_STATE_IDLE;
+        game->net_wait_seconds = 0.0f;
+        snprintf(error_out, error_size,
+                 "Too many requests - try again in %.1fs", retry_ms / 1000.0f);
+        return;
+    }
+
+    if (game->net_wait_seconds > NET_REQUEST_TIMEOUT_SECONDS) {
+        game->net_state        = NET_STATE_IDLE;
+        game->net_wait_seconds = 0.0f;
+        snprintf(error_out, error_size, "Server did not respond - please try again");
+    }
+}
+
 static void char_select_update(GameState* game, float delta_time) {
-    (void)delta_time;
+    resolve_stalled_request(game, delta_time,
+                            game->char_select.error_message,
+                            sizeof(game->char_select.error_message));
     
     // Handle deferred character creation
     if (game->char_select.pending_create) {
@@ -46,6 +76,7 @@ static void char_select_update(GameState* game, float delta_time) {
                                          game->char_select.selected_class,
                                          game->char_select.selected_race)) {
                 game->net_state = NET_STATE_CREATING_CHARACTER;
+                game->net_wait_seconds = 0.0f;
                 memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
             }
         }
@@ -60,6 +91,7 @@ static void char_select_update(GameState* game, float delta_time) {
             uint32_t char_id  = ntohl(game->char_select.list.characters[idx].character_id);
             if (network_delete_character(world_id, char_id)) {
                 game->net_state = NET_STATE_DELETING_CHARACTER;
+                game->net_wait_seconds = 0.0f;
                 memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
             }
         }
@@ -73,6 +105,7 @@ static void char_select_update(GameState* game, float delta_time) {
                 uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
                 if (network_request_character_list(world_id)) {
                     game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
+                    game->net_wait_seconds = 0.0f;
                 }
             }
             break;
@@ -324,6 +357,7 @@ static void char_select_render(GameState* game) {
 
                 if (network_request_enter_world(char_id, world_id)) {
                     game->net_state = NET_STATE_WAITING_FOR_ENTER_WORLD;
+                    game->net_wait_seconds = 0.0f;
                     is_busy = 1;
                 }
             }

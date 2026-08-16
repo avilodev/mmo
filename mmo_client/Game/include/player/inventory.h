@@ -5,8 +5,8 @@
 #include "core/game_types.h"
 
 #define EQUIP_SLOT_ID_HELMET    1
-#define EQUIP_SLOT_ID_CHEST     2
-#define EQUIP_SLOT_ID_GLOVES    3
+#define EQUIP_SLOT_ID_GLOVES    2
+#define EQUIP_SLOT_ID_CHEST     3
 #define EQUIP_SLOT_ID_LEGGINGS  4
 #define EQUIP_SLOT_ID_BOOTS     5
 #define EQUIP_SLOT_ID_MAIN_HAND 6

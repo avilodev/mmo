@@ -66,6 +66,24 @@ typedef struct {
     struct { BOOL ready; WorldConnectAckPacket         data; } world_connect_ack;
     struct { BOOL ready; RealmConnectAckPacket         data; } realm_connect_ack;
     struct { BOOL ready; float x; float y;                  } correction;
+
+    // Last rate-limit rejection from the server. Consumed by the UI so a
+    // request that was dropped stops a spinner instead of hanging on a
+    // response that is never coming.
+    struct {
+        BOOL     ready;
+        uint8_t  rejected_type;
+        uint8_t  limit_class;
+        uint16_t retry_after_ms;
+    } rate_limit;
+
+    // Why the server closed the connection, when it bothered to say. Without
+    // this the client can only report a generic timeout.
+    struct {
+        BOOL    set;
+        uint8_t reason;
+        char    message[128];
+    } disconnect;
 } NetContext;
 
 static NetContext g_net;
@@ -267,7 +285,7 @@ static void process_packet(const char* data, int length) {
 
                 // If game is already running, update live XP and gold immediately
                 if (g_current_game && g_current_game->player.info_loaded) {
-                    g_current_game->player.info.experience = ntohll(g_net.char_data.data.experience);
+                    g_current_game->player.info.experience = mmo_ntohll(g_net.char_data.data.experience);
                     g_current_game->player.info.gold = ntohl(g_net.char_data.data.gold);
                 }
 
@@ -669,7 +687,7 @@ static void process_packet(const char* data, int length) {
                     g_current_game->playing->player_evasion        = (int32_t)ntohl(pkt->evasion);
                     g_current_game->playing->player_vitality       = (int32_t)ntohl(pkt->vitality);
                     g_current_game->playing->player_luck           = (int32_t)ntohl(pkt->luck);
-                    g_current_game->playing->player_xp_for_next    = ntohll(pkt->xp_for_next_level);
+                    g_current_game->playing->player_xp_for_next    = mmo_ntohll(pkt->xp_for_next_level);
 
                     ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
                                                (int32_t)new_mana, (int32_t)new_max_mana);
@@ -708,7 +726,7 @@ static void process_packet(const char* data, int length) {
                     g_current_game->playing->player_luck           = (int32_t)ntohl(pkt->luck);
                     g_current_game->playing->player_move_speed     = pkt->move_speed;
                     g_current_game->playing->player_weapon_damage   = (int32_t)ntohl(pkt->weapon_damage);
-                    g_current_game->playing->player_xp_for_next    = ntohll(pkt->xp_for_next_level);
+                    g_current_game->playing->player_xp_for_next    = mmo_ntohll(pkt->xp_for_next_level);
 
                     int32_t max_hp       = (int32_t)ntohl(pkt->max_health);
                     int32_t max_mana     = (int32_t)ntohl(pkt->max_mana);
@@ -750,7 +768,7 @@ static void process_packet(const char* data, int length) {
                 if (g_current_game && g_current_game->playing) {
                     uint32_t xp_gained    = ntohl(pkt->xp_gained);
                     uint32_t gold_gained  = ntohl(pkt->gold_gained);
-                    uint64_t total_xp     = ntohll(pkt->total_xp);
+                    uint64_t total_xp     = mmo_ntohll(pkt->total_xp);
                     uint32_t total_gold   = ntohl(pkt->total_gold);
 
                     // Update player's gold and XP
@@ -1250,9 +1268,49 @@ static void process_packet(const char* data, int length) {
             }
             break;
 
-        case PACKET_DISCONNECT:
+        case PACKET_DISCONNECT: {
+            // The server tells us why immediately before closing. Record it so
+            // the UI can say what happened rather than falling back to the
+            // ping-timeout path and reporting a generic "connection lost".
+            EnterCriticalSection(&g_net.response_lock);
+            g_net.disconnect.set    = TRUE;
+            g_net.disconnect.reason = DISCONNECT_REASON_UNKNOWN;
+            g_net.disconnect.message[0] = '\0';
+
+            if (length >= (int)sizeof(DisconnectPacket)) {
+                DisconnectPacket* pkt = (DisconnectPacket*)data;
+                g_net.disconnect.reason = pkt->reason;
+                memcpy(g_net.disconnect.message, pkt->message,
+                       sizeof(g_net.disconnect.message) - 1);
+                g_net.disconnect.message[sizeof(g_net.disconnect.message) - 1] = '\0';
+            }
+            LeaveCriticalSection(&g_net.response_lock);
+
+            printf("[NET] Server closed connection: reason=%u %s\n",
+                   g_net.disconnect.reason, g_net.disconnect.message);
             g_net.connected = FALSE;
             break;
+        }
+
+        case PACKET_RATE_LIMITED: {
+            // A request was dropped because this connection is over its packet
+            // budget. Movement and combat never arrive here -- the server drops
+            // those silently because the next packet supersedes them. Anything
+            // reported this way had a caller waiting on it.
+            if (length >= (int)sizeof(RateLimitedPacket)) {
+                RateLimitedPacket* pkt = (RateLimitedPacket*)data;
+                EnterCriticalSection(&g_net.response_lock);
+                g_net.rate_limit.ready          = TRUE;
+                g_net.rate_limit.rejected_type  = pkt->rejected_type;
+                g_net.rate_limit.limit_class    = pkt->limit_class;
+                g_net.rate_limit.retry_after_ms = ntohs(pkt->retry_after_ms);
+                LeaveCriticalSection(&g_net.response_lock);
+
+                printf("[NET] Request type %u rate limited, retry in %ums\n",
+                       pkt->rejected_type, ntohs(pkt->retry_after_ms));
+            }
+            break;
+        }
 
         // ----------------------------------------------------------------
         // SHOP packets
@@ -1511,6 +1569,7 @@ void network_disconnect(void) {
     g_net.character_id = 0;
     g_net.last_facing_angle = 0.0f;
     EnterCriticalSection(&g_net.response_lock);
+    g_net.rate_limit.ready = FALSE;
     g_net.world_list.ready = FALSE;
     g_net.char_list.ready = FALSE;
     g_net.char_create.ready = FALSE;
@@ -1527,6 +1586,49 @@ int network_is_connected(void) {
     return g_net.connected;
 }
 
+// Read and clear the last rate-limit rejection. Returns 1 if one was pending.
+// UI code polls this alongside its normal response getters so a dropped request
+// closes out instead of waiting forever.
+int network_get_rate_limit_notice(uint8_t* out_type, uint16_t* out_retry_ms) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.rate_limit.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    if (out_type)     *out_type     = g_net.rate_limit.rejected_type;
+    if (out_retry_ms) *out_retry_ms = g_net.rate_limit.retry_after_ms;
+    g_net.rate_limit.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+    return 1;
+}
+
+// Why the connection ended, if the server said or we inferred it. Returns 1 if
+// a reason is available. Not cleared by disconnect -- the UI reads this after
+// the socket is already gone.
+int network_get_disconnect_reason(uint8_t* out_reason, char* out_message, int message_size) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.disconnect.set) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    if (out_reason) *out_reason = g_net.disconnect.reason;
+    if (out_message && message_size > 0) {
+        strncpy(out_message, g_net.disconnect.message, (size_t)message_size - 1);
+        out_message[message_size - 1] = '\0';
+    }
+    LeaveCriticalSection(&g_net.response_lock);
+    return 1;
+}
+
+// Drop any recorded reason. Call when starting a fresh connection attempt so a
+// stale cause is never shown against a new session.
+void network_clear_disconnect_reason(void) {
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.disconnect.set = FALSE;
+    g_net.disconnect.message[0] = '\0';
+    LeaveCriticalSection(&g_net.response_lock);
+}
+
 void network_set_character_id(uint32_t character_id) {
     g_net.character_id = character_id;
     printf("[NET] Character ID set to %u\n", character_id);
@@ -1541,7 +1643,8 @@ static int get_packet_size(uint8_t type) {
     switch (type) {
         // Basic packets
         case PACKET_PING:                       return (int)sizeof(PacketHeader);
-        case PACKET_DISCONNECT:                 return (int)sizeof(PacketHeader);
+        case PACKET_DISCONNECT:                 return (int)sizeof(DisconnectPacket);
+        case PACKET_RATE_LIMITED:               return (int)sizeof(RateLimitedPacket);
         
         // Auth packets
         case PACKET_AUTH_LOGIN:                 return (int)sizeof(AuthLoginPacket);
@@ -1793,6 +1896,17 @@ void network_update_with_ping(int game_mode) {
             if (g_net.pending_pings >= PING_MAX_MISSED) {
                 printf("[NET] Ping timeout: %d pings unanswered, disconnecting\n",
                        g_net.pending_pings);
+                // No PACKET_DISCONNECT arrived, so record the cause ourselves
+                // rather than leaving the UI with nothing to show.
+                EnterCriticalSection(&g_net.response_lock);
+                if (!g_net.disconnect.set) {
+                    g_net.disconnect.set    = TRUE;
+                    g_net.disconnect.reason = DISCONNECT_REASON_UNKNOWN;
+                    strncpy(g_net.disconnect.message,
+                            "Connection timed out",
+                            sizeof(g_net.disconnect.message) - 1);
+                }
+                LeaveCriticalSection(&g_net.response_lock);
                 network_disconnect();
                 return;
             }
@@ -2184,7 +2298,7 @@ int network_get_character_data(CharacterInfo* out) {
     out->max_health = ntohl(out->max_health);
     out->mana = (int32_t)ntohl((uint32_t)out->mana);
     out->max_mana = (int32_t)ntohl((uint32_t)out->max_mana);
-    out->experience = ntohll(out->experience);
+    out->experience = mmo_ntohll(out->experience);
 
     out->player_class = ntohl(out->player_class);
     out->player_race  = ntohl(out->player_race);

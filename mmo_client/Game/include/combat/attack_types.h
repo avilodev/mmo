@@ -2,15 +2,7 @@
 #define ATTACK_TYPES_H
 
 #include <stdint.h>
-
-// Attack shape types (must match server's AttackType enum)
-typedef enum {
-    ATTACK_TYPE_SINGLE = 0,
-    ATTACK_TYPE_AOE    = 1,
-    ATTACK_TYPE_CONE   = 2,
-    ATTACK_TYPE_LINE   = 3,
-    ATTACK_TYPE_COUNT  = 4
-} AttackType;
+#include "protocol.h"
 
 // Class IDs (must match server)
 typedef enum {

@@ -62,6 +62,10 @@ typedef enum {
     NET_STATE_WAITING_FOR_CHARACTER_DATA
 } NetworkState;
 
+// How long the client waits on any single server response before giving up
+// and returning the UI to an interactive state.
+#define NET_REQUEST_TIMEOUT_SECONDS 10.0f
+
 // ============================================================================
 // ITEM TYPES (for inventory)
 // ============================================================================
@@ -581,6 +585,11 @@ struct GameState {
     int is_running;
     GameMode mode;
     NetworkState net_state;
+    // Seconds spent in the current NET_STATE_WAITING_* state. A request can go
+    // unanswered for reasons the client cannot see -- the server dropping it
+    // over budget is only one of them -- so every wait is bounded rather than
+    // trusting a response to eventually arrive.
+    float        net_wait_seconds;
     InputState input;
     PlayerState player;
     WorldState world;           // This is now the chunked WorldState from world.h

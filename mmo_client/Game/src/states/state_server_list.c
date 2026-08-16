@@ -31,8 +31,29 @@ static void server_list_exit(GameState* game) {
 }
 
 static void server_list_update(GameState* game, float delta_time) {
-    (void)delta_time;
     double now = glfwGetTime();
+
+    // A request that never gets answered -- dropped by the server as over
+    // budget, or lost some other way -- must not wedge the refresh loop. This
+    // list re-fetches on a timer, so releasing the in-flight flags is enough;
+    // the next interval retries on its own and there is nothing to tell the
+    // user about a refresh they never asked for.
+    if (game->net_state != NET_STATE_IDLE) {
+        game->net_wait_seconds += delta_time;
+
+        uint8_t  rejected_type = 0;
+        uint16_t retry_ms      = 0;
+        int rejected = network_get_rate_limit_notice(&rejected_type, &retry_ms);
+
+        if (rejected || game->net_wait_seconds > NET_REQUEST_TIMEOUT_SECONDS) {
+            printf("[SERVER_LIST] World list request abandoned (%s)\n",
+                   rejected ? "rate limited" : "timed out");
+            game->net_state        = NET_STATE_IDLE;
+            game->net_wait_seconds = 0.0f;
+            s_refreshing           = 0;
+            s_last_refresh         = now;   // wait a full interval before retrying
+        }
+    }
 
     // Trigger a refresh if: never loaded, or interval elapsed and not mid-fetch
     int needs_refresh = !game->server_list.loaded ||
@@ -42,6 +63,7 @@ static void server_list_update(GameState* game, float delta_time) {
         printf("[SERVER_LIST] Requesting world list...\n");
         if (network_request_world_list()) {
             game->net_state = NET_STATE_WAITING_FOR_WORLDS;
+            game->net_wait_seconds = 0.0f;
             s_refreshing = 1;
         }
     }

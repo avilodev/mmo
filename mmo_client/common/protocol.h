@@ -2,11 +2,11 @@
 #define PROTOCOL_H
 
 #include <stdint.h>
-#include <winsock2.h>
 
 #define MAX_WORLDS 10
 #define MAX_CAST_TARGETS    16
 #define MAX_NPCS_PER_PACKET 32
+#define MAX_ABILITY_SLOTS    5
 
 #pragma pack(push, 1)
 
@@ -18,6 +18,7 @@ typedef enum {
     PACKET_AUTH_RESPONSE = 5,           // Success/fail (no session yet)
     PACKET_START_GAME_REQUEST = 6,      // Request to start game (creates session)
     PACKET_START_GAME_RESPONSE = 7,     // Returns session key + player ID
+    PACKET_RATE_LIMITED = 8,            // Server -> Client: request dropped, over budget
     
     // PATCH NOTES
     PATCH_NOTES_REQUEST = 10,
@@ -172,6 +173,41 @@ typedef struct {
     uint32_t player_id;     // 4 bytes
     uint16_t payload_size;  // 2 bytes
 } PacketHeader;             // Total: 7 bytes (no padding)
+
+// ---------------------------------------------------------------------------
+// Disconnect and rejection
+//
+// A server that closes a socket without saying why leaves the client to
+// discover it via ping timeout and report a generic "connection lost". These
+// two packets let the client tell the user what actually happened.
+// ---------------------------------------------------------------------------
+
+typedef enum {
+    DISCONNECT_REASON_UNKNOWN     = 0,
+    DISCONNECT_REASON_SHUTDOWN    = 1,   // server going down
+    DISCONNECT_REASON_RATE_LIMIT  = 2,   // sustained packet budget abuse
+    DISCONNECT_REASON_PROTOCOL    = 3,   // malformed or oversized packet
+    DISCONNECT_REASON_AUTH        = 4,   // session invalid or expired
+    DISCONNECT_REASON_KICKED      = 5    // administrative
+} DisconnectReason;
+
+// Server -> Client, sent immediately before the socket is closed.
+typedef struct {
+    PacketHeader header;
+    uint8_t      reason;        // DisconnectReason
+    char         message[128];  // human-readable; may be empty
+} DisconnectPacket;
+
+// Server -> Client: this request was dropped because the connection is over its
+// packet budget. Only sent for classes where silence would strand the UI
+// waiting on a response -- movement and combat drop silently, since the next
+// packet of that kind supersedes the one that was dropped.
+typedef struct {
+    PacketHeader header;
+    uint8_t      rejected_type;    // opcode that was dropped
+    uint8_t      limit_class;      // which budget it exhausted
+    uint16_t     retry_after_ms;   // hint for the client; not enforcement
+} RateLimitedPacket;
 
 // Zone types (matches server zone_system.h)
 #define ZONE_TYPE_WILD    0
@@ -393,6 +429,34 @@ typedef struct {
     char welcome_message[128];
 } WorldConnectAckPacket;
 
+// Realm server -> world server authentication.
+typedef struct {
+    PacketHeader header;
+    char server_key[128];
+    char realm_name[32];
+} RealmAuthPacket;
+
+typedef struct {
+    PacketHeader header;
+    uint8_t success;
+    char message[64];
+} RealmAuthAckPacket;
+
+typedef struct {
+    PacketHeader header;
+    uint64_t timestamp;
+} WorldHeartbeatPacket;
+
+typedef struct {
+    PacketHeader header;
+    char server_name[64];
+    uint32_t player_count;
+    uint32_t max_players;
+    uint8_t status;
+    float cpu_usage;
+    uint64_t uptime;
+} WorldStatusPacket;
+
 typedef struct {
     PacketHeader header;
     uint32_t character_id;
@@ -458,6 +522,14 @@ typedef struct {
 // ============================================================================
 // COMBAT PACKETS
 // ============================================================================
+
+typedef enum {
+    ATTACK_TYPE_SINGLE = 0,
+    ATTACK_TYPE_AOE    = 1,
+    ATTACK_TYPE_CONE   = 2,
+    ATTACK_TYPE_LINE   = 3,
+    ATTACK_TYPE_COUNT  = 4
+} AttackType;
 
 // Server -> Client: Cast cancelled/interrupted
 typedef struct {
@@ -744,13 +816,15 @@ typedef struct {
 // ============================================================================
 
 typedef enum {
+    SLOT_NONE      = 0,
     SLOT_HELMET    = 1,
-    SLOT_CHEST     = 2,
-    SLOT_GLOVES    = 3,
+    SLOT_GLOVES    = 2,
+    SLOT_CHEST     = 3,
     SLOT_LEGGINGS  = 4,
     SLOT_BOOTS     = 5,
     SLOT_MAIN_HAND = 6,
     SLOT_OFF_HAND  = 7,
+    SLOT_TWO_HANDED = 8,
 } EquipSlotType;
 
 // Client -> Server: Equip item from inventory
@@ -1250,9 +1324,19 @@ typedef struct {
     QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
 
-// Network byte order conversion for 64-bit values
-#define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-#define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
+// Network byte order conversion for 64-bit values.
+//
+// Deliberately NOT named htonll/ntohll. Windows declares those as inline
+// functions in winsock2.h (not macros), so a function-like macro of the same
+// name rewrites their declaration into garbage the moment this header is
+// included first. No include guard can detect that -- a macro cannot test for
+// the existence of a function -- so the only durable fix is to stay out of the
+// platform's namespace.
+//
+// NOTE: the argument is evaluated more than once. Do not pass a call or
+// anything with side effects; hoist it into a local first.
+#define mmo_htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
+#define mmo_ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
 
 #pragma pack(pop)
 

@@ -17,6 +17,26 @@ void network_disconnect(void);
 int  network_is_connected(void);
 void network_set_character_id(uint32_t character_id);
 
+// ---------------------------------------------------------------------------
+// Server-side limiting
+//
+// The server enforces its packet budgets unconditionally; nothing here changes
+// what it allows. These two calls only let the UI explain what the server
+// already decided, instead of showing a hang or a generic "connection lost".
+// ---------------------------------------------------------------------------
+
+// Read and clear the last rate-limit rejection. Returns 1 if one was pending.
+// out_type is the opcode that was dropped; out_retry_ms is the server's hint
+// for how long until it would be accepted.
+int  network_get_rate_limit_notice(uint8_t* out_type, uint16_t* out_retry_ms);
+
+// Why the connection ended. Returns 1 if a reason is available. Survives
+// disconnect on purpose, so it can be read after the socket is gone.
+int  network_get_disconnect_reason(uint8_t* out_reason, char* out_message, int message_size);
+
+// Clear the recorded reason before a fresh connection attempt.
+void network_clear_disconnect_reason(void);
+
 // ----------------------------------------------------------------------------
 // UPDATE (call every frame)
 // ----------------------------------------------------------------------------
