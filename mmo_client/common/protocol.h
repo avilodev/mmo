@@ -1,6 +1,8 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+/** @file Define the packed wire protocol shared by MMO clients and servers. */
+
 #include <stdint.h>
 
 #define MAX_WORLDS 10
@@ -10,7 +12,7 @@
 
 #pragma pack(push, 1)
 
-// Packet Types
+/** Assign wire opcodes to protocol messages. */
 typedef enum {
     PACKET_DISCONNECT = 2,
     PACKET_AUTH_LOGIN = 3,              // Username/password validation (no session created)
@@ -86,6 +88,7 @@ typedef enum {
     PACKET_USE_ITEM_RESPONSE = 126,
     PACKET_DROP_ITEM = 127,
     PACKET_DROP_ITEM_RESPONSE = 128,
+    PACKET_INVENTORY_UPDATE = 129,   // Server -> Client: authoritative slot contents
 
     // Dialogue packets (130-139)
     PACKET_NPC_INTERACT_REQUEST = 130,
@@ -154,6 +157,7 @@ typedef enum {
     PACKET_ZONE_CHANGE = 220,           // Server -> Client: player crossed a zone boundary
 } PacketType;
 
+/** Identify playable character classes on the wire. */
 typedef enum {
     GLADIATOR = 1,
     NINJA = 2,
@@ -161,27 +165,21 @@ typedef enum {
     SPIRIT = 4
 } Class;
 
+/** Identify playable character races on the wire. */
 typedef enum {
     HUMAN = 1,
     PYSECK = 2,
     INFOR = 3
 } Race;
 
-// Standard packet header
+/** Prefix every ordinary packet with its opcode, player identifier, and payload length. */
 typedef struct {
     uint8_t type;           // 1 byte
     uint32_t player_id;     // 4 bytes
     uint16_t payload_size;  // 2 bytes
 } PacketHeader;             // Total: 7 bytes (no padding)
 
-// ---------------------------------------------------------------------------
-// Disconnect and rejection
-//
-// A server that closes a socket without saying why leaves the client to
-// discover it via ping timeout and report a generic "connection lost". These
-// two packets let the client tell the user what actually happened.
-// ---------------------------------------------------------------------------
-
+/** Identify reasons supplied before a server closes a client connection. */
 typedef enum {
     DISCONNECT_REASON_UNKNOWN     = 0,
     DISCONNECT_REASON_SHUTDOWN    = 1,   // server going down
@@ -191,17 +189,14 @@ typedef enum {
     DISCONNECT_REASON_KICKED      = 5    // administrative
 } DisconnectReason;
 
-// Server -> Client, sent immediately before the socket is closed.
+/** Describe a server-initiated disconnect before closing the socket. */
 typedef struct {
     PacketHeader header;
     uint8_t      reason;        // DisconnectReason
     char         message[128];  // human-readable; may be empty
 } DisconnectPacket;
 
-// Server -> Client: this request was dropped because the connection is over its
-// packet budget. Only sent for classes where silence would strand the UI
-// waiting on a response -- movement and combat drop silently, since the next
-// packet of that kind supersedes the one that was dropped.
+/** Report a request rejected by the server's packet budget. */
 typedef struct {
     PacketHeader header;
     uint8_t      rejected_type;    // opcode that was dropped
@@ -209,12 +204,13 @@ typedef struct {
     uint16_t     retry_after_ms;   // hint for the client; not enforcement
 } RateLimitedPacket;
 
-// Zone types (matches server zone_system.h)
+/** Assign zone categories shared with the server zone system. */
 #define ZONE_TYPE_WILD    0
 #define ZONE_TYPE_SAFE    1
 #define ZONE_TYPE_DUNGEON 2
 #define ZONE_TYPE_PVP     3
 
+/** Announce a player's transition into a named zone. */
 typedef struct {
     PacketHeader header;
     uint8_t      zone_id;
@@ -222,7 +218,7 @@ typedef struct {
     char         zone_name[48];
 } ZoneChangePacket;
 
-// Auth packet header (with session key) - used when session key is needed
+/** Prefix authenticated packets with a fixed-width session key. */
 typedef struct {
     uint8_t type;
     uint32_t player_id;
@@ -230,28 +226,27 @@ typedef struct {
     char session_key[32];
 } AuthPacketHeader;
 
-// Patch notes packets
+/** Request an inclusive range of patch-note records. */
 typedef struct {
     PacketHeader header;
     uint16_t start;
     uint16_t end;
 } PatchNotesRequest;
 
+/** Return patch-note text in a fixed-capacity buffer. */
 typedef struct {
     PacketHeader header;
     char buffer[4000];
 } PatchNotesResponse;
 
-// ============================================================================
-// LOGIN PACKETS (validation only, no session)
-// ============================================================================
-
+/** Submit credentials for validation without creating a session. */
 typedef struct {
     PacketHeader header;
     char username[32];
     char password[64];
 } AuthLoginPacket;
 
+/** Return login validation status and a single-use authentication token. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -260,10 +255,7 @@ typedef struct {
     char message[128];
 } AuthLoginResponsePacket;
 
-// ============================================================================
-// REGISTRATION PACKETS (creates session)
-// ============================================================================
-
+/** Submit fixed-width account registration fields. */
 typedef struct {
     PacketHeader header;
     char username[32];
@@ -273,8 +265,7 @@ typedef struct {
     uint8_t reserved[32];     // Reserved for future fields
 } AuthRegisterPacket;
 
-// Registration response - NO SESSION KEY
-// User must log in after successful registration
+/** Return account registration status without creating a session. */
 typedef struct {
     PacketHeader header;      // Basic header without session key
     uint8_t success;          // 1 = success, 0 = failure
@@ -282,8 +273,7 @@ typedef struct {
     char message[128];        // Success or error message
 } AuthRegisterResponsePacket;
 
-//
-
+/** Exchange a single-use login token for a game session. */
 typedef struct {
     PacketHeader header;
     uint32_t player_id;      // Informational only; server trusts auth_token
@@ -291,29 +281,31 @@ typedef struct {
     char auth_token[32];     // Single-use proof of successful login
 } StartGameRequestPacket;
 
+/** Return session creation status and the authenticated header. */
 typedef struct {
     AuthPacketHeader header;
     uint8_t success;
     char message[128];
 } StartGameResponsePacket;
 
-// Realm connection packets (used by game.exe, not launcher)
+/** Authenticate the game client to the realm service. */
 typedef struct {
     AuthPacketHeader header;
 } RealmConnectPacket;
 
+/** Acknowledge the game client's realm connection. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
     char message[128];
 } RealmConnectAckPacket;
 
-// World list packets
+/** Request the realm's current world list. */
 typedef struct {
     PacketHeader header;
 } WorldListRequestPacket;
  
-// World list - PADDING FIXED
+/** Describe one world endpoint with explicit cross-platform padding. */
 typedef struct {
     char name[64];
     uint32_t world_id;
@@ -327,20 +319,20 @@ typedef struct {
     char region[32];
 } WorldInfo;
 
+/** Return up to MAX_WORLDS world descriptions. */
 typedef struct {
     PacketHeader header;
     uint8_t count;
     uint8_t padding[3];
     WorldInfo worlds[MAX_WORLDS];
 } WorldListResponsePacket;
-//
-
+/** Request characters belonging to an account on one world. */
 typedef struct {
     PacketHeader header;
     uint32_t world_id;
 } CharacterListRequestPacket;
 
-//Lists all characters
+/** Return the account's characters for one world. */
 typedef struct {
     PacketHeader header;
     uint32_t world_id;
@@ -355,7 +347,7 @@ typedef struct {
     } characters[10];
 } CharacterListResponsePacket;
 
-// Character create request
+/** Request creation of a named character on one world. */
 typedef struct {
     PacketHeader header;
     uint32_t world_id;
@@ -364,7 +356,7 @@ typedef struct {
     uint32_t race_id;
 } CharacterCreateRequestPacket;
 
-// Character create response
+/** Return the result and assigned identifier of character creation. */
 typedef struct {
     PacketHeader header;
     uint32_t world_id;
@@ -374,14 +366,14 @@ typedef struct {
     char message[128];
 } CharacterCreateResponsePacket;
 
-// Character delete request
+/** Request deletion of a character from one world. */
 typedef struct {
     PacketHeader header; 
     uint32_t character_id;
     uint32_t world_id;
 } CharacterDeleteRequestPacket;
 
-// Character delete response
+/** Return the result of a character deletion request. */
 typedef struct {
     PacketHeader header;
     uint32_t character_id;
@@ -390,18 +382,14 @@ typedef struct {
     char message[128];
 } CharacterDeleteResponsePacket;
 
-// ============================================================================
-// ENTER WORLD PACKETS
-// ============================================================================
-
-// Client -> Realm: Request to enter a world with a character
+/** Request entry to a world with a selected character. */
 typedef struct {
     PacketHeader header;
     uint32_t character_id;
     uint32_t world_id;
 } EnterWorldPacket;
 
-// Realm -> Client: Response with world server info and game ticket
+/** Return a world endpoint and short-lived admission ticket. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -411,42 +399,41 @@ typedef struct {
     char message[128];
 } EnterWorldResponsePacket;
 
-// ============================================================================
-// WORLD SERVER CONNECTION PACKETS
-// ============================================================================
-
-// Client -> World: Connect to world server with game ticket
+/** Present a realm-issued ticket to a world server. */
 typedef struct {
     PacketHeader header;
     char game_ticket[64];
     uint32_t character_id;
 } WorldConnectPacket;
 
-// World -> Client: Connection acknowledgment
+/** Acknowledge admission to a world server. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
     char welcome_message[128];
 } WorldConnectAckPacket;
 
-// Realm server -> world server authentication.
+/** Authenticate a realm server to a world server. */
 typedef struct {
     PacketHeader header;
     char server_key[128];
     char realm_name[32];
 } RealmAuthPacket;
 
+/** Acknowledge realm-to-world authentication. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
     char message[64];
 } RealmAuthAckPacket;
 
+/** Carry a realm-to-world heartbeat timestamp. */
 typedef struct {
     PacketHeader header;
     uint64_t timestamp;
 } WorldHeartbeatPacket;
 
+/** Report a world server's capacity, load, status, and uptime. */
 typedef struct {
     PacketHeader header;
     char server_name[64];
@@ -457,12 +444,41 @@ typedef struct {
     uint64_t uptime;
 } WorldStatusPacket;
 
+/** Request a character snapshot from a world server. */
 typedef struct {
     PacketHeader header;
     uint32_t character_id;
     uint32_t world_id;
 } WorldPlayerDataRequest;
 
+/** Define the shared array order for equipped item slots. */
+typedef enum {
+    EQUIP_HELMET = 0,
+    EQUIP_GLOVES,
+    EQUIP_CHEST,
+    EQUIP_LEGGINGS,
+    EQUIP_BOOTS,
+    EQUIP_MAIN_HAND,
+    EQUIP_SECOND_HAND,
+    EQUIP_BLESSING,
+    EQUIP_SLOTS
+} EquipSlotIndex;
+
+#define INVENTORY_SLOT_COUNT 150
+
+/** Place equipment slot identifiers above the inventory range. */
+#define EQUIP_SLOT_BASE 200
+
+/** Represent one fixed 16-byte inventory or equipment slot on the wire. */
+typedef struct {
+    uint64_t instance_id;   // 0 = empty slot
+    uint32_t item_id;
+    uint16_t quantity;
+    uint8_t  is_bound;
+    uint8_t  _reserved;     // keeps the struct at 16 bytes; must be 0
+} InventorySlotData;
+
+/** Carry a complete character, equipment, and inventory snapshot. */
 typedef struct {
     PacketHeader header;
 
@@ -480,27 +496,44 @@ typedef struct {
 
     Class player_class;
     Race player_race;
-    
-    // Equipment
-    uint32_t helmet;
-    uint32_t gloves;
-    uint32_t chest_armor;
-    uint32_t leggings;
-    uint32_t boots;
-    uint32_t main_hand;
-    uint32_t second_hand;
-    uint16_t blessing;
-    
-    // Inventory (150 slots)
-    uint32_t inventory[150];
+
+    /** Empty slots use an instance identifier of zero. */
+    InventorySlotData equipment[EQUIP_SLOTS];
+    InventorySlotData inventory[INVENTORY_SLOT_COUNT];
 } CharacterInfo;
 
-/*
-=========================
-  MOVEMENT
-=========================  
-*/
-// Client -> Server: Player movement update
+/** Limit the number of authoritative slot changes carried by one packet. */
+#define MAX_SLOT_UPDATES 8
+
+/** Pair a database-compatible slot number with its authoritative contents. */
+typedef struct {
+    uint16_t          slot;
+    InventorySlotData data;
+} SlotUpdateEntry;
+
+/** Return the authoritative contents of changed inventory or equipment slots. */
+typedef struct {
+    PacketHeader    header;
+    uint8_t         count;          // how many entries are populated
+    uint8_t         _pad[3];
+    SlotUpdateEntry slots[MAX_SLOT_UPDATES];
+} InventoryUpdatePacket;
+
+_Static_assert(sizeof(SlotUpdateEntry) == 18,
+               "SlotUpdateEntry must stay 18 bytes on every target");
+
+
+/** Enforce packed layouts shared by the Windows client and Linux server. */
+_Static_assert(sizeof(InventorySlotData) == 16,
+               "InventorySlotData must stay 16 bytes on every target");
+_Static_assert(sizeof(CharacterInfo) <= 8192,
+               "CharacterInfo must fit inside MAX_PACKET_SIZE");
+_Static_assert(sizeof(PacketHeader) == 7,
+               "PacketHeader must stay 7 bytes");
+
+
+
+/** Submit a player's position, velocity, and movement speed. */
 typedef struct {
     PacketHeader header;
     float pos_x;
@@ -512,17 +545,14 @@ typedef struct {
     float vel_y;
 } PlayerMovePacket;
 
-// Server -> Client: Movement acknowledgment (optional)
+/** Acknowledge an accepted player position. */
 typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
 } PlayerMoveAckPacket;
 
-// ============================================================================
-// COMBAT PACKETS
-// ============================================================================
-
+/** Identify supported attack-area shapes. */
 typedef enum {
     ATTACK_TYPE_SINGLE = 0,
     ATTACK_TYPE_AOE    = 1,
@@ -531,13 +561,14 @@ typedef enum {
     ATTACK_TYPE_COUNT  = 4
 } AttackType;
 
-// Server -> Client: Cast cancelled/interrupted
+/** Announce cancellation or interruption of an active cast. */
 typedef struct {
     PacketHeader header;
     uint32_t caster_id;
     uint8_t reason;          // 0=manual cancel, 1=moved, 2=interrupted
 } CastCancelPacket;
 
+/** Identify the server result of an attack intent. */
 typedef enum {
     ATTACK_RESULT_OK            = 0,    // At least one target was hit (damage packets follow)
     ATTACK_RESULT_ON_COOLDOWN   = 1,    // Attacker is still on cooldown
@@ -546,13 +577,14 @@ typedef enum {
     ATTACK_RESULT_INVALID       = 4     // Generic failure (attacker not found, etc.)
 } AttackResultCode;
 
-
+/** Request an attack aimed at a world position. */
 typedef struct {
     PacketHeader header;        // header.player_id = attacker's character_id
     float        aim_x;         // World X the player is aiming at
     float        aim_y;         // World Y the player is aiming at
 } AttackIntentPacket;
 
+/** Announce the resolved targets and geometry of an attack cast. */
 typedef struct {
     PacketHeader header;
     uint32_t     caster_id;                     // Who is attacking
@@ -560,13 +592,14 @@ typedef struct {
     uint8_t      attack_type;                   // AttackType enum value
     uint8_t      target_count;                  // How many targets resolved (0..MAX_CAST_TARGETS)
     uint32_t     target_ids[MAX_CAST_TARGETS]; // Entity IDs that will be hit
-    // Rendering hint: attacker position at cast start (for trajectory drawing)
+    /** Preserve the cast-start origin for trajectory rendering. */
     float        origin_x;
     float        origin_y;
     float        aim_x;
     float        aim_y;
 } CastStartV2Packet;
 
+/** Report authoritative damage and health for one target. */
 typedef struct {
     PacketHeader header;
     uint32_t     attacker_id;
@@ -577,16 +610,13 @@ typedef struct {
     uint8_t      is_crit;           // 1 if this was a critical hit
 } DamageV2Packet;
 
+/** Return the server's result for an attack intent. */
 typedef struct {
     PacketHeader header;        // header.player_id = attacker's character_id
     uint8_t      result_code;   // AttackResultCode enum value
 } AttackResultPacket;
 
-// ============================================================================
-// Ability PACKETS
-// ============================================================================
-
-// Client -> Server: Cast an ability
+/** Request an ability cast toward a position or entity. */
 typedef struct {
     PacketHeader header;
     uint16_t     ability_id;
@@ -595,7 +625,7 @@ typedef struct {
     uint32_t     target_id;     // 0 if ground-targeted/self
 } AbilityCastIntentPacket;
 
-// Server -> Client: Cast started
+/** Announce the authoritative start and geometry of an ability cast. */
 typedef struct {
     PacketHeader header;
     uint32_t     caster_id;
@@ -607,7 +637,7 @@ typedef struct {
     float        aim_y;
 } AbilityCastStartPacket;
 
-// Server -> Client: Ability effect applied
+/** Report an ability's authoritative damage, healing, and target health. */
 typedef struct {
     PacketHeader header;
     uint32_t     caster_id;
@@ -620,7 +650,7 @@ typedef struct {
     uint8_t      is_crit;           // 1 if this was a critical hit or heal
 } AbilityEffectPacket;
 
-// Bidirectional: Ability cast cancelled
+/** Announce cancellation of an ability cast in either direction. */
 typedef struct {
     PacketHeader header;
     uint32_t     caster_id;
@@ -628,7 +658,7 @@ typedef struct {
     uint8_t      reason;        // 0=manual, 1=moved, 2=interrupted, 3=no_mana
 } AbilityCastCancelPacket;
 
-// Server -> Client: Status effect applied
+/** Announce application of a timed status effect. */
 typedef struct {
     PacketHeader header;
     uint32_t     target_id;
@@ -638,14 +668,14 @@ typedef struct {
     uint32_t     source_id;
 } StatusEffectApplyPacket;
 
-// Server -> Client: Status effect removed
+/** Announce removal of a status effect. */
 typedef struct {
     PacketHeader header;
     uint32_t     target_id;
     uint8_t      effect_type;
 } StatusEffectRemovePacket;
 
-// Server -> Client: Zone spawned
+/** Announce an ability-created zone and its collision geometry. */
 typedef struct {
     PacketHeader header;
     uint32_t     zone_id;
@@ -658,20 +688,20 @@ typedef struct {
     uint8_t      has_collision;
 } SpawnZonePacket;
 
-// Server -> Client: Zone removed
+/** Announce removal of an ability-created zone. */
 typedef struct {
     PacketHeader header;
     uint32_t     zone_id;
 } RemoveZonePacket;
 
-// Server -> Client: Mana update
+/** Synchronize a player's current and maximum mana. */
 typedef struct {
     PacketHeader header;
     int32_t      mana;
     int32_t      max_mana;
 } ManaUpdatePacket;
 
-// Server -> Client: Ability bar loadout (sent on world entry and on level-up)
+/** Describe one ability-bar slot sent on world entry or level-up. */
 typedef struct {
     uint16_t id;
     char     name[24];
@@ -681,17 +711,14 @@ typedef struct {
     char     image[32];  // Icon filename, e.g. "cleave.png" — looked up in Game/Sprites/Abilities/
 } AbilitySlotInfo;
 
+/** Synchronize the player's current ability-bar loadout. */
 typedef struct {
     PacketHeader header;
     uint8_t  count;
     AbilitySlotInfo slots[5];
 } AbilityDataPacket;
 
-// ============================================================================
-// LEVEL & STATS PACKETS
-// ============================================================================
-
-// Server -> Client: Player leveled up
+/** Synchronize level, attributes, resources, and the next experience threshold. */
 typedef struct {
     PacketHeader header;
     uint32_t     new_level;
@@ -710,7 +737,7 @@ typedef struct {
     uint64_t     xp_for_next_level;
 } LevelUpPacket;
 
-// Server -> Client: Full stat snapshot (sent on login + on request)
+/** Return a full authoritative player-stat snapshot. */
 typedef struct {
     PacketHeader header;
     int32_t      strength;
@@ -730,15 +757,12 @@ typedef struct {
     uint64_t     xp_for_next_level;
 } PlayerStatsPacket;
 
-// Client -> Server: Request stats refresh (e.g. on reconnect)
+/** Request a fresh authoritative player-stat snapshot. */
 typedef struct {
     PacketHeader header;
 } RequestPlayerStatsPacket;
 
-// ============================================================================
-// ENEMY UPDATE PACKETS
-// ============================================================================
-
+/** Describe one NPC in a batched position update. */
 typedef struct {
     uint32_t npc_id;
     float pos_x;
@@ -751,6 +775,7 @@ typedef struct {
     uint8_t npc_type_id;     // NPC type for client display
 } NPCPositionData;
 
+/** Broadcast a bounded batch of NPC positions and combat states. */
 typedef struct {
     PacketHeader header;
     uint8_t npc_count;
@@ -758,20 +783,16 @@ typedef struct {
     NPCPositionData npcs[MAX_NPCS_PER_PACKET];
 } NPCPositionPacket;
 
-// ============================================================================
-// NPC DIALOGUE PACKETS (Client-side text storage)
-// ============================================================================
-
+/** Bound the choices exposed on one locally rendered dialogue page. */
 #define MAX_DIALOGUE_OPTIONS 6
 
-// Client -> Server: Request to interact with NPC
+/** Request interaction with an NPC. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
 } NPCInteractRequestPacket;
 
-// Server -> Client: Initial dialogue response
-// Client looks up text from local dialogues.json using dialogue_id + page_num
+/** Open an NPC dialogue whose text is indexed locally by dialogue and page. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
@@ -783,7 +804,7 @@ typedef struct {
     uint8_t  padding[2];
 } NPCInteractResponsePacket;
 
-// Client -> Server: Player selects dialogue option
+/** Submit a selected option from the current dialogue page. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
@@ -793,8 +814,7 @@ typedef struct {
     uint8_t  padding[2];
 } DialogueOptionSelectPacket;
 
-// Server -> Client: Update to new dialogue page
-// Client looks up text from local dialogues.json using dialogue_id + page_num
+/** Advance an NPC dialogue to a locally indexed page. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
@@ -805,16 +825,13 @@ typedef struct {
     uint8_t  padding[2];
 } DialogueUpdatePacket;
 
-// Bidirectional: Close dialogue window
+/** Close an NPC dialogue in either direction. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
 } DialogueClosePacket;
 
-// ============================================================================
-// EQUIPMENT PACKETS
-// ============================================================================
-
+/** Identify item equipment categories carried by item definitions. */
 typedef enum {
     SLOT_NONE      = 0,
     SLOT_HELMET    = 1,
@@ -827,7 +844,7 @@ typedef enum {
     SLOT_TWO_HANDED = 8,
 } EquipSlotType;
 
-// Client -> Server: Equip item from inventory
+/** Request equipping an inventory item into a designated slot. */
 typedef struct {
     PacketHeader header;
     uint32_t item_id;
@@ -836,7 +853,7 @@ typedef struct {
     uint8_t padding[2];
 } EquipItemPacket;
 
-// Server -> Client: Equip result
+/** Return the item identifiers affected by an equip request. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -846,14 +863,14 @@ typedef struct {
     char message[128];
 } EquipItemResponsePacket;
 
-// Client -> Server: Unequip item to inventory
+/** Request moving equipped gear back to inventory. */
 typedef struct {
     PacketHeader header;
     uint8_t equip_slot;
     uint8_t padding[3];
 } UnequipItemPacket;
 
-// Server -> Client: Unequip result
+/** Return the inventory destination and item affected by unequipping. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -863,18 +880,14 @@ typedef struct {
     char message[128];
 } UnequipItemResponsePacket;
 
-// ============================================================================
-// INVENTORY PACKETS
-// ============================================================================
-
-// Client -> Server: Use item from inventory
+/** Request use of an item in an inventory slot. */
 typedef struct {
     PacketHeader header;
     uint8_t inventory_slot;
     uint8_t padding[3];
 } UseItemPacket;
 
-// Server -> Client: Use item result
+/** Return the resource changes caused by using an item. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -888,14 +901,14 @@ typedef struct {
     char message[128];
 } UseItemResponsePacket;
 
-// Client -> Server: Drop item from inventory
+/** Request removal of an item from an inventory slot. */
 typedef struct {
     PacketHeader header;
     uint8_t inventory_slot;
     uint8_t padding[3];
 } DropItemPacket;
 
-// Server -> Client: Drop item result
+/** Return the result and item identifier of a drop request. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -903,7 +916,7 @@ typedef struct {
     uint32_t dropped_item;
 } DropItemResponsePacket;
 
-// Client -> Server: Move item between inventory slots
+/** Request movement or swapping between two inventory slots. */
 typedef struct {
     PacketHeader header;
     uint8_t from_slot;
@@ -911,7 +924,7 @@ typedef struct {
     uint8_t padding[2];
 } MoveItemPacket;
 
-// Server -> Client: Move item result
+/** Return the slots affected by an inventory move request. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
@@ -920,13 +933,10 @@ typedef struct {
     uint8_t padding;
 } MoveItemResponsePacket;
 
-// ============================================================================
-// PROJECTILE PACKETS
-// ============================================================================
-
+/** Bound the projectiles carried by one batch update. */
 #define MAX_PROJECTILES_PER_PACKET 32
 
-// Server -> Client: A new projectile was spawned
+/** Announce a projectile's owner, origin, direction, and speed. */
 typedef struct {
     PacketHeader header;
     uint32_t projectile_id;
@@ -938,13 +948,13 @@ typedef struct {
     float    speed;
 } ProjectileSpawnPacket;
 
-// Single projectile position entry for batch updates
+/** Describe one projectile position in a batch update. */
 typedef struct {
     uint32_t projectile_id;
     float    pos_x, pos_y;
 } ProjectilePositionData;
 
-// Server -> Client: Batch update of visible projectile positions
+/** Broadcast a bounded batch of visible projectile positions. */
 typedef struct {
     PacketHeader header;
     uint8_t count;
@@ -952,18 +962,14 @@ typedef struct {
     ProjectilePositionData projectiles[MAX_PROJECTILES_PER_PACKET];
 } ProjectileUpdatePacket;
 
-// Server -> Client: A projectile was destroyed
+/** Announce projectile destruction and its reason code. */
 typedef struct {
     PacketHeader header;
     uint32_t projectile_id;
     uint8_t  reason;            // 0=expired, 1=hit_target, 2=cancelled
 } ProjectileDestroyPacket;
 
-// ============================================================================
-// DEATH / RESPAWN PACKETS
-// ============================================================================
-
-// Server -> Client: A player died
+/** Announce a player's death and the responsible entity. */
 typedef struct {
     PacketHeader header;
     uint32_t dead_player_id;
@@ -971,7 +977,7 @@ typedef struct {
     uint8_t  killer_type;       // 0=npc, 1=player, 2=environment
 } PlayerDeathPacket;
 
-// Server -> Client: A player respawned
+/** Announce a player's respawn position and restored resources. */
 typedef struct {
     PacketHeader header;
     uint32_t player_id;
@@ -982,11 +988,7 @@ typedef struct {
     int32_t  max_mana;
 } PlayerRespawnPacket;
 
-// ============================================================================
-// LOOT PACKETS
-// ============================================================================
-
-// Server -> Client: Item dropped on ground
+/** Announce a ground-item drop and its world position. */
 typedef struct {
     PacketHeader header;
     uint32_t ground_item_id;
@@ -995,13 +997,13 @@ typedef struct {
     float    pos_x, pos_y;
 } LootDropPacket;
 
-// Client -> Server: Pick up a ground item
+/** Request collection of a ground item. */
 typedef struct {
     PacketHeader header;
     uint32_t ground_item_id;
 } LootPickupRequestPacket;
 
-// Server -> Client: Pickup result
+/** Return the inventory destination and result of a loot pickup. */
 typedef struct {
     PacketHeader header;
     uint8_t  success;
@@ -1012,18 +1014,16 @@ typedef struct {
     char     message[64];
 } LootPickupResponsePacket;
 
-// Server -> Client: Ground item disappeared
+/** Announce removal of a ground item. */
 typedef struct {
     PacketHeader header;
     uint32_t ground_item_id;
 } LootDespawnPacket;
 
-// ============================================================================
-// PLAYER POSITION BROADCAST
-// ============================================================================
-
+/** Bound the nearby players carried by one position broadcast. */
 #define MAX_NEARBY_PLAYERS 32
 
+/** Describe one nearby player's position, state, and reported latency. */
 typedef struct {
     uint32_t player_id;
     float    pos_x, pos_y;
@@ -1037,7 +1037,7 @@ typedef struct {
     uint8_t  padding[2];
 } NearbyPlayerData;
 
-// Server -> Client: Batch update of nearby player positions
+/** Broadcast a bounded batch of nearby player states. */
 typedef struct {
     PacketHeader header;
     uint8_t count;
@@ -1045,13 +1045,10 @@ typedef struct {
     NearbyPlayerData players[MAX_NEARBY_PLAYERS];
 } PlayerPositionBroadcastPacket;
 
-// ============================================================================
-// SESSION LIST (O MENU) — full server player list, paginated at 30 per page
-// ============================================================================
-
+/** Set the number of online players returned per session-list page. */
 #define SESSION_LIST_PAGE_SIZE 30
 
-// One entry per player in the server list
+/** Describe one online player in the paginated session list. */
 typedef struct {
     uint32_t player_id;
     char     name[32];
@@ -1063,14 +1060,14 @@ typedef struct {
     uint8_t  padding2[2];
 } SessionPlayerEntry;  // 44 bytes
 
-// Client -> Server: request page N of the online player list
+/** Request a zero-indexed page of online players. */
 typedef struct {
     PacketHeader header;
     uint16_t page;      // 0-indexed
     uint8_t  padding[2];
 } SessionListRequestPacket;
 
-// Server -> Client: one page of the online player list
+/** Return one page and the current pagination totals. */
 typedef struct {
     PacketHeader     header;
     uint32_t         total_players;   // total online right now
@@ -1081,11 +1078,7 @@ typedef struct {
     SessionPlayerEntry entries[SESSION_LIST_PAGE_SIZE];
 } SessionListResponsePacket;
 
-// ============================================================================
-// NPC TELEGRAPH PACKETS
-// ============================================================================
-
-// Server -> Client: NPC started casting - show ground indicator
+/** Announce an NPC cast and its telegraph geometry. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
@@ -1100,19 +1093,17 @@ typedef struct {
     float    cast_time;
 } NPCTelegraphStartPacket;
 
-// Server -> Client: NPC telegraph resolved - show impact VFX
+/** Announce resolution of an NPC cast telegraph. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
     uint16_t ability_id;
 } NPCTelegraphResolvePacket;
 
-// ============================================================================
-// CHAT PACKETS
-// ============================================================================
-
+/** Bound chat message storage including its terminator. */
 #define MAX_CHAT_MESSAGE 256
 
+/** Identify supported chat delivery channels. */
 typedef enum {
     CHAT_CHANNEL_LOCAL  = 0,
     CHAT_CHANNEL_GLOBAL = 1,
@@ -1120,7 +1111,7 @@ typedef enum {
     CHAT_CHANNEL_PARTY  = 3,
 } ChatChannel;
 
-// Client -> Server: Player sends a chat message
+/** Submit a message to a selected chat channel. */
 typedef struct {
     PacketHeader header;
     uint8_t  channel;
@@ -1128,7 +1119,7 @@ typedef struct {
     char     message[MAX_CHAT_MESSAGE];
 } ChatSendPacket;
 
-// Server -> Client: Chat message broadcast
+/** Broadcast a chat message with its sender identity. */
 typedef struct {
     PacketHeader header;
     uint32_t sender_id;
@@ -1138,47 +1129,44 @@ typedef struct {
     char     message[MAX_CHAT_MESSAGE];
 } ChatMessagePacket;
 
-// ============================================================================
-// PARTY PACKETS
-// ============================================================================
-
+/** Bound party membership including the leader. */
 #define MAX_PARTY_SIZE 5
 
-// Client -> Server: invite player by name
+/** Invite a named player to a party. */
 typedef struct {
     PacketHeader header;
     char target_name[32];
 } PartyInvitePacket;
 
-// Server -> Client: you have a pending invite
+/** Notify a player of a pending party invitation. */
 typedef struct {
     PacketHeader header;
     uint32_t from_id;
     char from_name[32];
 } PartyInviteNotifyPacket;
 
-// Client -> Server: accept invite
+/** Accept the caller's pending party invitation. */
 typedef struct {
     PacketHeader header;
 } PartyAcceptPacket;
 
-// Client -> Server: decline invite
+/** Decline the caller's pending party invitation. */
 typedef struct {
     PacketHeader header;
 } PartyDeclinePacket;
 
-// Client -> Server: leave party
+/** Request departure from the caller's current party. */
 typedef struct {
     PacketHeader header;
 } PartyLeavePacket;
 
-// Client -> Server: leader kicks member
+/** Request removal of a member by the party leader. */
 typedef struct {
     PacketHeader header;
     uint32_t target_id;
 } PartyKickPacket;
 
-// Server -> Client: full party state update
+/** Synchronize complete party membership and resource state. */
 typedef struct {
     PacketHeader header;
     uint32_t party_id;
@@ -1198,16 +1186,12 @@ typedef struct {
     } members[MAX_PARTY_SIZE];
 } PartyUpdatePacket;
 
-// Server -> Client: party disbanded
+/** Announce dissolution of the current party. */
 typedef struct {
     PacketHeader header;
 } PartyDisbandPacket;
 
-// ============================================================================
-// REWARD PACKETS
-// ============================================================================
-
-// Server -> Client: XP and gold gained from a kill
+/** Report kill rewards and the player's resulting totals. */
 typedef struct {
     PacketHeader header;
     uint32_t     xp_gained;
@@ -1216,18 +1200,16 @@ typedef struct {
     uint32_t     total_gold;     // Player's new total gold
 } KillRewardPacket;
 
-// ============================================================================
-// SHOP PACKETS
-// ============================================================================
-
+/** Bound the items advertised by one shop-open packet. */
 #define MAX_SHOP_ITEMS 32
 
+/** Pair a shop item identifier with its purchase price. */
 typedef struct {
     uint32_t item_id;
     uint32_t buy_price;
 } ShopItemInfo;
 
-// Server -> Client: Open shop window with item list
+/** Open a named shop with its current item prices. */
 typedef struct {
     PacketHeader header;
     uint32_t     shop_id;
@@ -1237,14 +1219,14 @@ typedef struct {
     ShopItemInfo items[MAX_SHOP_ITEMS];
 } ShopOpenPacket;
 
-// Client -> Server: Buy one item from the shop
+/** Request purchase of one item from a shop. */
 typedef struct {
     PacketHeader header;
     uint32_t shop_id;
     uint32_t item_id;
 } ShopBuyPacket;
 
-// Server -> Client: Result of a buy request
+/** Return the inventory destination and balance after a purchase. */
 typedef struct {
     PacketHeader header;
     uint8_t  success;
@@ -1255,7 +1237,7 @@ typedef struct {
     char     message[64];
 } ShopBuyResponsePacket;
 
-// Client -> Server: Sell one inventory slot to the shop
+/** Request sale of one inventory slot to a shop. */
 typedef struct {
     PacketHeader header;
     uint32_t shop_id;
@@ -1263,7 +1245,7 @@ typedef struct {
     uint8_t  padding[3];
 } ShopSellPacket;
 
-// Server -> Client: Result of a sell request
+/** Return the sold item, price, and resulting balance. */
 typedef struct {
     PacketHeader header;
     uint8_t  success;
@@ -1275,18 +1257,16 @@ typedef struct {
     char     message[64];
 } ShopSellResponsePacket;
 
-// ============================================================================
-// QUEST PACKETS
-// ============================================================================
-
+/** Bound objectives and item rewards carried by quest packets. */
 #define MAX_QUEST_OBJECTIVES 4
 
+/** Describe one quest objective and its required count. */
 typedef struct {
     char    description[64];
     int32_t required;
 } QuestObjectiveInfo;
 
-// Server -> Client: Quest accepted / added to log
+/** Add a quest and its objectives to the client's log. */
 typedef struct {
     PacketHeader       header;
     uint32_t           quest_id;
@@ -1296,7 +1276,7 @@ typedef struct {
     QuestObjectiveInfo objectives[MAX_QUEST_OBJECTIVES];
 } QuestAcceptPacket;
 
-// Server -> Client: Real-time objective progress update
+/** Synchronize progress for one quest objective. */
 typedef struct {
     PacketHeader header;
     uint32_t quest_id;
@@ -1306,6 +1286,7 @@ typedef struct {
     int32_t  required;
 } QuestProgressPacket;
 
+/** Describe one item granted by quest completion. */
 typedef struct {
     uint32_t item_id;
     uint8_t  quantity;
@@ -1313,7 +1294,7 @@ typedef struct {
     uint8_t  padding[2];
 } QuestRewardItem;
 
-// Server -> Client: Quest completed + rewards granted
+/** Announce quest completion and all granted rewards. */
 typedef struct {
     PacketHeader    header;
     uint32_t        quest_id;
@@ -1324,17 +1305,10 @@ typedef struct {
     QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
 
-// Network byte order conversion for 64-bit values.
-//
-// Deliberately NOT named htonll/ntohll. Windows declares those as inline
-// functions in winsock2.h (not macros), so a function-like macro of the same
-// name rewrites their declaration into garbage the moment this header is
-// included first. No include guard can detect that -- a macro cannot test for
-// the existence of a function -- so the only durable fix is to stay out of the
-// platform's namespace.
-//
-// NOTE: the argument is evaluated more than once. Do not pass a call or
-// anything with side effects; hoist it into a local first.
+/** Convert 64-bit integers to and from network order without platform-name collisions.
+ *
+ * Each macro evaluates its argument more than once; pass a value without side effects.
+ */
 #define mmo_htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
 #define mmo_ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
 

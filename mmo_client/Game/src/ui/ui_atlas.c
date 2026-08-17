@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Load named UI atlas regions and render them through the client renderer.
+ */
 #include "ui_atlas.h"
 #include "renderer.h"
 #include "texture.h"
@@ -6,6 +10,11 @@
 #include <string.h>
 #include <stdlib.h>
 
+/**
+ * Load an atlas texture and its whitespace-delimited sprite definition file.
+ *
+ * @return      Nonzero on success, otherwise zero after releasing any loaded texture.
+ */
 int ui_atlas_load(UIAtlas* atlas, const char* texture_path, const char* atlas_path) {
     memset(atlas, 0, sizeof(*atlas));
 
@@ -67,6 +76,7 @@ int ui_atlas_load(UIAtlas* atlas, const char* texture_path, const char* atlas_pa
     return 1;
 }
 
+/** Release an atlas texture and clear its sprite count. */
 void ui_atlas_unload(UIAtlas* atlas) {
     if (atlas->texture_id) {
         texture_unload(atlas->texture_id);
@@ -75,6 +85,11 @@ void ui_atlas_unload(UIAtlas* atlas) {
     atlas->count = 0;
 }
 
+/**
+ * Find a named sprite within an atlas.
+ *
+ * @return      A pointer into the atlas sprite array, or NULL when no name matches.
+ */
 const AtlasSprite* ui_atlas_get(const UIAtlas* atlas, const char* name) {
     for (int i = 0; i < atlas->count; i++) {
         if (strcmp(atlas->sprites[i].name, name) == 0)
@@ -84,6 +99,11 @@ const AtlasSprite* ui_atlas_get(const UIAtlas* atlas, const char* name) {
     return NULL;
 }
 
+/**
+ * Draw a named atlas sprite using optional destination dimensions.
+ *
+ * Zero width or height selects the sprite's corresponding natural dimension.
+ */
 void ui_atlas_draw(const UIAtlas* atlas, const char* name,
                    float x, float y, float w, float h) {
     const AtlasSprite* s = ui_atlas_get(atlas, name);
@@ -94,6 +114,11 @@ void ui_atlas_draw(const UIAtlas* atlas, const char* name,
                             s->u0, s->v0, s->u1, s->v1);
 }
 
+/**
+ * Draw a named atlas sprite with a color and alpha multiplier.
+ *
+ * Zero width or height selects the sprite's corresponding natural dimension.
+ */
 void ui_atlas_draw_tinted(const UIAtlas* atlas, const char* name,
                           float x, float y, float w, float h,
                           float r, float g, float b, float a) {

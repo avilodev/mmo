@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Load launcher server endpoints from the executable's configuration directory.
+ */
 #include "launcher_config.h"
 
 #include <windows.h>
@@ -10,6 +14,9 @@ int  g_login_server_port     = DEFAULT_LOGIN_PORT;
 char g_game_server_ip[64]   = DEFAULT_GAME_IP;
 int  g_game_server_port      = DEFAULT_GAME_PORT;
 
+/**
+ * Reset server endpoints to defaults and apply values from server.conf when present.
+ */
 void launcher_config_load(void) {
     // Reset to compiled-in defaults first
     strncpy(g_login_server_ip, DEFAULT_LOGIN_IP, sizeof(g_login_server_ip) - 1);

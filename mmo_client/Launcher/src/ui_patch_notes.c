@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Fetch and display patch notes within the launcher window.
+ */
 #include "ui_patch_notes.h"
 #include "network.h"
 #include "tls_client.h"
@@ -11,7 +15,13 @@ static BOOL g_patchNotesVisible = FALSE;
 static BOOL g_patchNotesFetched = FALSE;
 static char g_patchNotesContent[4096] = "Loading patch notes...";
 
-// Function to send patch notes request to server
+/**
+ * Fetch a bounded patch-note range from the login server over TLS.
+ *
+ * This call blocks and decodes a seven-byte MMO packet header in network byte order.
+ *
+ * @return      TRUE when patch-note content is received, otherwise FALSE with buffer populated.
+ */
 static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
     SOCKET sock = INVALID_SOCKET;
     struct sockaddr_in server_addr;
@@ -188,6 +198,7 @@ static BOOL FetchPatchNotes(char* buffer, int bufferSize) {
     }
 }
 
+/** Create the initially hidden patch-note panel and read-only text control. */
 void CreatePatchNotesPanel(HWND hwndParent) {
     // Create invisible panel initially
     g_hwndPatchNotesPanel = CreateWindowEx(
@@ -226,6 +237,7 @@ void CreatePatchNotesPanel(HWND hwndParent) {
     SendMessage(g_hwndPatchNotesText, WM_SETFONT, (WPARAM)hFont, TRUE);
 }
 
+/** Show cached patch notes or fetch and convert them for a Windows edit control. */
 void ShowPatchNotes(HWND hwndParent) {
     if (!g_hwndPatchNotesPanel) {
         CreatePatchNotesPanel(hwndParent);
@@ -284,6 +296,7 @@ void ShowPatchNotes(HWND hwndParent) {
     g_patchNotesVisible = TRUE;
 }
 
+/** Hide patch notes and restore the appropriate login-panel state. */
 void HidePatchNotes(void) {
     if (g_hwndPatchNotesPanel) {
         ShowWindow(g_hwndPatchNotesPanel, SW_HIDE);
@@ -294,10 +307,16 @@ void HidePatchNotes(void) {
     ShowLoginPanel();
 }
 
+/**
+ * Report whether the patch-note panel is visible.
+ *
+ * @return      TRUE while the panel is visible, otherwise FALSE.
+ */
 BOOL IsPatchNotesVisible(void) {
     return g_patchNotesVisible;
 }
 
+/** Accept the shared command-dispatch interface for the buttonless patch-note panel. */
 void HandlePatchNotesCommand(HWND hwnd, int controlId) {
     (void)hwnd;
     (void)controlId;

@@ -1,7 +1,7 @@
-// ============================================================================
-// shop_ui.c — Buy/Sell shop window
-// ============================================================================
-
+/**
+ * @file
+ * Render the vendor shop and dispatch buy or sell requests.
+ */
 #include "ui/shop_ui.h"
 #include "core/game_types.h"
 #include "renderer.h"
@@ -10,10 +10,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-// ============================================================================
-// Layout constants
-// ============================================================================
 
 #define SW_W        400.0f
 #define SW_H        480.0f
@@ -24,11 +20,11 @@
 #define SW_BTN_W     60.0f
 #define SW_BTN_H     24.0f
 
-// ============================================================================
-// Helper: draw the shop window chrome (background + title + tabs)
-// Returns the Y position where the item list starts.
-// ============================================================================
-
+/**
+ * Render the shop frame and return the item-list origin.
+ *
+ * @return      The screen-space Y coordinate where item rows begin.
+ */
 static float shop_chrome(const GameState* game, int vw, int vh,
                           float* out_px, float* out_py) {
     float px = ((float)vw - SW_W) * 0.5f;
@@ -80,10 +76,9 @@ static float shop_chrome(const GameState* game, int vw, int vh,
     return py + SW_HEADER_H + SW_TAB_H + 2.0f;
 }
 
-// ============================================================================
-// Render
-// ============================================================================
-
+/**
+ * Render the open shop's purchase or inventory-sale listing.
+ */
 void shop_ui_render(const GameState* game) {
     if (!game->playing->shop.is_open) return;
 
@@ -95,7 +90,6 @@ void shop_ui_render(const GameState* game) {
 
     float px, py;
     float list_y = shop_chrome(game, vw, vh, &px, &py);
-    float list_h = SW_H - (list_y - py) - SW_PAD;
     float max_y  = py + SW_H - SW_PAD;
 
     if (game->playing->shop.sell_tab == 0) {
@@ -181,10 +175,12 @@ void shop_ui_render(const GameState* game) {
     }
 }
 
-// ============================================================================
-// Input
-// ============================================================================
-
+/**
+ * Handle shop tabs, dismissal, and transaction buttons.
+ *
+ * @param clicked  Nonzero when the current pointer event is a click.
+ * @return         Nonzero when the shop consumes the pointer event, otherwise zero.
+ */
 int shop_ui_handle_input(GameState* game, float mx, float my, int clicked) {
     if (!game->playing->shop.is_open) return 0;
 

@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Stream, modify, query, and render the client's chunked tile world.
+ */
+
 #include "game_types.h"
 #include "renderer.h"
 #include "texture/texture.h"
@@ -6,10 +11,15 @@
 #include <string.h>
 #include <stdio.h>
 
-// ============================================================================
-// WORLD LIFECYCLE
-// ============================================================================
-
+/**
+ * Open a world file, read its layer metadata, and load tileset textures.
+ *
+ * The open file and textures remain owned by world until world_cleanup.
+ *
+ * @param world_file_path  Path to the binary world file in native file encoding.
+ * @param tile_size  Runtime tile size in pixels.
+ * @return      Nonzero on initialization success; otherwise zero.
+ */
 int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     memset(world, 0, sizeof(WorldState));
 
@@ -82,6 +92,9 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     return 1;
 }
 
+/**
+ * Ensure chunks around a player position are resident.
+ */
 void world_update_chunks(WorldState* world, float player_x, float player_y) {
     if (!world->world_file || world->tile_size == 0) return;
     world->current_frame++;
@@ -98,6 +111,11 @@ void world_update_chunks(WorldState* world, float player_x, float player_y) {
     }
 }
 
+/**
+ * Expire temporary tile modifications.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 void world_update_modifications(WorldState* world, float delta_time) {
     for (int i = 0; i < world->modification_count; i++) {
         if (world->modifications[i].duration > 0) {
@@ -119,6 +137,11 @@ static void chunk_free_display_lists(Chunk* c) {
     c->dl_dirty = 1;
 }
 
+/**
+ * Close the world file and release chunk display lists and tileset textures.
+ *
+ * A current OpenGL context must exist while display lists and textures are released.
+ */
 void world_cleanup(WorldState* world) {
     if (world->world_file) {
         fclose(world->world_file);
@@ -138,10 +161,11 @@ void world_cleanup(WorldState* world) {
     printf("[WORLD] Cleaned up\n");
 }
 
-// ============================================================================
-// CHUNK MANAGEMENT
-// ============================================================================
-
+/**
+ * Find or load a chunk and refresh its recency marker.
+ *
+ * @return      Resident chunk, or NULL for out-of-range coordinates or load failure.
+ */
 Chunk* world_get_chunk(WorldState* world, int chunk_x, int chunk_y) {
     if (chunk_x < 0 || chunk_x >= world->world_width_chunks ||
         chunk_y < 0 || chunk_y >= world->world_height_chunks)
@@ -158,6 +182,13 @@ Chunk* world_get_chunk(WorldState* world, int chunk_x, int chunk_y) {
     return world_load_chunk(world, chunk_x, chunk_y);
 }
 
+/**
+ * Read one chunk-shaped region from a world layer.
+ *
+ * @param layer_offset  Byte offset of the layer in the open world file.
+ * @param dst  Destination with capacity for CHUNK_SIZE squared tiles.
+ * @param fill_val  Value assigned outside world bounds.
+ */
 static void load_layer_rows(WorldState* world, long layer_offset, int tile_start_x, int tile_start_y,
                              uint16_t* dst, uint16_t fill_val) {
     for (int ly = 0; ly < CHUNK_SIZE; ly++) {
@@ -180,6 +211,11 @@ static void load_layer_rows(WorldState* world, long layer_offset, int tile_start
     }
 }
 
+/**
+ * Load a chunk into an unused or least-recently-used cache slot.
+ *
+ * @return      Loaded cache entry, or NULL when no file or slot is available.
+ */
 Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     if (!world->world_file) return NULL;
 
@@ -252,10 +288,11 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     return target;
 }
 
-// ============================================================================
-// TILE ACCESS
-// ============================================================================
-
+/**
+ * Read the effective base tile at world tile coordinates.
+ *
+ * @return      Packed tile value, or -1 outside the world or on chunk-load failure.
+ */
 int world_get_tile(const WorldState* world, int tx, int ty) {
     if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
         return -1;
@@ -271,6 +308,9 @@ int world_get_tile(const WorldState* world, int tx, int ty) {
     return chunk->tiles[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)];
 }
 
+/**
+ * Replace a resident base tile when its coordinates are valid.
+ */
 void world_set_tile(WorldState* world, int tx, int ty, int tile_type) {
     if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
         return;
@@ -279,10 +319,11 @@ void world_set_tile(WorldState* world, int tx, int ty, int tile_type) {
     chunk->tiles[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)] = (uint16_t)tile_type;
 }
 
-// ============================================================================
-// COLLISION CHECKING
-// ============================================================================
-
+/**
+ * Check collision at a world-space point.
+ *
+ * @return      Nonzero for blocked, out-of-range, or unavailable tiles; otherwise zero.
+ */
 int world_check_tile_collision(const WorldState* world, float x, float y) {
     int tx = (int)(x / world->tile_size);
     int ty = (int)(y / world->tile_size);
@@ -300,6 +341,11 @@ int world_check_tile_collision(const WorldState* world, float x, float y) {
     return chunk->collision[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)];
 }
 
+/**
+ * Check collision at the four corners of an axis-aligned box.
+ *
+ * @return      Nonzero when any corner is blocked; otherwise zero.
+ */
 int world_check_box_collision(const WorldState* world, float x, float y, float half_size) {
     if (world_check_tile_collision(world, x - half_size, y - half_size)) return 1;
     if (world_check_tile_collision(world, x + half_size, y - half_size)) return 1;
@@ -308,23 +354,21 @@ int world_check_box_collision(const WorldState* world, float x, float y, float h
     return 0;
 }
 
-// ============================================================================
-// COORDINATE CONVERSION
-// ============================================================================
-
+/**
+ * Convert a world position to containing tile coordinates.
+ */
 void world_to_tile(const WorldState* world, float wx, float wy, int* tx, int* ty) {
     *tx = (int)(wx / world->tile_size);
     *ty = (int)(wy / world->tile_size);
 }
 
+/**
+ * Convert tile coordinates to the tile center in world space.
+ */
 void tile_to_world(const WorldState* world, int tx, int ty, float* wx, float* wy) {
     *wx = tx * world->tile_size + world->tile_size / 2.0f;
     *wy = ty * world->tile_size + world->tile_size / 2.0f;
 }
-
-// ============================================================================
-// DYNAMIC MODIFICATIONS
-// ============================================================================
 
 // Mark the chunk containing (tile_x, tile_y) as needing a display list rebuild.
 static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
@@ -340,6 +384,12 @@ static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
     }
 }
 
+/**
+ * Add or replace a dynamic tile and collision override.
+ *
+ * @param duration  Lifetime in seconds, or a non-positive value for no expiry.
+ * @return      Nonzero when stored; otherwise zero when capacity is exhausted.
+ */
 int world_add_modification(WorldState* world, int tile_x, int tile_y,
                             uint16_t tile_type, uint8_t collision, float duration) {
     if (world->modification_count >= MAX_MODIFICATIONS) {
@@ -368,6 +418,9 @@ int world_add_modification(WorldState* world, int tile_x, int tile_y,
     return 1;
 }
 
+/**
+ * Remove a dynamic override at tile coordinates.
+ */
 void world_remove_modification(WorldState* world, int tile_x, int tile_y) {
     for (int i = 0; i < world->modification_count; i++) {
         if (world->modifications[i].tile_x == tile_x &&
@@ -379,6 +432,9 @@ void world_remove_modification(WorldState* world, int tile_x, int tile_y) {
     }
 }
 
+/**
+ * Clear every dynamic tile override and invalidate resident display lists.
+ */
 void world_clear_modifications(WorldState* world) {
     // Mark all loaded chunks dirty since any could have had modifications
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
@@ -387,11 +443,9 @@ void world_clear_modifications(WorldState* world) {
     world->modification_count = 0;
 }
 
-// ============================================================================
-// RENDERING HELPERS
-// ============================================================================
-
-// Compute visible chunk range from camera
+/**
+ * Compute the inclusive chunk range intersecting the camera viewport.
+ */
 static void visible_chunk_range(const WorldState* world, const Camera* camera,
                                  int* sc_x, int* ec_x, int* sc_y, int* ec_y) {
     float half_w = camera->viewport_width  / (2.0f * camera->zoom);
@@ -413,9 +467,11 @@ static void visible_chunk_range(const WorldState* world, const Camera* camera,
     *ec_y = ey / CHUNK_SIZE;
 }
 
-// Build (or rebuild) a chunk's display list for one layer.
-// Modifications are baked in so dynamic changes stay correct.
-// layer: 0=base, 1=floor, 2=interior, 3=above
+/**
+ * Compile one chunk layer into its OpenGL display list.
+ *
+ * @param layer  Layer index: zero base, one floor, two interior, or three above.
+ */
 static void chunk_build_display_list(WorldState* world, Chunk* chunk, int layer) {
     unsigned int* dl_id = (layer == 0) ? &chunk->dl_base
                         : (layer == 1) ? &chunk->dl_overlay_floor
@@ -498,6 +554,9 @@ static void chunk_build_display_list(WorldState* world, Chunk* chunk, int layer)
     glEndList();
 }
 
+/**
+ * Render visible chunks for one cached tile layer.
+ */
 static void render_tile_layer(const WorldState* world, const Camera* camera, int layer) {
     int sc_x, ec_x, sc_y, ec_y;
     visible_chunk_range(world, camera, &sc_x, &ec_x, &sc_y, &ec_y);
@@ -530,30 +589,40 @@ static void render_tile_layer(const WorldState* world, const Camera* camera, int
     }
 }
 
-// ============================================================================
-// RENDERING
-// ============================================================================
-
+/**
+ * Render the visible base tile layer.
+ */
 void world_render(const WorldState* world, const Camera* camera) {
     render_tile_layer(world, camera, 0);
 }
 
+/**
+ * Render the visible floor overlay layer.
+ */
 void world_render_overlay_floor(const WorldState* world, const Camera* camera) {
     render_tile_layer(world, camera, 1);
 }
 
+/**
+ * Render the visible interior overlay layer.
+ */
 void world_render_overlay_interior(const WorldState* world, const Camera* camera) {
     render_tile_layer(world, camera, 2);
 }
 
-// Used when player is inside — all overlay_above tiles draw over player (display list)
+/**
+ * Render all visible above-player overlay tiles from display lists.
+ */
 void world_render_overlay_above(const WorldState* world, const Camera* camera) {
     render_tile_layer(world, camera, 3);
 }
 
-// Y-sorted overlay_above for exterior — renders tiles directly (no display list)
-// north_half=1: only rows < player_ty  (draw before player)
-// north_half=0: only rows >= player_ty (draw after player)
+/**
+ * Render one Y-partition of the above-player overlay without display lists.
+ *
+ * @param player_ty  Player tile row used as the partition boundary.
+ * @param north_half  Nonzero for rows north of the boundary; zero for remaining rows.
+ */
 static void render_overlay_above_half(const WorldState* world, const Camera* camera,
                                        int player_ty, int north_half) {
     int sc_x, ec_x, sc_y, ec_y;
@@ -625,14 +694,25 @@ static void render_overlay_above_half(const WorldState* world, const Camera* cam
     if (in_begin) glEnd();
 }
 
+/**
+ * Render above-player overlay rows north of the player.
+ */
 void world_render_overlay_above_north(const WorldState* world, const Camera* camera, int player_ty) {
     render_overlay_above_half(world, camera, player_ty, 1);
 }
 
+/**
+ * Render above-player overlay rows at or south of the player.
+ */
 void world_render_overlay_above_south(const WorldState* world, const Camera* camera, int player_ty) {
     render_overlay_above_half(world, camera, player_ty, 0);
 }
 
+/**
+ * Check whether a world position has an interior floor overlay.
+ *
+ * @return      Nonzero for an interior tile; otherwise zero.
+ */
 int world_is_inside(const WorldState* world, float wx, float wy) {
     int tx = (int)(wx / world->tile_size);
     int ty = (int)(wy / world->tile_size);

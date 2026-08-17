@@ -7,7 +7,7 @@
 #define MAX_COMBAT_TARGETS 16
 #define MAX_DAMAGE_EVENTS  8
 
-// Single damage event for floating text
+/** Track one timed combat-number event in world space. */
 typedef struct {
     uint32_t target_id;
     float    world_x;
@@ -16,41 +16,37 @@ typedef struct {
     int      is_kill;
     int      is_crit;
     int      is_heal;
-    float    age;           // Seconds since event
+    float    age;           /**< Seconds since receipt. */
     int      active;
 } DamageEvent;
 
-// Main combat state
+/** Aggregate current cast geometry, targets, presentation, and cooldown state. */
 typedef struct {
-    // Cast state
     int         is_casting;
-    float       cast_elapsed;
-    float       cast_duration;
+    float       cast_elapsed;       /**< Elapsed cast time in seconds. */
+    float       cast_duration;      /**< Total cast duration in seconds. */
     AttackType  attack_type;
     
-    // Cast geometry (from server)
+    /** Server-provided world-space cast geometry. */
     float       origin_x;
     float       origin_y;
     float       aim_x;
     float       aim_y;
     
-    // Targets
     uint32_t    target_ids[MAX_COMBAT_TARGETS];
     uint8_t     target_count;
     
-    // Visual parameters (looked up from attack def)
+    /** Attack-definition geometry and color used for rendering. */
     float       range;
     float       radius;
     float       cone_angle;
     float       line_width;
     float       color_r, color_g, color_b, color_a;
     
-    // Damage events for floating text
     DamageEvent damage_events[MAX_DAMAGE_EVENTS];
     
-    // Cooldown tracking
-    float       cooldown_remaining;
-    float       cooldown_total;
+    float       cooldown_remaining; /**< Remaining attack cooldown in seconds. */
+    float       cooldown_total;     /**< Total attack cooldown in seconds. */
     
 } CombatState;
 

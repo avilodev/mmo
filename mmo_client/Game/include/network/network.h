@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Declare asynchronous realm/world networking and packet-result polling.
+ */
+
 #ifndef NETWORK_H
 #define NETWORK_H
 
@@ -7,46 +12,22 @@
 #include "protocol.h"
 #include "combat_render.h"
 
-// ----------------------------------------------------------------------------
-// INITIALIZATION
-// ----------------------------------------------------------------------------
-
 int  network_init(uint32_t account_id);
 void network_cleanup(void);
 void network_disconnect(void);
 int  network_is_connected(void);
 void network_set_character_id(uint32_t character_id);
 
-// ---------------------------------------------------------------------------
-// Server-side limiting
-//
-// The server enforces its packet budgets unconditionally; nothing here changes
-// what it allows. These two calls only let the UI explain what the server
-// already decided, instead of showing a hang or a generic "connection lost".
-// ---------------------------------------------------------------------------
-
-// Read and clear the last rate-limit rejection. Returns 1 if one was pending.
-// out_type is the opcode that was dropped; out_retry_ms is the server's hint
-// for how long until it would be accepted.
+/** Read and clear the last rejected opcode and retry delay in milliseconds. */
 int  network_get_rate_limit_notice(uint8_t* out_type, uint16_t* out_retry_ms);
 
-// Why the connection ended. Returns 1 if a reason is available. Survives
-// disconnect on purpose, so it can be read after the socket is gone.
+/** Read a disconnect reason retained after socket teardown. */
 int  network_get_disconnect_reason(uint8_t* out_reason, char* out_message, int message_size);
 
-// Clear the recorded reason before a fresh connection attempt.
 void network_clear_disconnect_reason(void);
-
-// ----------------------------------------------------------------------------
-// UPDATE (call every frame)
-// ----------------------------------------------------------------------------
 
 void network_update(void);
 void network_update_with_ping(int game_mode);
-
-// ----------------------------------------------------------------------------
-// REALM SERVER
-// ----------------------------------------------------------------------------
 
 int network_connect_to_realm(const char* ip, uint16_t port, 
                              const char* session_key, uint32_t account_id);
@@ -67,10 +48,6 @@ int network_get_character_delete_response(CharacterDeleteResponsePacket* out);
 int network_request_enter_world(uint32_t character_id, uint32_t world_id);
 int network_get_enter_world_response(EnterWorldResponsePacket* out);
 
-// ----------------------------------------------------------------------------
-// WORLD SERVER
-// ----------------------------------------------------------------------------
-
 int network_connect_to_world(const char* ip, uint16_t port,
                             const char* game_ticket, uint32_t character_id);
 
@@ -81,54 +58,28 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
 int network_get_server_correction(float* out_x, float* out_y);
 
 void network_send_ping(void);
-int  network_get_ping_ms(void);  // Returns most recent measured RTT in milliseconds
-
-// ----------------------------------------------------------------------------
-// COMBAT
-// ----------------------------------------------------------------------------
+/** Return the most recently measured round-trip time in milliseconds. */
+int  network_get_ping_ms(void);
 
 void network_update_facing_direction(float vel_x, float vel_y);
 void network_send_attack_intent(float aim_x, float aim_y);
 
-// ----------------------------------------------------------------------------
-// ABILITIES
-// ----------------------------------------------------------------------------
-
 void network_send_ability_cast(uint16_t ability_id, float aim_x, float aim_y, uint32_t target_id);
 void network_send_ability_cancel(void);
 
-// ----------------------------------------------------------------------------
-// STATS
-// ----------------------------------------------------------------------------
-
-// Request a full stat refresh from the server (e.g. on reconnect)
 void network_request_player_stats(void);
 
-// Request full character data refresh (updates XP, gold, inventory)
 void network_request_player_data_refresh(void);
 
-// ----------------------------------------------------------------------------
-// NPC DIALOGUE
-// ----------------------------------------------------------------------------
-
-// Request to interact with an NPC
 void network_send_npc_interact_request(uint32_t npc_id);
 
-// Send the player's selected dialogue option
 void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, uint8_t current_page, uint8_t option_selected);
 
-// Get the initial dialogue response from the server (returns 1 if ready, 0 if not)
 int network_get_npc_interact_response(NPCInteractResponsePacket* out);
 
-// Get the dialogue update from the server (returns 1 if ready, 0 if not)
 int network_get_dialogue_update(DialogueUpdatePacket* out);
 
-// Get the dialogue close notification from the server (returns 1 if ready, 0 if not)
 int network_get_dialogue_close(DialogueClosePacket* out);
-
-// ----------------------------------------------------------------------------
-// INVENTORY / EQUIPMENT
-// ----------------------------------------------------------------------------
 
 void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t equip_slot);
 void network_send_unequip_item(uint8_t equip_slot);
@@ -136,21 +87,9 @@ void network_send_use_item(uint8_t inventory_slot);
 void network_send_drop_item(uint8_t inventory_slot);
 void network_send_move_item(uint8_t from_slot, uint8_t to_slot);
 
-// ----------------------------------------------------------------------------
-// CHAT
-// ----------------------------------------------------------------------------
-
 void network_send_chat(uint8_t channel, const char* message);
 
-// ----------------------------------------------------------------------------
-// LOOT
-// ----------------------------------------------------------------------------
-
 void network_send_loot_pickup(uint32_t ground_item_id);
-
-// ----------------------------------------------------------------------------
-// PARTY
-// ----------------------------------------------------------------------------
 
 void network_send_party_invite(const char* target_name);
 void network_send_party_accept(void);
@@ -158,16 +97,8 @@ void network_send_party_decline(void);
 void network_send_party_leave(void);
 void network_send_party_kick(uint32_t target_id);
 
-// ----------------------------------------------------------------------------
-// SHOP
-// ----------------------------------------------------------------------------
-
 void network_send_shop_buy(uint32_t shop_id, uint32_t item_id);
 void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot);
-
-// ----------------------------------------------------------------------------
-// SESSION LIST (O MENU)
-// ----------------------------------------------------------------------------
 
 void network_send_session_list_request(uint16_t page);
 

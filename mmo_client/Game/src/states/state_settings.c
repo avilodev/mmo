@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Implement the main-menu settings state and its shared settings panel.
+ */
 #include "state_handler.h"
 #include "game.h"
 #include "renderer.h"
@@ -5,10 +9,6 @@
 #include "input/input.h"
 
 #include <stdio.h>
-
-// ============================================================================
-// SETTINGS STATE (entered from main menu)
-// ============================================================================
 
 static void settings_enter(GameState* game) {
     (void)game;
@@ -24,6 +24,7 @@ static void settings_update(GameState* game, float delta_time) {
     (void)game; (void)delta_time;
 }
 
+/** Render the scaled settings panel over the menu background. */
 static void settings_render(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
@@ -81,6 +82,7 @@ static void settings_render(GameState* game) {
     glLoadIdentity(); // Reset modelview after panel drawing
 }
 
+/** Handle settings controls, persistence, and return-to-menu input. */
 static void settings_input(GameState* game, GLFWwindow* window, float delta_time) {
     (void)window; (void)delta_time;
 
@@ -113,6 +115,7 @@ static void settings_input(GameState* game, GLFWwindow* window, float delta_time
     }
 }
 
+/** Dispatch lifecycle callbacks for the main-menu settings state. */
 const StateHandler g_state_settings = {
     .enter        = settings_enter,
     .exit         = settings_exit,

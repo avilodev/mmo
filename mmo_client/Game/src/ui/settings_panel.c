@@ -1,7 +1,12 @@
+/**
+ * @file
+ * Render shared settings controls and update their values from pointer input.
+ */
 #include "ui/settings_panel.h"
 #include "renderer.h"
 #include <stdio.h>
 
+/** Draw a labeled normalized-value slider row. */
 void sp_draw_slider(float px, float py, const char* label, float val,
                     float sr, float sg, float sb) {
     float sy = py + (SP_ROW - SP_SH) * 0.5f;
@@ -19,6 +24,7 @@ void sp_draw_slider(float px, float py, const char* label, float val,
     renderer_draw_text(sx + SP_SW + 6.0f, py + SP_ROW - 10.0f, pct);
 }
 
+/** Draw a labeled Boolean checkbox row. */
 void sp_draw_checkbox(float px, float py, const char* label, int on) {
     float bx = px + SP_SX, by = py + (SP_ROW - 18.0f) * 0.5f;
     renderer_draw_text(px + 20.0f, py + SP_ROW - 10.0f, label);
@@ -31,6 +37,7 @@ void sp_draw_checkbox(float px, float py, const char* label, int on) {
     renderer_draw_text(bx + 26.0f, py + SP_ROW - 10.0f, on ? "On" : "Off");
 }
 
+/** Render the audio and display settings panel content. */
 void sp_draw_content(float px, float py, const GameSettings* s) {
     float pw = SP_PW;
     renderer_draw_rect(px, py, pw, 46.0f, 0.14f, 0.20f, 0.30f, 1.0f);
@@ -59,6 +66,11 @@ void sp_draw_content(float px, float py, const GameSettings* s) {
     renderer_draw_text(px + SP_SX + SP_SW + 46.0f, ry + SP_ROW - 10.0f, scl);
 }
 
+/**
+ * Apply pointer interaction to settings controls and the close button.
+ *
+ * @return      Nonzero when the close button is clicked, otherwise zero.
+ */
 int sp_handle_mouse(float px, float py, float mx, float my,
                     int clicked, int held, GameSettings* s, float btn_y) {
     float sx = px + SP_SX;

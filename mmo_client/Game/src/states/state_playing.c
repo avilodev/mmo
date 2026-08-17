@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Coordinate gameplay simulation, world rendering, overlays, and player input.
+ */
+
 #include "game_types.h"
 #include "game.h"
 #include "texture/texture.h"
@@ -48,7 +53,11 @@ static float s_last_sent_y = 0.0f;
 static int s_move_state_init = 0;
 // Ability bar is now populated by PACKET_ABILITY_DATA from the server (network.c)
 
-// ENTER / EXIT
+/**
+ * Allocate gameplay state and initialize gameplay-only resources.
+ *
+ * The allocated PlayingState and textures are released by playing_exit.
+ */
 static void playing_enter(GameState* game) {
     printf("[STATE] Entering gameplay\n");
     s_move_state_init = 0;
@@ -87,6 +96,9 @@ static void playing_enter(GameState* game) {
     g_current_game = game;
 }
 
+/**
+ * Disconnect gameplay and release gameplay-only resources.
+ */
 static void playing_exit(GameState* game) {
     printf("[STATE] Exiting gameplay\n");
 
@@ -109,7 +121,11 @@ static void playing_exit(GameState* game) {
     }
 }
 
-// UPDATE
+/**
+ * Advance gameplay state and publish throttled movement updates.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 static void playing_update(GameState* game, float delta_time) {
     double now = glfwGetTime();
      
@@ -351,10 +367,9 @@ static void playing_update(GameState* game, float delta_time) {
     }
 }
 
-// ============================================================================
-// WORLD-SPACE RENDER HELPERS
-// ============================================================================
-
+/**
+ * Draw nearby players with class colors, health, and identity labels.
+ */
 static void render_nearby_players(GameState* game) {
     int size = game->world.tile_size * 2;
     for (int i = 0; i < game->playing->nearby_player_count; i++) {
@@ -403,6 +418,9 @@ static void render_projectiles(GameState* game) {
     }
 }
 
+/**
+ * Draw active NPC cast telegraphs with shape-specific geometry.
+ */
 static void render_telegraphs(GameState* game) {
     for (int i = 0; i < MAX_TELEGRAPHS; i++) {
         if (!game->playing->telegraphs[i].active) continue;
@@ -477,6 +495,9 @@ static void render_zones(GameState* game) {
     }
 }
 
+/**
+ * Draw expanding, fading rings for active healing effects.
+ */
 static void render_heal_vfxs(GameState* game) {
     for (int i = 0; i < MAX_HEAL_VFXS; i++) {
         HealVFX* vfx = &game->playing->heal_vfxs[i];
@@ -502,6 +523,9 @@ static void render_heal_vfxs(GameState* game) {
     }
 }
 
+/**
+ * Draw active ground-item markers.
+ */
 static void render_ground_items(GameState* game) {
     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
         if (!game->playing->ground_items[i].active) continue;
@@ -515,10 +539,9 @@ static void render_ground_items(GameState* game) {
     }
 }
 
-// ============================================================================
-// SCREEN-SPACE RENDER HELPERS
-// ============================================================================
-
+/**
+ * Draw chat history, channel state, and the active input buffer.
+ */
 static void render_chat(GameState* game) {
     ChatState* chat = &game->playing->chat;
 
@@ -602,6 +625,9 @@ static void render_chat(GameState* game) {
     }
 }
 
+/**
+ * Draw health and mana frames for current party members.
+ */
 static void render_party_frames(GameState* game) {
     PartyState* ps = &game->playing->party;
     if (!ps->has_party) return;
@@ -641,6 +667,9 @@ static void render_party_frames(GameState* game) {
     }
 }
 
+/**
+ * Draw the pending party invitation and response buttons.
+ */
 static void render_party_invite(GameState* game) {
     PartyState* ps = &game->playing->party;
     if (!ps->has_pending_invite) return;
@@ -671,6 +700,9 @@ static void render_party_invite(GameState* game) {
     renderer_draw_text(x + 198, y + 68, "Decline");
 }
 
+/**
+ * Draw the death overlay and animated respawn status.
+ */
 static void render_death_screen(GameState* game) {
     if (!game->playing->is_dead) return;
 
@@ -712,6 +744,9 @@ static void render_level_up(GameState* game) {
     renderer_draw_text(cx - 140, 126, msg);
 }
 
+/**
+ * Draw timed XP and gold reward notifications.
+ */
 static void render_reward_notifications(GameState* game) {
     // Notifications stack upward from center-right
     float base_x = (float)game->camera.viewport_width * 0.5f + 60.0f;
@@ -759,6 +794,9 @@ static void render_reward_notifications(GameState* game) {
 // Hovered buff icon index (-1 = none), updated each input frame
 static int s_hovered_effect = -1;
 
+/**
+ * Draw a bounded tooltip for the currently hovered status effect.
+ */
 static void render_buff_tooltip(const GameState* game) {
     if (s_hovered_effect < 0 || s_hovered_effect >= MAX_CLIENT_EFFECTS) return;
     const ClientStatusEffect* e = &game->playing->ability_bar.effects[s_hovered_effect];
@@ -795,6 +833,9 @@ static void render_buff_tooltip(const GameState* game) {
     }
 }
 
+/**
+ * Draw the scaled in-game settings panel over the world.
+ */
 static void render_settings_overlay(GameState* game) {
     if (!game->show_settings) return;
 
@@ -845,6 +886,9 @@ static void render_settings_overlay(GameState* game) {
     glPopMatrix();
 }
 
+/**
+ * Draw the centered, zoomable map with entity markers.
+ */
 static void render_big_map(GameState* game) {
     if (!game->playing->show_map) return;
 
@@ -947,6 +991,9 @@ static void render_big_map(GameState* game) {
     renderer_draw_text(px + 10.0f, bar_y + 14.0f, info);
 }
 
+/**
+ * Draw the pause menu and its navigation controls.
+ */
 static void render_pause_overlay(GameState* game) {
     if (!game->playing->is_paused) return;
 
@@ -994,7 +1041,9 @@ static void render_pause_overlay(GameState* game) {
 }
 
 
-// RENDER
+/**
+ * Render the ordered world layers, entities, HUD, panels, and overlays.
+ */
 static void playing_render(GameState* game) {
     renderer_begin_2d();
     camera_apply(&game->camera);
@@ -1092,12 +1141,13 @@ static void playing_render(GameState* game) {
     renderer_draw_text(10, 20, debug);
 }
 
-// INPUT
+/**
+ * Route gameplay, panel, chat, targeting, movement, and combat input.
+ *
+ * @param delta_time  Elapsed frame time in seconds for chat key repeat.
+ */
 static void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
 
-    // -------------------------------------------------------------------------
-    // PAUSE MENU  (handle first — blocks everything else)
-    // -------------------------------------------------------------------------
     if (game->playing->is_paused) {
         // ESC or R unpause
         if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE) ||
@@ -1134,9 +1184,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         return; // Block all gameplay input while paused
     }
 
-    // -------------------------------------------------------------------------
-    // SETTINGS OVERLAY  (gameplay continues, but input routed to settings)
-    // -------------------------------------------------------------------------
+    // route input to settings overlay
     if (game->show_settings) {
         if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
             game->show_settings = 0;
@@ -1165,9 +1213,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         return;
     }
 
-    // -------------------------------------------------------------------------
-    // BUFF ICON HOVER  (update each frame before gameplay input)
-    // -------------------------------------------------------------------------
+    // update hovered buff before gameplay input
     {
         float eff_x = game->playing->ability_bar.bar_x;
         float eff_y = game->playing->ability_bar.bar_y - 40.0f;
@@ -1637,6 +1683,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     (void)window;
 }
 
+/** State-handler table for GAME_MODE_PLAYING. */
 const StateHandler g_state_playing = {
     .enter = playing_enter,
     .exit = playing_exit,

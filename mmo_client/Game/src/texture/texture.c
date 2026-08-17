@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Load image files into OpenGL textures and query or release texture objects.
+ */
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -9,6 +14,14 @@
 #include <stdlib.h>
 
 
+/**
+ * Load an image file into a nearest-filtered OpenGL texture.
+ *
+ * A current OpenGL context must exist before this call.
+ *
+ * @param filepath  Path to an image format supported by stb_image.
+ * @return      OpenGL texture object, or zero when image loading fails.
+ */
 unsigned int texture_load(const char* filepath) {
     unsigned int texture_id;
     int width, height, channels;
@@ -50,6 +63,11 @@ unsigned int texture_load(const char* filepath) {
     return texture_id;
 }
 
+/**
+ * Delete an OpenGL texture object when nonzero.
+ *
+ * A current OpenGL context must exist before this call.
+ */
 void texture_unload(unsigned int texture_id) {
     if (texture_id != 0) {
         glDeleteTextures(1, &texture_id);
@@ -57,6 +75,14 @@ void texture_unload(unsigned int texture_id) {
     }
 }
 
+/**
+ * Query the level-zero dimensions of an OpenGL texture.
+ *
+ * A current OpenGL context must exist before this call.
+ *
+ * @param width  Destination for the texture width in pixels.
+ * @param height  Destination for the texture height in pixels.
+ */
 void texture_get_size(unsigned int texture_id, int* width, int* height) {
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, width);

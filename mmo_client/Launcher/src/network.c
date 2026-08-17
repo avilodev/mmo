@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Exchange launcher authentication and registration packets over TLS.
+ */
 #include "network.h"
 #include "tls_client.h"
 #include <stdio.h>
@@ -5,6 +9,11 @@
 
 static BOOL g_networkInitialized = FALSE;
 
+/**
+ * Initialize Winsock and the shared TLS client context.
+ *
+ * @return      TRUE when networking is available, otherwise FALSE.
+ */
 BOOL NetworkInit(void) {
     if (g_networkInitialized) return TRUE;
 
@@ -21,6 +30,7 @@ BOOL NetworkInit(void) {
     return TRUE;
 }
 
+/** Release launcher TLS and Winsock state when initialized. */
 void NetworkCleanup(void) {
     if (g_networkInitialized) {
         tls_client_cleanup();
@@ -29,7 +39,13 @@ void NetworkCleanup(void) {
     }
 }
 
-// STAGE 1: Validate credentials (returns player_id if successful, no session created)
+/**
+ * Validate credentials and obtain a single-use start-game token.
+ *
+ * This call blocks on a TLS connection and decodes fixed-width network-order packet fields.
+ *
+ * @return      TRUE on accepted credentials, otherwise FALSE with errorMsg populated.
+ */
 BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_player_id,
                       char out_auth_token[32], char* errorMsg, int errorMsgSize) {
     SOCKET sock = INVALID_SOCKET;
@@ -195,7 +211,13 @@ BOOL SendLoginRequest(const char* username, const char* password, uint32_t* out_
     }
 }
 
-// STAGE 2: Request game start (creates session and returns key)
+/**
+ * Redeem an authentication token for a world-session key.
+ *
+ * This call blocks on a TLS connection and expects the authentication response wire layout.
+ *
+ * @return      TRUE when a session key is returned, otherwise FALSE with errorMsg populated.
+ */
 BOOL SendStartGameRequest(uint32_t player_id, const char* username, const char auth_token[32],
                           char* out_session_key, char* errorMsg, int errorMsgSize) {
     SOCKET sock = INVALID_SOCKET;
@@ -333,9 +355,13 @@ BOOL SendStartGameRequest(uint32_t player_id, const char* username, const char a
     }
 }
 
-// Add this to network.c
-
-// REGISTRATION: Create new account
+/**
+ * Submit a fixed-width account-registration packet to the login server.
+ *
+ * This call blocks on a TLS connection; optional email and birthday strings may be empty.
+ *
+ * @return      TRUE when the account is created, otherwise FALSE with errorMsg populated.
+ */
 BOOL SendRegisterRequest(const char* username, const char* password, const char* email, const char* birthday,
                          uint32_t* out_player_id, char* errorMsg, int errorMsgSize) {
     SOCKET sock = INVALID_SOCKET;

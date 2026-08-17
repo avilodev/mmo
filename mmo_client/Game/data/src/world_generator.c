@@ -1,13 +1,14 @@
+/**
+ * @file
+ * Generate a standalone binary world map with terrain, collision, and decorations.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
-
-// ============================================================================
-// LARGE WORLD GENERATOR - 2000x2000 tiles with biomes and decorations
-// ============================================================================
 
 #define WORLD_WIDTH  2000
 #define WORLD_HEIGHT 2000
@@ -25,20 +26,30 @@
 #define DECO_TREE1  1
 #define DECO_SHRUB1 2
 
+/** Describe one serialized decoration and its chunk-local offset. */
 typedef struct {
     uint16_t decoration_id;
     float offset_x;
     float offset_y;
 } Decoration;
 
-// Enhanced noise function
+/**
+ * Generate deterministic coordinate noise.
+ *
+ * @return      A deterministic pseudo-random value derived from the coordinates and seed.
+ */
 float noise(int x, int y, int seed) {
     int n = x + y * 57 + seed * 131;
     n = (n << 13) ^ n;
     return (1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0f);
 }
 
-// Multi-octave noise for smoother terrain
+/**
+ * Combine decreasing-amplitude noise octaves.
+ *
+ * @param octaves  Positive number of frequency layers.
+ * @return      Normalized combined noise value.
+ */
 float noise_octaves(int x, int y, int seed, int octaves) {
     float result = 0.0f;
     float amplitude = 1.0f;
@@ -55,6 +66,13 @@ float noise_octaves(int x, int y, int seed, int octaves) {
     return result / max_value;
 }
 
+/**
+ * Generate and write the configured world data file.
+ *
+ * This function performs blocking random-access file I/O and leaves errors reported on stderr.
+ *
+ * @param output_path  Destination file path.
+ */
 void generate_large_world(const char* output_path) {
     FILE* f = fopen(output_path, "wb");
     if (!f) {
@@ -251,10 +269,16 @@ void generate_large_world(const char* output_path) {
     printf("  - 70%% trees, 30%% shrubs\n");
 }
 
+/**
+ * Generate a world file at the requested or default output path.
+ *
+ * @param argc  Command-line argument count.
+ * @param argv  Command-line arguments; argv[1] optionally selects the output path.
+ * @return      Zero after the generation attempt.
+ */
 int main(int argc, char* argv[]) {
     printf("=== Large World Generator ===\n\n");
     
-    // Seed random number generator
     srand(time(NULL));
     
     const char* output = "world_large.dat";

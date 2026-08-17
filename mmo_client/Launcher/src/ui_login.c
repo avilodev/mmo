@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Manage launcher login controls, authentication state, and game startup.
+ */
 #include "ui_login.h"
 #include "ui_status_bar.h"
 #include "network.h"
@@ -31,6 +35,7 @@ static WNDPROC g_oldUsernameProc = NULL;
 // Subclass procedure for password (with custom masking)
 static WNDPROC g_oldPasswordProc = NULL;
 
+/** Dispatch username-edit messages while suppressing newlines and painting its border. */
 LRESULT CALLBACK CustomUsernameProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // Prevent Enter key from adding newlines
     if (uMsg == WM_CHAR && wParam == VK_RETURN) {
@@ -70,6 +75,7 @@ LRESULT CALLBACK CustomUsernameProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
     return CallWindowProc(g_oldUsernameProc, hwnd, uMsg, wParam, lParam);
 }
 
+/** Dispatch password-edit messages while retaining the unmasked value separately. */
 LRESULT CALLBACK CustomPasswordProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     // Prevent Enter key from adding newlines
     if (uMsg == WM_CHAR && wParam == VK_RETURN) {
@@ -151,6 +157,7 @@ LRESULT CALLBACK CustomPasswordProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
     return CallWindowProc(g_oldPasswordProc, hwnd, uMsg, wParam, lParam);
 }
 
+/** Create and subclass the launcher's credential controls. */
 void CreateLoginPanel(HWND hwndParent) {
     int margin = 40;
     int entryBoxWidth = 300;
@@ -259,6 +266,7 @@ void CreateLoginPanel(HWND hwndParent) {
     CreateRegisterLink(hwndParent);
 }
 
+/** Hide the credential form and registration link. */
 void HideLoginPanel(void) {
     if (g_hwndUsername) ShowWindow(g_hwndUsername, SW_HIDE);
     if (g_hwndPassword) ShowWindow(g_hwndPassword, SW_HIDE);
@@ -269,6 +277,7 @@ void HideLoginPanel(void) {
     HideRegisterLink();
 }
 
+/** Create the authenticated-player label and start-game control. */
 void ShowStartGameButton(HWND hwndParent) {
     int margin = 40;
     int entryBoxWidth = 300;
@@ -321,6 +330,7 @@ void ShowStartGameButton(HWND hwndParent) {
     SendMessage(g_hwndStartGameButton, WM_SETFONT, (WPARAM)hButtonFont, TRUE);
 }
 
+/** Handle credential validation and authenticated session creation commands. */
 void HandleLoginCommand(HWND hwnd, WORD controlId) {
     if (controlId == ID_LOGIN_BUTTON) {
         char username[256];
@@ -423,6 +433,11 @@ void HandleLoginCommand(HWND hwnd, WORD controlId) {
     }
 }
 
+/**
+ * Launch the game process with the authenticated session in its environment.
+ *
+ * The child inherits MMO_SESSION before the launcher clears its own copy.
+ */
 void StartGame(HWND hwnd) {
     // Validate username contains only safe characters before inserting into
     // the CreateProcess command line (#8 — prevent argument injection)
@@ -513,15 +528,20 @@ void StartGame(HWND hwnd) {
     }
 }
 
+/** Copy the username control's current contents into a caller buffer. */
 void GetUsername(char* buffer, int bufferSize) {
     GetWindowText(g_hwndUsername, buffer, bufferSize);
 }
 
+/** Copy the separately stored unmasked password into a caller buffer. */
 void GetPassword(char* buffer, int bufferSize) {
     // Return the actual password, not the bullets
     snprintf(buffer, bufferSize, "%s", g_actualPassword);
 }
 
+/**
+ * Configure credential-edit colors and return their background brush.
+ */
 HBRUSH HandleEditControlColor(HWND hwnd, HDC hdc) {
     (void)hwnd;
     // Set text color to white
@@ -532,6 +552,7 @@ HBRUSH HandleEditControlColor(HWND hwnd, HDC hdc) {
     return g_hEditBrush;
 }
 
+/** Show controls appropriate to the current authenticated or logged-out state. */
 void ShowLoginPanel(void) {
     // Check if user is logged in based on player ID, not button visibility
     // (When switching tabs, buttons get hidden but user is still logged in)
@@ -578,11 +599,13 @@ void ShowLoginPanel(void) {
     }
 }
 
+/** Hide the authenticated-player label and start-game control. */
 void HideStartGameButton(void) {
     if (g_hwndWelcomeLabel) ShowWindow(g_hwndWelcomeLabel, SW_HIDE);
     if (g_hwndStartGameButton) ShowWindow(g_hwndStartGameButton, SW_HIDE);
 }
 
+/** Show the existing authenticated-player label and start-game control. */
 void ShowStartGameButtonOnly(void) {
     if (g_hwndWelcomeLabel) ShowWindow(g_hwndWelcomeLabel, SW_SHOW);
     if (g_hwndStartGameButton) ShowWindow(g_hwndStartGameButton, SW_SHOW);

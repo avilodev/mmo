@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Load local dialogue definitions and present server-selected dialogue pages.
+ */
 #include "ui/npc_dialogue.h"
 #include "renderer.h"
 #include <string.h>
@@ -6,17 +10,9 @@
 #include <ctype.h>
 #include <dirent.h>
 
-// ============================================================================
-// Static Storage
-// ============================================================================
-
 static DialogueDef* dialogue_table[MAX_DIALOGUES] = {0};
 static int dialogues_loaded = 0;
 static DialogueState g_dialogue = {0};
-
-// ============================================================================
-// JSON Parsing Helpers
-// ============================================================================
 
 static const char* skip_whitespace(const char* str) {
     while (*str && isspace(*str)) str++;
@@ -37,6 +33,11 @@ static const char* find_json_value(const char* json, const char* key) {
     return skip_whitespace(pos);
 }
 
+/**
+ * Decode a quoted JSON string into a bounded destination buffer.
+ *
+ * @return      Nonzero when the value begins with a quote, otherwise zero.
+ */
 static int parse_json_string(const char* val, char* out, int out_size) {
     val = skip_whitespace(val);
     if (*val != '"') return 0;
@@ -77,6 +78,11 @@ static const char* find_json_array(const char* json, const char* key) {
     return val + 1;
 }
 
+/**
+ * Find the next object at the current position in a JSON array.
+ *
+ * @return      The object's opening brace, or NULL at the end or for an unsupported element.
+ */
 static const char* next_array_element(const char* arr_pos) {
     arr_pos = skip_whitespace(arr_pos);
 
@@ -106,6 +112,13 @@ static const char* next_array_element(const char* arr_pos) {
     return NULL;
 }
 
+/**
+ * Read an entire dialogue file into a terminated buffer.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return      The allocated contents, or NULL when the file cannot be read or memory cannot be allocated.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -127,11 +140,11 @@ static char* read_file(const char* filepath) {
     return buffer;
 }
 
-// ============================================================================
-// Dialogue System Init/Cleanup
-// ============================================================================
-
-// Parse one per-NPC JSON file {"id":N,"name":"...","pages":[...]}
+/**
+ * Parse and register one per-NPC dialogue definition.
+ *
+ * @return      Nonzero when a valid definition is registered, otherwise zero.
+ */
 static int load_single_dialogue(const char* json_content) {
     DialogueDef* dialogue = calloc(1, sizeof(DialogueDef));
     if (!dialogue) return 0;
@@ -195,6 +208,12 @@ static int load_single_dialogue(const char* json_content) {
     return 0;
 }
 
+/**
+ * Initialize dialogue state and load every JSON definition in a directory.
+ *
+ * @param dir_path  Directory containing per-NPC JSON dialogue files.
+ * @return          Nonzero when the directory is opened and scanned, otherwise zero.
+ */
 int dialogue_system_init(const char* dir_path) {
     printf("[DIALOGUE] Loading dialogues from directory: %s\n", dir_path);
 
@@ -236,6 +255,9 @@ int dialogue_system_init(const char* dir_path) {
     return 1;
 }
 
+/**
+ * Release all loaded dialogue definitions and reset active state.
+ */
 void dialogue_system_cleanup(void) {
     for (int i = 0; i < MAX_DIALOGUES; i++) {
         if (dialogue_table[i]) {
@@ -249,6 +271,11 @@ void dialogue_system_cleanup(void) {
     printf("[DIALOGUE] Dialogue system cleaned up\n");
 }
 
+/**
+ * Find a loaded dialogue definition by protocol identifier.
+ *
+ * @return      The shared definition, or NULL when the identifier is invalid or unloaded.
+ */
 const DialogueDef* dialogue_get(uint32_t dialogue_id) {
     if (dialogue_id == 0 || dialogue_id >= MAX_DIALOGUES) {
         return NULL;
@@ -256,10 +283,9 @@ const DialogueDef* dialogue_get(uint32_t dialogue_id) {
     return dialogue_table[dialogue_id];
 }
 
-// ============================================================================
-// Dialogue UI Functions
-// ============================================================================
-
+/**
+ * Populate visible dialogue text and options from a loaded page.
+ */
 static void dialogue_lookup_and_display(uint32_t dialogue_id, uint8_t page_num,
                                         uint8_t option_count, const uint8_t* option_ids) {
     const DialogueDef* dialogue = dialogue_get(dialogue_id);
@@ -299,6 +325,9 @@ static void dialogue_lookup_and_display(uint32_t dialogue_id, uint8_t page_num,
     }
 }
 
+/**
+ * Open a dialogue window using the page and option identifiers supplied by the server.
+ */
 void dialogue_show(uint32_t npc_id, const char* npc_name, uint32_t dialogue_id,
                   uint8_t page_num, uint8_t option_count, const uint8_t* option_ids) {
     g_dialogue.is_active = true;
@@ -316,6 +345,9 @@ void dialogue_show(uint32_t npc_id, const char* npc_name, uint32_t dialogue_id,
            dialogue_id, page_num, npc_id, npc_name);
 }
 
+/**
+ * Replace the active dialogue page with a server-selected page.
+ */
 void dialogue_update_page(uint32_t dialogue_id, uint8_t page_num,
                          uint8_t option_count, const uint8_t* option_ids) {
     if (!g_dialogue.is_active) return;
@@ -329,20 +361,34 @@ void dialogue_update_page(uint32_t dialogue_id, uint8_t page_num,
     printf("[DIALOGUE] Updated to page %u\n", page_num);
 }
 
+/**
+ * Close the active dialogue window.
+ */
 void dialogue_close(void) {
     g_dialogue.is_active = false;
     g_dialogue.selected_option = -1;
     printf("[DIALOGUE] Closed dialogue window\n");
 }
 
+/**
+ * Report whether a dialogue window is active.
+ *
+ * @return      True while a dialogue is open, otherwise false.
+ */
 bool dialogue_is_active(void) {
     return g_dialogue.is_active;
 }
 
+/**
+ * Update dialogue state for a frame.
+ */
 void dialogue_update_state(float delta_time) {
     (void)delta_time;
 }
 
+/**
+ * Render the active dialogue window and its available responses.
+ */
 void dialogue_render(void) {
     if (!g_dialogue.is_active) {
         return;
@@ -404,6 +450,11 @@ void dialogue_render(void) {
     renderer_draw_text(x + w - 120.0f, y + h - 25.0f, close_hint);
 }
 
+/**
+ * Resolve a screen-space click against the displayed response options.
+ *
+ * @return      The selected option index, or -1 when no option was selected.
+ */
 int dialogue_handle_click(float mouse_x, float mouse_y) {
     if (!g_dialogue.is_active) {
         return -1;
@@ -438,14 +489,23 @@ int dialogue_handle_click(float mouse_x, float mouse_y) {
     return -1;
 }
 
+/**
+ * Return the NPC identifier associated with the dialogue state.
+ */
 uint32_t dialogue_get_current_npc(void) {
     return g_dialogue.npc_id;
 }
 
+/**
+ * Return the active dialogue definition identifier.
+ */
 uint32_t dialogue_get_current_dialogue_id(void) {
     return g_dialogue.dialogue_id;
 }
 
+/**
+ * Return the active dialogue page index.
+ */
 uint8_t dialogue_get_current_page(void) {
     return g_dialogue.current_page;
 }

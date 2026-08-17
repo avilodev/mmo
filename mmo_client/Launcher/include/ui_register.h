@@ -7,7 +7,7 @@
 #include <windows.h>
 #include "protocol.h"
 
-// Control IDs
+/** Identify registration controls in window command messages. */
 #define ID_REGISTER_USERNAME_BOX    2001
 #define ID_REGISTER_PASSWORD_BOX    2002
 #define ID_REGISTER_EMAIL_BOX       2003
@@ -20,14 +20,12 @@
 #define ID_REGISTER_BIRTHDAY_LABEL  2010
 #define ID_SHOW_REGISTER_BUTTON     2011
 
-// Functions
 void CreateRegisterPanel(HWND hwndParent);
 void ShowRegisterPanel(void);
 void HideRegisterPanel(void);
 void HandleRegisterCommand(HWND hwnd, WORD controlId);
 HBRUSH HandleRegisterEditControlColor(HWND hwnd, HDC hdc);
 
-// Add "Register" link to login panel
 void CreateRegisterLink(HWND hwndParent);
 void ShowRegisterLink(void);
 void HideRegisterLink(void);

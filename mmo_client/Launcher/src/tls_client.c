@@ -1,9 +1,20 @@
+/**
+ * @file
+ * Manage launcher TLS sessions and framed packet transfers.
+ */
 #include "tls_client.h"
 #include <stdio.h>
 #include <string.h>
 
 static SSL_CTX* g_ssl_ctx = NULL;
 
+/**
+ * Initialize the process-wide launcher TLS context.
+ *
+ * Server certificate verification is disabled and TLS 1.2 is the minimum protocol version.
+ *
+ * @return      TRUE when the context is available, otherwise FALSE.
+ */
 BOOL tls_client_init(void) {
     if (g_ssl_ctx) return TRUE;
 
@@ -20,9 +31,7 @@ BOOL tls_client_init(void) {
         return FALSE;
     }
 
-    // Skip server certificate verification.
-    // Threat model: passive sniffing on LAN/internet.
-    // MITM is out of scope for a private game server.
+    // certificate verification is disabled for this client
     SSL_CTX_set_verify(g_ssl_ctx, SSL_VERIFY_NONE, NULL);
 
     // Require TLS 1.2 minimum.
@@ -32,6 +41,7 @@ BOOL tls_client_init(void) {
     return TRUE;
 }
 
+/** Release the process-wide TLS context and OpenSSL algorithm state. */
 void tls_client_cleanup(void) {
     if (g_ssl_ctx) {
         SSL_CTX_free(g_ssl_ctx);
@@ -40,6 +50,13 @@ void tls_client_cleanup(void) {
     EVP_cleanup();
 }
 
+/**
+ * Perform a TLS handshake over an already connected socket.
+ *
+ * The caller retains ownership of the socket and must close it separately.
+ *
+ * @return      A connected TLS session, or NULL when setup or negotiation fails.
+ */
 SSL* tls_client_connect(SOCKET sock) {
     if (!g_ssl_ctx) {
         fprintf(stderr, "[TLS] tls_client_connect: context not initialized\n");
@@ -68,6 +85,11 @@ SSL* tls_client_connect(SOCKET sock) {
     return ssl;
 }
 
+/**
+ * Write a complete buffer through a TLS session.
+ *
+ * @return      The bytes written, or the TLS error result when no bytes were written.
+ */
 int tls_client_send(SSL* ssl, const void* buf, int len) {
     const unsigned char* ptr = (const unsigned char*)buf;
     int total = 0;
@@ -83,6 +105,11 @@ int tls_client_send(SSL* ssl, const void* buf, int len) {
     return total;
 }
 
+/**
+ * Read an exact byte count from a TLS session unless an error occurs.
+ *
+ * @return      The bytes read, or the TLS error result when no bytes were read.
+ */
 static int tls_recv_exact(SSL* ssl, unsigned char* buf, int len) {
     int total = 0;
     while (total < len) {
@@ -98,6 +125,13 @@ static int tls_recv_exact(SSL* ssl, unsigned char* buf, int len) {
     return total;
 }
 
+/**
+ * Receive one complete MMO packet framed by its seven-byte header.
+ *
+ * The payload length at header offset five is encoded in network byte order.
+ *
+ * @return      The complete packet size, a partial header result, or -1 for invalid input, overflow, or a truncated payload.
+ */
 int tls_client_recv_packet(SSL* ssl, void* buf, int capacity) {
     enum { MMO_HEADER_SIZE = 7 };
     if (!ssl || !buf || capacity < MMO_HEADER_SIZE) return -1;
@@ -120,6 +154,11 @@ int tls_client_recv_packet(SSL* ssl, void* buf, int capacity) {
     return packet_size;
 }
 
+/**
+ * Read up to a requested byte count from a TLS session.
+ *
+ * @return      The result from SSL_read.
+ */
 int tls_client_recv(SSL* ssl, void* buf, int len) {
     int ret = SSL_read(ssl, buf, len);
     if (ret <= 0) {
@@ -130,6 +169,7 @@ int tls_client_recv(SSL* ssl, void* buf, int len) {
     return ret;
 }
 
+/** Shut down and release a TLS session without closing its socket. */
 void tls_client_close(SSL* ssl) {
     if (!ssl) return;
     SSL_shutdown(ssl);

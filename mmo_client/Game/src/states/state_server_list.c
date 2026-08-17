@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Implement world-list retrieval, refresh timing, selection, and rendering.
+ */
+
 #include "state_handler.h"
 #include "game.h"
 #include "renderer.h"
@@ -7,10 +12,7 @@
 #include <winsock2.h>
 #include <GLFW/glfw3.h>
 
-// ============================================================================
-// SERVER LIST STATE
-// ============================================================================
-
+/** Refresh interval for a loaded world list, in seconds. */
 #define SERVER_LIST_REFRESH_INTERVAL 10.0
 
 static double s_last_refresh = 0.0;
@@ -30,14 +32,16 @@ static void server_list_exit(GameState* game) {
     printf("[STATE] Exiting server list\n");
 }
 
+/**
+ * Refresh the world list and bound stalled network requests.
+ *
+ * Background refresh failures wait a full interval before another attempt.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 static void server_list_update(GameState* game, float delta_time) {
     double now = glfwGetTime();
 
-    // A request that never gets answered -- dropped by the server as over
-    // budget, or lost some other way -- must not wedge the refresh loop. This
-    // list re-fetches on a timer, so releasing the in-flight flags is enough;
-    // the next interval retries on its own and there is nothing to tell the
-    // user about a refresh they never asked for.
     if (game->net_state != NET_STATE_IDLE) {
         game->net_wait_seconds += delta_time;
 
@@ -79,6 +83,9 @@ static void server_list_update(GameState* game, float delta_time) {
     }
 }
 
+/**
+ * Render the world list and process pointer selection and navigation.
+ */
 static void server_list_render(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
@@ -191,6 +198,7 @@ static void server_list_input(GameState* game, GLFWwindow* window, float delta_t
     }
 }
 
+/** State-handler table for GAME_MODE_SERVER_LIST. */
 const StateHandler g_state_server_list = {
     .enter = server_list_enter,
     .exit = server_list_exit,

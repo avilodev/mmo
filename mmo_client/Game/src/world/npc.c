@@ -1,9 +1,16 @@
+/**
+ * @file
+ * Locate and render NPCs visible to the MMO client.
+ */
 #include "npc.h"
 #include "renderer.h"
 
 #include <stdio.h>
 #include <math.h>
 
+/**
+ * Render one living NPC with its category styling and health display.
+ */
 void npc_render(const VisibleNPC* npc, int tile_size) {
     if (!npc->is_alive) return;
 
@@ -48,10 +55,7 @@ void npc_render(const VisibleNPC* npc, int tile_size) {
         return;
     }
 
-    // Category-based body color
-    // 0 = passive  (calm blue-green)
-    // 1 = hostile  (danger red)
-    // 2 = quest    (golden yellow)
+    // category selects passive, hostile, or quest coloring
     float cr, cg, cb;
     switch (npc->category) {
         case 1:  cr = 0.85f; cg = 0.20f; cb = 0.20f; break; // hostile - red
@@ -97,12 +101,20 @@ void npc_render(const VisibleNPC* npc, int tile_size) {
     }
 }
 
+/**
+ * Render every NPC in a visible-NPC array.
+ */
 void npc_render_all(const VisibleNPC* npcs, int count, int tile_size) {
     for (int i = 0; i < count; i++) {
         npc_render(&npcs[i], tile_size);
     }
 }
 
+/**
+ * Find a visible NPC by its server identifier.
+ *
+ * @return      A pointer into the supplied array, or NULL when no entry matches.
+ */
 const VisibleNPC* npc_find_by_id(const VisibleNPC* npcs, int count, uint32_t npc_id) {
     for (int i = 0; i < count; i++) {
         if (npcs[i].npc_id == npc_id) {
@@ -112,6 +124,11 @@ const VisibleNPC* npc_find_by_id(const VisibleNPC* npcs, int count, uint32_t npc
     return NULL;
 }
 
+/**
+ * Copy a visible NPC's world position into caller-provided outputs.
+ *
+ * @return      Nonzero when the NPC is found, otherwise zero.
+ */
 int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id,
                      float* out_x, float* out_y) {
     const VisibleNPC* npc = npc_find_by_id(npcs, count, npc_id);
@@ -123,6 +140,9 @@ int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id,
     return 0;
 }
 
+/**
+ * Render selection brackets around the targeted living NPC.
+ */
 void npc_render_target_indicator(const VisibleNPC* npcs, int count, int tile_size,
                                   uint32_t target_npc_id) {
     if (target_npc_id == 0) return;

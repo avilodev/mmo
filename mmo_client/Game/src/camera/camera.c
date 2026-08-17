@@ -1,8 +1,19 @@
+/**
+ * @file
+ * Track the client camera and convert between screen and world coordinates.
+ */
+
 #include "camera.h"
 #include <GLFW/glfw3.h>
 #include <math.h>
 #include <stdio.h>
 
+/**
+ * Initialize a camera for a logical viewport.
+ *
+ * @param viewport_width  Logical viewport width in pixels.
+ * @param viewport_height  Logical viewport height in pixels.
+ */
 void camera_init(Camera* camera, int viewport_width, int viewport_height) {
     camera->x = 0.0f;
     camera->y = 0.0f;
@@ -17,6 +28,11 @@ void camera_init(Camera* camera, int viewport_width, int viewport_height) {
     printf("Camera initialized: viewport %dx%d\n", viewport_width, viewport_height);
 }
 
+/**
+ * Move the camera toward a target using frame-rate-adjusted interpolation.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 void camera_update(Camera* camera, float target_x, float target_y, double delta_time) {
     // Store target position
     camera->target_x = target_x;
@@ -35,6 +51,9 @@ void camera_update(Camera* camera, float target_x, float target_y, double delta_
     camera->y += (target_camera_y - camera->y) * lerp_factor;
 }
 
+/**
+ * Snap the camera and its interpolation target to a world position.
+ */
 void camera_set_position(Camera* camera, float x, float y) {
     camera->x = x;
     camera->y = y;
@@ -42,6 +61,11 @@ void camera_set_position(Camera* camera, float x, float y) {
     camera->target_y = y;
 }
 
+/**
+ * Apply the camera as the current OpenGL projection.
+ *
+ * A current OpenGL context must exist before this call.
+ */
 void camera_apply(const Camera* camera) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -64,12 +88,24 @@ void camera_apply(const Camera* camera) {
     glLoadIdentity();
 }
 
+/**
+ * Convert logical screen coordinates to world coordinates.
+ *
+ * @param world_x  Destination for the converted world X coordinate.
+ * @param world_y  Destination for the converted world Y coordinate.
+ */
 void camera_screen_to_world(const Camera* camera, float screen_x, float screen_y,
                             float* world_x, float* world_y) {
     *world_x = (screen_x - camera->viewport_width / 2.0f) / camera->zoom + camera->x;
     *world_y = (screen_y - camera->viewport_height / 2.0f) / camera->zoom + camera->y;
 }
 
+/**
+ * Convert world coordinates to logical screen coordinates.
+ *
+ * @param screen_x  Destination for the converted screen X coordinate.
+ * @param screen_y  Destination for the converted screen Y coordinate.
+ */
 void camera_world_to_screen(const Camera* camera, float world_x, float world_y,
                             float* screen_x, float* screen_y) {
     *screen_x = (world_x - camera->x) * camera->zoom + camera->viewport_width / 2.0f;

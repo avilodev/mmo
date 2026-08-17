@@ -6,16 +6,14 @@
 
 #include "window_types.h"
 
+/** Define the status-bar height in pixels and its window control ID. */
 #define STATUS_BAR_HEIGHT 30
 #define ID_STATUS_BAR 1001
 
-// Create status bar at bottom of window
 void CreateStatusBar(HWND hwndParent);
 
-// Update status bar text
 void UpdateStatusBar(const char* status);
 
-// Set online/offline status
 void SetStatusOnline(void);
 void SetStatusOffline(void);
 

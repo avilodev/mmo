@@ -7,6 +7,7 @@
 
 #include "ui_register.h"
 
+/** Identify login-panel controls in window command messages. */
 #define ID_USERNAME_BOX 1001
 #define ID_PASSWORD_BOX 1002
 #define ID_LOGIN_BUTTON 1003

@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Manage launcher account-registration controls and submission.
+ */
 #include "ui_register.h"
 #include "ui_login.h"
 #include "ui_status_bar.h"
@@ -28,6 +32,7 @@ static WNDPROC g_oldRegPasswordProc = NULL;
 static WNDPROC g_oldRegEmailProc = NULL;
 static WNDPROC g_oldRegBirthdayProc = NULL;
 
+/** Dispatch registration username messages and paint the custom edit border. */
 LRESULT CALLBACK CustomRegUsernameProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_CHAR && wParam == VK_RETURN) {
         return 0;
@@ -60,6 +65,7 @@ LRESULT CALLBACK CustomRegUsernameProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     return CallWindowProc(g_oldRegUsernameProc, hwnd, uMsg, wParam, lParam);
 }
 
+/** Dispatch registration password messages while retaining the unmasked value separately. */
 LRESULT CALLBACK CustomRegPasswordProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_CHAR && wParam == VK_RETURN) {
         return 0;
@@ -126,6 +132,7 @@ LRESULT CALLBACK CustomRegPasswordProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     return CallWindowProc(g_oldRegPasswordProc, hwnd, uMsg, wParam, lParam);
 }
 
+/** Dispatch registration email messages and paint the custom edit border. */
 LRESULT CALLBACK CustomRegEmailProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_CHAR && wParam == VK_RETURN) {
         return 0;
@@ -158,6 +165,7 @@ LRESULT CALLBACK CustomRegEmailProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
     return CallWindowProc(g_oldRegEmailProc, hwnd, uMsg, wParam, lParam);
 }
 
+/** Dispatch registration birthday messages and paint the custom edit border. */
 LRESULT CALLBACK CustomRegBirthdayProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_CHAR && wParam == VK_RETURN) {
         return 0;
@@ -190,6 +198,7 @@ LRESULT CALLBACK CustomRegBirthdayProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     return CallWindowProc(g_oldRegBirthdayProc, hwnd, uMsg, wParam, lParam);
 }
 
+/** Create the login panel's registration navigation control. */
 void CreateRegisterLink(HWND hwndParent) {
     int margin = 40;
     int entryBoxWidth = 300;
@@ -217,6 +226,7 @@ void CreateRegisterLink(HWND hwndParent) {
     SendMessage(g_hwndShowRegisterButton, WM_SETFONT, (WPARAM)hLinkFont, TRUE);
 }
 
+/** Create and subclass the registration form controls. */
 void CreateRegisterPanel(HWND hwndParent) {
     int margin = 40;
     int entryBoxWidth = 300;
@@ -384,6 +394,7 @@ void CreateRegisterPanel(HWND hwndParent) {
     SendMessage(g_hwndBackToLoginButton, WM_SETFONT, (WPARAM)hBackFont, TRUE);
 }
 
+/** Clear and show the registration form while hiding login controls. */
 void ShowRegisterPanel(void) {
     if (!g_hwndRegUsername) {
         CreateRegisterPanel(GetMainWindow());
@@ -412,6 +423,7 @@ void ShowRegisterPanel(void) {
     if (g_hwndRegBirthdayLabel) ShowWindow(g_hwndRegBirthdayLabel, SW_SHOW);
 }
 
+/** Hide every registration form control. */
 void HideRegisterPanel(void) {
     if (g_hwndRegUsername) ShowWindow(g_hwndRegUsername, SW_HIDE);
     if (g_hwndRegPassword) ShowWindow(g_hwndRegPassword, SW_HIDE);
@@ -425,14 +437,17 @@ void HideRegisterPanel(void) {
     if (g_hwndRegBirthdayLabel) ShowWindow(g_hwndRegBirthdayLabel, SW_HIDE);
 }
 
+/** Show the registration navigation control. */
 void ShowRegisterLink(void) {
     if (g_hwndShowRegisterButton) ShowWindow(g_hwndShowRegisterButton, SW_SHOW);
 }
 
+/** Hide the registration navigation control. */
 void HideRegisterLink(void) {
     if (g_hwndShowRegisterButton) ShowWindow(g_hwndShowRegisterButton, SW_HIDE);
 }
 
+/** Validate registration fields and dispatch navigation or account creation. */
 void HandleRegisterCommand(HWND hwnd, WORD controlId) {
     if (controlId == ID_SHOW_REGISTER_BUTTON) {
         ShowRegisterPanel();
@@ -529,6 +544,9 @@ void HandleRegisterCommand(HWND hwnd, WORD controlId) {
     }
 }
 
+/**
+ * Configure registration-edit colors and return their background brush.
+ */
 HBRUSH HandleRegisterEditControlColor(HWND hwnd, HDC hdc) {
     (void)hwnd;
     SetTextColor(hdc, RGB(255, 255, 255));

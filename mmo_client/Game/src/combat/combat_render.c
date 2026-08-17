@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Render combat telegraphs, cast progress, cooldowns, and damage events.
+ */
 #include "combat_render.h"
 #include "renderer.h"
 #include <math.h>
@@ -7,11 +11,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// ============================================================================
-// INTERNAL HELPERS - Drawing primitives for attack shapes
-// ============================================================================
-
-// Draw a circle outline using small rectangles (since renderer only has draw_rect)
+/** Approximate a circle outline with rectangular samples. */
 static void draw_circle_outline(float cx, float cy, float radius, 
                                 float r, float g, float b, float a,
                                 int segments) {
@@ -27,7 +27,7 @@ static void draw_circle_outline(float cx, float cy, float radius,
     } 
 }
 
-// Draw a filled circle using pie slices (approximation)
+/** Approximate a filled circle with concentric sampled rings. */
 static void draw_circle_filled(float cx, float cy, float radius,
                                float r, float g, float b, float a,
                                int segments) {
@@ -49,7 +49,7 @@ static void draw_circle_filled(float cx, float cy, float radius,
     }
 }
 
-// Draw a cone/wedge shape
+/** Draw a sampled cone telegraph from an origin toward an aim point. */
 static void draw_cone(float origin_x, float origin_y,
                       float aim_x, float aim_y,
                       float range, float angle_degrees,
@@ -116,7 +116,7 @@ static void draw_cone(float origin_x, float origin_y,
     }
 }
 
-// Draw a line/beam shape (rectangle along direction)
+/** Draw a sampled rectangular beam along an aim direction. */
 static void draw_line_beam(float origin_x, float origin_y,
                            float aim_x, float aim_y,
                            float range, float width,
@@ -188,7 +188,7 @@ static void draw_line_beam(float origin_x, float origin_y,
     }
 }
 
-// Draw target reticle for single-target attacks
+/** Draw concentric targeting rings and crosshairs. */
 static void draw_target_reticle(float x, float y, float radius,
                                 float r, float g, float b, float a) {
     // Outer circle
@@ -213,10 +213,9 @@ static void draw_target_reticle(float x, float y, float radius,
     }
 }
 
-// ============================================================================
-// PUBLIC FUNCTIONS
-// ============================================================================
-
+/**
+ * Render the active attack telegraph with cast-progress animation.
+ */
 void combat_render_indicator(const CombatState* combat) {
     if (!combat || !combat->is_casting) {
         return;
@@ -307,6 +306,9 @@ void combat_render_indicator(const CombatState* combat) {
     }
 }
 
+/**
+ * Render active floating combat events with age-based motion and fading.
+ */
 void combat_render_damage_numbers(CombatState* combat) {
     if (!combat) return;
     
@@ -368,6 +370,9 @@ void combat_render_damage_numbers(CombatState* combat) {
     }
 }
 
+/**
+ * Render cast progress at the bottom center of the viewport.
+ */
 void combat_render_cast_bar(const CombatState* combat, float screen_width, float screen_height) {
     if (!combat || !combat->is_casting) {
         return;
@@ -418,6 +423,9 @@ void combat_render_cast_bar(const CombatState* combat, float screen_width, float
     renderer_draw_text(bar_x + bar_width + 10, bar_y + bar_height - 5, time_buf);
 }
 
+/**
+ * Render the active cooldown overlay for an ability icon.
+ */
 void combat_render_cooldown(const CombatState* combat, float x, float y, float size) {
     if (!combat || combat->cooldown_remaining <= 0.0f) {
         return;

@@ -1,12 +1,13 @@
+/**
+ * @file
+ * Implement the client's initial menu state and its navigation choices.
+ */
+
 #include "state_handler.h"
 #include "game.h"
 #include "renderer.h"
 #include "input/input.h"
 #include <stdio.h>
-
-// ============================================================================
-// MAIN MENU STATE
-// ============================================================================
 
 static void main_menu_enter(GameState* game) {
     printf("[STATE] Entering main menu\n");
@@ -23,6 +24,9 @@ static void main_menu_update(GameState* game, float delta_time) {
     game->main_menu.animation_time += delta_time;
 }
 
+/**
+ * Render the main menu and process pointer activation of its buttons.
+ */
 static void main_menu_render(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
@@ -108,6 +112,7 @@ static void main_menu_input(GameState* game, GLFWwindow* window, float delta_tim
     }
 }
 
+/** State-handler table for GAME_MODE_MAIN_MENU. */
 const StateHandler g_state_main_menu = {
     .enter = main_menu_enter,
     .exit = main_menu_exit,

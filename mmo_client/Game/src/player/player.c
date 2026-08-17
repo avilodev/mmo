@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Maintain client player movement, server position state, and world rendering.
+ */
+
 #include "player.h"
 #include "world/world.h"
 #include "input.h"
@@ -7,11 +12,17 @@
 #include <stdio.h>
 #include <math.h>
 
+/**
+ * Initialize an empty player state with the default movement speed.
+ */
 void player_init(PlayerState* player) {
     memset(player, 0, sizeof(PlayerState));
     player->speed = 200.0f;  // Default; overridden by server PACKET_PLAYER_STATS
 }
 
+/**
+ * Reset the player position and clear pending movement state.
+ */
 void player_reset_position(PlayerState* player, float x, float y) {
     player->x = x;
     player->y = y;
@@ -21,6 +32,13 @@ void player_reset_position(PlayerState* player, float x, float y) {
     printf("[PLAYER] Position reset to (%.1f, %.1f)\n", x, y);
 }
 
+/**
+ * Apply bound movement input while resolving collision per axis.
+ *
+ * @param world  Loaded world used for tile size and collision queries.
+ * @param delta_time  Elapsed frame time in seconds.
+ * @return      Nonzero when movement remains after collision resolution; otherwise zero.
+ */
 int player_update_movement(PlayerState* player, const InputState* input,
                            const WorldState* world, float delta_time) {
     float move_x = 0.0f;
@@ -75,12 +93,20 @@ int player_update_movement(PlayerState* player, const InputState* input,
     return (move_x != 0.0f || move_y != 0.0f);
 }
 
+/**
+ * Replace the local player position with a server correction.
+ */
 void player_apply_correction(PlayerState* player, float x, float y) {
     player->x = x;
     player->y = y;
     printf("[PLAYER] Server correction applied: (%.1f, %.1f)\n", x, y);
 }
 
+/**
+ * Copy server character data into the local player state.
+ *
+ * @param info  Complete character record received from the server.
+ */
 void player_load_info(PlayerState* player, const CharacterInfo* info) {
     memcpy(&player->info, info, sizeof(CharacterInfo));
     player->info_loaded = 1;
@@ -94,6 +120,12 @@ void player_load_info(PlayerState* player, const CharacterInfo* info) {
            info->name, info->level, info->pos_x, info->pos_y);
 }
 
+/**
+ * Draw the player sprite or fallback shape and its loaded identity label.
+ *
+ * @param texture  OpenGL texture object, or zero to draw the fallback shape.
+ * @param tile_size  World tile size in pixels.
+ */
 void player_render(const PlayerState* player, unsigned int texture, int tile_size) {
     int size = tile_size * 2;
 
@@ -126,6 +158,12 @@ void player_render(const PlayerState* player, unsigned int texture, int tile_siz
     }
 }
 
+/**
+ * Return the collision half-size used for a player.
+ *
+ * @param tile_size  World tile size in pixels.
+ * @return      Collision half-size in world pixels.
+ */
 float player_get_half_size(const PlayerState* player, int tile_size) {
     (void)player;
     return tile_size * 1.0f;

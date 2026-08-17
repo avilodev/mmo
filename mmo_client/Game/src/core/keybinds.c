@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Map configurable key names to GLFW codes and persist client bindings.
+ */
+
 #include "core/keybinds.h"
 
 #include <stdio.h>
@@ -6,10 +11,7 @@
 
 KeyBinds g_keybinds;
 
-// ============================================================================
-// String <-> GLFW key code table
-// ============================================================================
-
+/** Associate a configuration key name with its GLFW key code. */
 typedef struct { const char* name; int key; } KeyEntry;
 
 static const KeyEntry KEY_TABLE[] = {
@@ -69,10 +71,9 @@ static const char* name_from_key(int key) {
     return "UNKNOWN";
 }
 
-// ============================================================================
-// Defaults
-// ============================================================================
-
+/**
+ * Restore all client key bindings to factory defaults.
+ */
 void keybinds_defaults(void) {
     g_keybinds.move_up          = GLFW_KEY_W;
     g_keybinds.move_down        = GLFW_KEY_S;
@@ -90,10 +91,13 @@ void keybinds_defaults(void) {
     g_keybinds.ability[4]       = GLFW_KEY_5;
 }
 
-// ============================================================================
-// Load
-// ============================================================================
-
+/**
+ * Load recognized key bindings from a text configuration file.
+ *
+ * Defaults are installed first, so missing files and entries retain default bindings.
+ *
+ * @param path  Configuration file path to read.
+ */
 void keybinds_load(const char* path) {
     keybinds_defaults();
 
@@ -144,10 +148,11 @@ void keybinds_load(const char* path) {
     printf("[KEYBINDS] Loaded from %s\n", path);
 }
 
-// ============================================================================
-// Save
-// ============================================================================
-
+/**
+ * Write current key bindings to a text configuration file.
+ *
+ * @param path  Destination file path, which is replaced when writable.
+ */
 void keybinds_save(const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {

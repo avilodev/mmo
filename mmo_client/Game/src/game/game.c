@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Coordinate client game state, mode handlers, persistent settings, and subsystem lifetimes.
+ */
+
 #include "game.h"
 #include "renderer.h"
 #include "texture.h"
@@ -19,6 +24,15 @@
 #include <string.h>
 #include <direct.h>   // _mkdir
 
+/**
+ * Initialize the game state and its shared client subsystems.
+ *
+ * The inventory and character screen are heap-allocated and released by game_cleanup.
+ *
+ * @param game  Game state storage to initialize.
+ * @param viewport_width  Logical viewport width in pixels.
+ * @param viewport_height  Logical viewport height in pixels.
+ */
 void game_init(GameState* game, int viewport_width, int viewport_height) {
     memset(game, 0, sizeof(GameState));
     
@@ -118,6 +132,11 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     printf("[GAME] Viewport: %dx%d\n", viewport_width, viewport_height);
 }
 
+/**
+ * Exit the current mode and enter a new game mode.
+ *
+ * @param game  Initialized game state whose active handler is changed.
+ */
 void game_change_state(GameState* game, GameMode new_mode) {
     if (game->mode == new_mode) {
         printf("[GAME] Already in mode %d, skipping\n", new_mode);
@@ -148,6 +167,12 @@ void game_change_state(GameState* game, GameMode new_mode) {
     }
 }
 
+/**
+ * Refresh input state and dispatch input to the active mode handler.
+ *
+ * @param window  Active GLFW window used for input and coordinate scaling.
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 void game_handle_input(GameState* game, GLFWwindow* window, float delta_time) {
     // Get window size for mouse scaling
     int win_w, win_h;
@@ -166,6 +191,11 @@ void game_handle_input(GameState* game, GLFWwindow* window, float delta_time) {
     }
 }
 
+/**
+ * Update streamed world data and the active game mode.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 void game_update(GameState* game, float delta_time) {
     // Update world chunks based on player position (critical for chunked loading!)
     world_update_chunks(&game->world, game->player.x, game->player.y);
@@ -180,6 +210,9 @@ void game_update(GameState* game, float delta_time) {
     }
 }
 
+/**
+ * Clear the frame and render the active game mode.
+ */
 void game_render(GameState* game) {
     renderer_clear(0.1f, 0.1f, 0.2f);
     
@@ -190,6 +223,9 @@ void game_render(GameState* game) {
     }
 }
 
+/**
+ * Release game-owned resources and persist current settings.
+ */
 void game_cleanup(GameState* game) {
     // Exit current state
     const StateHandler* handler = state_handler_get(game->mode);
@@ -226,6 +262,12 @@ void game_cleanup(GameState* game) {
     printf("[GAME] Cleaned up\n");
 }
 
+/**
+ * Write client settings to a text configuration file.
+ *
+ * @param s  Settings values to serialize.
+ * @param path  Destination file path, which is replaced when writable.
+ */
 void game_settings_save(const GameSettings* s, const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
@@ -242,6 +284,14 @@ void game_settings_save(const GameSettings* s, const char* path) {
     printf("[GAME] Settings saved to %s\n", path);
 }
 
+/**
+ * Load recognized client settings from a text configuration file.
+ *
+ * Missing files and unrecognized lines leave the corresponding values unchanged.
+ *
+ * @param s  Existing settings to update with parsed values.
+ * @param path  Configuration file path to read.
+ */
 void game_settings_load(GameSettings* s, const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) return;  // No file yet — keep defaults
@@ -273,6 +323,13 @@ GLFWwindow* g_window = NULL;
 // Saved windowed-mode geometry for restoring after fullscreen exit
 static int s_win_x = 100, s_win_y = 100, s_win_w = 1728, s_win_h = 972;
 
+/**
+ * Apply audio levels and fullscreen state to active client subsystems.
+ *
+ * The global window pointer may be NULL before window creation or after shutdown.
+ *
+ * @param s  Settings values to apply.
+ */
 void game_settings_apply(const GameSettings* s) {
     audio_set_master_volume(s->master_volume);
     audio_set_music_volume(s->music_volume);

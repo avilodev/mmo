@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Render the in-game heads-up display and handle its panel controls.
+ */
 #include "hud.h"
 #include "renderer.h"
 #include "core/game_types.h"
@@ -7,6 +11,9 @@
 #include <math.h>
 #include <string.h>
 
+/**
+ * Initialize HUD element positions for the current viewport.
+ */
 void hud_init(HUDLayout* hud, int screen_width, int screen_height) {
     printf("[HUD] Initializing %dx%d\n", screen_width, screen_height);
     hud->screen_width = screen_width;
@@ -55,6 +62,11 @@ void hud_init(HUDLayout* hud, int screen_width, int screen_height) {
     hud->currency_spacing = 35.0f;
 }
 
+/**
+ * Test whether a screen position falls within the inventory button.
+ *
+ * @return      Nonzero when the position is inside the button, otherwise zero.
+ */
 int hud_check_inventory_button_clicked(const HUDLayout* hud, float mouse_x, float mouse_y) {
     float x = hud->inv_button_x;
     float y = hud->inv_button_y;
@@ -64,6 +76,11 @@ int hud_check_inventory_button_clicked(const HUDLayout* hud, float mouse_x, floa
             mouse_y >= y && mouse_y <= y + size);
 }
 
+/**
+ * Test whether a screen position falls within the character button.
+ *
+ * @return      Nonzero when the position is inside the button, otherwise zero.
+ */
 int hud_check_character_button_clicked(const HUDLayout* hud, float mouse_x, float mouse_y) {
     float x = hud->char_button_x;
     float y = hud->char_button_y;
@@ -73,6 +90,9 @@ int hud_check_character_button_clicked(const HUDLayout* hud, float mouse_x, floa
             mouse_y >= y && mouse_y <= y + size);
 }
 
+/**
+ * Render the complete playing-state HUD in screen coordinates.
+ */
 void hud_render(const HUDLayout* hud, const GameState* game) {
     if (!game->player.info_loaded) {
         return;
@@ -108,6 +128,9 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     hud_render_zone_banner(hud, game);
 }
 
+/**
+ * Render nearby entities and zone information on the minimap.
+ */
 void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
     float x    = hud->minimap_x;
     float y    = hud->minimap_y;
@@ -185,6 +208,9 @@ void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
     }
 }
 
+/**
+ * Render the local player's health bar.
+ */
 void hud_render_health_bar(const HUDLayout* hud, const GameState* game) {
     float x = hud->health_bar_x;
     float y = hud->health_bar_y;
@@ -222,6 +248,9 @@ void hud_render_health_bar(const HUDLayout* hud, const GameState* game) {
     renderer_draw_text(x + 10, y + height - 5, hp_text);
 }
 
+/**
+ * Render the local player's class resource bar.
+ */
 void hud_render_mana_bar(const HUDLayout* hud, const GameState* game) {
     float x = hud->mana_bar_x;
     float y = hud->mana_bar_y;
@@ -269,6 +298,9 @@ void hud_render_mana_bar(const HUDLayout* hud, const GameState* game) {
     renderer_draw_text(x + 10, y + height - 3, mana_text);
 }
 
+/**
+ * Render progress toward the server-provided experience threshold.
+ */
 void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     float x = hud->exp_bar_x;
     float y = hud->exp_bar_y;
@@ -305,6 +337,9 @@ void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     renderer_draw_text(x + 10, y + height - 3, exp_text);
 }
 
+/**
+ * Render the local player's level badge.
+ */
 void hud_render_level(const HUDLayout* hud, const GameState* game) {
     float x = hud->level_x;
     float y = hud->level_y;
@@ -329,6 +364,9 @@ void hud_render_level(const HUDLayout* hud, const GameState* game) {
     renderer_draw_text(x + 20, y + 45, level_num);
 }
 
+/**
+ * Render the inventory button.
+ */
 void hud_render_inventory_button(const HUDLayout* hud, const GameState* game) {
     (void)game;
     
@@ -358,6 +396,9 @@ void hud_render_inventory_button(const HUDLayout* hud, const GameState* game) {
     renderer_draw_rect(icon_x + 2*icon_size/3, icon_y, 2, icon_size, 0.7f, 0.6f, 0.2f, 1.0f);
 }
 
+/**
+ * Render the character-screen button.
+ */
 void hud_render_character_button(const HUDLayout* hud, const GameState* game) {
     (void)game;
     
@@ -393,6 +434,9 @@ void hud_render_character_button(const HUDLayout* hud, const GameState* game) {
     renderer_draw_rect(icon_x + 3, icon_y + 20, 2, 8, 0.3f, 0.8f, 0.3f, 1.0f);
 }
 
+/**
+ * Render the selected NPC's health panel.
+ */
 void hud_render_target_bar(const GameState* game, float screen_width) {
     if (game->playing->target_npc_id == 0) return;
 
@@ -444,6 +488,9 @@ void hud_render_target_bar(const GameState* game, float screen_width) {
     renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
 }
 
+/**
+ * Render the selected nearby player's health panel.
+ */
 void hud_render_player_target_bar(const GameState* game, float screen_width) {
     if (game->playing->target_player_id == 0) return;
 
@@ -500,6 +547,9 @@ void hud_render_player_target_bar(const GameState* game, float screen_width) {
     renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
 }
 
+/**
+ * Render health and resource frames for the current party.
+ */
 void hud_render_party_frames(const GameState* game) {
     if (!game->playing->party.has_party || game->playing->party.member_count == 0) return;
 
@@ -557,6 +607,9 @@ void hud_render_party_frames(const GameState* game) {
     }
 }
 
+/**
+ * Render the local player's currency display.
+ */
 void hud_render_currencies(const HUDLayout* hud, const GameState* game) {
     float x = hud->currency_x;
     float y = hud->currency_y;
@@ -573,6 +626,11 @@ void hud_render_currencies(const HUDLayout* hud, const GameState* game) {
     renderer_draw_text(x, y, gold_text);
 }
 
+/**
+ * Render the connection latency badge above the minimap.
+ *
+ * @param ping_ms  Round-trip latency in milliseconds, or a nonpositive value when unavailable.
+ */
 void hud_render_ping(const HUDLayout* hud, int ping_ms) {
     // Render ping badge just above the minimap in the upper-right
     char text[32];
@@ -601,7 +659,7 @@ void hud_render_ping(const HUDLayout* hud, int ping_ms) {
     renderer_draw_text(x + 2, y + h - 3, text);
 }
 
-// Class name helper (mirrors server-side Class enum)
+/** Map a protocol class identifier to its display name. */
 static const char* session_class_name(uint8_t cls) {
     switch (cls) {
         case 1: return "Gladiator";
@@ -612,6 +670,7 @@ static const char* session_class_name(uint8_t cls) {
     }
 }
 
+/** Map a protocol race identifier to its display name. */
 static const char* session_race_name(uint8_t race) {
     switch (race) {
         case 1: return "Human";
@@ -650,14 +709,20 @@ static float session_panel_x(const HUDLayout* hud) {
 }
 static float session_panel_y(void) { return 60.0f; }
 
+/**
+ * Render the paginated server session roster.
+ *
+ * @param own_ping_ms  Retained for the caller interface but currently unused.
+ */
 void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int own_ping_ms) {
+    // Each row carries its own ping from the server, so the viewer's own value
+    // is not needed here. Kept in the signature for callers.
+    (void)own_ping_ms;
+
     float px = session_panel_x(hud);
     float py = session_panel_y();
 
-    // -----------------------------------------------------------------------
-    // Static panel background texture (drawn once, covers the whole panel)
-    // Falls back to a flat rect if texture not loaded yet
-    // -----------------------------------------------------------------------
+    // fall back to a flat panel until the texture loads
     if (game->textures.session_panel_bg) {
         renderer_draw_sprite(px, py, SESSION_PANEL_W, SESSION_PANEL_H,
                              game->textures.session_panel_bg);
@@ -694,9 +759,7 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
     renderer_draw_rect(px + SESSION_PAD, sep_y, SESSION_PANEL_W - SESSION_PAD * 2, 1.0f,
                        0.30f, 0.36f, 0.48f, 0.8f);
 
-    // -----------------------------------------------------------------------
-    // Player rows — entry background texture drawn per row
-    // -----------------------------------------------------------------------
+    // draw one optional background texture per player row
     float row_y = sep_y + 2.0f;
 
     for (int i = 0; i < game->playing->session_list_count; i++) {
@@ -735,9 +798,7 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
         row_y += SESSION_ROW_H;
     }
 
-    // -----------------------------------------------------------------------
-    // Footer: prev/next buttons + page indicator
-    // -----------------------------------------------------------------------
+    // pagination footer
     float footer_y = py + SESSION_PANEL_H - SESSION_FOOTER_H;
     renderer_draw_rect(px, footer_y, SESSION_PANEL_W, 1.0f, 0.30f, 0.36f, 0.48f, 0.6f);
 
@@ -775,19 +836,16 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
                                 page_buf);
 }
 
-// ============================================================================
-// ZONE ENTRY BANNER (FF14-style)
-// Fades in quickly, holds, then fades out. Total duration = 4.0s.
-// Timer starts at 4.0 and counts down to 0.
-//   0.0–0.5s : fade-out  (timer 0→0.5)   alpha = timer / 0.5
-//   0.5–3.5s : full      (timer 0.5→3.5)  alpha = 1.0
-//   3.5–4.0s : fade-in   (timer 3.5→4.0)  alpha = (4.0 - timer) / 0.5
-// ============================================================================
+/** Total lifetime of a zone-entry banner, in seconds. */
 #define ZONE_BANNER_DURATION   4.0f
+/** Duration of each zone-banner fade, in seconds. */
 #define ZONE_BANNER_FADE_TIME  0.5f
 #define ZONE_BANNER_BAR_H      2.0f
 #define ZONE_BANNER_TEXT_Y_OFF 0.38f   // fraction of screen height
 
+/**
+ * Render the timed zone-entry banner.
+ */
 void hud_render_zone_banner(const HUDLayout* hud, const GameState* game) {
     if (!game->playing) return;
     float t = game->playing->zone_banner_timer;
@@ -827,6 +885,11 @@ void hud_render_zone_banner(const HUDLayout* hud, const GameState* game) {
                                  0.95f * alpha, 0.88f * alpha, 0.55f * alpha);
 }
 
+/**
+ * Resolve a click against the session panel's pagination controls.
+ *
+ * @return      -1 for the previous page, 1 for the next page, or 0 for neither.
+ */
 int hud_session_panel_handle_click(const GameState* game, float mx, float my) {
     // Must mirror the footer layout in hud_render_session_panel
     extern void hud_init(HUDLayout*, int, int);  // just to get screen_width via game->playing->hud

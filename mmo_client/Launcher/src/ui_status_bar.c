@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Manage the launcher's connection-status text control.
+ */
 #include "ui_status_bar.h"
 #include "window.h"
 #include <stdio.h>
@@ -5,6 +9,7 @@
 static HWND g_hwndStatusBar = NULL;
 static HBRUSH g_hStatusBrush = NULL;
  
+/** Create the initially hidden status control at the window's lower edge. */
 void CreateStatusBar(HWND hwndParent) {
     // Create dark brush for status bar
     if (g_hStatusBrush == NULL) {
@@ -33,6 +38,7 @@ void CreateStatusBar(HWND hwndParent) {
     SendMessage(g_hwndStatusBar, WM_SETFONT, (WPARAM)hFont, TRUE);
 }
 
+/** Replace the status control's displayed text. */
 void UpdateStatusBar(const char* status) {
     if (g_hwndStatusBar) {
         SetWindowText(g_hwndStatusBar, status);
@@ -40,6 +46,7 @@ void UpdateStatusBar(const char* status) {
     }
 }
 
+/** Display the predefined online status. */
 void SetStatusOnline(void) {
     if (g_hwndStatusBar) {
         SetWindowText(g_hwndStatusBar, "Status: Online");
@@ -47,6 +54,7 @@ void SetStatusOnline(void) {
     }
 }
 
+/** Display the predefined offline status. */
 void SetStatusOffline(void) {
     if (g_hwndStatusBar) {
         SetWindowText(g_hwndStatusBar, "Status: Offline");
@@ -54,6 +62,7 @@ void SetStatusOffline(void) {
     }
 }
 
+/** Show and repaint the status control. */
 void ShowStatusBar(void) {
     if (g_hwndStatusBar) {
         ShowWindow(g_hwndStatusBar, SW_SHOW);
@@ -61,12 +70,16 @@ void ShowStatusBar(void) {
     }
 }
 
+/** Hide the status control. */
 void HideStatusBar(void) {
     if (g_hwndStatusBar) {
         ShowWindow(g_hwndStatusBar, SW_HIDE);
     }
 }
 
+/**
+ * Return the shared brush used for the status background.
+ */
 HBRUSH GetStatusBarBrush(void) {
     return g_hStatusBrush;
 }

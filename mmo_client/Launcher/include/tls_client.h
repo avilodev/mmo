@@ -5,26 +5,26 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-// Initialize the global TLS client context. Idempotent — safe to call more
-// than once. Returns FALSE on failure. Call once from NetworkInit().
+/** Initialize the idempotent global TLS client context, returning FALSE on failure. */
 BOOL tls_client_init(void);
 
-// Free the global context. Call from NetworkCleanup().
+/** Free the global TLS client context during network cleanup. */
 void tls_client_cleanup(void);
 
-// Perform TLS client handshake over an already-connected socket.
-// Returns NULL on failure. The caller still owns sock and must
-// closesocket() it after calling tls_client_close().
+/** Establish TLS over a connected socket, returning NULL on failure.
+ *
+ * The caller retains the socket and closes it after tls_client_close().
+ */
 SSL* tls_client_connect(SOCKET sock);
 
-// Send/receive through TLS. Return values match SSL_write/SSL_read
-// (bytes transferred, or <= 0 on error).
+/** Send bytes with SSL_write return semantics. */
 int tls_client_send(SSL* ssl, const void* buf, int len);
+/** Receive bytes with SSL_read return semantics. */
 int tls_client_recv(SSL* ssl, void* buf, int len);
-// Receive one complete 7-byte-header framed MMO packet.
+/** Receive one complete MMO packet with its seven-byte header. */
 int tls_client_recv_packet(SSL* ssl, void* buf, int capacity);
 
-// Shut down and free a TLS session. Does NOT close the socket.
+/** Shut down and free a TLS session while leaving its socket open. */
 void tls_client_close(SSL* ssl);
 
 #endif // TLS_CLIENT_H

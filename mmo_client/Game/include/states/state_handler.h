@@ -4,11 +4,7 @@
 #include "core/game_types.h"
 #include <GLFW/glfw3.h>
 
-// ============================================================================
-// STATE HANDLER INTERFACE
-// Each game mode implements these functions
-// ============================================================================
-
+/** Group lifecycle, frame, rendering, and input callbacks for one game mode. */
 typedef struct {
     void (*enter)(GameState* game);
     void (*exit)(GameState* game);
@@ -17,10 +13,8 @@ typedef struct {
     void (*handle_input)(GameState* game, GLFWwindow* window, float delta_time);
 } StateHandler;
 
-// Get handler for a game mode
 const StateHandler* state_handler_get(GameMode mode);
 
-// State handler implementations (defined in states/ files)
 extern const StateHandler g_state_main_menu;
 extern const StateHandler g_state_server_list;
 extern const StateHandler g_state_character_select;

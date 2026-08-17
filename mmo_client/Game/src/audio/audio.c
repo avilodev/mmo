@@ -1,21 +1,18 @@
+/**
+ * @file
+ * Control client sound effects and background music through Windows winmm.
+ */
+
 #include "audio/audio.h"
 #include <windows.h>
 #include <mmsystem.h>
 #include <stdio.h>
 #include <string.h>
 
-// ============================================================================
-// STATE
-// ============================================================================
-
 static float g_master = 1.0f;
 static float g_music  = 1.0f;
 static float g_sfx    = 1.0f;
 static int   g_music_open = 0;  // 1 if MCI alias "bgm" is open
-
-// ============================================================================
-// INTERNAL HELPERS
-// ============================================================================
 
 // Convert 0.0-1.0 to Windows WORD volume (0-0xFFFF) and pack stereo
 static DWORD vol_to_dword(float v) {
@@ -41,41 +38,63 @@ static void push_music_volume(void) {
     mciSendStringA(cmd, NULL, 0, NULL);
 }
 
-// ============================================================================
-// PUBLIC API
-// ============================================================================
-
+/**
+ * Initialize the client audio backend.
+ */
 void audio_init(void) {
     printf("[AUDIO] Initialized (winmm backend)\n");
 }
 
+/**
+ * Stop playback and release audio state.
+ */
 void audio_cleanup(void) {
     audio_stop_music();
     printf("[AUDIO] Cleaned up\n");
 }
 
+/**
+ * Set the clamped master volume and apply it to active outputs.
+ */
 void audio_set_master_volume(float v) {
     g_master = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     push_wave_volume();
     push_music_volume();
 }
 
+/**
+ * Set the clamped music volume and apply it to active playback.
+ */
 void audio_set_music_volume(float v) {
     g_music = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     push_music_volume();
 }
 
+/**
+ * Set the clamped sound-effect volume and apply it to wave output.
+ */
 void audio_set_sfx_volume(float v) {
     g_sfx = (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
     push_wave_volume();
 }
 
+/**
+ * Start asynchronous playback of a wave-file sound effect.
+ *
+ * @param path  Non-empty wave-file path; missing files are ignored by the backend.
+ */
 void audio_play_sfx(const char* path) {
     if (!path || path[0] == '\0') return;
     // PlaySoundA is async; if file missing it silently fails (SND_NODEFAULT)
     PlaySoundA(path, NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
 }
 
+/**
+ * Replace current background music with a file-backed MCI stream.
+ *
+ * @param path  Non-empty path to a format supported by MCI.
+ * @param loop  Nonzero to repeat playback.
+ */
 void audio_play_music(const char* path, int loop) {
     if (!path || path[0] == '\0') return;
 
@@ -104,6 +123,9 @@ void audio_play_music(const char* path, int loop) {
     printf("[AUDIO] Playing music: %s\n", path);
 }
 
+/**
+ * Stop and close the active background-music stream.
+ */
 void audio_stop_music(void) {
     if (!g_music_open) return;
     mciSendStringA("stop bgm",  NULL, 0, NULL);
@@ -111,13 +133,27 @@ void audio_stop_music(void) {
     g_music_open = 0;
 }
 
-// ---------------------------------------------------------------------------
-// Named event helpers — update paths when assets are ready
-// ---------------------------------------------------------------------------
-
+/**
+ * Play the configured ability-cast sound.
+ */
 void audio_event_ability_cast(void) { audio_play_sfx("Game/Sounds/ability_cast.wav"); }
+/**
+ * Play the configured hit sound.
+ */
 void audio_event_hit(void)          { audio_play_sfx("Game/Sounds/hit.wav"); }
+/**
+ * Play the configured death sound.
+ */
 void audio_event_death(void)        { audio_play_sfx("Game/Sounds/death.wav"); }
+/**
+ * Play the configured level-up sound.
+ */
 void audio_event_level_up(void)     { audio_play_sfx("Game/Sounds/level_up.wav"); }
+/**
+ * Play the configured pickup sound.
+ */
 void audio_event_pickup(void)       { audio_play_sfx("Game/Sounds/pickup.wav"); }
+/**
+ * Play the configured interface-click sound.
+ */
 void audio_event_ui_click(void)     { audio_play_sfx("Game/Sounds/ui_click.wav"); }

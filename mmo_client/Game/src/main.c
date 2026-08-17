@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Start the game client and coordinate its window, network session, and frame loop.
+ */
+
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,24 +14,18 @@
 #include "network/network.h"
 #include "game_types.h"
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
 #define TARGET_FPS       60
 #define GAME_VIEW_WIDTH  1920
 #define GAME_VIEW_HEIGHT 1080
 
-// ============================================================================
-// GLOBALS
-// ============================================================================
-
 GameState* g_current_game = NULL;
 
-// ============================================================================
-// CALLBACKS
-// ============================================================================
-
+/**
+ * Adjust the active map or camera zoom from a scroll event.
+ *
+ * @param window  Window whose user pointer must reference the active GameState.
+ * @param yoffset  Signed scroll displacement reported by GLFW.
+ */
 static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     (void)xoffset;
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
@@ -57,10 +56,12 @@ static void char_callback(GLFWwindow* window, unsigned int codepoint) {
     }
 }
 
-// ============================================================================
-// ARGUMENT PARSING
-// ============================================================================
-
+/**
+ * Populate connection settings from the environment and command line.
+ *
+ * @param argv  Argument vector containing optional player, user, and server values.
+ * @param game  Game state to initialize with parsed connection settings.
+ */
 static void parse_arguments(int argc, char* argv[], GameState* game) {
     memset(game->session_key, 0, sizeof(game->session_key));
     memset(game->username, 0, sizeof(game->username));
@@ -125,6 +126,13 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
     printf("[ARGS] Server: %s:%d\n", game->realm_ip[0] ? game->realm_ip : "(none)", game->realm_port);
 }
 
+/**
+ * Decode hexadecimal byte pairs into a bounded binary buffer.
+ *
+ * @param hex  NUL-terminated hexadecimal input with two characters per byte.
+ * @param bin  Destination buffer for decoded bytes.
+ * @param bin_size  Capacity of bin in bytes.
+ */
 static void hex_to_binary(const char* hex, char* bin, size_t bin_size) {
     size_t hex_len = strlen(hex);
     size_t bin_len = hex_len / 2;
@@ -136,10 +144,11 @@ static void hex_to_binary(const char* hex, char* bin, size_t bin_size) {
     }
 }
 
-// ============================================================================
-// NETWORK CONNECTION
-// ============================================================================
-
+/**
+ * Connect the client to its configured realm server.
+ *
+ * @param game  Game state containing the session key, account, and realm endpoint.
+ */
 static void connect_to_realm(GameState* game) {
     if (game->session_key[0] == '\0' || game->account_id == 0 || game->realm_ip[0] == '\0') {
         printf("[NETWORK] Missing connection parameters\n");
@@ -161,10 +170,12 @@ static void connect_to_realm(GameState* game) {
     }
 }
 
-// ============================================================================
-// MAIN
-// ============================================================================
-
+/**
+ * Run the game client until its window closes or the game requests shutdown.
+ *
+ * @param argv  Argument vector containing optional connection parameters.
+ * @return      Zero after normal shutdown, or -1 when GLFW or window creation fails.
+ */
 int main(int argc, char* argv[]) {
     printf("=== MMO Client Starting ===\n");
     
@@ -245,10 +256,6 @@ int main(int argc, char* argv[]) {
     printf("Game viewport: %dx%d\n", window_width, window_height);
     printf("Network: %s\n\n", game.network_status);
     
-    // ========================================================================
-    // MAIN LOOP
-    // ========================================================================
-    
     while (!glfwWindowShouldClose(window) && game.is_running) {
         // Get framebuffer size
         int fb_width, fb_height;
@@ -298,7 +305,6 @@ int main(int argc, char* argv[]) {
         }
         prev_f11 = cur_f11;
 
-        // === GAME LOOP ===
         game_handle_input(&game, window, delta_time);
         game_update(&game, delta_time);
         game_render(&game);
@@ -312,10 +318,6 @@ int main(int argc, char* argv[]) {
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
-    
-    // ========================================================================
-    // CLEANUP
-    // ========================================================================
     
     printf("\n=== Shutting Down ===\n");
     

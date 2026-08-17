@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Manage client TCP sessions, packet framing, protocol dispatch, and pending responses.
+ */
+
 #include "ability_bar.h"
 #include "network.h"
 #include "game_types.h"
@@ -22,14 +27,7 @@
 #define NET_LOG(...) ((void)0)
 #endif
 
-// ============================================================================
-// NETWORK STATE — all module state in one place
-// ============================================================================
-
-// Each pending response uses the same layout: a ready flag + the data.
-// The response_lock (Windows CRITICAL_SECTION) protects all ready flags and
-// data fields so a future network thread can write them safely while the
-// main thread reads them via network_get_*().
+/** Hold the client socket, reassembly buffer, and lock-protected pending responses. */
 typedef struct {
     // Connection
     SOCKET   socket;
@@ -95,18 +93,18 @@ static NetContext g_net;
 // External game state for combat events
 extern GameState* g_current_game;
 
-// ============================================================================
-// HELPERS
-// ============================================================================
-
 static double get_time(void) {
     return glfwGetTime();
 }
 
-// ============================================================================
-// PACKET PROCESSOR
-// ============================================================================
-
+/**
+ * Validate and dispatch one complete protocol packet.
+ *
+ * Response fields are published while holding response_lock; gameplay events update g_current_game directly.
+ *
+ * @param data  Buffer containing one complete packet.
+ * @param length  Available packet length in bytes.
+ */
 static void process_packet(const char* data, int length) {
     if (length < (int)sizeof(PacketHeader)) {
         printf("[NET] ⚠️ Packet too small: %d bytes (need at least %zu)\n", 
@@ -293,6 +291,47 @@ static void process_packet(const char* data, int length) {
             }
             break;
             
+        case PACKET_INVENTORY_UPDATE:
+            if (length >= (int)(sizeof(PacketHeader) + 4)) {
+                InventoryUpdatePacket* pkt = (InventoryUpdatePacket*)data;
+                int count = pkt->count;
+                if (count > MAX_SLOT_UPDATES) count = MAX_SLOT_UPDATES;
+
+                // Refuse a packet that claims more entries than actually
+                // arrived, rather than reading past the end of the buffer.
+                int need = (int)(sizeof(PacketHeader) + 4 +
+                                 (size_t)count * sizeof(SlotUpdateEntry));
+                if (length < need) break;
+
+                if (g_current_game && g_current_game->inventory) {
+                    for (int i = 0; i < count; i++) {
+                        uint16_t slot = ntohs(pkt->slots[i].slot);
+                        const InventorySlotData* d = &pkt->slots[i].data;
+
+                        uint64_t instance_id = mmo_ntohll(d->instance_id);
+                        uint32_t item_id     = ntohl(d->item_id);
+                        uint16_t quantity    = ntohs(d->quantity);
+
+                        // equipment refreshes through CharacterInfo
+                        if (slot >= INVENTORY_SIZE) continue;
+
+                        ItemSlot* dst = &g_current_game->inventory->slots[slot];
+                        if (instance_id == 0) {
+                            dst->template_id = 0;
+                            dst->quantity    = 0;
+                            dst->instance_id = 0;
+                            dst->is_bound    = 0;
+                        } else {
+                            dst->instance_id = instance_id;
+                            dst->template_id = item_id;
+                            dst->quantity    = quantity ? quantity : 1;
+                            dst->is_bound    = d->is_bound;
+                        }
+                    }
+                }
+            }
+            break;
+
         case PACKET_PLAYER_MOVE_ACK:
             if (length >= (int)sizeof(PlayerMoveAckPacket)) {
                 PlayerMoveAckPacket* ack = (PlayerMoveAckPacket*)data;
@@ -1210,8 +1249,9 @@ static void process_packet(const char* data, int length) {
                 if (g_current_game && g_current_game->playing) {
                     g_current_game->playing->party.has_pending_invite = 1;
                     g_current_game->playing->party.invite_from_id = ntohl(pkt->from_id);
-                    strncpy(g_current_game->playing->party.invite_from_name, pkt->from_name, 31);
-                    g_current_game->playing->party.invite_from_name[31] = '\0';
+                    snprintf(g_current_game->playing->party.invite_from_name,
+                             sizeof(g_current_game->playing->party.invite_from_name),
+                             "%s", pkt->from_name);
                     g_current_game->playing->party.invite_timer = 30.0f;
                 }
             }
@@ -1293,10 +1333,7 @@ static void process_packet(const char* data, int length) {
         }
 
         case PACKET_RATE_LIMITED: {
-            // A request was dropped because this connection is over its packet
-            // budget. Movement and combat never arrive here -- the server drops
-            // those silently because the next packet supersedes them. Anything
-            // reported this way had a caller waiting on it.
+            // reported throttling excludes supersedable traffic
             if (length >= (int)sizeof(RateLimitedPacket)) {
                 RateLimitedPacket* pkt = (RateLimitedPacket*)data;
                 EnterCriticalSection(&g_net.response_lock);
@@ -1311,10 +1348,6 @@ static void process_packet(const char* data, int length) {
             }
             break;
         }
-
-        // ----------------------------------------------------------------
-        // SHOP packets
-        // ----------------------------------------------------------------
 
         case PACKET_SHOP_OPEN:
             if (length >= (int)sizeof(ShopOpenPacket) && g_current_game && g_current_game->playing) {
@@ -1373,10 +1406,6 @@ static void process_packet(const char* data, int length) {
             }
             break;
 
-        // ----------------------------------------------------------------
-        // SESSION LIST (O menu)
-        // ----------------------------------------------------------------
-
         case PACKET_SESSION_LIST_RESPONSE: {
             // Server sends a variable-length packet: fixed header + count entries.
             // Minimum needed: up to (but not including) the entries array.
@@ -1418,10 +1447,6 @@ static void process_packet(const char* data, int length) {
                    (int)count);
             break;
         }
-
-        // ----------------------------------------------------------------
-        // QUEST packets
-        // ----------------------------------------------------------------
 
         case PACKET_QUEST_ACCEPT:
             if (length >= (int)sizeof(QuestAcceptPacket) && g_current_game && g_current_game->playing) {
@@ -1508,10 +1533,11 @@ static void process_packet(const char* data, int length) {
     }
 }
 
-// ============================================================================
-// PUBLIC API - INITIALIZATION
-// ============================================================================
-
+/**
+ * Initialize Winsock and the shared network context.
+ *
+ * @return      Nonzero on success or when already initialized; otherwise zero.
+ */
 int network_init(uint32_t account_id) {
     if (g_net.initialized) return 1;
 
@@ -1533,6 +1559,9 @@ int network_init(uint32_t account_id) {
     return 1;
 }
 
+/**
+ * Close the socket and release Winsock and synchronization resources.
+ */
 void network_cleanup(void) {
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
@@ -1549,6 +1578,9 @@ void network_cleanup(void) {
     DeleteCriticalSection(&g_net.response_lock);
 }
 
+/**
+ * Send a logout when connected, close the socket, and clear session responses.
+ */
 void network_disconnect(void) {
     if (g_net.socket != INVALID_SOCKET) {
         if (g_net.connected) {
@@ -1582,13 +1614,22 @@ void network_disconnect(void) {
     LeaveCriticalSection(&g_net.response_lock);
 }
 
+/**
+ * Check whether the network context currently has an accepted connection.
+ *
+ * @return      Nonzero while connected; otherwise zero.
+ */
 int network_is_connected(void) {
     return g_net.connected;
 }
 
-// Read and clear the last rate-limit rejection. Returns 1 if one was pending.
-// UI code polls this alongside its normal response getters so a dropped request
-// closes out instead of waiting forever.
+/**
+ * Consume the most recent server rate-limit notice.
+ *
+ * @param out_type  Optional destination for the rejected packet type.
+ * @param out_retry_ms  Optional destination for the retry delay in milliseconds.
+ * @return      Nonzero when a notice was consumed; otherwise zero.
+ */
 int network_get_rate_limit_notice(uint8_t* out_type, uint16_t* out_retry_ms) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.rate_limit.ready) {
@@ -1602,9 +1643,16 @@ int network_get_rate_limit_notice(uint8_t* out_type, uint16_t* out_retry_ms) {
     return 1;
 }
 
-// Why the connection ended, if the server said or we inferred it. Returns 1 if
-// a reason is available. Not cleared by disconnect -- the UI reads this after
-// the socket is already gone.
+/**
+ * Copy the retained connection-termination reason.
+ *
+ * The reason survives disconnect so callers can query it after socket closure.
+ *
+ * @param out_reason  Optional destination for the protocol reason code.
+ * @param out_message  Optional destination for a NUL-terminated message.
+ * @param message_size  Capacity of out_message in bytes.
+ * @return      Nonzero when a reason is available; otherwise zero.
+ */
 int network_get_disconnect_reason(uint8_t* out_reason, char* out_message, int message_size) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.disconnect.set) {
@@ -1620,8 +1668,9 @@ int network_get_disconnect_reason(uint8_t* out_reason, char* out_message, int me
     return 1;
 }
 
-// Drop any recorded reason. Call when starting a fresh connection attempt so a
-// stale cause is never shown against a new session.
+/**
+ * Clear the retained connection-termination reason.
+ */
 void network_clear_disconnect_reason(void) {
     EnterCriticalSection(&g_net.response_lock);
     g_net.disconnect.set = FALSE;
@@ -1629,16 +1678,20 @@ void network_clear_disconnect_reason(void) {
     LeaveCriticalSection(&g_net.response_lock);
 }
 
+/**
+ * Set the character identifier used in world-server packet headers.
+ */
 void network_set_character_id(uint32_t character_id) {
     g_net.character_id = character_id;
     printf("[NET] Character ID set to %u\n", character_id);
 }
 
-// ============================================================================
-// PUBLIC API - UPDATE
-// ============================================================================
-
-// Returns the expected total size for a given packet type, or 0 if unknown
+/**
+ * Return the expected fixed wire size for a packet type.
+ *
+ * @return      Fixed packet size in bytes, or zero for variable or unknown types.
+ */
+__attribute__((unused))
 static int get_packet_size(uint8_t type) {
     switch (type) {
         // Basic packets
@@ -1790,6 +1843,11 @@ static int get_packet_size(uint8_t type) {
     }
 }
 
+/**
+ * Receive available TCP bytes and dispatch every complete framed packet.
+ *
+ * The socket is nonblocking; incomplete packets remain in the reassembly buffer for a later call.
+ */
 void network_update(void) {
     if (g_net.socket == INVALID_SOCKET || !g_net.connected) return;
 
@@ -1879,6 +1937,11 @@ void network_update(void) {
     }
 }
 
+/**
+ * Process incoming packets and maintain the connection heartbeat.
+ *
+ * Disconnect after PING_MAX_MISSED unanswered heartbeat intervals.
+ */
 void network_update_with_ping(int game_mode) {
     network_update();
 
@@ -1916,10 +1979,14 @@ void network_update_with_ping(int game_mode) {
     }
 }
 
-// ============================================================================
-// PUBLIC API - REALM CONNECTION
-// ============================================================================
-
+/**
+ * Connect and authenticate to a realm server.
+ *
+ * This call blocks while polling for an acknowledgement for up to ten seconds.
+ *
+ * @param session_key  Buffer containing 32 binary session-key bytes.
+ * @return      Nonzero when the realm accepts the connection; otherwise zero.
+ */
 int network_connect_to_realm(const char* ip, uint16_t port,
                             const char* session_key, uint32_t account_id) {
     if (!g_net.initialized) return 0;
@@ -2010,6 +2077,11 @@ int network_connect_to_realm(const char* ip, uint16_t port,
     return 1;
 }
 
+/**
+ * Send a world-list request and clear any prior response.
+ *
+ * @return      Nonzero when the complete request is sent; otherwise zero.
+ */
 int network_request_world_list(void) {
     if (!g_net.connected) return 0;
 
@@ -2026,6 +2098,11 @@ int network_request_world_list(void) {
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume the pending world-list response.
+ *
+ * @return      Nonzero when a response is copied; otherwise zero.
+ */
 int network_get_world_list(WorldListResponsePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.world_list.ready) {
@@ -2038,6 +2115,11 @@ int network_get_world_list(WorldListResponsePacket* out) {
     return 1;
 }
 
+/**
+ * Request the account's characters for a world.
+ *
+ * @return      Nonzero when the complete request is sent; otherwise zero.
+ */
 int network_request_character_list(uint32_t world_id) {
     if (!g_net.connected) return 0;
 
@@ -2055,6 +2137,11 @@ int network_request_character_list(uint32_t world_id) {
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume the pending character-list response.
+ *
+ * @return      Nonzero when a response is copied; otherwise zero.
+ */
 int network_get_character_list(CharacterListResponsePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.char_list.ready) {
@@ -2067,6 +2154,12 @@ int network_get_character_list(CharacterListResponsePacket* out) {
     return 1;
 }
 
+/**
+ * Send a character-creation request.
+ *
+ * @param name  NUL-terminated character name, truncated to 31 bytes on the wire.
+ * @return      Nonzero when the complete request is sent; otherwise zero.
+ */
 int network_create_character(uint32_t world_id, const char* name,
                             uint32_t class_id, uint32_t race_id) {
     if (!g_net.connected) return 0;
@@ -2088,6 +2181,11 @@ int network_create_character(uint32_t world_id, const char* name,
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume the pending character-creation response.
+ *
+ * @return      Nonzero when a response is copied; otherwise zero.
+ */
 int network_get_character_create_response(CharacterCreateResponsePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.char_create.ready) {
@@ -2100,6 +2198,11 @@ int network_get_character_create_response(CharacterCreateResponsePacket* out) {
     return 1;
 }
 
+/**
+ * Send a character-deletion request.
+ *
+ * @return      Nonzero when the complete request is sent; otherwise zero.
+ */
 int network_delete_character(uint32_t world_id, uint32_t character_id) {
     if (!g_net.connected) return 0;
 
@@ -2118,6 +2221,11 @@ int network_delete_character(uint32_t world_id, uint32_t character_id) {
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume the pending character-deletion response.
+ *
+ * @return      Nonzero when a response is copied; otherwise zero.
+ */
 int network_get_character_delete_response(CharacterDeleteResponsePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.char_delete.ready) {
@@ -2130,6 +2238,11 @@ int network_get_character_delete_response(CharacterDeleteResponsePacket* out) {
     return 1;
 }
 
+/**
+ * Request a game ticket and endpoint for entering a world.
+ *
+ * @return      Nonzero when the complete request is sent; otherwise zero.
+ */
 int network_request_enter_world(uint32_t character_id, uint32_t world_id) {
     if (!g_net.connected) return 0;
 
@@ -2149,6 +2262,11 @@ int network_request_enter_world(uint32_t character_id, uint32_t world_id) {
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume the pending enter-world response.
+ *
+ * @return      Nonzero when a response is copied; otherwise zero.
+ */
 int network_get_enter_world_response(EnterWorldResponsePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.enter_world.ready) {
@@ -2161,10 +2279,14 @@ int network_get_enter_world_response(EnterWorldResponsePacket* out) {
     return 1;
 }
 
-// ============================================================================
-// PUBLIC API - WORLD CONNECTION
-// ============================================================================
-
+/**
+ * Replace the realm connection with an authenticated world-server connection.
+ *
+ * This call blocks while polling for an acknowledgement for up to five seconds.
+ *
+ * @param game_ticket  Buffer containing the 64-byte world ticket.
+ * @return      Nonzero when the world server accepts the connection; otherwise zero.
+ */
 int network_connect_to_world(const char* ip, uint16_t port,
                             const char* game_ticket, uint32_t character_id) {
     if (!g_net.initialized) return 0;
@@ -2264,6 +2386,11 @@ int network_connect_to_world(const char* ip, uint16_t port,
     return 1;
 }
 
+/**
+ * Request a full character record from the world server.
+ *
+ * @return      Nonzero when the complete request is sent; otherwise zero.
+ */
 int network_request_character_data(uint32_t character_id, uint32_t world_id) {
     if (!g_net.connected) return 0;
 
@@ -2282,6 +2409,13 @@ int network_request_character_data(uint32_t character_id, uint32_t world_id) {
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume character data and convert its integer fields to host byte order.
+ *
+ * Inventory and equipment entries are converted in place exactly once by this function.
+ *
+ * @return      Nonzero when a response is copied and converted; otherwise zero.
+ */
 int network_get_character_data(CharacterInfo* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.char_data.ready) {
@@ -2304,22 +2438,27 @@ int network_get_character_data(CharacterInfo* out) {
     out->player_race  = ntohl(out->player_race);
 
     out->gold = ntohl(out->gold);
-    out->helmet = ntohl(out->helmet);
-    out->gloves = ntohl(out->gloves);
-    out->chest_armor = ntohl(out->chest_armor);
-    out->leggings = ntohl(out->leggings);
-    out->boots = ntohl(out->boots);
-    out->main_hand = ntohl(out->main_hand);
-    out->second_hand = ntohl(out->second_hand);
-    out->blessing = ntohs(out->blessing);
 
-    for (int i = 0; i < 150; i++) {
-        out->inventory[i] = ntohl(out->inventory[i]);
+    // preserve 64-bit instance identifiers during conversion
+    for (int i = 0; i < INVENTORY_SLOT_COUNT; i++) {
+        out->inventory[i].instance_id = mmo_ntohll(out->inventory[i].instance_id);
+        out->inventory[i].item_id     = ntohl(out->inventory[i].item_id);
+        out->inventory[i].quantity    = ntohs(out->inventory[i].quantity);
+    }
+    for (int i = 0; i < EQUIP_SLOTS; i++) {
+        out->equipment[i].instance_id = mmo_ntohll(out->equipment[i].instance_id);
+        out->equipment[i].item_id     = ntohl(out->equipment[i].item_id);
+        out->equipment[i].quantity    = ntohs(out->equipment[i].quantity);
     }
 
     return 1;
 }
 
+/**
+ * Send the current player position and velocity.
+ *
+ * @return      Nonzero when the complete packet is sent; otherwise zero.
+ */
 int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y) {
     if (!g_net.connected) return 0;
 
@@ -2337,6 +2476,11 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
     return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
 }
 
+/**
+ * Consume the most recent server position correction.
+ *
+ * @return      Nonzero when a correction is copied; otherwise zero.
+ */
 int network_get_server_correction(float* out_x, float* out_y) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.correction.ready) {
@@ -2350,13 +2494,15 @@ int network_get_server_correction(float* out_x, float* out_y) {
     return 1;
 }
 
+/**
+ * Send a packed heartbeat containing the latest measured latency.
+ *
+ * The packet is serialized manually because PacketHeader is packed and a containing structure would add padding.
+ */
 void network_send_ping(void) {
     if (!g_net.connected) return;
 
-    // Serialize into a flat byte array to avoid struct padding between
-    // PacketHeader (7 bytes, packed) and uint16_t — the anonymous struct
-    // would be padded to 10 bytes, sending a rogue zero byte that desynchronizes
-    // the server's TCP reassembly pointer.
+    // flat buffer avoids padding after the packed header
     uint8_t buf[9]; // sizeof(PacketHeader)=7 + sizeof(uint16_t)=2, no padding
     PacketHeader* hdr = (PacketHeader*)buf;
     memset(buf, 0, sizeof(buf));
@@ -2372,20 +2518,27 @@ void network_send_ping(void) {
     }
 }
 
+/**
+ * Return the most recent round-trip measurement.
+ *
+ * @return      Round-trip time in milliseconds.
+ */
 int network_get_ping_ms(void) {
     return g_net.ping_ms;
 }
 
-// ============================================================================
-// PUBLIC API - COMBAT
-// ============================================================================
-
+/**
+ * Update the last nonzero movement-facing angle.
+ */
 void network_update_facing_direction(float vel_x, float vel_y) {
     if (vel_x != 0.0f || vel_y != 0.0f) {
         g_net.last_facing_angle = atan2f(vel_y, vel_x);
     }
 }
 
+/**
+ * Send a basic-attack intent toward a world-space aim point.
+ */
 void network_send_attack_intent(float aim_x, float aim_y) {
     if (!g_net.connected) return;
 
@@ -2402,6 +2555,9 @@ void network_send_attack_intent(float aim_x, float aim_y) {
     }
 }
 
+/**
+ * Send an ability-cast intent with aim and optional target information.
+ */
 void network_send_ability_cast(uint16_t ability_id, float aim_x, float aim_y, uint32_t target_id) {
     if (!g_net.connected) return;
 
@@ -2421,6 +2577,9 @@ void network_send_ability_cast(uint16_t ability_id, float aim_x, float aim_y, ui
     }
 }
 
+/**
+ * Send a cancellation for the local character's active ability cast.
+ */
 void network_send_ability_cancel(void) {
     if (!g_net.connected) return;
 
@@ -2436,10 +2595,9 @@ void network_send_ability_cancel(void) {
     send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
 }
 
-// ============================================================================
-// PUBLIC API - STATS
-// ============================================================================
-
+/**
+ * Request current server-authoritative combat statistics.
+ */
 void network_request_player_stats(void) {
     if (!g_net.connected) return;
 
@@ -2453,6 +2611,9 @@ void network_request_player_stats(void) {
     printf("[NET] Requested player stats refresh\n");
 }
 
+/**
+ * Request current character data for the active character.
+ */
 void network_request_player_data_refresh(void) {
     if (!g_net.connected || g_net.character_id == 0) return;
 
@@ -2468,10 +2629,9 @@ void network_request_player_data_refresh(void) {
     printf("[NET] Requested player data refresh (XP/gold)\n");
 }
 
-// ============================================================================
-// PUBLIC API - NPC DIALOGUE
-// ============================================================================
-
+/**
+ * Send an interaction request for an NPC.
+ */
 void network_send_npc_interact_request(uint32_t npc_id) {
     if (!g_net.connected) return;
 
@@ -2487,6 +2647,9 @@ void network_send_npc_interact_request(uint32_t npc_id) {
     }
 }
 
+/**
+ * Send the selected option for the current NPC dialogue page.
+ */
 void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, uint8_t current_page, uint8_t option_selected) {
     if (!g_net.connected) return;
 
@@ -2506,6 +2669,11 @@ void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, 
     }
 }
 
+/**
+ * Consume the pending NPC interaction response.
+ *
+ * @return      Nonzero when a response is copied; otherwise zero.
+ */
 int network_get_npc_interact_response(NPCInteractResponsePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.npc_interact.ready) {
@@ -2518,6 +2686,11 @@ int network_get_npc_interact_response(NPCInteractResponsePacket* out) {
     return 1;
 }
 
+/**
+ * Consume the pending dialogue-page update.
+ *
+ * @return      Nonzero when an update is copied; otherwise zero.
+ */
 int network_get_dialogue_update(DialogueUpdatePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.dialogue_update.ready) {
@@ -2530,6 +2703,11 @@ int network_get_dialogue_update(DialogueUpdatePacket* out) {
     return 1;
 }
 
+/**
+ * Consume the pending dialogue-close notification.
+ *
+ * @return      Nonzero when a notification is copied; otherwise zero.
+ */
 int network_get_dialogue_close(DialogueClosePacket* out) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.dialogue_close.ready) {
@@ -2542,10 +2720,9 @@ int network_get_dialogue_close(DialogueClosePacket* out) {
     return 1;
 }
 
-// ============================================================================
-// PUBLIC API - INVENTORY / EQUIPMENT
-// ============================================================================
-
+/**
+ * Send a request to equip an inventory item into an equipment slot.
+ */
 void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t equip_slot) {
     if (!g_net.connected) return;
 
@@ -2563,6 +2740,9 @@ void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t e
            item_id, inventory_slot, equip_slot);
 }
 
+/**
+ * Send a request to unequip an equipment slot.
+ */
 void network_send_unequip_item(uint8_t equip_slot) {
     if (!g_net.connected) return;
 
@@ -2577,6 +2757,9 @@ void network_send_unequip_item(uint8_t equip_slot) {
     printf("[NET] Unequip item sent: equip_slot=%u\n", equip_slot);
 }
 
+/**
+ * Send a request to use an inventory slot.
+ */
 void network_send_use_item(uint8_t inventory_slot) {
     if (!g_net.connected) return;
 
@@ -2591,6 +2774,9 @@ void network_send_use_item(uint8_t inventory_slot) {
     printf("[NET] Use item sent: slot=%u\n", inventory_slot);
 }
 
+/**
+ * Send a request to drop an inventory slot.
+ */
 void network_send_drop_item(uint8_t inventory_slot) {
     if (!g_net.connected) return;
 
@@ -2605,6 +2791,9 @@ void network_send_drop_item(uint8_t inventory_slot) {
     printf("[NET] Drop item sent: slot=%u\n", inventory_slot);
 }
 
+/**
+ * Send a request to move or swap two inventory slots.
+ */
 void network_send_move_item(uint8_t from_slot, uint8_t to_slot) {
     if (!g_net.connected) return;
 
@@ -2619,10 +2808,11 @@ void network_send_move_item(uint8_t from_slot, uint8_t to_slot) {
     send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
 }
 
-// ============================================================================
-// PUBLIC API - CHAT
-// ============================================================================
-
+/**
+ * Send a chat message on a protocol channel.
+ *
+ * @param message  NUL-terminated text truncated to MAX_CHAT_MESSAGE minus one bytes.
+ */
 void network_send_chat(uint8_t channel, const char* message) {
     if (!g_net.connected) return;
 
@@ -2637,10 +2827,9 @@ void network_send_chat(uint8_t channel, const char* message) {
     send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
 }
 
-// ============================================================================
-// PUBLIC API - LOOT
-// ============================================================================
-
+/**
+ * Send a pickup request for a ground-item instance.
+ */
 void network_send_loot_pickup(uint32_t ground_item_id) {
     if (!g_net.connected) return;
 
@@ -2655,10 +2844,11 @@ void network_send_loot_pickup(uint32_t ground_item_id) {
     printf("[NET] Loot pickup request sent: ground_item=%u\n", ground_item_id);
 }
 
-// ============================================================================
-// PUBLIC API - PARTY
-// ============================================================================
-
+/**
+ * Send a party invitation to a character name.
+ *
+ * @param target_name  NUL-terminated name truncated to 31 bytes on the wire.
+ */
 void network_send_party_invite(const char* target_name) {
     if (!g_net.connected) return;
 
@@ -2673,6 +2863,9 @@ void network_send_party_invite(const char* target_name) {
     printf("[NET] Party invite sent to: %s\n", target_name);
 }
 
+/**
+ * Accept the pending party invitation.
+ */
 void network_send_party_accept(void) {
     if (!g_net.connected) return;
 
@@ -2685,6 +2878,9 @@ void network_send_party_accept(void) {
     printf("[NET] Party accept sent\n");
 }
 
+/**
+ * Decline the pending party invitation.
+ */
 void network_send_party_decline(void) {
     if (!g_net.connected) return;
 
@@ -2697,6 +2893,9 @@ void network_send_party_decline(void) {
     printf("[NET] Party decline sent\n");
 }
 
+/**
+ * Request departure from the current party.
+ */
 void network_send_party_leave(void) {
     if (!g_net.connected) return;
 
@@ -2709,6 +2908,9 @@ void network_send_party_leave(void) {
     printf("[NET] Party leave sent\n");
 }
 
+/**
+ * Request removal of a character from the current party.
+ */
 void network_send_party_kick(uint32_t target_id) {
     if (!g_net.connected) return;
 
@@ -2723,10 +2925,9 @@ void network_send_party_kick(uint32_t target_id) {
     printf("[NET] Party kick sent: %u\n", target_id);
 }
 
-// ============================================================================
-// PUBLIC API - SHOP
-// ============================================================================
-
+/**
+ * Send a request to buy an item from a shop.
+ */
 void network_send_shop_buy(uint32_t shop_id, uint32_t item_id) {
     if (!g_net.connected) return;
 
@@ -2742,6 +2943,9 @@ void network_send_shop_buy(uint32_t shop_id, uint32_t item_id) {
     printf("[NET] Shop buy: shop=%u item=%u\n", shop_id, item_id);
 }
 
+/**
+ * Send a request to sell an inventory slot to a shop.
+ */
 void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot) {
     if (!g_net.connected) return;
 
@@ -2757,6 +2961,9 @@ void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot) {
     printf("[NET] Shop sell: shop=%u slot=%u\n", shop_id, inventory_slot);
 }
 
+/**
+ * Request one zero-based page of the active-player session list.
+ */
 void network_send_session_list_request(uint16_t page) {
     if (!g_net.connected) return;
 

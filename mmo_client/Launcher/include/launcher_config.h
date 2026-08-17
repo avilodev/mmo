@@ -1,8 +1,7 @@
 #ifndef LAUNCHER_CONFIG_H
 #define LAUNCHER_CONFIG_H
 
-// Runtime server configuration loaded from server.conf next to Launcher.exe.
-// If the file is missing, the compile-time defaults below are used.
+/** Default endpoints used when Launcher.exe cannot load server.conf. */
 #define DEFAULT_LOGIN_IP   "127.0.0.1"
 #define DEFAULT_LOGIN_PORT 7776
 #define DEFAULT_GAME_IP    "127.0.0.1"
@@ -13,7 +12,7 @@ extern int  g_login_server_port;
 extern char g_game_server_ip[64];
 extern int  g_game_server_port;
 
-// Load (or re-load) server.conf. Safe to call multiple times.
+/** Reload server.conf into the global endpoint values. */
 void launcher_config_load(void);
 
 #endif // LAUNCHER_CONFIG_H

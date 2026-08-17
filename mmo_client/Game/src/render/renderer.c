@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Provide immediate-mode OpenGL drawing and baked-font rendering for the client.
+ */
+
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
@@ -22,6 +27,11 @@ static void set_texture_enabled(int enable) {
     g_texture_enabled = enable;
 }
 
+/**
+ * Initialize renderer state for a logical viewport.
+ *
+ * A current OpenGL context must exist before this call.
+ */
 void renderer_init(int window_width, int window_height) {
     screen_width = window_width;
     screen_height = window_height;
@@ -36,11 +46,17 @@ void renderer_init(int window_width, int window_height) {
     printf("Renderer initialized: %dx%d\n", window_width, window_height);
 }
 
+/**
+ * Clear the color and depth buffers with an opaque color.
+ */
 void renderer_clear(float r, float g, float b) {
     glClearColor(r, g, b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
+/**
+ * Reset the model-view matrix for a 2D drawing pass.
+ */
 void renderer_begin_2d(void) {
     // Just set up the modelview matrix
     // The camera will handle the projection matrix
@@ -48,10 +64,16 @@ void renderer_begin_2d(void) {
     glLoadIdentity();
 }
 
+/**
+ * Finish a 2D drawing pass.
+ */
 void renderer_end_2d(void) {
     // Nothing needed here for now
 }
 
+/**
+ * Draw an axis-aligned rectangle with a uniform RGBA color.
+ */
 void renderer_draw_rect(float x, float y, float width, float height,
                         float r, float g, float b, float a) {
     set_texture_enabled(0);
@@ -65,6 +87,11 @@ void renderer_draw_rect(float x, float y, float width, float height,
     glEnd();
 }
 
+/**
+ * Draw an entire texture as an axis-aligned sprite.
+ *
+ * @param texture_id  OpenGL texture object to bind for the draw.
+ */
 void renderer_draw_sprite(float x, float y, float width, float height,
                           unsigned int texture_id) {
     set_texture_enabled(1);
@@ -79,6 +106,15 @@ void renderer_draw_sprite(float x, float y, float width, float height,
     glEnd();
 }
 
+/**
+ * Draw a normalized texture region as an axis-aligned sprite.
+ *
+ * @param texture_id  OpenGL texture object to bind for the draw.
+ * @param u0  Left normalized texture coordinate.
+ * @param v0  Top normalized texture coordinate.
+ * @param u1  Right normalized texture coordinate.
+ * @param v1  Bottom normalized texture coordinate.
+ */
 void renderer_draw_sprite_uv(float x, float y, float width, float height,
                              unsigned int texture_id,
                              float u0, float v0, float u1, float v1) {
@@ -93,6 +129,11 @@ void renderer_draw_sprite_uv(float x, float y, float width, float height,
     glEnd();
 }
 
+/**
+ * Draw a normalized texture region multiplied by an RGBA tint.
+ *
+ * @param texture_id  OpenGL texture object to bind for the draw.
+ */
 void renderer_draw_sprite_uv_tinted(float x, float y, float width, float height,
                                     unsigned int texture_id,
                                     float u0, float v0, float u1, float v1,
@@ -108,6 +149,11 @@ void renderer_draw_sprite_uv_tinted(float x, float y, float width, float height,
     glEnd();
 }
 
+/**
+ * Render placeholder text as one colored rectangle per character.
+ *
+ * @param text  NUL-terminated text whose character count controls the rectangles.
+ */
 void renderer_draw_text_primitive(float x, float y, const char* text, float r, float g, float b) {
     // Very simple: draw a colored box per character
     for (int i = 0; text[i] != '\0'; i++) {
@@ -115,6 +161,14 @@ void renderer_draw_text_primitive(float x, float y, const char* text, float r, f
     }
 }
 
+/**
+ * Load and bake a TrueType font into the renderer's shared glyph texture.
+ *
+ * A current OpenGL context must exist before this call.
+ *
+ * @param path  Path to a readable TrueType font file.
+ * @param size  Glyph height passed to the font baker, in pixels.
+ */
 void renderer_font_init(const char* path, float size) {
     unsigned char* ttf_buffer = malloc(1<<20);
     unsigned char* temp_bitmap = malloc(512*512);
@@ -147,6 +201,11 @@ void renderer_font_init(const char* path, float size) {
     free(temp_bitmap);
 }
 
+/**
+ * Draw printable ASCII text with the shared baked font.
+ *
+ * @param text  NUL-terminated text; bytes outside ASCII 32 through 127 are skipped.
+ */
 void renderer_draw_text(float x, float y, const char* text) {
     set_texture_enabled(1);
     glBindTexture(GL_TEXTURE_2D, font_texture);
@@ -167,6 +226,11 @@ void renderer_draw_text(float x, float y, const char* text) {
     glEnd();
 }
 
+/**
+ * Draw text centered within a rectangular region.
+ *
+ * @param text  NUL-terminated text measured with the shared baked font.
+ */
 void renderer_draw_text_centered(float x, float y, float w, float h, const char* text) {
     float tw = 0;
     for (int i = 0; text[i]; i++) {
@@ -177,6 +241,11 @@ void renderer_draw_text_centered(float x, float y, float w, float h, const char*
     renderer_draw_text(x + (w - tw) / 2.0f, y + (h / 2.0f) + 6.0f, text);
 }
 
+/**
+ * Draw a filled circle as a triangle fan.
+ *
+ * @param segments  Positive number of perimeter subdivisions.
+ */
 void renderer_draw_circle(float cx, float cy, float radius,
                           float r, float g, float b, float a, int segments) {
     set_texture_enabled(0);
@@ -190,6 +259,12 @@ void renderer_draw_circle(float cx, float cy, float radius,
     glEnd();
 }
 
+/**
+ * Draw a filled cone centered on a direction vector.
+ *
+ * @param angle_deg  Full cone angle in degrees.
+ * @param segments  Positive number of arc subdivisions.
+ */
 void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
                         float radius, float angle_deg,
                         float r, float g, float b, float a, int segments) {
@@ -209,6 +284,11 @@ void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
     glEnd();
 }
 
+/**
+ * Release the shared font texture.
+ *
+ * A current OpenGL context must exist before this call.
+ */
 void renderer_cleanup(void) {
     if (font_texture) {
         glDeleteTextures(1, &font_texture);

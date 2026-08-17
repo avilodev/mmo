@@ -1,7 +1,11 @@
+/**
+ * @file
+ * Provide client attack presentation definitions indexed by class and shape.
+ */
 #include "attack_defs.h"
 #include <stddef.h>
 
-// Attack definitions matching server's g_class_profiles
+/** Client attack parameters aligned with the server class-profile table. */
 static const AttackDef g_attack_defs[CLASS_COUNT] = {
     // [0] None/Invalid
     {
@@ -79,6 +83,11 @@ static const AttackDef g_attack_defs[CLASS_COUNT] = {
     }
 };
 
+/**
+ * Select the attack definition for a class identifier.
+ *
+ * @return      The indexed definition, or the Gladiator definition for an out-of-range identifier.
+ */
 const AttackDef* attack_def_get(ClassId class_id) {
     if (class_id >= CLASS_COUNT) {
         return &g_attack_defs[CLASS_GLADIATOR]; // Fallback
@@ -86,6 +95,11 @@ const AttackDef* attack_def_get(ClassId class_id) {
     return &g_attack_defs[class_id];
 }
 
+/**
+ * Select the first class attack with a given targeting shape.
+ *
+ * @return      The matching definition, or the Gladiator definition when none matches.
+ */
 const AttackDef* attack_def_get_by_type(AttackType type) {
     // Find first attack def matching this type
     for (int i = 1; i < CLASS_COUNT; i++) {

@@ -1,15 +1,31 @@
+/**
+ * @file
+ * Track client combat casts, cooldowns, and transient damage events.
+ */
+
 #include "combat_system.h"
 #include "attack_defs.h"
 #include <string.h>
 
+/**
+ * Initialize empty combat state.
+ */
 void combat_init(CombatState* combat) {
     memset(combat, 0, sizeof(CombatState));
 }
 
+/**
+ * Clear all active combat state and events.
+ */
 void combat_reset(CombatState* combat) {
     memset(combat, 0, sizeof(CombatState));
 }
 
+/**
+ * Advance cast, cooldown, and damage-event timers.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 void combat_update(CombatState* combat, float delta_time) {
     // Update cast timer
     if (combat->is_casting) {
@@ -41,6 +57,12 @@ void combat_update(CombatState* combat, float delta_time) {
     }
 }
 
+/**
+ * Record a server-confirmed cast and its attack geometry.
+ *
+ * @param target_ids  Array containing target_count server identifiers.
+ * @param target_count  Number of targets, clamped to MAX_COMBAT_TARGETS.
+ */
 void combat_on_cast_start(CombatState* combat,
                           uint8_t attack_type,
                           float cast_time,
@@ -77,11 +99,19 @@ void combat_on_cast_start(CombatState* combat,
     combat->color_a = def->color_a;
 }
 
+/**
+ * Clear the active cast timer.
+ */
 void combat_on_cast_cancel(CombatState* combat) {
     combat->is_casting = 0;
     combat->cast_elapsed = 0.0f;
 }
 
+/**
+ * Add a transient damage or healing event to the first free slot.
+ *
+ * Events are discarded when every slot is active.
+ */
 void combat_on_damage(CombatState* combat,
                       uint32_t target_id,
                       int damage,
@@ -110,6 +140,11 @@ void combat_on_damage(CombatState* combat,
     if (!is_heal) combat->is_casting = 0;
 }
 
+/**
+ * Start the basic-attack cooldown after a successful result.
+ *
+ * @param cooldown  Cooldown duration in seconds.
+ */
 void combat_on_attack_result(CombatState* combat, uint8_t result_code, float cooldown) {
     if (result_code == 0) {  // ATTACK_RESULT_OK
         combat->cooldown_remaining = cooldown;
@@ -117,10 +152,20 @@ void combat_on_attack_result(CombatState* combat, uint8_t result_code, float coo
     }
 }
 
+/**
+ * Check whether a cast is active.
+ *
+ * @return      Nonzero while casting; otherwise zero.
+ */
 int combat_is_casting(const CombatState* combat) {
     return combat->is_casting;
 }
 
+/**
+ * Return normalized cast completion.
+ *
+ * @return      Cast progress from zero through one, or zero when idle.
+ */
 float combat_get_cast_progress(const CombatState* combat) {
     if (!combat->is_casting || combat->cast_duration <= 0.0f) {
         return 0.0f;
@@ -129,6 +174,11 @@ float combat_get_cast_progress(const CombatState* combat) {
     return (progress > 1.0f) ? 1.0f : progress;
 }
 
+/**
+ * Return remaining cast time.
+ *
+ * @return      Nonnegative remaining duration in seconds.
+ */
 float combat_get_cast_remaining(const CombatState* combat) {
     if (!combat->is_casting || combat->cast_duration <= 0.0f) {
         return 0.0f;
@@ -138,10 +188,20 @@ float combat_get_cast_remaining(const CombatState* combat) {
     return (remaining < 0.0f) ? 0.0f : remaining;
 }
 
+/**
+ * Check whether the basic attack is cooling down.
+ *
+ * @return      Nonzero while cooldown remains; otherwise zero.
+ */
 int combat_is_on_cooldown(const CombatState* combat) {
     return combat->cooldown_remaining > 0.0f;
 }
 
+/**
+ * Return normalized remaining cooldown.
+ *
+ * @return      Remaining fraction from zero through one.
+ */
 float combat_get_cooldown_progress(const CombatState* combat) {
     if (combat->cooldown_total <= 0.0f) {
         return 0.0f;

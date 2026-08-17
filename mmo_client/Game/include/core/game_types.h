@@ -9,18 +9,11 @@
 #include "camera.h"
 #include "combat_state.h"
 #include "ui/quest_log.h"
-// world.h moved below - needs GameTextures to be defined first
-
-// ============================================================================
-// FORWARD DECLARATIONS
-// ============================================================================
 typedef struct GameState GameState;
 typedef struct CharacterScreenState CharacterScreenState;
-typedef struct WorldState WorldState;  // Fully defined in world.h (included below)
+typedef struct WorldState WorldState;
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
+/** Bound fixed-capacity client presentation collections. */
 #define MAX_VISIBLE_NPCS        64
 #define MAX_DAMAGE_NUMBERS      10
 #define MAX_REWARD_POPUPS       5
@@ -37,21 +30,16 @@ typedef struct WorldState WorldState;  // Fully defined in world.h (included bel
 #define INVENTORY_COLS 10
 #define INVENTORY_ROWS 15
 
-// ============================================================================
-// ENUMS
-// ============================================================================
-
+/** Select the client's active top-level screen. */
 typedef enum {
     GAME_MODE_MAIN_MENU,
     GAME_MODE_SERVER_LIST,
     GAME_MODE_CHARACTER_SELECT,
     GAME_MODE_PLAYING,
-    // NOTE: pause is an overlay (game->is_paused flag) within GAME_MODE_PLAYING,
-    // not a separate state. GAME_MODE_PAUSED was removed to prevent the
-    // state_handler fallback silently dropping the player to the main menu.
     GAME_MODE_SETTINGS
 } GameMode;
 
+/** Track the outstanding realm or world request expected by the UI. */
 typedef enum {
     NET_STATE_IDLE,
     NET_STATE_WAITING_FOR_WORLDS,
@@ -62,14 +50,10 @@ typedef enum {
     NET_STATE_WAITING_FOR_CHARACTER_DATA
 } NetworkState;
 
-// How long the client waits on any single server response before giving up
-// and returning the UI to an interactive state.
+/** Maximum wait for one server response, in seconds. */
 #define NET_REQUEST_TIMEOUT_SECONDS 10.0f
 
-// ============================================================================
-// ITEM TYPES (for inventory)
-// ============================================================================
-
+/** Classify inventory item behavior. */
 typedef enum {
     ITEM_TYPE_NONE = 0,
     ITEM_TYPE_CONSUMABLE,
@@ -80,6 +64,7 @@ typedef enum {
     ITEM_TYPE_KEY
 } ItemType;
 
+/** Identify client equipment array positions. */
 typedef enum {
     EQUIP_SLOT_NONE = 0,
     EQUIP_SLOT_HELMET,
@@ -92,6 +77,7 @@ typedef enum {
     EQUIP_SLOT_COUNT
 } EquipSlot;
 
+/** Classify item rarity for presentation and fallback pricing. */
 typedef enum {
     ITEM_RARITY_COMMON = 0,
     ITEM_RARITY_UNCOMMON,
@@ -100,6 +86,7 @@ typedef enum {
     ITEM_RARITY_LEGENDARY
 } ItemRarity;
 
+/** Describe immutable item metadata used by the client inventory. */
 typedef struct {
     uint32_t id;
     char name[32];
@@ -119,15 +106,16 @@ typedef struct {
     uint16_t sprite_id;
 } ItemTemplate;
 
+/** Store one inventory item instance and quantity. */
 typedef struct {
     uint32_t template_id;
     uint16_t quantity;
+
+    uint64_t instance_id;   /**< Server-assigned instance identifier, or 0 for an empty slot. */
+    uint8_t  is_bound;      /**< Nonzero when the item cannot be traded. */
 } ItemSlot;
 
-// ============================================================================
-// INVENTORY STATE (FULL DEFINITION)
-// ============================================================================
-
+/** Track inventory contents, interaction, tooltip, and window layout. */
 typedef struct {
     ItemSlot slots[INVENTORY_SIZE];
     int is_open;
@@ -150,30 +138,23 @@ typedef struct {
     float drag_offset_x;     
     float drag_offset_y;
     
-    // Close button
     float close_button_x;
     float close_button_y;
     float close_button_size;
 } InventoryState;
 
-// ============================================================================
-// INPUT STATE
-// ============================================================================
-
+/** Capture mouse and keyboard state for one client frame. */
 typedef struct {
     float mouse_x;
     float mouse_y;
-    int mouse_left_clicked;      // Just pressed this frame
-    int mouse_left_down;          // NEW: Held down
+    int mouse_left_clicked;      /**< Nonzero only on the press frame. */
+    int mouse_left_down;         /**< Nonzero while held. */
     int mouse_right_clicked;
     int keys_pressed[GLFW_KEY_LAST + 1];
     int keys_just_pressed[GLFW_KEY_LAST + 1];
 } InputState;
 
-// ============================================================================
-// PLAYER DATA
-// ============================================================================
-
+/** Track local player movement and server character data. */
 typedef struct {
     float x;
     float y;
@@ -185,57 +166,34 @@ typedef struct {
     int info_loaded;
 } PlayerState;
 
-// ============================================================================
-// VISIBLE NPC
-// ============================================================================
-
+/** Track one server-visible NPC and its interpolation state. */
 typedef struct {
     uint32_t npc_id;
     float pos_x;
     float pos_y;
-    float target_x;          // Server target position for interpolation
+    float target_x;          /**< Server target position for interpolation. */
     float target_y;
-    float prev_x;            // Previous position for interpolation
+    float prev_x;            /**< Previous interpolation position. */
     float prev_y;
-    float interp_t;          // Interpolation progress (0.0 to 1.0)
+    float interp_t;          /**< Interpolation progress from 0.0 to 1.0. */
     uint32_t health;
     uint32_t max_health;
     uint8_t is_alive;
-    uint8_t category;        // 0=passive, 1=hostile, 2=quest
-    uint8_t is_interactable; // 1 if player can interact (talk)
-    uint8_t npc_type_id;     // NPC type for client display
+    uint8_t category;        /**< 0 passive, 1 hostile, or 2 quest. */
+    uint8_t is_interactable;
+    uint8_t npc_type_id;
     char name[32];
-    float visual_y_offset;   // Client-side vertical animation offset (e.g., ground pound)
+    float visual_y_offset;   /**< Client-only vertical animation offset. */
 } VisibleNPC;
 
-// ============================================================================
-// WORLD STATE - REMOVED! Now defined in world.h
-// ============================================================================
-// OLD (REMOVED):
-// typedef struct {
-//     int* tiles;
-//     uint8_t* collision;
-//     int width;
-//     int height;
-//     int tile_size;
-// } WorldState;
-//
-// NEW: WorldState is forward-declared above and fully defined in world.h
-
-// ============================================================================
-// MENU STATE
-// ============================================================================
-
+/** Track main-menu selection and animation state. */
 typedef struct {
     int selected_button;
     int hovered_button;
     float animation_time;
 } MenuState;
 
-// ============================================================================
-// SERVER LIST STATE
-// ============================================================================
-
+/** Track the received world list and its current UI selection. */
 typedef struct {
     WorldListResponsePacket list;
     int loaded;
@@ -243,10 +201,7 @@ typedef struct {
     int hovered_index;
 } ServerListState;
 
-// ============================================================================
-// CHARACTER SELECT STATE
-// ============================================================================
-
+/** Track character-list selection, creation, deletion, and errors. */
 typedef struct {
     CharacterListResponsePacket list;
     int loaded;
@@ -262,19 +217,15 @@ typedef struct {
     int pending_delete_index;
 } CharacterSelectState;
 
-// ============================================================================
-// TEXTURES
-// ============================================================================
-
+/** Own persistent OpenGL textures shared across client screens. */
 typedef struct {
     unsigned int player;
     unsigned int background;
-    unsigned int session_panel_bg;  // Static panel frame texture (O menu background)
-    unsigned int session_entry_bg;  // Per-row entry background texture (tiled per player)
-    // World tilesets are owned by WorldState (world->tileset_textures)
+    unsigned int session_panel_bg;
+    unsigned int session_entry_bg;
 } GameTextures;
 
-// One row in the session panel — mirrors SessionPlayerEntry in protocol.h
+/** Mirror one SessionPlayerEntry for the session panel. */
 typedef struct {
     uint32_t player_id;
     char     name[32];
@@ -284,13 +235,9 @@ typedef struct {
     uint16_t ping_ms;
 } SessionPlayer;
 
-// Include world.h here - it needs Camera (already defined) and GameTextures (just defined)
 #include "world.h"
 
-// ============================================================================
-// HUD LAYOUT (FULL DEFINITION - Don't redefine in hud.h)
-// ============================================================================
-
+/** Store screen-space HUD geometry. */
 typedef struct {
     int screen_width;
     int screen_height;
@@ -314,7 +261,6 @@ typedef struct {
     float inv_button_x;
     float inv_button_y;
     float inv_button_size;
-    // Character button (bottom right, left of inventory)
     float char_button_x;
     float char_button_y;
     float char_button_size;
@@ -323,10 +269,7 @@ typedef struct {
     float currency_spacing;
 } HUDLayout;
 
-// ============================================================================
-// NEARBY PLAYERS
-// ============================================================================
-
+/** Track one nearby player received from interest broadcasts. */
 typedef struct {
     uint32_t player_id;
     float pos_x, pos_y;
@@ -339,10 +282,7 @@ typedef struct {
     char name[32];
 } NearbyPlayer;
 
-// ============================================================================
-// PROJECTILES
-// ============================================================================
-
+/** Track one visible server projectile. */
 typedef struct {
     uint32_t id;
     float pos_x, pos_y;
@@ -351,13 +291,10 @@ typedef struct {
     uint8_t active;
 } VisibleProjectile;
 
-// ============================================================================
-// NPC TELEGRAPHS
-// ============================================================================
-
+/** Track one visible NPC attack telegraph. */
 typedef struct {
     uint32_t npc_id;
-    uint8_t shape;          // 0=circle, 1=cone, 2=rectangle, 3=line
+    uint8_t shape;          /**< 0 circle, 1 cone, 2 rectangle, or 3 line. */
     float pos_x, pos_y;
     float dir_x, dir_y;
     float radius, angle, width, length;
@@ -366,10 +303,7 @@ typedef struct {
     uint8_t active;
 } VisibleTelegraph;
 
-// ============================================================================
-// ZONES (AoE areas)
-// ============================================================================
-
+/** Track one visible timed area-of-effect zone. */
 typedef struct {
     uint32_t zone_id;
     float pos_x, pos_y;
@@ -379,10 +313,7 @@ typedef struct {
     uint8_t active;
 } VisibleZone;
 
-// ============================================================================
-// GROUND LOOT
-// ============================================================================
-
+/** Track one visible ground-item stack. */
 typedef struct {
     uint32_t ground_item_id;
     uint32_t item_id;
@@ -391,16 +322,14 @@ typedef struct {
     uint8_t active;
 } GroundItem;
 
-// ============================================================================
-// CHAT STATE
-// ============================================================================
-
+/** Store one rendered chat line. */
 typedef struct {
     char sender[32];
     char text[256];
     uint8_t channel;
 } ChatLine;
 
+/** Track chat history, input, channel, and whisper reply state. */
 typedef struct {
     ChatLine lines[MAX_CHAT_LINES];
     int line_count;
@@ -410,13 +339,10 @@ typedef struct {
     uint8_t active_channel;
     float backspace_timer;
     int   backspace_first;
-    char whisper_reply_target[32];  // Character name of last whisper sender (for /r)
+    char whisper_reply_target[32];  /**< Last whisper sender used by /r. */
 } ChatState;
 
-// ============================================================================
-// HEAL VFX (client-side expanding ring on heal land)
-// ============================================================================
-
+/** Track one client-only expanding heal ring. */
 typedef struct {
     float pos_x, pos_y;
     float age;
@@ -425,30 +351,24 @@ typedef struct {
     int   active;
 } HealVFX;
 
-// ============================================================================
-// SHOP STATE
-// ============================================================================
-
+/** Store one shop item and its server price. */
 typedef struct {
     uint32_t item_id;
     uint32_t buy_price;
 } ShopItemEntry;
 
+/** Track shop inventory, active tab, and selection state. */
 typedef struct {
     int          is_open;
     uint32_t     shop_id;
     char         shop_name[32];
     uint8_t      item_count;
     ShopItemEntry items[MAX_SHOP_ITEMS];
-    // Sell tab
-    int          sell_tab;       // 0 = buy tab, 1 = sell tab
-    int          hovered_slot;   // item index hovered in current tab
+    int          sell_tab;       /**< 0 for buy or 1 for sell. */
+    int          hovered_slot;
 } ShopState;
 
-// ============================================================================
-// PARTY STATE
-// ============================================================================
-
+/** Store one party member's displayed status. */
 typedef struct {
     uint32_t id;
     char name[32];
@@ -458,49 +378,40 @@ typedef struct {
     int32_t mana, max_mana;
 } PartyMember;
 
+/** Track party membership and a pending invitation. */
 typedef struct {
     uint32_t party_id;
     uint32_t leader_id;
     uint8_t member_count;
     PartyMember members[MAX_PARTY_SIZE];
     int has_party;
-    // Pending invite
     int has_pending_invite;
     uint32_t invite_from_id;
     char invite_from_name[32];
     float invite_timer;
 } PartyState;
 
-// ============================================================================
-// SETTINGS
-// ============================================================================
-
+/** Store persisted audio, display, and UI preferences. */
 typedef struct {
-    float master_volume;   // 0.0 - 1.0
-    float music_volume;    // 0.0 - 1.0
-    float sfx_volume;      // 0.0 - 1.0
-    int   show_fps;        // 0 = off, 1 = on
-    int   fullscreen;      // 0 = windowed, 1 = fullscreen
-    float ui_scale;        // 0.75 to 1.5, default 1.0
+    float master_volume;   /**< Range 0.0 to 1.0. */
+    float music_volume;    /**< Range 0.0 to 1.0. */
+    float sfx_volume;      /**< Range 0.0 to 1.0. */
+    int   show_fps;
+    int   fullscreen;
+    float ui_scale;        /**< Range 0.75 to 1.5. */
 } GameSettings;
 
-// ============================================================================
-// REWARD NOTIFICATIONS
-// ============================================================================
-
+/** Track one timed XP and gold notification. */
 typedef struct {
     uint32_t xp_gained;
     uint32_t gold_gained;
-    float age;              // Seconds since notification
+    float age;              /**< Seconds since receipt. */
     int active;
 } RewardNotification;
 
-// ============================================================================
-// PLAYING STATE — heap-allocated on entering gameplay, freed on exit.
-// Access via game->playing (NULL when not in GAME_MODE_PLAYING).
-// ============================================================================
+/** Aggregate heap-owned gameplay state while GAME_MODE_PLAYING is active. */
 typedef struct {
-    // Visible world entities
+    /** Fixed-capacity visible entity collections. */
     VisibleNPC        visible_npcs[MAX_VISIBLE_NPCS];
     int               visible_npc_count;
     uint32_t          target_npc_id;
@@ -516,7 +427,7 @@ typedef struct {
     GroundItem        ground_items[MAX_GROUND_ITEMS];
     HealVFX           heal_vfxs[MAX_HEAL_VFXS];
 
-    // UI systems
+    /** Gameplay UI subsystem state. */
     ChatState         chat;
     PartyState        party;
     ShopState         shop;
@@ -525,7 +436,7 @@ typedef struct {
     CombatState       combat;
     AbilityBarState   ability_bar;
 
-    // Session panel (O menu)
+    /** Session-panel pagination and rows. */
     int               show_session_panel;
     SessionPlayer     session_list[SESSION_LIST_PAGE_SIZE];
     int               session_list_count;
@@ -533,19 +444,16 @@ typedef struct {
     uint16_t          session_current_page;
     uint16_t          session_total_pages;
 
-    // Reward notifications
     RewardNotification reward_notifications[MAX_REWARD_POPUPS];
 
-    // Player death
     int               is_dead;
     float             death_timer;
 
-    // Level-up notification
     int               show_level_up;
     float             level_up_timer;
     int               level_up_new_level;
 
-    // Server-authoritative stats
+    /** Server-authoritative derived player stats. */
     int32_t           player_strength;
     int32_t           player_agility;
     int32_t           player_intelligence;
@@ -558,41 +466,29 @@ typedef struct {
     int32_t           player_weapon_damage;
     uint64_t          player_xp_for_next;
 
-    // World enter response (needed during initial data load)
     EnterWorldResponsePacket enter_world_response;
 
-    // Pause overlay
     int               is_paused;
 
-    // Full map
     int               show_map;
     float             map_zoom;
 
-    // Player targeting
     uint32_t          target_player_id;
 
-    // Zone system
-    char              current_zone_name[48]; // Name of zone player is currently in
-    char              zone_banner_name[48];  // Name shown in the entry banner
-    float             zone_banner_timer;     // Counts down from ZONE_BANNER_DURATION; 0 = hidden
+    char              current_zone_name[48];
+    char              zone_banner_name[48];
+    float             zone_banner_timer;     /**< Remaining banner time, or 0 when hidden. */
 } PlayingState;
 
-// ============================================================================
-// MAIN GAME STATE
-// ============================================================================
-
+/** Own the client lifecycle, screen state, network identity, and gameplay allocation. */
 struct GameState {
     int is_running;
     GameMode mode;
     NetworkState net_state;
-    // Seconds spent in the current NET_STATE_WAITING_* state. A request can go
-    // unanswered for reasons the client cannot see -- the server dropping it
-    // over budget is only one of them -- so every wait is bounded rather than
-    // trusting a response to eventually arrive.
-    float        net_wait_seconds;
+    float        net_wait_seconds; /**< Seconds spent awaiting the current network response. */
     InputState input;
     PlayerState player;
-    WorldState world;           // This is now the chunked WorldState from world.h
+    WorldState world;
     Camera camera;
     MenuState main_menu;
     ServerListState server_list;
@@ -613,12 +509,10 @@ struct GameState {
     int network_connected;
     char network_status[128];
 
-    // --- Settings ---
     GameSettings settings;
-    int          show_settings;  // 1 = in-game settings overlay visible
+    int          show_settings;
 
-    // Heap-allocated gameplay state (NULL when not in GAME_MODE_PLAYING)
-    PlayingState* playing;
+    PlayingState* playing;       /**< Heap allocation owned while playing, or NULL. */
 };
 
 #endif // GAME_TYPES_H

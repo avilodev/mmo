@@ -11,14 +11,14 @@
 #define MAX_OPTION_TEXT_LENGTH 256
 #define MAX_NPC_NAME_LENGTH 64
 
-// Dialogue option definition (loaded from JSON)
+/** Define a selectable response loaded from a dialogue JSON file. */
 typedef struct {
     uint8_t option_id;
     char text[MAX_OPTION_TEXT_LENGTH];
-    int8_t next_page;  // -1 = close dialogue
+    int8_t next_page;  /**< Next page index, or -1 to close the dialogue. */
 } DialogueOptionDef;
 
-// Dialogue page definition (loaded from JSON)
+/** Define one page of locally stored dialogue text and responses. */
 typedef struct {
     uint8_t page_num;
     char text[MAX_DIALOGUE_TEXT_LENGTH];
@@ -26,7 +26,7 @@ typedef struct {
     DialogueOptionDef options[MAX_DIALOGUE_OPTIONS];
 } DialoguePageDef;
 
-// Full dialogue definition (loaded from JSON)
+/** Define a complete per-NPC dialogue loaded from JSON. */
 typedef struct {
     uint32_t dialogue_id;
     char name[64];
@@ -34,7 +34,7 @@ typedef struct {
     DialoguePageDef pages[MAX_PAGES_PER_DIALOGUE];
 } DialogueDef;
 
-// Active dialogue state (runtime)
+/** Track the dialogue page and window currently presented to the player. */
 typedef struct {
     bool is_active;
     uint32_t npc_id;
@@ -42,24 +42,20 @@ typedef struct {
     uint8_t current_page;
     char npc_name[MAX_NPC_NAME_LENGTH];
 
-    // Currently displayed data (looked up from dialogue_id + current_page)
+    /** Text resolved from the active dialogue and page identifiers. */
     char displayed_text[MAX_DIALOGUE_TEXT_LENGTH];
     uint8_t displayed_option_count;
     char displayed_options[MAX_DIALOGUE_OPTIONS][MAX_OPTION_TEXT_LENGTH];
     uint8_t option_ids[MAX_DIALOGUE_OPTIONS];
 
-    int selected_option;  // Currently highlighted option (-1 for none)
+    int selected_option;  /**< Highlighted option index, or -1 when none is selected. */
 
-    // Window position and size
+    /** Screen-space dialogue window bounds. */
     float window_x;
     float window_y;
     float window_width;
     float window_height;
 } DialogueState;
-
-// ============================================================================
-// Dialogue Data Loading
-// ============================================================================
 
 // Initialize dialogue system and load dialogues.json
 int dialogue_system_init(const char* json_path);
@@ -69,10 +65,6 @@ void dialogue_system_cleanup(void);
 
 // Get dialogue definition by ID
 const DialogueDef* dialogue_get(uint32_t dialogue_id);
-
-// ============================================================================
-// Dialogue UI
-// ============================================================================
 
 // Show dialogue window with server data (looks up text locally)
 void dialogue_show(uint32_t npc_id, const char* npc_name, uint32_t dialogue_id,

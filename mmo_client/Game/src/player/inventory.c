@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Load client item metadata and manage inventory interaction and rendering.
+ */
+
 #include "inventory.h"
 #include "network.h"
 #include "renderer.h"
@@ -6,10 +11,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-// ============================================================================
-// ITEM DATABASE - Custom JSON Parser (Zero Dependencies)
-// ============================================================================
-
+/** Maximum number of item templates retained by the client. */
 #define MAX_ITEM_TEMPLATES 1000
 static ItemTemplate g_item_db[MAX_ITEM_TEMPLATES];
 static int g_item_db_count = 0;
@@ -22,6 +24,9 @@ static ItemType parse_type(const char* type_str);
 static ItemRarity parse_rarity(const char* rarity_str);
 static int parse_items_json(const char* json_content);
 
+/**
+ * Reload the client item-template database from its JSON data file.
+ */
 void item_db_init(void) {
     g_item_db_count = 0;
     memset(g_item_db, 0, sizeof(g_item_db));
@@ -46,6 +51,13 @@ void item_db_init(void) {
     }
 }
 
+/**
+ * Find an item template by its protocol identifier.
+ *
+ * The returned pointer refers to static database storage and remains valid until item_db_init is called again.
+ *
+ * @return      Matching template, or NULL when the identifier is unknown.
+ */
 const ItemTemplate* item_db_get(uint32_t item_id) {
     for (int i = 0; i < g_item_db_count; i++) {
         if (g_item_db[i].id == item_id) {
@@ -55,15 +67,23 @@ const ItemTemplate* item_db_get(uint32_t item_id) {
     return NULL;
 }
 
+/**
+ * Return the display name for an item identifier.
+ *
+ * @return      Static template name, or "Unknown Item" when no template matches.
+ */
 const char* item_db_get_name(uint32_t item_id) {
     const ItemTemplate* item = item_db_get(item_id);
     return item ? item->name : "Unknown Item";
 }
 
-// ============================================================================
-// JSON Parsing Implementation
-// ============================================================================
-
+/**
+ * Read an entire file into a NUL-terminated allocation.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return      Allocated file contents, or NULL on open or allocation failure.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -85,6 +105,11 @@ static char* read_file(const char* filepath) {
     return buffer;
 }
 
+/**
+ * Locate the first value token following a JSON key.
+ *
+ * @return      Pointer into json at the first non-space value byte, or NULL when absent.
+ */
 static const char* find_json_value(const char* json, const char* key) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -132,6 +157,11 @@ static ItemRarity parse_rarity(const char* rarity_str) {
     return ITEM_RARITY_COMMON;
 }
 
+/**
+ * Parse item objects into the static template database.
+ *
+ * @return      Nonzero when the items array is found and processed; otherwise zero.
+ */
 static int parse_items_json(const char* json_content) {
     const char* items_start = strstr(json_content, "\"items\"");
     if (!items_start) {
@@ -282,10 +312,12 @@ static int parse_items_json(const char* json_content) {
     return 1;
 }
 
-// ============================================================================
-// INVENTORY INITIALIZATION
-// ============================================================================
-
+/**
+ * Initialize inventory layout and interaction state.
+ *
+ * @param screen_width  Logical screen width in pixels.
+ * @param screen_height  Logical screen height in pixels.
+ */
 void inventory_init(InventoryState* inv, float screen_width, float screen_height) {
     memset(inv, 0, sizeof(InventoryState));
     
@@ -314,26 +346,40 @@ void inventory_init(InventoryState* inv, float screen_width, float screen_height
     printf("[INVENTORY] Initialized %dx%d grid\n", INVENTORY_COLS, INVENTORY_ROWS);
 }
 
-void inventory_load_from_server(InventoryState* inv, const uint32_t* server_data) {
-    for (int i = 0; i < INVENTORY_SIZE; i++) {
-        uint32_t packed = server_data[i];
-        inv->slots[i].template_id = packed;
-        
-        if (packed > 0) {
-            const ItemTemplate* item = item_db_get(packed);
-            if (item && item->max_stack > 1) {
-                inv->slots[i].quantity = 1;
-            } else {
-                inv->slots[i].quantity = (packed > 0) ? 1 : 0;
-            }
-        } else {
-            inv->slots[i].quantity = 0;
+/**
+ * Replace local inventory slots with server-provided slot records.
+ *
+ * The input records must already be converted to host byte order.
+ *
+ * @param server_data  Array containing at least INVENTORY_SLOT_COUNT records.
+ */
+void inventory_load_from_server(InventoryState* inv, const InventorySlotData* server_data) {
+    for (int i = 0; i < INVENTORY_SIZE && i < INVENTORY_SLOT_COUNT; i++) {
+        const InventorySlotData* src = &server_data[i];
+
+        if (src->instance_id == 0) {
+            inv->slots[i].template_id = 0;
+            inv->slots[i].quantity    = 0;
+            inv->slots[i].instance_id = 0;
+            inv->slots[i].is_bound    = 0;
+            continue;
         }
+
+        inv->slots[i].instance_id = src->instance_id;
+        inv->slots[i].template_id = src->item_id;
+        inv->slots[i].is_bound    = src->is_bound;
+
+        // Never store 0 alongside a live instance: a slot with an id and no
+        // quantity would render as an empty square that still refuses a drop.
+        inv->slots[i].quantity = src->quantity ? src->quantity : 1;
     }
-    
+
     printf("[INVENTORY] Loaded from server data\n");
 }
 
+/**
+ * Toggle inventory visibility and clear interaction state when closing.
+ */
 void inventory_toggle(InventoryState* inv) {
     inv->is_open = !inv->is_open;
     if (!inv->is_open) {
@@ -344,10 +390,11 @@ void inventory_toggle(InventoryState* inv) {
     }
 }
 
-// ============================================================================
-// INVENTORY UPDATE & INTERACTION
-// ============================================================================
-
+/**
+ * Resolve a mouse position to an inventory slot.
+ *
+ * @return      Slot index, or -1 outside an open inventory slot.
+ */
 static int get_slot_at_position(const InventoryState* inv, float mouse_x, float mouse_y) {
     if (!inv->is_open) return -1;
     
@@ -382,6 +429,11 @@ static int is_mouse_in_title_bar(const InventoryState* inv, float mouse_x, float
             mouse_y <= inv->window_y + 35);
 }
 
+/**
+ * Check whether a mouse position hits the visible close button.
+ *
+ * @return      Nonzero on a hit; otherwise zero.
+ */
 int inventory_check_close_button(const InventoryState* inv, float mouse_x, float mouse_y) {
     if (!inv->is_open) return 0;
     
@@ -393,6 +445,13 @@ int inventory_check_close_button(const InventoryState* inv, float mouse_x, float
             mouse_y >= y && mouse_y <= y + size);
 }
 
+/**
+ * Update inventory dragging, selection, tooltips, and item activation.
+ *
+ * @param mouse_clicked  Nonzero on a new left-button press.
+ * @param mouse_down  Nonzero while the left button is held.
+ * @param right_clicked  Nonzero on a new right-button press.
+ */
 void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
                      int mouse_clicked, int mouse_down, int right_clicked) {
     if (!inv->is_open) {
@@ -504,10 +563,6 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
     }
 }
 
-// ============================================================================
-// INVENTORY RENDERING
-// ============================================================================
-
 static void get_rarity_color(ItemRarity rarity, float* r, float* g, float* b) {
     switch (rarity) {
         case ITEM_RARITY_COMMON: *r=0.8f; *g=0.8f; *b=0.8f; break;
@@ -519,6 +574,9 @@ static void get_rarity_color(ItemRarity rarity, float* r, float* g, float* b) {
     }
 }
 
+/**
+ * Draw the inventory frame, title, and close button.
+ */
 static void render_inventory_window(const InventoryState* inv) {
     renderer_draw_rect(inv->window_x, inv->window_y, inv->window_width, inv->window_height, 0.1f, 0.1f, 0.15f, 0.95f);
     renderer_draw_rect(inv->window_x, inv->window_y, inv->window_width, 35, 0.15f, 0.1f, 0.2f, 1.0f);
@@ -542,6 +600,9 @@ static void render_inventory_window(const InventoryState* inv) {
     renderer_draw_text(close_x + 7, close_y + 18, "X");
 }
 
+/**
+ * Draw visible inventory slots and their item representations.
+ */
 static void render_inventory_slots(const InventoryState* inv) {
     float cx = inv->window_x + inv->slot_padding;
     float cy = inv->window_y + 40;
@@ -594,6 +655,9 @@ static void render_inventory_slots(const InventoryState* inv) {
     }
 }
 
+/**
+ * Draw the selected item at the current mouse position.
+ */
 static void render_dragged_item(const InventoryState* inv) {
     if (inv->selected_slot < 0 || inv->selected_slot >= INVENTORY_SIZE) return;
     
@@ -636,6 +700,9 @@ static void render_dragged_item(const InventoryState* inv) {
     }
 }
 
+/**
+ * Draw the hovered item's bounded tooltip.
+ */
 static void render_tooltip(const InventoryState* inv) {
     if (!inv->tooltip_visible || inv->hovered_slot < 0) return;
     const ItemSlot* slot = &inv->slots[inv->hovered_slot];
@@ -675,6 +742,11 @@ static void render_tooltip(const InventoryState* inv) {
     }
 }
 
+/**
+ * Render an open inventory in screen space.
+ *
+ * The function preserves the current OpenGL projection and model-view matrices.
+ */
 void inventory_render(const InventoryState* inv) {
     if (!inv->is_open) return;
     glMatrixMode(GL_PROJECTION); 
@@ -698,10 +770,11 @@ void inventory_render(const InventoryState* inv) {
     glPopMatrix();
 }
 
-// ============================================================================
-// INVENTORY OPERATIONS
-// ============================================================================
-
+/**
+ * Add a quantity across compatible stacks and empty slots.
+ *
+ * @return      Nonzero when the entire quantity is stored; otherwise zero.
+ */
 int inventory_add_item(InventoryState* inv, uint32_t item_id, uint16_t quantity) {
     const ItemTemplate* item = item_db_get(item_id);
     if (!item) return 0;
@@ -737,6 +810,13 @@ int inventory_add_item(InventoryState* inv, uint32_t item_id, uint16_t quantity)
     return 1;
 }
 
+/**
+ * Remove up to a requested quantity from one slot.
+ *
+ * @param si  Slot index, which may be outside the inventory range.
+ * @param q  Maximum quantity to remove.
+ * @return      Quantity actually removed.
+ */
 uint16_t inventory_remove_item(InventoryState* inv, int si, uint16_t q) {
     if (si < 0 || si >= INVENTORY_SIZE) return 0;
     ItemSlot* s = &inv->slots[si];
@@ -747,6 +827,11 @@ uint16_t inventory_remove_item(InventoryState* inv, int si, uint16_t q) {
     return r;
 }
 
+/**
+ * Request use or equipment of the item in a slot.
+ *
+ * @param si  Slot index, which may be outside the inventory range.
+ */
 void inventory_use_item(InventoryState* inv, int si) {
     if (si < 0 || si >= INVENTORY_SIZE) return;
     ItemSlot* s = &inv->slots[si];
@@ -777,6 +862,11 @@ void inventory_use_item(InventoryState* inv, int si) {
     }
 }
 
+/**
+ * Sum the local quantity of an item across all slots.
+ *
+ * @return      Total recorded quantity.
+ */
 uint32_t inventory_get_item_count(const InventoryState* inv, uint32_t item_id) {
     uint32_t c = 0;
     for (int i = 0; i < INVENTORY_SIZE; i++) {
@@ -785,6 +875,12 @@ uint32_t inventory_get_item_count(const InventoryState* inv, uint32_t item_id) {
     return c;
 }
 
+/**
+ * Check whether a slot is invalid or contains no item template.
+ *
+ * @param si  Slot index, which may be outside the inventory range.
+ * @return      Nonzero when invalid or empty; otherwise zero.
+ */
 int inventory_slot_is_empty(const InventoryState* inv, int si) {
     if (si < 0 || si >= INVENTORY_SIZE) return 1;
     return inv->slots[si].template_id == 0;

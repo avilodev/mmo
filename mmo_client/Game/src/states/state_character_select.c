@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Implement character listing, creation, deletion, and world-entry transitions.
+ */
+
 #include "state_handler.h"
 #include "game.h"
 #include "renderer.h"
@@ -6,10 +11,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
-
-// ============================================================================
-// CHARACTER SELECT STATE
-// ============================================================================
 
 static void char_select_enter(GameState* game) {
     printf("[STATE] Entering character select\n");
@@ -30,10 +31,13 @@ static void char_select_exit(GameState* game) {
     printf("[STATE] Exiting character select\n");
 }
 
-// A pending request can end without ever producing a response: the server may
-// have dropped it as over budget, or it may be lost for reasons the client
-// cannot see. Both leave the UI stuck in a NET_STATE_WAITING_* state, so both
-// are resolved here rather than waiting on a reply that is not coming.
+/**
+ * Release a pending character request after rejection or timeout.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ * @param error_out  Destination for a user-facing failure message.
+ * @param error_size  Capacity of error_out in bytes.
+ */
 static void resolve_stalled_request(GameState* game, float delta_time,
                                     char* error_out, size_t error_size) {
     if (game->net_state == NET_STATE_IDLE) return;
@@ -58,6 +62,11 @@ static void resolve_stalled_request(GameState* game, float delta_time,
     }
 }
 
+/**
+ * Drive deferred character operations and their network response state machine.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ */
 static void char_select_update(GameState* game, float delta_time) {
     resolve_stalled_request(game, delta_time,
                             game->char_select.error_message,
@@ -189,6 +198,9 @@ static void char_select_update(GameState* game, float delta_time) {
     }
 }
 
+/**
+ * Render and operate the character-creation overlay.
+ */
 static void char_select_render_creation(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
@@ -278,6 +290,9 @@ static void char_select_render_creation(GameState* game) {
     }
 }
 
+/**
+ * Render the character list and process selection, deletion, and navigation.
+ */
 static void char_select_render(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
@@ -413,6 +428,9 @@ static void char_select_render(GameState* game) {
     }
 }
 
+/**
+ * Handle character-select escape and creation-name keyboard input.
+ */
 static void char_select_input(GameState* game, GLFWwindow* window, float delta_time) {
     (void)delta_time;
     
@@ -448,6 +466,7 @@ static void char_select_input(GameState* game, GLFWwindow* window, float delta_t
     }
 }
 
+/** State-handler table for GAME_MODE_CHARACTER_SELECT. */
 const StateHandler g_state_character_select = {
     .enter = char_select_enter,
     .exit = char_select_exit,

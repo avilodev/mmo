@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Create the launcher window and dispatch its Windows UI messages.
+ */
 #include <windowsx.h>
 #include "window.h"
 #include "ui_header.h"
@@ -11,6 +15,11 @@
 static HWND g_hwndMain = NULL;
 static HINSTANCE g_hInstance = NULL;
 
+/**
+ * Dispatch Windows messages to launcher panels and window behavior.
+ *
+ * @return      The message-specific result or the default window-procedure result.
+ */
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_CREATE:
@@ -188,6 +197,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
+/**
+ * Register and create the launcher's borderless top-level window.
+ *
+ * @return      TRUE after successful creation, otherwise FALSE.
+ */
 BOOL InitializeWindow(HINSTANCE hInstance) {
     g_hInstance = hInstance;
 
@@ -237,10 +251,18 @@ BOOL InitializeWindow(HINSTANCE hInstance) {
     return TRUE;
 }
 
+/**
+ * Return the launcher's top-level window handle.
+ */
 HWND GetMainWindow(void) {
     return g_hwndMain;
 }
 
+/**
+ * Process Windows messages until a quit message is received.
+ *
+ * This call blocks for the lifetime of the launcher window.
+ */
 void RunMessageLoop(void) {
     MSG msg = {0};
     while (GetMessage(&msg, NULL, 0, 0)) {

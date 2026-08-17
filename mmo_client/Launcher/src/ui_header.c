@@ -1,7 +1,12 @@
+/**
+ * @file
+ * Render and handle the launcher's custom navigation header.
+ */
 #include "ui_header.h"
 #include "window.h"
 #include <string.h>
 
+/** Describe one clickable launcher navigation label. */
 typedef struct {
     char* text;
     int x;
@@ -13,6 +18,7 @@ static int g_menuCount = 0;
 static int g_hoveredIndex = -1;
 static BOOL g_closeButtonHovered = FALSE;
 
+/** Initialize the header's navigation-item layout. */
 void CreateHeader(HWND hwndParent) {
     (void)hwndParent;
     // Initialize menu items (removed Play Guide and Online Store)
@@ -28,6 +34,11 @@ void CreateHeader(HWND hwndParent) {
     }
 }
 
+/**
+ * Find the navigation item containing a client-space point.
+ *
+ * @return      The item index, or -1 when no item contains the point.
+ */
 int GetHoveredMenuItem(POINT pt) {
     if (pt.y < 0 || pt.y >= HEADER_HEIGHT) return -1;
     
@@ -42,6 +53,7 @@ int GetHoveredMenuItem(POINT pt) {
     return -1;
 }
 
+/** Update hover state and repaint the header when it changes. */
 void HandleHeaderHover(HWND hwnd, POINT pt) {
     int newHoveredIndex = GetHoveredMenuItem(pt);
     BOOL newCloseHovered = IsPointInCloseButton(pt);
@@ -56,6 +68,7 @@ void HandleHeaderHover(HWND hwnd, POINT pt) {
     }
 }
 
+/** Paint the launcher logo, navigation labels, and close control. */
 void PaintHeader(HDC hdc) {
     // Draw header background
     HBRUSH headerBrush = CreateSolidBrush(RGB(25, 25, 30));
@@ -190,6 +203,7 @@ void PaintHeader(HDC hdc) {
     // hLogoFont and hMenuFont are static — do not delete them here
 }
 
+/** Dispatch a click on a launcher navigation item. */
 void HandleHeaderClick(HWND hwnd, POINT pt) {
     if (pt.y > HEADER_HEIGHT) return;
     
@@ -213,6 +227,11 @@ void HandleHeaderClick(HWND hwnd, POINT pt) {
     }
 }
 
+/**
+ * Test whether a client-space point lies within the custom close control.
+ *
+ * @return      TRUE when the point is inside the close control, otherwise FALSE.
+ */
 BOOL IsPointInCloseButton(POINT pt) {
     int closeX = WINDOW_WIDTH - 40;
     int closeY = 15;

@@ -1,6 +1,7 @@
-// ============================================================================
-// ability_bar.c — Client-side ability bar rendering and logic
-// ============================================================================
+/**
+ * @file
+ * Manage client ability slots, cooldowns, cast state, effects, and rendering.
+ */
 
 #include "ability_bar.h"
 #include "render/renderer.h"
@@ -16,11 +17,11 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// ---------------------------------------------------------------------------
-// Class color palettes for ability slots
-// ---------------------------------------------------------------------------
-
-// Returns 1 if the ability name indicates a healing ability
+/**
+ * Check whether an ability name contains the ASCII substring "heal".
+ *
+ * @return      Nonzero on a case-insensitive match; otherwise zero.
+ */
 static int ability_name_is_heal(const char* name) {
     for (const char* p = name; *p; p++) {
         char c0 = p[0] | 0x20;
@@ -41,10 +42,9 @@ static void get_class_color_for_slot(int slot_index, int slot_count,
     (void)slot_count;
 }
 
-// ============================================================================
-// INIT
-// ============================================================================
-
+/**
+ * Initialize ability-bar state and bottom-center layout.
+ */
 void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_height) {
     memset(bar, 0, sizeof(AbilityBarState));
 
@@ -61,6 +61,9 @@ void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_hei
     bar->bar_y = screen_height - bar->slot_size - 20.0f;
 }
 
+/**
+ * Release all loaded ability icon textures and clear the slot count.
+ */
 void ability_bar_cleanup(AbilityBarState* bar) {
     for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
         if (bar->slots[i].texture_id) {
@@ -71,10 +74,13 @@ void ability_bar_cleanup(AbilityBarState* bar) {
     bar->slot_count = 0;
 }
 
-// ============================================================================
-// SET ABILITIES (from server data on login)
-// ============================================================================
-
+/**
+ * Replace ability slots with parallel arrays received from the server.
+ *
+ * Existing icon textures are released before replacement.
+ *
+ * @param count  Number of array entries, clamped to MAX_ABILITY_SLOTS.
+ */
 void ability_bar_set_abilities(AbilityBarState* bar,
                                uint16_t* ability_ids,
                                const char** ability_names,
@@ -127,10 +133,13 @@ void ability_bar_set_abilities(AbilityBarState* bar,
     printf("[ABILITY_BAR] Set %d abilities\n", bar->slot_count);
 }
 
-// ============================================================================
-// UPDATE (per frame)
-// ============================================================================
-
+/**
+ * Advance ability timers and resolve newly pressed ability bindings.
+ *
+ * @param delta_time  Elapsed frame time in seconds.
+ * @param keys_just_pressed  GLFW-indexed edge-triggered key array.
+ * @return      Requested ability identifier, or zero when no cast is requested.
+ */
 uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
                             const int* keys_just_pressed, uint32_t player_class) {
     (void)player_class;
@@ -210,10 +219,11 @@ uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
     return 0; // No cast requested
 }
 
-// ============================================================================
-// SERVER EVENT HANDLERS
-// ============================================================================
-
+/**
+ * Start the server-confirmed ability cast display.
+ *
+ * @param cast_time  Cast duration in seconds.
+ */
 void ability_bar_on_cast_start(AbilityBarState* bar, uint16_t ability_id, float cast_time) {
     bar->is_casting = 1;
     bar->cast_elapsed = 0.0f;
@@ -231,6 +241,9 @@ void ability_bar_on_cast_start(AbilityBarState* bar, uint16_t ability_id, float 
     }
 }
 
+/**
+ * Resolve a cast and start its configured cooldown.
+ */
 void ability_bar_on_cast_resolve(AbilityBarState* bar, uint16_t ability_id) {
     bar->is_casting = 0;
 
@@ -243,6 +256,9 @@ void ability_bar_on_cast_resolve(AbilityBarState* bar, uint16_t ability_id) {
     }
 }
 
+/**
+ * Cancel the active cast and flash the identified slot.
+ */
 void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id) {
     bar->is_casting = 0;
     bar->cast_elapsed = 0.0f;
@@ -258,6 +274,11 @@ void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id) {
     }
 }
 
+/**
+ * Apply a server-provided cooldown to an ability slot.
+ *
+ * @param cooldown  Cooldown duration in seconds.
+ */
 void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown) {
     for (int i = 0; i < bar->slot_count; i++) {
         if (bar->slots[i].id == ability_id) {
@@ -268,11 +289,21 @@ void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float co
     }
 }
 
+/**
+ * Replace displayed current and maximum mana values.
+ */
 void ability_bar_on_mana_update(AbilityBarState* bar, int32_t mana, int32_t max_mana) {
     bar->mana = mana;
     bar->max_mana = max_mana;
 }
 
+/**
+ * Refresh or add a client status-effect display entry.
+ *
+ * New effects are discarded when every effect slot is active.
+ *
+ * @param duration  Remaining effect duration in seconds.
+ */
 void ability_bar_on_effect_apply(AbilityBarState* bar, uint8_t effect_type,
                                   int value, float duration, uint32_t source_id) {
     // Check if we already have this effect type — refresh duration
@@ -298,6 +329,9 @@ void ability_bar_on_effect_apply(AbilityBarState* bar, uint8_t effect_type,
     }
 }
 
+/**
+ * Remove the first active status effect of a type.
+ */
 void ability_bar_on_effect_remove(AbilityBarState* bar, uint8_t effect_type) {
     for (int i = 0; i < MAX_CLIENT_EFFECTS; i++) {
         if (bar->effects[i].active && bar->effects[i].effect_type == effect_type) {
@@ -307,10 +341,9 @@ void ability_bar_on_effect_remove(AbilityBarState* bar, uint8_t effect_type) {
     }
 }
 
-// ============================================================================
-// RENDER — ABILITY SLOTS
-// ============================================================================
-
+/**
+ * Render ability slots, cooldown overlays, costs, and key labels.
+ */
 void ability_bar_render(const AbilityBarState* bar) {
     float x = bar->bar_x;
     float y = bar->bar_y;
@@ -404,10 +437,9 @@ void ability_bar_render(const AbilityBarState* bar) {
     }
 }
 
-// ============================================================================
-// RENDER — STATUS EFFECTS (buff/debuff icons)
-// ============================================================================
-
+/**
+ * Render active status effects as timed colored icons.
+ */
 void ability_bar_render_effects(const AbilityBarState* bar, float x, float y) {
     float icon_size = 28.0f;
     float icon_pad = 4.0f;
@@ -453,10 +485,9 @@ void ability_bar_render_effects(const AbilityBarState* bar, float x, float y) {
     }
 }
 
-// ============================================================================
-// RENDER — ABILITY CAST BAR
-// ============================================================================
-
+/**
+ * Render the active ability cast bar above the ability slots.
+ */
 void ability_bar_render_cast_bar(const AbilityBarState* bar,
                                   float screen_width, float screen_height) {
     if (!bar->is_casting || bar->cast_duration <= 0.0f) return;

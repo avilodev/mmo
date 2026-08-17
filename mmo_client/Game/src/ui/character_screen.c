@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Manage the draggable client character panel, equipment slots, doll, and stats.
+ */
+
 #include "character_screen.h"
 #include "renderer.h"
 #include "inventory.h"
@@ -15,6 +20,12 @@
 #define SLOT_BOOTS      6
 #define SLOT_BLESSING   7  // NEW
 
+/**
+ * Initialize character-panel layout and interaction state.
+ *
+ * @param screen_width  Logical screen width in pixels.
+ * @param screen_height  Logical screen height in pixels.
+ */
 void character_screen_init(CharacterScreenState* char_screen, float screen_width, float screen_height) {
     memset(char_screen, 0, sizeof(CharacterScreenState));
     
@@ -96,6 +107,9 @@ void character_screen_init(CharacterScreenState* char_screen, float screen_width
            char_screen->window_width, char_screen->window_height);
 }
 
+/**
+ * Toggle character-panel visibility and clear interaction state when closing.
+ */
 void character_screen_toggle(CharacterScreenState* char_screen) {
     char_screen->is_open = !char_screen->is_open;
     if (!char_screen->is_open) {
@@ -105,6 +119,11 @@ void character_screen_toggle(CharacterScreenState* char_screen) {
     }
 }
 
+/**
+ * Resolve a mouse position to an equipment slot.
+ *
+ * @return      Equipment slot index, or -1 outside the open panel's slots.
+ */
 static int get_slot_at_position(const CharacterScreenState* char_screen, float mouse_x, float mouse_y) {
     if (!char_screen->is_open) return -1;
     
@@ -141,6 +160,11 @@ static int is_mouse_in_title_bar(const CharacterScreenState* char_screen, float 
             mouse_y <= char_screen->window_y + 35);
 }
 
+/**
+ * Check whether a mouse position hits the close button.
+ *
+ * @return      Nonzero on a hit; otherwise zero.
+ */
 int character_screen_check_close_button(const CharacterScreenState* char_screen, 
                                        float mouse_x, float mouse_y) {
     float x = char_screen->close_button_x;
@@ -151,6 +175,12 @@ int character_screen_check_close_button(const CharacterScreenState* char_screen,
             mouse_y >= y && mouse_y <= y + size);
 }
 
+/**
+ * Update panel dragging, close handling, and equipment hover state.
+ *
+ * @param mouse_clicked  Nonzero on a new left-button press.
+ * @param mouse_down  Nonzero while the left button is held.
+ */
 void character_screen_update(CharacterScreenState* char_screen, float mouse_x, float mouse_y,
                             int mouse_clicked, int mouse_down, int right_clicked) {
     (void)right_clicked;
@@ -258,6 +288,11 @@ void character_screen_update(CharacterScreenState* char_screen, float mouse_x, f
     }
 }
 
+/**
+ * Draw one equipment slot with its item rarity or empty label.
+ *
+ * @param item_id  Item template identifier, or zero for an empty slot.
+ */
 static void render_equipment_slot(const EquipSlotUI* slot, int is_hovered, 
                                   uint32_t item_id, const char* slot_name) {
     float x = slot->x;
@@ -311,6 +346,9 @@ static void render_equipment_slot(const EquipSlotUI* slot, int is_hovered,
     }
 }
 
+/**
+ * Draw the hovered equipment slot's bounded tooltip.
+ */
 static void render_tooltip(const CharacterScreenState* char_screen, const GameState* game) {
     if (!char_screen->tooltip_visible || char_screen->hovered_slot < 0) return;
     if (!game->player.info_loaded) return;
@@ -320,14 +358,14 @@ static void render_tooltip(const CharacterScreenState* char_screen, const GameSt
     const char* slot_name = "";
     
     switch (char_screen->hovered_slot) {
-        case SLOT_MAIN_HAND:  item_id = game->player.info.main_hand; slot_name = "Main Hand"; break;
-        case SLOT_OFF_HAND:   item_id = game->player.info.second_hand; slot_name = "Off Hand"; break;
-        case SLOT_HELMET:     item_id = game->player.info.helmet; slot_name = "Helmet"; break;
-        case SLOT_CHEST:      item_id = game->player.info.chest_armor; slot_name = "Chest"; break;
-        case SLOT_GLOVES:     item_id = game->player.info.gloves; slot_name = "Gloves"; break;
-        case SLOT_LEGGINGS:   item_id = game->player.info.leggings; slot_name = "Leggings"; break;
-        case SLOT_BOOTS:      item_id = game->player.info.boots; slot_name = "Boots"; break;
-        case SLOT_BLESSING:   item_id = game->player.info.blessing; slot_name = "Blessing"; break;  // NEW
+        case SLOT_MAIN_HAND:  item_id = game->player.info.equipment[EQUIP_MAIN_HAND].item_id; slot_name = "Main Hand"; break;
+        case SLOT_OFF_HAND:   item_id = game->player.info.equipment[EQUIP_SECOND_HAND].item_id; slot_name = "Off Hand"; break;
+        case SLOT_HELMET:     item_id = game->player.info.equipment[EQUIP_HELMET].item_id; slot_name = "Helmet"; break;
+        case SLOT_CHEST:      item_id = game->player.info.equipment[EQUIP_CHEST].item_id; slot_name = "Chest"; break;
+        case SLOT_GLOVES:     item_id = game->player.info.equipment[EQUIP_GLOVES].item_id; slot_name = "Gloves"; break;
+        case SLOT_LEGGINGS:   item_id = game->player.info.equipment[EQUIP_LEGGINGS].item_id; slot_name = "Leggings"; break;
+        case SLOT_BOOTS:      item_id = game->player.info.equipment[EQUIP_BOOTS].item_id; slot_name = "Boots"; break;
+        case SLOT_BLESSING:   item_id = game->player.info.equipment[EQUIP_BLESSING].item_id; slot_name = "Blessing"; break;  // NEW
     }
     
     if (item_id == 0) {
@@ -390,10 +428,6 @@ static void render_tooltip(const CharacterScreenState* char_screen, const GameSt
     }
 }
 
-// ============================================================================
-// Character doll + stats helpers
-// ============================================================================
-
 static void doll_rarity_color(uint32_t item_id, float* r, float* g, float* b) {
     const ItemTemplate* item = item_db_get(item_id);
     if (!item || item_id == 0) { *r=0.28f; *g=0.28f; *b=0.32f; return; }
@@ -423,6 +457,9 @@ static void doll_rect(float x, float y, float w, float h, float r, float g, floa
     renderer_draw_rect(x, y, w, h, r, g, b, 1.0f);
 }
 
+/**
+ * Draw the character doll using class and equipped-item rarity colors.
+ */
 static void render_character_doll(const CharacterScreenState* cs, const GameState* game) {
     float dx = cs->char_display_x;
     float dy = cs->char_display_y;
@@ -456,8 +493,8 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     // HEAD (22×22) — helmet color
     float head_w = 22.0f, head_h = 22.0f;
     float head_x = cx - head_w * 0.5f;
-    if (game->player.info.helmet)
-        doll_rarity_color(game->player.info.helmet, &r, &g, &b);
+    if (game->player.info.equipment[EQUIP_HELMET].item_id)
+        doll_rarity_color(game->player.info.equipment[EQUIP_HELMET].item_id, &r, &g, &b);
     else
         class_base_color(game->player.info.player_class, &r, &g, &b);
     doll_rect(head_x, fy, head_w, head_h, r, g, b);
@@ -472,8 +509,8 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     float torso_w = 48.0f, torso_h = 44.0f;
     float torso_x = cx - torso_w * 0.5f;
     float torso_y = neck_y + neck_h;
-    if (game->player.info.chest_armor)
-        doll_rarity_color(game->player.info.chest_armor, &r, &g, &b);
+    if (game->player.info.equipment[EQUIP_CHEST].item_id)
+        doll_rarity_color(game->player.info.equipment[EQUIP_CHEST].item_id, &r, &g, &b);
     else
         class_base_color(game->player.info.player_class, &r, &g, &b);
     doll_rect(torso_x, torso_y, torso_w, torso_h, r, g, b);
@@ -489,8 +526,8 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     doll_rect(right_arm_x, arm_y, arm_w, arm_upper_h, r, g, b);
 
     float glove_y = arm_y + arm_upper_h;
-    if (game->player.info.gloves)
-        doll_rarity_color(game->player.info.gloves, &r, &g, &b);
+    if (game->player.info.equipment[EQUIP_GLOVES].item_id)
+        doll_rarity_color(game->player.info.equipment[EQUIP_GLOVES].item_id, &r, &g, &b);
     else
         class_base_color(game->player.info.player_class, &r, &g, &b);
     r *= 0.8f; g *= 0.8f; b *= 0.8f;
@@ -502,8 +539,8 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     float leg_y = torso_y + torso_h;
     float left_leg_x  = cx - leg_w - 2.0f;
     float right_leg_x = cx + 2.0f;
-    if (game->player.info.leggings)
-        doll_rarity_color(game->player.info.leggings, &r, &g, &b);
+    if (game->player.info.equipment[EQUIP_LEGGINGS].item_id)
+        doll_rarity_color(game->player.info.equipment[EQUIP_LEGGINGS].item_id, &r, &g, &b);
     else
         class_base_color(game->player.info.player_class, &r, &g, &b);
     doll_rect(left_leg_x,  leg_y, leg_w, leg_h, r, g, b);
@@ -512,14 +549,17 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     // FEET (boots color, slightly wider than legs)
     float foot_w = 22.0f, foot_h = 11.0f;
     float foot_y = leg_y + leg_h;
-    if (game->player.info.boots)
-        doll_rarity_color(game->player.info.boots, &r, &g, &b);
+    if (game->player.info.equipment[EQUIP_BOOTS].item_id)
+        doll_rarity_color(game->player.info.equipment[EQUIP_BOOTS].item_id, &r, &g, &b);
     else
         class_base_color(game->player.info.player_class, &r, &g, &b);
     doll_rect(left_leg_x  - 1.0f, foot_y, foot_w, foot_h, r, g, b);
     doll_rect(right_leg_x - 1.0f, foot_y, foot_w, foot_h, r, g, b);
 }
 
+/**
+ * Draw the loaded character's combat-stat grid.
+ */
 static void render_character_stats(const CharacterScreenState* cs, const GameState* game) {
     if (!game->player.info_loaded) return;
 
@@ -572,6 +612,11 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
     }
 }
 
+/**
+ * Render an open character panel in screen space.
+ *
+ * The function preserves the current OpenGL projection and model-view matrices.
+ */
 void character_screen_render(const CharacterScreenState* char_screen, const GameState* game) {
     if (!char_screen->is_open) return;
     
@@ -629,36 +674,36 @@ void character_screen_render(const CharacterScreenState* char_screen, const Game
     if (game->player.info_loaded) {
         render_equipment_slot(&char_screen->main_hand_slot, 
                              char_screen->hovered_slot == SLOT_MAIN_HAND,
-                             game->player.info.main_hand, "Main");
+                             game->player.info.equipment[EQUIP_MAIN_HAND].item_id, "Main");
         
         render_equipment_slot(&char_screen->off_hand_slot,
                              char_screen->hovered_slot == SLOT_OFF_HAND,
-                             game->player.info.second_hand, "Off");
+                             game->player.info.equipment[EQUIP_SECOND_HAND].item_id, "Off");
         
         render_equipment_slot(&char_screen->helmet_slot,
                              char_screen->hovered_slot == SLOT_HELMET,
-                             game->player.info.helmet, "Head");
+                             game->player.info.equipment[EQUIP_HELMET].item_id, "Head");
         
         render_equipment_slot(&char_screen->chest_slot,
                              char_screen->hovered_slot == SLOT_CHEST,
-                             game->player.info.chest_armor, "Chest");
+                             game->player.info.equipment[EQUIP_CHEST].item_id, "Chest");
         
         render_equipment_slot(&char_screen->gloves_slot,
                              char_screen->hovered_slot == SLOT_GLOVES,
-                             game->player.info.gloves, "Hands");
+                             game->player.info.equipment[EQUIP_GLOVES].item_id, "Hands");
         
         render_equipment_slot(&char_screen->leggings_slot,
                              char_screen->hovered_slot == SLOT_LEGGINGS,
-                             game->player.info.leggings, "Legs");
+                             game->player.info.equipment[EQUIP_LEGGINGS].item_id, "Legs");
         
         render_equipment_slot(&char_screen->boots_slot,
                              char_screen->hovered_slot == SLOT_BOOTS,
-                             game->player.info.boots, "Feet");
+                             game->player.info.equipment[EQUIP_BOOTS].item_id, "Feet");
         
         // NEW: Render blessing slot
         render_equipment_slot(&char_screen->blessing_slot,
                              char_screen->hovered_slot == SLOT_BLESSING,
-                             game->player.info.blessing, "Blessing");
+                             game->player.info.equipment[EQUIP_BLESSING].item_id, "Blessing");
     }
     
     // Render tooltip

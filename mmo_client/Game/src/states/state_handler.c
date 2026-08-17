@@ -1,5 +1,15 @@
+/**
+ * @file
+ * Map client game modes to their state-handler tables.
+ */
+
 #include "state_handler.h"
 
+/**
+ * Select the handler table for a game mode.
+ *
+ * @return      Matching handler, or the main-menu handler for an unknown mode.
+ */
 const StateHandler* state_handler_get(GameMode mode) {
     switch (mode) {
         case GAME_MODE_MAIN_MENU:        return &g_state_main_menu;

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "protocol.h"
 
-// Class IDs (must match server)
+/** Mirror the server class identifier values. */
 typedef enum {
     CLASS_NONE       = 0,
     CLASS_GLADIATOR  = 1,
@@ -14,39 +14,34 @@ typedef enum {
     CLASS_COUNT      = 5
 } ClassId;
 
-// Forward declaration for function pointers
 typedef struct AttackDef AttackDef;
 
-// Function pointer types for polymorphic behavior
+/** Render an attack definition at normalized cast progress. */
 typedef void (*AttackRenderFn)(const AttackDef* def, 
                                 float origin_x, float origin_y,
                                 float aim_x, float aim_y,
                                 float progress);
 
-// Attack definition structure (data-driven)
+/** Describe class attack timing, geometry, color, and optional rendering. */
 struct AttackDef {
     uint8_t      id;
     const char*  name;
     AttackType   type;
     
-    // Timing
-    float        cast_time;
-    float        cooldown;
+    float        cast_time;      /**< Cast duration in seconds. */
+    float        cooldown;       /**< Cooldown duration in seconds. */
     
-    // Shape parameters
     float        range;
-    float        radius;        // AOE: circle radius
-    float        cone_angle;    // CONE: full angle in degrees
-    float        line_width;    // LINE: width of beam
+    float        radius;         /**< Area-of-effect radius in world units. */
+    float        cone_angle;     /**< Full cone angle in degrees. */
+    float        line_width;     /**< Line attack width in world units. */
     
-    // Visuals
     float        color_r;
     float        color_g;
     float        color_b;
     float        color_a;
     
-    // Optional custom render (NULL = use default for type)
-    AttackRenderFn custom_render;
+    AttackRenderFn custom_render; /**< Optional renderer, or NULL for the default. */
 };
 
 #endif // ATTACK_TYPES_H

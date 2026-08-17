@@ -1,30 +1,34 @@
+/**
+ * @file
+ * Maintain and render the client's active and completed quest log.
+ */
+
 #include "ui/quest_log.h"
 #include "renderer.h"
 #include <string.h>
 #include <stdio.h>
-
-// ============================================================================
-// LAYOUT CONSTANTS
-// ============================================================================
 
 #define QL_PW        480.0f   // Panel width
 #define QL_PH        420.0f   // Panel height
 #define QL_ROW_H     36.0f    // Height per collapsed quest row
 #define QL_OBJ_H     20.0f    // Height per objective line when expanded
 
-// ============================================================================
-// INIT
-// ============================================================================
-
+/**
+ * Initialize an empty, closed quest log.
+ */
 void quest_log_init(QuestLogState* ql) {
     memset(ql, 0, sizeof(*ql));
     ql->selected = -1;
 }
 
-// ============================================================================
-// DATA MANAGEMENT
-// ============================================================================
-
+/**
+ * Add a quest or refresh the metadata of an existing entry.
+ *
+ * Existing objective progress is preserved when an entry is refreshed.
+ *
+ * @param descriptions  Array containing obj_count objective descriptions.
+ * @param required  Array containing obj_count target counts.
+ */
 void quest_log_add(QuestLogState* ql, uint32_t id,
                    const char* title,
                    uint8_t obj_count,
@@ -64,6 +68,9 @@ void quest_log_add(QuestLogState* ql, uint32_t id,
     }
 }
 
+/**
+ * Replace progress for one objective of an active quest.
+ */
 void quest_log_update_progress(QuestLogState* ql, uint32_t quest_id,
                                uint8_t obj_index, int32_t current, int32_t required) {
     for (int i = 0; i < ql->count; i++) {
@@ -79,6 +86,9 @@ void quest_log_update_progress(QuestLogState* ql, uint32_t quest_id,
     }
 }
 
+/**
+ * Mark a quest completed and inactive.
+ */
 void quest_log_complete(QuestLogState* ql, uint32_t id) {
     for (int i = 0; i < ql->count; i++) {
         if (ql->entries[i].id == id) {
@@ -89,6 +99,9 @@ void quest_log_complete(QuestLogState* ql, uint32_t id) {
     }
 }
 
+/**
+ * Remove a quest and compact the entry array.
+ */
 void quest_log_remove(QuestLogState* ql, uint32_t id) {
     for (int i = 0; i < ql->count; i++) {
         if (ql->entries[i].id == id) {
@@ -100,10 +113,6 @@ void quest_log_remove(QuestLogState* ql, uint32_t id) {
         }
     }
 }
-
-// ============================================================================
-// RENDER
-// ============================================================================
 
 static void draw_panel_border(float px, float py, float pw, float ph) {
     renderer_draw_rect(px,        py,         pw, 2.0f, 0.45f, 0.55f, 0.75f, 1.0f);
@@ -118,6 +127,9 @@ static float expanded_height(const QuestEntry* e) {
     return 12.0f + obj * QL_OBJ_H + 8.0f;
 }
 
+/**
+ * Render the open quest log centered in a logical viewport.
+ */
 void quest_log_render(const QuestLogState* ql, int vw, int vh) {
     if (!ql->is_open) return;
 
@@ -244,10 +256,13 @@ void quest_log_render(const QuestLogState* ql, int vw, int vh) {
     }
 }
 
-// ============================================================================
-// INPUT
-// ============================================================================
-
+/**
+ * Toggle, close, or select entries in the quest log.
+ *
+ * @param clicked  Nonzero on a new pointer click.
+ * @param key_j  Nonzero on a new quest-log binding press.
+ * @param key_esc  Nonzero on a new escape-key press.
+ */
 void quest_log_handle_input_full(QuestLogState* ql,
                                   float mx, float my, int clicked,
                                   int key_j, int key_esc,

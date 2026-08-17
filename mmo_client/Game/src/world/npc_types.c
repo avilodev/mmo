@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Load the client mapping from NPC type identifiers to display names.
+ */
+
 #include "npc_types.h"
 
 #include <stdio.h>
@@ -9,16 +14,17 @@
 static char  g_names[MAX_NPC_TYPE_ID][32];
 static int   g_loaded = 0;
 
-// ============================================================================
-// MINIMAL JSON HELPERS  (no external deps, same approach as items.json parser)
-// ============================================================================
-
 static const char* skip_ws(const char* p) {
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
     return p;
 }
 
-// Advance past a quoted string (p must point at the opening '"')
+/**
+ * Advance past a quoted JSON string and its escaped bytes.
+ *
+ * @param p  Input position expected to point at an opening quote.
+ * @return      First byte after the closing quote, or the input position when unquoted.
+ */
 static const char* skip_str(const char* p) {
     if (*p != '"') return p;
     p++;
@@ -30,7 +36,13 @@ static const char* skip_str(const char* p) {
     return p;
 }
 
-// Copy the contents of a quoted string into buf (p points at '"')
+/**
+ * Copy a quoted JSON string into a bounded buffer.
+ *
+ * @param p  Input position expected to point at an opening quote.
+ * @param buf  Destination buffer that receives a NUL-terminated value.
+ * @param buf_sz  Destination capacity in bytes; must be positive.
+ */
 static void read_str(const char* p, char* buf, int buf_sz) {
     buf[0] = '\0';
     if (*p != '"') return;
@@ -49,7 +61,11 @@ static int read_int(const char* p) {
     return (int)strtol(p, NULL, 10);
 }
 
-// Skip over a single JSON value (string, number, true/false/null, or nested {}/[])
+/**
+ * Advance past one JSON scalar or balanced container value.
+ *
+ * @return      First byte following the parsed value.
+ */
 static const char* skip_value(const char* p) {
     p = skip_ws(p);
     if (*p == '"') return skip_str(p);
@@ -69,10 +85,13 @@ static const char* skip_value(const char* p) {
     return p;
 }
 
-// ============================================================================
-// PUBLIC API
-// ============================================================================
-
+/**
+ * Load NPC display names from a JSON array.
+ *
+ * Missing or unreadable data leaves the table loaded but empty.
+ *
+ * @param path  Path to the NPC type JSON file.
+ */
 void npc_types_init(const char* path) {
     memset(g_names, 0, sizeof(g_names));
     g_loaded = 1;
@@ -143,11 +162,21 @@ void npc_types_init(const char* path) {
     printf("[NPC_TYPES] Loaded %d NPC types\n", count);
 }
 
+/**
+ * Clear the NPC display-name table.
+ */
 void npc_types_cleanup(void) {
     memset(g_names, 0, sizeof(g_names));
     g_loaded = 0;
 }
 
+/**
+ * Find the loaded display name for an NPC type.
+ *
+ * The returned pointer refers to static storage until cleanup or reinitialization.
+ *
+ * @return      Display name, or NULL when the table or identifier is unavailable.
+ */
 const char* npc_type_get_name(uint8_t type_id) {
     if (!g_loaded || g_names[type_id][0] == '\0') return NULL;
     return g_names[type_id];
