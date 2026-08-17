@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 
+/** Hold realm listener state and the synchronized world-server registry. */
 typedef struct {
     char name[32];
     int tcp_sockfd;
@@ -21,13 +22,13 @@ typedef struct {
     int running;
     pthread_t accept_thread;
     
-    // World server monitoring (realm server only)
     pthread_t world_monitor_thread;
     WorldServer world_servers[MAX_WORLDS];
     int num_world_servers;
     pthread_mutex_t world_servers_lock;
 } ServerConfig;
 
+/** Track the realm's current aggregate player count. */
 typedef struct {
     int current_players; 
 } ServerState;

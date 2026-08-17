@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 
+/** Locate the realm's configured world-list file. */
 #define WORLD_FILE_PATH "/home/avilo/mmo_server/realm_server/worlds/worlds.txt"
 
 void world_send_list(int client_fd, uint32_t account_id);           

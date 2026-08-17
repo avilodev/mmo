@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Validate and dispatch login-server packet types to their handlers.
+ */
 #include "routes.h"
 #include "auth.h"
 #include "patch_notes.h"
@@ -5,6 +9,11 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
+/**
+ * Route one complete login packet according to its wire type.
+ *
+ * Credential text fields in mutable packet_data are forced to terminate before dispatch.
+ */
 void route_packet(int client_fd, void* packet_data, ssize_t bytes) {
     if (bytes < MIN_HEADER_SIZE) {
         printf("Packet too small: %zd bytes\n", bytes);

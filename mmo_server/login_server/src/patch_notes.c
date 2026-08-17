@@ -1,9 +1,14 @@
+/**
+ * @file
+ * Cache login-server patch notes and serve them in protocol responses.
+ */
 #include "patch_notes.h"
 #include "tls.h"
 
 static char g_patch_notes_cache[PATCH_NOTES_MAX_SIZE] = {0};
 static size_t g_patch_notes_len = 0;
 
+/** Load patch-note text into the process-wide response cache. */
 void patch_notes_init(void) {
     FILE* file = fopen(PATCH_NOTES_PATH, "r");
     if (file == NULL) {
@@ -20,6 +25,11 @@ void patch_notes_init(void) {
     printf("[PATCH NOTES] Cached %zu bytes from %s\n", g_patch_notes_len, PATCH_NOTES_PATH);
 }
 
+/**
+ * Send the cached patch notes to a TLS client.
+ *
+ * The response uses a seven-byte header with network-order player and payload fields.
+ */
 void handle_patch_notes_request(int client_fd, PacketHeader* packet, ssize_t bytes) {
     (void)packet;
     (void)bytes;

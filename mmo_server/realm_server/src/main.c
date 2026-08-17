@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Run the realm service, authenticate clients, and monitor configured world servers.
+ */
 #include "types.h"
 #include "log.h"
 #include "session.h"
@@ -36,6 +40,11 @@ static int append_path(char* destination, size_t destination_size,
     return 1;
 }
 
+/**
+ * Receive an exact byte count while applying a poll timeout to each read.
+ *
+ * @return      The requested byte count, or -1 on timeout, socket error, or disconnection.
+ */
 static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
     uint8_t* ptr = buffer;
     size_t total = 0;
@@ -50,6 +59,7 @@ static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeo
     return (ssize_t)total;
 }
 
+/** Resolve the world-list path relative to the realm-server executable. */
 static void init_runtime_paths(void) {
     char exe_path[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
@@ -69,6 +79,13 @@ static void init_runtime_paths(void) {
     }
 }
 
+/**
+ * Authenticate one realm client and route its reassembled post-authentication packets.
+ *
+ * The function owns and frees the heap-allocated descriptor argument, then closes the client descriptor before returning.
+ *
+ * @return      Always NULL.
+ */
 void* client_handler_thread(void* arg) {
     int client_fd = *(int*)arg;
     free(arg);
@@ -213,6 +230,11 @@ disconnect:
     return NULL;
 }
 
+/**
+ * Accept realm connections and detach one handler thread per client.
+ *
+ * @return      Always NULL after the server stops.
+ */
 void* accept_thread_func(void* arg) {
     (void)arg;
     
@@ -247,7 +269,13 @@ void* accept_thread_func(void* arg) {
     return NULL;
 }
 
-// World server monitoring thread
+/**
+ * Maintain authenticated world connections and update their heartbeat status.
+ *
+ * This function holds world_servers_lock while connecting to and querying every configured world.
+ *
+ * @return      Always NULL after monitoring stops or world configuration cannot be loaded.
+ */
 void* world_monitor_thread_func(void* arg) {
     (void)arg;
     
@@ -390,6 +418,13 @@ void* world_monitor_thread_func(void* arg) {
     return NULL;
 }
 
+/**
+ * Initialize realm dependencies and run client and world-monitor threads until shutdown.
+ *
+ * @param argc  Argument count; an optional first argument names the configuration file.
+ * @param argv  Argument vector containing the optional configuration path.
+ * @return      Zero after orderly shutdown, or one when initialization fails.
+ */
 int main(int argc, char** argv) {
     log_init();   // reads MMO_LOG_LEVEL; must run before any thread starts
 

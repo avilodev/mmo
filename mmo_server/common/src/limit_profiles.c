@@ -1,28 +1,12 @@
-// ============================================================================
-// limit_profiles.c — Concrete packet budgets per server.
-//
-// Costs are in tokens. A cost of 1 is "as cheap as a ping"; anything that
-// touches the database, broadcasts to other players, or scans a collection is
-// priced above that so it drains its bucket proportionally faster. This is what
-// keeps the class list short: an expensive new opcode gets a higher cost rather
-// than a class of its own.
-//
-// Rates are deliberately well above what a well-behaved client needs. Movement
-// is capped far above the 60Hz client send rate, so normal play never sees a
-// drop.
-// ============================================================================
+/**
+ * @file
+ * Define token-bucket packet budgets for world and realm traffic.
+ */
 
 #include "limit_profiles.h"
 #include "protocol.h"
 
-// ---------------------------------------------------------------------------
-// World server
-//
-// The overall rate sits below the sum of the class rates on purpose. Each class
-// is sized for a client using only that class; the overall bucket is what stops
-// someone spreading across all five to stay under every individual cap while
-// still flooding in aggregate.
-// ---------------------------------------------------------------------------
+/** Budget world traffic by high-rate movement and lower-rate stateful operations. */
 static const PacketLimitProfile WORLD_PROFILE = {
     .name = "world",
 
@@ -89,14 +73,7 @@ static const PacketLimitProfile WORLD_PROFILE = {
     .violation_window = 10.0,
 };
 
-// ---------------------------------------------------------------------------
-// Realm server
-//
-// Character selection traffic: a handful of packets per session, nearly all of
-// them a database round trip. Budgets are an order of magnitude tighter than
-// the world's, and the violation limit is tighter still, because there is no
-// legitimate reason for a realm client to be fast.
-// ---------------------------------------------------------------------------
+/** Budget realm traffic for infrequent database-backed character operations. */
 static const PacketLimitProfile REALM_PROFILE = {
     .name = "realm",
 
@@ -135,5 +112,7 @@ static const PacketLimitProfile REALM_PROFILE = {
     .violation_window = 10.0,
 };
 
+/** Return the immutable world-server packet-limit profile. */
 const PacketLimitProfile* limit_profile_world(void) { return &WORLD_PROFILE; }
+/** Return the immutable realm-server packet-limit profile. */
 const PacketLimitProfile* limit_profile_realm(void) { return &REALM_PROFILE; }

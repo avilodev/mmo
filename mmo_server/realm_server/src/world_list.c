@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Send realm world listings and issue single-use world-entry tickets.
+ */
 #include "world_list.h"
 
 #include "world_database_manager.h"
@@ -10,7 +14,11 @@
 #include <hiredis/hiredis.h>
 #include <stddef.h>
 
-// Generate cryptographically random ticket
+/**
+ * Generate a hexadecimal world-entry ticket from system random input.
+ *
+ * A timestamp-and-rand fallback is used when /dev/urandom cannot be opened.
+ */
 static void generate_secure_ticket(char* ticket_out, size_t size) {
     FILE* urandom = fopen("/dev/urandom", "r");
     if (urandom) {
@@ -29,6 +37,11 @@ static void generate_secure_ticket(char* ticket_out, size_t size) {
     }
 }
 
+/**
+ * Snapshot monitored world status and send it to an authenticated realm client.
+ *
+ * World identifiers, population values, capacities, and ports are encoded in network byte order.
+ */
 void world_send_list(int client_fd, uint32_t account_id) {
     WorldListResponsePacket response;
     memset(&response, 0, sizeof(response));
@@ -81,6 +94,11 @@ void world_send_list(int client_fd, uint32_t account_id) {
     printf("Sent world list with %d worlds to account %u\n", world_count, account_id);
 }
 
+/**
+ * Validate character ownership and issue a short-lived ticket for an online world.
+ *
+ * The world-server mutex remains held while the ticket is stored in Redis.
+ */
 void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(EnterWorldPacket)) {
         printf("Invalid enter world packet size\n");

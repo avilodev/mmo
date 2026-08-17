@@ -254,12 +254,18 @@ TEST_CFLAGS_BASE = $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$
 TEST_CFLAGS = -Wall -Wextra -g -pthread $(TEST_CFLAGS_BASE)
 
 .PHONY: test
-test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/move_validator_test
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test
 	@echo "=== Running packet limiter test ==="
 	@./$(TEST_BIN)/packet_limiter_test
 	@echo ""
 	@echo "=== Running move validator test ==="
 	@./$(TEST_BIN)/move_validator_test
+	@echo ""
+	@echo "=== Running spatial grid test ==="
+	@./$(TEST_BIN)/spatial_grid_test
+	@echo ""
+	@echo "=== Running tick scheduler test ==="
+	@./$(TEST_BIN)/tick_scheduler_test
 	@echo ""
 	@echo "=== Running config limits test ==="
 	@./$(TEST_BIN)/config_limits_test
@@ -269,6 +275,21 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo ""
 	@echo "=== Running login concurrency test ==="
 	@./$(TEST_BIN)/login_concurrency_test
+	@echo ""
+	@echo "=== Running player index test ==="
+	@./$(TEST_BIN)/player_index_test
+	@echo ""
+	@echo "=== Running tick snapshot test ==="
+	@./$(TEST_BIN)/tick_snapshot_test
+	@echo ""
+	@echo "=== Running item data test ==="
+	@./$(TEST_BIN)/item_data_test
+	@echo ""
+	@echo "=== Running item instance test ==="
+	@./$(TEST_BIN)/item_instance_test
+	@echo ""
+	@echo "=== Running character items DB test ==="
+	@./$(TEST_BIN)/character_items_db_test
 	@echo ""
 	@echo "=== All tests passed ==="
 
@@ -288,6 +309,24 @@ $(TEST_BIN)/net_loop_test: tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(W
 
 # The event loop is concurrent code; compiling it is not the same as proving it.
 # Run this when touching net_loop.c. TSan needs ASLR off on some kernels.
+# The player registry is read by every gameplay thread and written by logins.
+# Run this when touching player_data.c. Same ASLR caveat as above.
+.PHONY: player-index-sanitize
+player-index-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (concurrent logins vs. scanning readers) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/player_index_tsan tests/login_concurrency_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/player_index_tsan > /tmp/player_index_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/player_index_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/player_index_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan (index probing and bounds) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/player_index_asan tests/player_index_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/player_index_asan > /tmp/player_index_asan.log 2>&1 && echo "  clean" || \
+	  { tail -40 /tmp/player_index_asan.log; exit 1; }
+
 .PHONY: net-loop-sanitize
 net-loop-sanitize:
 	@mkdir -p $(TEST_BIN)
@@ -309,11 +348,74 @@ $(TEST_BIN)/login_concurrency_test: tests/login_concurrency_test.c $(WORLD_DIR)/
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
 
+# Round-trips character_items through a real PostgreSQL. Skips itself (exit 0)
+# unless MMO_TEST_PGCONN is set, so the suite stays green without a database.
+$(TEST_BIN)/character_items_db_test: tests/character_items_db_test.c $(DB_DIR)/src/players_database.c $(DB_DIR)/src/class_stats.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lpq -lm
+
+# Covers item instances and stacking. Every assertion is a conservation check:
+# an item duplication bug shows up as a change in the total.
+$(TEST_BIN)/item_instance_test: tests/item_instance_test.c $(WORLD_DIR)/src/item_instance.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# Covers item definition parsing and shop content validation, including the
+# shipped data files so a bad content edit fails here rather than in play.
+$(TEST_BIN)/item_data_test: tests/item_data_test.c $(WORLD_DIR)/src/items_database.c $(WORLD_DIR)/src/shop.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Covers the gameplay tick's player snapshot and interest grid: correctness
+# against brute force, nearest-first ordering, and that query cost stops
+# scaling with population.
+$(TEST_BIN)/tick_snapshot_test: tests/tick_snapshot_test.c $(WORLD_DIR)/src/tick_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -O2 -o $@ $^ -lm
+
+# Covers the character_id -> slot index: correctness, the ABA guard on a
+# recycled slot, and that lookup cost stays flat as the table fills.
+$(TEST_BIN)/player_index_test: tests/player_index_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -O2 -o $@ $^
+
 # Drives the movement rules against a synthetic collision map — no sockets, no
 # database, so this runs anywhere.
 $(TEST_BIN)/move_validator_test: tests/move_validator_test.c $(WORLD_DIR)/src/move_validator.c $(WORLD_DIR)/src/world_collision.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Checks interest management against a brute-force oracle — the O(n^2) scan it
+# replaces must agree with it exactly, including result ordering.
+$(TEST_BIN)/spatial_grid_test: tests/spatial_grid_test.c $(WORLD_DIR)/src/spatial_grid.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Checks multi-rate deadline scheduling against a synthetic clock: arbitrary
+# rates, missed-tick handling, and phase alignment after a stall.
+$(TEST_BIN)/tick_scheduler_test: tests/tick_scheduler_test.c $(WORLD_DIR)/src/tick_scheduler.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# Deadline arithmetic and the flat-array grid are both easy to get subtly wrong
+# in ways a passing test will not show. Run this when touching either.
+.PHONY: tick-scheduler-sanitize
+tick-scheduler-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== AddressSanitizer + UBSan ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/tick_scheduler_asan tests/tick_scheduler_test.c $(WORLD_DIR)/src/tick_scheduler.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/tick_scheduler_asan > /tmp/tick_scheduler_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/tick_scheduler_asan.log | head -40; exit 1; }
+
+.PHONY: spatial-grid-sanitize
+spatial-grid-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== AddressSanitizer + UBSan ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/spatial_grid_asan tests/spatial_grid_test.c $(WORLD_DIR)/src/spatial_grid.c -lm
+	@setarch `uname -m` -R ./$(TEST_BIN)/spatial_grid_asan > /tmp/spatial_grid_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/spatial_grid_asan.log | head -40; exit 1; }
 
 # Full setup (databases + tables)
 setup-all: setup-postgres init-world-tables

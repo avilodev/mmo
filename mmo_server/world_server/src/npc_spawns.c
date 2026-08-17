@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Load configured NPC spawn records into the world-server NPC pool.
+ */
+
 #include "npc_spawns.h"
 #include "combat.h"
 
@@ -6,10 +11,13 @@
 #include <string.h>
 #include <ctype.h>
 
-// ---------------------------------------------------------------------------
-// Minimal JSON helpers (same pattern as items_database.c)
-// ---------------------------------------------------------------------------
-
+/**
+ * Read an entire file into a terminated buffer.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return An allocated buffer, or NULL when opening or allocation fails.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -74,10 +82,13 @@ static uint8_t parse_category(const char* str) {
     return NPC_CATEGORY_PASSIVE;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
+/**
+ * Parse NPC spawn objects and add them to an NPC world.
+ *
+ * @param json_filepath  Path to the spawn-definition JSON file.
+ * @param world          Initialized NPC world receiving the spawns.
+ * @return               The number spawned, or -1 when the file or root array is unavailable.
+ */
 int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
     printf("Loading NPC spawns from: %s\n", json_filepath);
 

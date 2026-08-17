@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Exercise realm-to-world authentication, heartbeats, and world configuration parsing.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,35 +13,40 @@
 #include <arpa/inet.h>
 #include <time.h>
 
-// Simplified packet definitions for testing
+/** Test-only realm/world packet opcodes. */
 #define PACKET_REALM_AUTH 200
 #define PACKET_REALM_AUTH_ACK 201
 #define PACKET_WORLD_HEARTBEAT 202
 #define PACKET_WORLD_STATUS 203
 
+/** Mirror the test protocol header layout. */
 typedef struct {
     uint8_t type;
     uint32_t player_id;
     uint16_t payload_size;
 } PacketHeader;
 
+/** Carry realm credentials to the mock world server. */
 typedef struct {
     PacketHeader header;
     char server_key[64];
     char realm_name[32];
 } RealmAuthPacket;
 
+/** Carry the mock world's authentication verdict. */
 typedef struct {
     PacketHeader header;
     uint8_t success;
     char message[64];
 } RealmAuthAckPacket;
 
+/** Carry a realm heartbeat timestamp. */
 typedef struct {
     PacketHeader header;
     uint64_t timestamp;
 } WorldHeartbeatPacket;
 
+/** Carry mock world capacity and health data. */
 typedef struct {
     PacketHeader header;
     char server_name[64];
@@ -47,10 +57,10 @@ typedef struct {
     uint64_t uptime;
 } WorldStatusPacket;
 
-// Test counters
 int test_passed = 0;
 int test_failed = 0;
 
+/** Record and print one assertion result. */
 void print_test_result(const char* test_name, int passed) {
     if (passed) {
         printf("✓ PASS: %s\n", test_name);
@@ -61,7 +71,12 @@ void print_test_result(const char* test_name, int passed) {
     }
 }
 
-// Simulate a world server
+/**
+ * Serve one realm authentication exchange and three heartbeats.
+ *
+ * @param arg  Heap-allocated int containing the listening port; consumed by this thread.
+ * @return      Always NULL after the mock server stops.
+ */
 void* mock_world_server(void* arg) {
     int port = *(int*)arg;
     free(arg);
@@ -154,7 +169,7 @@ void* mock_world_server(void* arg) {
     return NULL;
 }
 
-// Test 1: Basic packet structure sizes
+/** Check test protocol structure sizes. */
 void test_packet_sizes() {
     int passed = 1;
     
@@ -171,7 +186,7 @@ void test_packet_sizes() {
     print_test_result("Packet structure sizes", passed);
 }
 
-// Test 2: Connect to mock world server
+/** Check authentication and heartbeat exchange with a mock world. */
 void test_connection_to_world_server() {
     int port = 9999;
     
@@ -246,7 +261,7 @@ void test_connection_to_world_server() {
     pthread_join(server_thread, NULL);
 }
 
-// Test 3: Invalid auth key
+/** Check rejection of an invalid realm key. */
 void test_invalid_auth_key() {
     int port = 9998;
     
@@ -288,7 +303,7 @@ void test_invalid_auth_key() {
     pthread_join(server_thread, NULL);
 }
 
-// Test 4: Packet type validation
+/** Check the test protocol opcode assignments. */
 void test_packet_types() {
     int passed = 1;
     
@@ -300,7 +315,7 @@ void test_packet_types() {
     print_test_result("Packet type constants", passed);
 }
 
-// Test 5: Load world servers from config file
+/** Describe one world-server record parsed from configuration. */
 typedef struct {
     char name[64];
     char host[64];
@@ -312,6 +327,14 @@ typedef struct {
     time_t last_heartbeat;
 } WorldServer;
 
+/**
+ * Load whitespace-delimited world-server records from a configuration file.
+ *
+ * @param filepath  Configuration path to read.
+ * @param servers  Destination array.
+ * @param max_servers  Maximum records to store.
+ * @return      Number of records loaded, or -1 when the file cannot be opened.
+ */
 int load_world_servers_from_file(const char* filepath, WorldServer* servers, int max_servers) {
     FILE* file = fopen(filepath, "r");
     if (!file) {
@@ -355,6 +378,7 @@ int load_world_servers_from_file(const char* filepath, WorldServer* servers, int
     return count;
 }
 
+/** Check expected world records from the configured fixture. */
 void test_world_config_loading() {
     WorldServer servers[20];
     
@@ -389,6 +413,11 @@ void test_world_config_loading() {
     print_test_result("World config file loading", passed);
 }
 
+/**
+ * Run the realm/world communication test suite.
+ *
+ * @return      Zero when every check passes, or one otherwise.
+ */
 int main() {
     printf("=================================\n");
     printf("REALM-WORLD SERVER COMMUNICATION TEST\n");

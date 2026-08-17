@@ -1,5 +1,14 @@
+/**
+ * @file
+ * Validate account-registration text fields for the login server.
+ */
 #include "utils.h"
 
+/**
+ * Validate the configured username length range.
+ *
+ * @return      Nonzero for a 3-to-15-character username, otherwise zero.
+ */
 int validate_username(const char* username) {
     if(!username) return 0;
     if(strlen(username) < 3 || strlen(username) > 15) return 0;
@@ -7,6 +16,11 @@ int validate_username(const char* username) {
     return 1;
 }
 
+/**
+ * Validate the configured password length range.
+ *
+ * @return      Nonzero for a 6-to-20-character password, otherwise zero.
+ */
 int validate_password(const char* password) {
     if(!password) return 0;
     if(strlen(password) < 6 || strlen(password) > 20) return 0;
@@ -14,6 +28,11 @@ int validate_password(const char* password) {
     return 1;
 }
 
+/**
+ * Validate the login server's basic email-address structure.
+ *
+ * @return      Nonzero when the address contains one non-leading at-sign and a following dotted suffix, otherwise zero.
+ */
 int validate_email(const char* email) {
     if (!email || strlen(email) < 3) return 0;
     
@@ -28,6 +47,13 @@ int validate_email(const char* email) {
     return 1;
 }
 
+/**
+ * Validate birthday syntax and coarse month and day ranges.
+ *
+ * The check accepts February 29 without evaluating the year as a leap year.
+ *
+ * @return      Nonzero for an accepted YYYY-MM-DD value, otherwise zero.
+ */
 int validate_birthday(const char* birthday) {
     if (!birthday) return 0;
     if(strlen(birthday) != 10) return 0;

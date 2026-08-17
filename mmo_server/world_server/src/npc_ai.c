@@ -1,18 +1,15 @@
-// ============================================================================
-// npc_ai.c — NPC AI system implementation
-//
-// Handles: target acquisition, movement (follow/stationary/maintain range),
-// projectile firing, FF14-style telegraph attacks (cast time + ground AOE).
-//
-// Threading: state mutations under world->lock, sends OUTSIDE all locks.
-// Called from combat_update_thread at 20Hz.
-// ============================================================================
+/**
+ * @file
+ * Load NPC behavior profiles and advance targeting, movement, projectiles, and telegraphs.
+ * Mutate NPC state under the world lock and defer network actions until it is released.
+ */
 
 #include "npc_ai.h"
 #include "log.h"
 #include "projectile.h"
 #include "player_data.h"
 #include "combat_stats.h"
+#include "tick_snapshot.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,23 +21,10 @@
 #include <sys/socket.h>
 #include "utils.h"
 
-// ---------------------------------------------------------------------------
-// Extern references
-// ---------------------------------------------------------------------------
-
 extern ActivePlayer active_players[];
-extern pthread_mutex_t active_players_lock;
-
-// ---------------------------------------------------------------------------
-// Static state
-// ---------------------------------------------------------------------------
 
 static NPCAIProfile g_ai_profiles[MAX_NPC_AI_PROFILES];
 static int          g_ai_profile_count = 0;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 static double get_time(void) {
     struct timespec ts;
@@ -54,10 +38,13 @@ static float dist2d(float ax, float ay, float bx, float by) {
     return sqrtf(dx * dx + dy * dy);
 }
 
-// ---------------------------------------------------------------------------
-// JSON parsing helpers (same minimal parser pattern as loot.c)
-// ---------------------------------------------------------------------------
-
+/**
+ * Read an entire file into a terminated buffer.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return An allocated buffer, or NULL when opening or allocation fails.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -88,6 +75,11 @@ static const char* find_key(const char* json, const char* key) {
     return skip_ws(pos);
 }
 
+/**
+ * Find the delimiter that balances a nested JSON span.
+ *
+ * @return The matching delimiter, or NULL for an unterminated span.
+ */
 static const char* find_matching(const char* start, char open, char close) {
     int depth = 0;
     const char* p = start;
@@ -110,10 +102,11 @@ static void parse_string_val(const char* json, const char* key, char* out, int m
     out[i] = '\0';
 }
 
-// ---------------------------------------------------------------------------
-// Parse npc_types.json
-// ---------------------------------------------------------------------------
-
+/**
+ * Parse NPC behavior profiles into the fixed registry.
+ *
+ * @return 1 when parsing completes or no section exists, or 0 on malformed input or allocation failure.
+ */
 static int parse_npc_types(const char* json) {
     const char* types_start = strstr(json, "\"npc_types\"");
     if (!types_start) {
@@ -304,10 +297,11 @@ static int parse_npc_types(const char* json) {
     return 1;
 }
 
-// ============================================================================
-// API — Init / Cleanup
-// ============================================================================
-
+/**
+ * Initialize NPC AI profiles from a JSON file.
+ *
+ * @return 1 on success, or 0 when the file cannot be read or parsed.
+ */
 int npc_ai_init(const char* json_path) {
     g_ai_profile_count = 0;
 
@@ -324,11 +318,21 @@ int npc_ai_init(const char* json_path) {
     return result;
 }
 
+/**
+ * Clear the NPC AI profile registry.
+ */
 void npc_ai_cleanup(void) {
     g_ai_profile_count = 0;
     LOG_DEBUG("[NPC_AI] Cleaned up");
 }
 
+/**
+ * Retrieve an NPC behavior profile by type identifier.
+ *
+ * The returned pointer remains owned by the profile registry.
+ *
+ * @return The matching profile, or NULL when absent.
+ */
 const NPCAIProfile* npc_ai_get_profile(uint16_t npc_type_id) {
     for (int i = 0; i < g_ai_profile_count; i++) {
         if (g_ai_profiles[i].npc_type_id == npc_type_id) {
@@ -338,14 +342,15 @@ const NPCAIProfile* npc_ai_get_profile(uint16_t npc_type_id) {
     return NULL;
 }
 
-// ============================================================================
-// Telegraph geometry — check if a point is inside a telegraph shape
-// ============================================================================
-
 static int point_in_circle(float px, float py, float cx, float cy, float radius) {
     return dist2d(px, py, cx, cy) <= radius;
 }
 
+/**
+ * Test whether a point lies within an oriented cone.
+ *
+ * @return 1 when inside, or 0 otherwise.
+ */
 static int point_in_cone(float px, float py, float cx, float cy,
                           float dir_x, float dir_y, float radius, float angle_deg) {
     float dx = px - cx;
@@ -359,6 +364,11 @@ static int point_in_cone(float px, float py, float cx, float cy,
     return dot >= cosf(half_angle_rad);
 }
 
+/**
+ * Test whether a point lies within an oriented forward rectangle.
+ *
+ * @return 1 when inside, or 0 otherwise.
+ */
 static int point_in_rectangle(float px, float py, float cx, float cy,
                                 float dir_x, float dir_y, float width, float length) {
     // Rectangle extends from center in dir direction for length, width perpendicular
@@ -375,6 +385,11 @@ static int point_in_rectangle(float px, float py, float cx, float cy,
     return (perp >= -half_w && perp <= half_w);
 }
 
+/**
+ * Dispatch a point-containment test for a telegraph shape.
+ *
+ * @return 1 when inside, or 0 for an exterior point or unknown shape.
+ */
 static int point_in_telegraph(float px, float py,
                                 uint8_t shape,
                                 float cx, float cy,
@@ -394,10 +409,6 @@ static int point_in_telegraph(float px, float py,
             return 0;
     }
 }
-
-// ============================================================================
-// Deferred send types — collected under lock, sent after unlock
-// ============================================================================
 
 #define MAX_DEFERRED 128
 
@@ -462,10 +473,11 @@ static void dq_push(DeferredQueue* q, const DeferredAction* item) {
     }
 }
 
-// ============================================================================
-// Flush deferred queue — OUTSIDE all locks
-// ============================================================================
-
+/**
+ * Execute deferred telegraph broadcasts, damage, and projectile spawns.
+ *
+ * The caller must hold neither the NPC-world lock nor player locks.
+ */
 static void dq_flush(DeferredQueue* q) {
     for (int i = 0; i < q->count; i++) {
         DeferredAction* d = &q->items[i];
@@ -491,7 +503,7 @@ static void dq_flush(DeferredQueue* q) {
                 pkt.cast_time  = d->tstart.cast_time;
 
                 // Send to nearby players
-                pthread_mutex_lock(&active_players_lock);
+                player_registry_rdlock();
                 for (int p = 0; p < MAX_PLAYERS; p++) {
                     if (!active_players[p].is_loaded) continue;
                     float pd = dist2d(d->tstart.npc_x, d->tstart.npc_y,
@@ -500,7 +512,7 @@ static void dq_flush(DeferredQueue* q) {
                         server_send(active_players[p].client_fd, &pkt, sizeof(pkt));
                     }
                 }
-                pthread_mutex_unlock(&active_players_lock);
+                player_registry_unlock();
                 break;
             }
 
@@ -514,7 +526,7 @@ static void dq_flush(DeferredQueue* q) {
                 rpkt.ability_id = htons(d->tresolve.ability_id);
 
                 // Deal damage to players inside the shape
-                pthread_mutex_lock(&active_players_lock);
+                player_registry_rdlock();
                 for (int p = 0; p < MAX_PLAYERS; p++) {
                     if (!active_players[p].is_loaded) continue;
 
@@ -574,7 +586,7 @@ static void dq_flush(DeferredQueue* q) {
 
                     LOG_DEBUG("[NPC_AI] Telegraph hit player %u for %d dmg (hp=%d)%s", char_id, damage, new_hp, is_kill ? " — KILLED" : "");
                 }
-                pthread_mutex_unlock(&active_players_lock);
+                player_registry_unlock();
                 break;
             }
 
@@ -603,47 +615,20 @@ static void dq_flush(DeferredQueue* q) {
     }
 }
 
-// ============================================================================
-// AI Tick — called from combat_update_thread at 20Hz
-// ============================================================================
-
-void npc_ai_tick(NPCWorld* world, double delta_time) {
+/**
+ * Advance NPC targeting, movement, cooldowns, and ability casts.
+ *
+ * @param world       NPC world whose entities are updated.
+ * @param snap        Tick-wide player snapshot; NULL or empty snapshots skip the update.
+ * @param delta_time  Elapsed tick time in seconds.
+ */
+void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
     double now = get_time();
     float dt = (float)delta_time;
 
-    // -------------------------------------------------------------------
-    // 1. Snapshot active player positions
-    // -------------------------------------------------------------------
-    typedef struct {
-        uint32_t character_id;
-        float    pos_x, pos_y;
-        int      is_dead;
-        int      valid;
-    } PlayerTarget;
+    // share one player snapshot across the gameplay tick
+    if (!snap || snap->count == 0) return;
 
-    PlayerTarget targets[MAX_PLAYERS];
-    int target_count = 0;
-
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!active_players[i].is_loaded) {
-            targets[i].valid = 0;
-            continue;
-        }
-        targets[i].valid = 1;
-        targets[i].character_id = active_players[i].character_id;
-        targets[i].pos_x = active_players[i].pos_x;
-        targets[i].pos_y = active_players[i].pos_y;
-        targets[i].is_dead = active_players[i].is_dead;
-        target_count++;
-    }
-    pthread_mutex_unlock(&active_players_lock);
-
-    if (target_count == 0) return;
-
-    // -------------------------------------------------------------------
-    // 2. Process each NPC under world lock
-    // -------------------------------------------------------------------
     DeferredQueue q;
     dq_init(&q);
 
@@ -657,9 +642,7 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
         const NPCAIProfile* prof = npc_ai_get_profile(npc->npc_type_id);
         if (!prof || prof->ability_count == 0) continue;
 
-        // Seed per-enemy cooldown phases once — each NPC instance gets a unique
-        // random offset within its full cooldown window so enemies of the same
-        // type never fire in sync with each other.
+        // stagger initial ability cooldown phases per NPC
         if (!npc->ai_cd_seeded) {
             for (int a = 0; a < prof->ability_count && a < MAX_NPC_ABILITIES_RT; a++) {
                 double cd = prof->abilities[a].cooldown;
@@ -675,9 +658,6 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
 
         float spawn_dist = dist2d(npc->pos_x, npc->pos_y, npc->spawn_x, npc->spawn_y);
 
-        // =============================================================
-        // State: CASTING — NPC is locked, waiting for telegraph to resolve
-        // =============================================================
         if (npc->ai_state == NPC_AI_CASTING && npc->ai_is_casting) {
             int abi = npc->ai_cast_ability_idx;
             if (abi < 0 || abi >= prof->ability_count) {
@@ -728,9 +708,6 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
             continue;
         }
 
-        // =============================================================
-        // State: RETURNING — walk back to spawn
-        // =============================================================
         if (npc->ai_state == NPC_AI_RETURNING) {
             if (spawn_dist < 5.0f) {
                 npc->pos_x = npc->spawn_x;
@@ -752,45 +729,38 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
             continue;
         }
 
-        // =============================================================
-        // Find best target
-        // =============================================================
         float best_dist = 1e9f;
         int best_target = -1;
 
-        // Once aggroed, keep chasing until the target is more than
-        // NPC_HOLD_AGGRO_RANGE units away from the NPC itself.
-        // This is intentionally larger than the initial aggro_range so the
-        // enemy feels relentless once it locks on.
+        // retain aggro beyond the initial acquisition range
 #define NPC_HOLD_AGGRO_RANGE 250.0f
 
+        // resolve held targets through the snapshot index
         if (npc->ai_target_id > 0) {
-            for (int t = 0; t < MAX_PLAYERS; t++) {
-                if (!targets[t].valid) continue;
-                if (targets[t].character_id == npc->ai_target_id) {
-                    if (!targets[t].is_dead) {
-                        float d = dist2d(npc->pos_x, npc->pos_y,
-                                         targets[t].pos_x, targets[t].pos_y);
-                        if (spawn_dist < prof->leash_range &&
-                            d < NPC_HOLD_AGGRO_RANGE) {
-                            best_target = t;
-                            best_dist = d;
-                        }
-                    }
-                    break;
+            int t = tick_snapshot_find(snap, npc->ai_target_id);
+            if (t >= 0 && !snap->is_dead[t]) {
+                float d = dist2d(npc->pos_x, npc->pos_y,
+                                 snap->pos_x[t], snap->pos_y[t]);
+                if (spawn_dist < prof->leash_range && d < NPC_HOLD_AGGRO_RANGE) {
+                    best_target = t;
+                    best_dist = d;
                 }
             }
         }
 
+        // select the nearest living grid candidate
         if (best_target == -1) {
-            for (int t = 0; t < MAX_PLAYERS; t++) {
-                if (!targets[t].valid || targets[t].is_dead) continue;
-                float d = dist2d(npc->pos_x, npc->pos_y,
-                                 targets[t].pos_x, targets[t].pos_y);
-                if (d <= prof->aggro_range && d < best_dist) {
-                    best_dist = d;
-                    best_target = t;
-                }
+            int nearby[NPC_AGGRO_CANDIDATES];
+            int n_near = tick_snapshot_query(snap, npc->pos_x, npc->pos_y,
+                                             prof->aggro_range,
+                                             nearby, NPC_AGGRO_CANDIDATES);
+            for (int k = 0; k < n_near; k++) {
+                int t = nearby[k];
+                if (snap->is_dead[t]) continue;
+                best_dist   = dist2d(npc->pos_x, npc->pos_y,
+                                     snap->pos_x[t], snap->pos_y[t]);
+                best_target = t;
+                break;
             }
         }
 
@@ -808,14 +778,11 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
             continue;
         }
 
-        // =============================================================
-        // We have a valid target — movement + abilities
-        // =============================================================
         npc->ai_state = NPC_AI_AGGRO;
-        npc->ai_target_id = targets[best_target].character_id;
+        npc->ai_target_id = snap->character_id[best_target];
 
-        float tx = targets[best_target].pos_x;
-        float ty = targets[best_target].pos_y;
+        float tx = snap->pos_x[best_target];
+        float ty = snap->pos_y[best_target];
         float target_dist = best_dist;
 
         // ----- Movement -----
@@ -892,9 +859,7 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
             }
 
             if (ready_count > 0) {
-                // Pick a random ability from the ready pool so firing order
-                // is never fixed — abilities feel unpredictable but each one
-                // is still clearly telegraphed when it fires.
+                // randomize selection among ready abilities
                 int a = ready[rand() % ready_count];
                 const NPCAbilityDef* ab = &prof->abilities[a];
 
@@ -905,10 +870,7 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
                 float dir_x = (len > 0.001f) ? dx / len : 1.0f;
                 float dir_y = (len > 0.001f) ? dy / len : 0.0f;
 
-                // Aim jitter: rotate direction by a small random angle (±8°).
-                // The telegraph still points roughly at the player, but not
-                // with pixel-perfect precision — standing still is punished,
-                // small sidesteps can dodge.
+                // rotate aim by up to eight degrees
                 float jitter = ((float)(rand() % 17) - 8.0f) * (3.14159f / 180.0f);
                 float cj = cosf(jitter), sj = sinf(jitter);
                 float jdir_x = dir_x * cj - dir_y * sj;
@@ -988,8 +950,5 @@ void npc_ai_tick(NPCWorld* world, double delta_time) {
 
     pthread_mutex_unlock(&world->lock);
 
-    // -------------------------------------------------------------------
-    // 3. Flush all deferred actions OUTSIDE locks
-    // -------------------------------------------------------------------
     dq_flush(&q);
 }

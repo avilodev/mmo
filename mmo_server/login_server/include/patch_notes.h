@@ -8,9 +8,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-// Path relative to the server's working directory (#11)
-// Run the login server from its base directory, e.g.:
-//   cd /home/user/mmo_server/login_server && ./login_server
+/** Locate and bound patch-note text relative to the login server's working directory. */
 #define PATCH_NOTES_PATH "./server_files/patch_notes.txt"
 #define PATCH_NOTES_MAX_SIZE 4000
 

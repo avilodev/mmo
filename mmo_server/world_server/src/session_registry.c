@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Track authenticated world sessions by descriptor, account, and character.
+ */
 #include "session_registry.h"
 #include "log.h"
 #include <string.h>
@@ -7,11 +11,19 @@
 
 SessionRegistry g_session_registry;
 
+/** Initialize the process-wide session registry and its read-write lock. */
 void session_registry_init(void) {
     memset(&g_session_registry, 0, sizeof(g_session_registry));
     pthread_rwlock_init(&g_session_registry.lock, NULL);
 }
 
+/**
+ * Register an authenticated session, shutting down any stale session for the account.
+ *
+ * The stale session's handler retains ownership of its descriptor and performs the eventual close.
+ *
+ * @return      Zero on success, or -1 when no registry slot remains.
+ */
 int session_registry_add(int fd, uint32_t account_id, uint32_t character_id) {
     pthread_rwlock_wrlock(&g_session_registry.lock);
 
@@ -57,6 +69,7 @@ int session_registry_add(int fd, uint32_t account_id, uint32_t character_id) {
     return -1;  // Server full
 }
 
+/** Mark the session associated with a descriptor inactive. */
 void session_registry_remove(int fd) {
     pthread_rwlock_wrlock(&g_session_registry.lock);
     
@@ -72,9 +85,12 @@ void session_registry_remove(int fd) {
     pthread_rwlock_unlock(&g_session_registry.lock);
 }
 
-// Returns 1 and copies entry into *out while holding the read lock.
-// Returns 0 if not found. The caller owns the copy — no pointer into the
-// live registry is ever exposed, so there is no use-after-unlock race.
+/**
+ * Copy a session selected by descriptor while holding the registry read lock.
+ *
+ * @param out  Receives a detached copy when non-NULL.
+ * @return     Nonzero when a session is found, otherwise zero.
+ */
 int session_find_by_fd(int fd, SessionEntry* out) {
     pthread_rwlock_rdlock(&g_session_registry.lock);
     for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -89,6 +105,12 @@ int session_find_by_fd(int fd, SessionEntry* out) {
     return 0;
 }
 
+/**
+ * Copy a session selected by account identifier while holding the registry read lock.
+ *
+ * @param out  Receives a detached copy when non-NULL.
+ * @return     Nonzero when a session is found, otherwise zero.
+ */
 int session_find_by_account(uint32_t account_id, SessionEntry* out) {
     pthread_rwlock_rdlock(&g_session_registry.lock);
     for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -103,6 +125,12 @@ int session_find_by_account(uint32_t account_id, SessionEntry* out) {
     return 0;
 }
 
+/**
+ * Copy a session selected by character identifier while holding the registry read lock.
+ *
+ * @param out  Receives a detached copy when non-NULL.
+ * @return     Nonzero when a session is found, otherwise zero.
+ */
 int session_find_by_character(uint32_t character_id, SessionEntry* out) {
     pthread_rwlock_rdlock(&g_session_registry.lock);
     for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -117,6 +145,7 @@ int session_find_by_character(uint32_t character_id, SessionEntry* out) {
     return 0;
 }
 
+/** Refresh the last-activity timestamp for a descriptor's session. */
 void session_update_activity(int fd) {
     pthread_rwlock_wrlock(&g_session_registry.lock);
     

@@ -1,5 +1,14 @@
+/**
+ * @file
+ * Authenticate realm-to-world connections and load configured world endpoints.
+ */
 #include "world_connect.h"
 
+/**
+ * Send an entire buffer unless the socket fails.
+ *
+ * @return      Nonzero when every byte is sent, otherwise zero.
+ */
 static int send_exact(int fd, const void* buffer, size_t length) {
     const uint8_t* ptr = buffer;
     size_t total = 0;
@@ -11,6 +20,11 @@ static int send_exact(int fd, const void* buffer, size_t length) {
     return 1;
 }
 
+/**
+ * Receive an exact byte count with a timeout applied to each poll.
+ *
+ * @return      Nonzero when every byte is received, otherwise zero.
+ */
 static int recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
     uint8_t* ptr = buffer;
     size_t total = 0;
@@ -24,7 +38,12 @@ static int recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_m
     return 1;
 }
 
-// Connect to a world server
+/**
+ * Connect to a world endpoint and complete server-key authentication.
+ *
+ * @param silent  Nonzero to suppress connection diagnostics.
+ * @return        The authenticated socket descriptor, or -1 on failure.
+ */
 int connect_to_world_server(const char* host, int port, const char* server_key, int silent) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -87,7 +106,11 @@ int connect_to_world_server(const char* host, int port, const char* server_key, 
     return sockfd;
 }
 
-// Parse world servers from config file
+/**
+ * Parse world endpoint records and their region headings from a text file.
+ *
+ * @return      The number of loaded worlds, or -1 when the file cannot be opened.
+ */
 int load_world_servers_from_file(const char* filepath, WorldServer* servers, int max_servers) {
     FILE* file = fopen(filepath, "r");
     if (!file) {

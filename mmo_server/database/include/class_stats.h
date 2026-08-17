@@ -3,9 +3,11 @@
 
 #include <stdint.h>
 
+/** Bound the supported level and class identifier ranges. */
 #define MAX_LEVEL 50
 #define NUM_CLASSES 4
 
+/** Hold level-adjusted attributes consumed by player initialization. */
 typedef struct {
     int     max_health;
     int     max_mana;
@@ -17,9 +19,11 @@ typedef struct {
     int     evasion;
     int     vitality;
     int     luck;
+    /** Store movement speed in world pixels per second. */
     float   move_speed;
 } DerivedStats;
 
+/** Define one class's base attributes and per-level growth rates. */
 typedef struct {
     const char* class_name;
     int     base_health;
@@ -30,10 +34,12 @@ typedef struct {
     int     base_wisdom;
     int     base_defense;
     int     base_evasion;
+    /** Store movement speed in world pixels per second. */
     float   base_move_speed;
     int     health_per_level;
     int     mana_per_level;
-    int     strength_per_level;     // x10 fixed point
+    /** Store attribute growth in tenths of a point per level. */
+    int     strength_per_level;     /**< Use x10 fixed-point units. */
     int     agility_per_level;
     int     intelligence_per_level;
     int     wisdom_per_level;

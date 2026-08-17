@@ -1,11 +1,7 @@
-// ============================================================================
-// ability_def.c — JSON loader for ability definitions
-//
-// Same architecture as items_database.c:
-//   - Read file into memory
-//   - Walk the JSON manually (no library)
-//   - Store into a static array for O(1) lookup by ID
-// ============================================================================
+/**
+ * @file
+ * Load ability definitions and provide world-server ability lookups.
+ */
 
 #include "ability_def.h"
 
@@ -14,17 +10,9 @@
 #include <string.h>
 #include <ctype.h>
 
-// ---------------------------------------------------------------------------
-// Static storage
-// ---------------------------------------------------------------------------
-
 static AbilityDef* ability_table[MAX_ABILITIES];   // Indexed by numeric ID
 static int abilities_loaded = 0;
 static uint16_t next_ability_id = 1;               // Auto-assigned, 1-based
-
-// ---------------------------------------------------------------------------
-// Forward declarations — JSON helpers
-// ---------------------------------------------------------------------------
 
 static char* read_file(const char* filepath);
 static const char* find_json_value(const char* json, const char* key);
@@ -34,7 +22,6 @@ static float parse_json_float(const char* val);
 static const char* find_json_object(const char* json, const char* key, int* out_len);
 static const char* find_json_array(const char* json, const char* key);
 
-// Parsers for sub-objects
 static void parse_aoe(const char* obj_json, AbilityAoeDef* aoe);
 static void parse_spawn(const char* obj_json, AbilitySpawnDef* spawn);
 static void parse_movement(const char* obj_json, AbilityMovementDef* move);
@@ -43,10 +30,14 @@ static void parse_bonus_damage(const char* obj_json, AbilityBonusDamageDef* bonu
 static int  parse_status_effects(const char* obj_json, AbilityEffectDef* effects, int max_effects);
 static int  parse_abilities_json(const char* json_content);
 
-// ---------------------------------------------------------------------------
-// API implementation
-// ---------------------------------------------------------------------------
-
+/**
+ * Initialize the ability registry from a JSON file.
+ *
+ * Replaces the current registry contents and retains definitions until abilities_cleanup().
+ *
+ * @param json_filepath  Path to the ability-definition JSON file.
+ * @return               1 on success, or 0 when the file cannot be read or parsed.
+ */
 int abilities_init(const char* json_filepath) {
     printf("Loading abilities from: %s\n", json_filepath);
 
@@ -72,11 +63,26 @@ int abilities_init(const char* json_filepath) {
     return result;
 }
 
+/**
+ * Retrieve an ability definition by its one-based identifier.
+ *
+ * The returned pointer remains owned by the ability registry.
+ *
+ * @return The ability definition, or NULL when the identifier is absent or invalid.
+ */
 const AbilityDef* ability_get(uint16_t ability_id) {
     if (ability_id == 0 || ability_id >= MAX_ABILITIES) return NULL;
     return ability_table[ability_id];
 }
 
+/**
+ * Retrieve an ability definition by its JSON key.
+ *
+ * The returned pointer remains owned by the ability registry.
+ *
+ * @param key  Terminated ability key; may be NULL.
+ * @return     The matching definition, or NULL when no match exists.
+ */
 const AbilityDef* ability_get_by_key(const char* key) {
     if (!key) return NULL;
     for (int i = 1; i < MAX_ABILITIES; i++) {
@@ -87,6 +93,14 @@ const AbilityDef* ability_get_by_key(const char* key) {
     return NULL;
 }
 
+/**
+ * Collect registered ability identifiers for a character class.
+ *
+ * @param class_id  Character class identifier to match.
+ * @param out_ids   Output array with room for max_out identifiers.
+ * @param max_out   Maximum number of identifiers to write.
+ * @return          The number of identifiers written.
+ */
 int ability_get_class_abilities(uint8_t class_id, uint16_t* out_ids, int max_out) {
     int count = 0;
     for (int i = 1; i < MAX_ABILITIES && count < max_out; i++) {
@@ -97,10 +111,18 @@ int ability_get_class_abilities(uint8_t class_id, uint16_t* out_ids, int max_out
     return count;
 }
 
+/**
+ * Report the number of registered ability definitions.
+ *
+ * @return The number of loaded abilities.
+ */
 int abilities_get_count(void) {
     return abilities_loaded;
 }
 
+/**
+ * Release all ability definitions and clear the registry.
+ */
 void abilities_cleanup(void) {
     for (int i = 0; i < MAX_ABILITIES; i++) {
         if (ability_table[i]) {
@@ -112,10 +134,13 @@ void abilities_cleanup(void) {
     printf("Abilities system cleaned up\n");
 }
 
-// ---------------------------------------------------------------------------
-// JSON helpers (same style as items_database.c)
-// ---------------------------------------------------------------------------
-
+/**
+ * Read an entire file into a terminated buffer.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return An allocated buffer, or NULL when opening or allocation fails.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -134,7 +159,6 @@ static char* read_file(const char* filepath) {
     return buffer;
 }
 
-// Find "key": <value> and return pointer to <value>
 static const char* find_json_value(const char* json, const char* key) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -150,7 +174,6 @@ static const char* find_json_value(const char* json, const char* key) {
     return pos;
 }
 
-// Extract a JSON string value into out. Returns 1 on success.
 static int parse_json_string(const char* val, char* out, int out_size) {
     if (!val || *val != '"') return 0;
     const char* end = strchr(val + 1, '"');
@@ -173,8 +196,12 @@ static float parse_json_float(const char* val) {
     return (float)atof(val);
 }
 
-// Find a nested JSON object: "key": { ... }
-// Returns pointer to the '{', sets *out_len to include the closing '}'.
+/**
+ * Locate a named nested object and measure its balanced brace span.
+ *
+ * @param out_len  Receives the object length including braces; may be NULL.
+ * @return         A pointer to the opening brace, or NULL when absent or unbalanced.
+ */
 static const char* find_json_object(const char* json, const char* key, int* out_len) {
     const char* val = find_json_value(json, key);
     if (!val || *val != '{') return NULL;
@@ -192,17 +219,11 @@ static const char* find_json_object(const char* json, const char* key, int* out_
     return val;
 }
 
-// Find a JSON array: "key": [ ... ]
-// Returns pointer to the '['
 static const char* find_json_array(const char* json, const char* key) {
     const char* val = find_json_value(json, key);
     if (!val || *val != '[') return NULL;
     return val;
 }
-
-// ---------------------------------------------------------------------------
-// Sub-object parsers
-// ---------------------------------------------------------------------------
 
 static AbilityAoeShape parse_aoe_shape(const char* str) {
     if (strcmp(str, "circle") == 0)    return ABILITY_AOE_CIRCLE;
@@ -269,6 +290,9 @@ static AbilityProjectileType parse_projectile_type(const char* str) {
     return PROJECTILE_NONE;
 }
 
+/**
+ * Parse an optional area-of-effect component.
+ */
 static void parse_aoe(const char* obj_json, AbilityAoeDef* aoe) {
     // Extract the "aoe" sub-object
     int obj_len = 0;
@@ -305,6 +329,9 @@ static void parse_aoe(const char* obj_json, AbilityAoeDef* aoe) {
     free(sub);
 }
 
+/**
+ * Parse an optional spawned-entity component.
+ */
 static void parse_spawn(const char* obj_json, AbilitySpawnDef* spawn) {
     int obj_len = 0;
     const char* spawn_obj = find_json_object(obj_json, "spawnsEntity", &obj_len);
@@ -336,6 +363,9 @@ static void parse_spawn(const char* obj_json, AbilitySpawnDef* spawn) {
     free(sub);
 }
 
+/**
+ * Parse an optional movement component.
+ */
 static void parse_movement(const char* obj_json, AbilityMovementDef* move) {
     int obj_len = 0;
     const char* move_obj = find_json_object(obj_json, "movement", &obj_len);
@@ -358,6 +388,9 @@ static void parse_movement(const char* obj_json, AbilityMovementDef* move) {
     free(sub);
 }
 
+/**
+ * Parse an optional projectile component.
+ */
 static void parse_projectile(const char* obj_json, AbilityProjectileDef* proj) {
     int obj_len = 0;
     const char* proj_obj = find_json_object(obj_json, "projectile", &obj_len);
@@ -383,6 +416,9 @@ static void parse_projectile(const char* obj_json, AbilityProjectileDef* proj) {
     free(sub);
 }
 
+/**
+ * Parse an optional conditional-damage component.
+ */
 static void parse_bonus_damage(const char* obj_json, AbilityBonusDamageDef* bonus) {
     int obj_len = 0;
     const char* bonus_obj = find_json_object(obj_json, "bonusDamage", &obj_len);
@@ -410,10 +446,11 @@ static void parse_bonus_damage(const char* obj_json, AbilityBonusDamageDef* bonu
     free(sub);
 }
 
-// Parse statusEffects — can be an array of objects or an array of strings.
-// Objects: [{"type":"hot","value":5,"duration":4,"tickRate":1}]
-// Strings: ["Recklessness","Bleed"] — stored as named effects (effect_type = NONE,
-//          but you can map string names to types here if you want).
+/**
+ * Parse object-form and named-string status effects.
+ *
+ * @return The number of output entries populated, limited by max_effects.
+ */
 static int parse_status_effects(const char* obj_json, AbilityEffectDef* effects, int max_effects) {
     const char* arr = find_json_array(obj_json, "statusEffects");
     if (!arr) return 0;
@@ -522,10 +559,6 @@ static int parse_status_effects(const char* obj_json, AbilityEffectDef* effects,
     return count;
 }
 
-// ---------------------------------------------------------------------------
-// Class name -> ID mapping
-// ---------------------------------------------------------------------------
-
 static uint8_t parse_class_id(const char* str) {
     if (strcmp(str, "gladiator") == 0)  return 1;
     if (strcmp(str, "ninja") == 0)      return 2;
@@ -534,10 +567,11 @@ static uint8_t parse_class_id(const char* str) {
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Main parser — walks the "abilities" object
-// ---------------------------------------------------------------------------
-
+/**
+ * Parse ability objects into the global registry.
+ *
+ * @return 1 after scanning the abilities object, or 0 when its root is absent.
+ */
 static int parse_abilities_json(const char* json_content) {
     // Find the "abilities" object: "abilities": { "cleave": {...}, "rage": {...}, ... }
     const char* abilities_start = strstr(json_content, "\"abilities\"");

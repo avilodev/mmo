@@ -1,6 +1,7 @@
-// ============================================================================
-// net_notify.c — Build the disconnect-reason and rejection packets.
-// ============================================================================
+/**
+ * @file
+ * Build protocol notifications for rejected requests and disconnections.
+ */
 
 #include "net_notify.h"
 #include "protocol.h"
@@ -8,6 +9,11 @@
 #include <arpa/inet.h>
 #include <string.h>
 
+/**
+ * Return the default client-facing text for a disconnect reason.
+ *
+ * @return      A static reason string, including a generic value for unknown reasons.
+ */
 const char* net_disconnect_reason_text(uint8_t reason) {
     switch (reason) {
         case DISCONNECT_REASON_SHUTDOWN:
@@ -25,6 +31,15 @@ const char* net_disconnect_reason_text(uint8_t reason) {
     }
 }
 
+/**
+ * Build a disconnect notification packet.
+ *
+ * @param out  Destination buffer for DisconnectPacket.
+ * @param out_size  Destination capacity in bytes.
+ * @param reason  DisconnectReason value.
+ * @param message  Optional message overriding the default reason text.
+ * @return      Packet size in bytes, or 0 when the destination is invalid or too small.
+ */
 size_t net_build_disconnect(void* out, size_t out_size,
                             uint8_t reason, const char* message) {
     if (!out || out_size < sizeof(DisconnectPacket)) return 0;
@@ -42,6 +57,16 @@ size_t net_build_disconnect(void* out, size_t out_size,
     return sizeof(DisconnectPacket);
 }
 
+/**
+ * Build a rate-limit rejection packet.
+ *
+ * @param out  Destination buffer for RateLimitedPacket.
+ * @param out_size  Destination capacity in bytes.
+ * @param rejected_type  Packet opcode that exceeded its limit.
+ * @param limit_class  Applied packet-limiter class.
+ * @param retry_after_ms  Suggested retry delay in milliseconds.
+ * @return      Packet size in bytes, or 0 when the destination is invalid or too small.
+ */
 size_t net_build_rate_limited(void* out, size_t out_size,
                               uint8_t rejected_type, uint8_t limit_class,
                               uint16_t retry_after_ms) {

@@ -3,8 +3,10 @@
 
 #include <stdint.h>
 
+/** Bound rectangular zones loaded for one world. */
 #define MAX_WORLD_ZONES 64
 
+/** Define one named axis-aligned zone in world units. */
 typedef struct {
     uint8_t  id;
     uint8_t  type;        // ZONE_TYPE_* from headers.h
@@ -12,12 +14,11 @@ typedef struct {
     float    x, y, w, h; // World-unit rectangle
 } WorldZone;
 
-// Load zones from a JSON file. Returns number of zones loaded, -1 on error.
+// return the loaded zone count or -1 on JSON failure
 int  zone_system_init(const char* json_path);
 void zone_system_cleanup(void);
 
-// Returns the zone the point falls inside, or NULL if none match.
-// When multiple zones overlap, the smallest area wins (more specific zone).
+// return the smallest matching zone or NULL when outside all zones
 const WorldZone* zone_lookup(float world_x, float world_y);
 
 #endif

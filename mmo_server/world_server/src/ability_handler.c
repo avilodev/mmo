@@ -1,7 +1,7 @@
-// ============================================================================
-// ability_handler.c — Server-side ability casting and resolution
-// UPDATED: stat-scaled damage, defense, evasion, wisdom mana regen, XP on kill
-// ============================================================================
+/**
+ * @file
+ * Validate, schedule, resolve, and tick world-server abilities and zones.
+ */
 
 #include "ability_handler.h"
 #include "ability_def.h"
@@ -22,17 +22,8 @@
 #include <time.h>
 #include "utils.h"
 
-// ---------------------------------------------------------------------------
-// Extern references
-// ---------------------------------------------------------------------------
-
 extern ActivePlayer active_players[];
-extern pthread_mutex_t active_players_lock;
 extern NPCWorld g_npc_world;
-
-// ---------------------------------------------------------------------------
-// Static state
-// ---------------------------------------------------------------------------
 
 static PendingAbilityCast g_ability_casts[MAX_PLAYERS];
 static pthread_mutex_t    g_ability_casts_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -43,10 +34,6 @@ static uint32_t           g_next_zone_id = 1;
 
 // Per-player mana regen accumulator (fractional mana between ticks)
 static float g_mana_accum[MAX_PLAYERS];
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 static double get_time(void) {
     struct timespec ts;
@@ -60,7 +47,11 @@ static float dist2d(float ax, float ay, float bx, float by) {
     return sqrtf(dx * dx + dy * dy);
 }
 
-// Closest distance from point (px,py) to line segment (ax,ay)-(bx,by)
+/**
+ * Calculate the shortest distance from a point to a line segment.
+ *
+ * @return The distance in world units.
+ */
 static float point_to_segment_dist(float px, float py,
                                    float ax, float ay,
                                    float bx, float by) {
@@ -79,13 +70,7 @@ static float point_to_segment_dist(float px, float py,
 }
 
 static int find_player_slot(uint32_t character_id) {
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded &&
-            active_players[i].character_id == character_id) {
-            return i;
-        }
-    }
-    return -1;
+    return player_slot_of(character_id);
 }
 
 static int player_has_ability(ActivePlayer* player, uint16_t ability_id, int* out_slot) {
@@ -100,10 +85,9 @@ static int player_has_ability(ActivePlayer* player, uint16_t ability_id, int* ou
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Send helpers (unchanged)
-// ---------------------------------------------------------------------------
-
+/**
+ * Send a cast-cancellation packet to one client.
+ */
 static void send_ability_cast_cancel(int client_fd, uint32_t caster_id,
                                      uint16_t ability_id, uint8_t reason) {
     AbilityCastCancelPacket pkt = {0};
@@ -116,6 +100,9 @@ static void send_ability_cast_cancel(int client_fd, uint32_t caster_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send a cast-start packet to one client.
+ */
 static void send_ability_cast_start(int client_fd, uint32_t caster_id,
                                     uint16_t ability_id, float cast_time,
                                     float ox, float oy, float ax, float ay) {
@@ -133,6 +120,9 @@ static void send_ability_cast_start(int client_fd, uint32_t caster_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send resolved damage or healing for one ability target.
+ */
 static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t target_id,
                                 uint16_t ability_id, int damage, int healing,
                                 int target_new_hp, uint8_t is_kill, uint8_t is_crit) {
@@ -151,6 +141,9 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send a status-effect application to one client.
+ */
 static void send_status_effect_apply(int client_fd, uint32_t target_id,
                                      uint8_t effect_type, int value,
                                      float duration, uint32_t source_id) {
@@ -166,6 +159,9 @@ static void send_status_effect_apply(int client_fd, uint32_t target_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send a player's current mana values to one client.
+ */
 static void send_mana_update(int client_fd, uint32_t player_id,
                              int32_t mana, int32_t max_mana) {
     ManaUpdatePacket pkt = {0};
@@ -177,6 +173,9 @@ static void send_mana_update(int client_fd, uint32_t player_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send an active-zone spawn to one client.
+ */
 static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
                             uint16_t ability_id, float px, float py,
                             float duration, float radius, uint8_t has_collision) {
@@ -195,6 +194,9 @@ static void send_spawn_zone(int client_fd, uint32_t zone_id, uint32_t caster_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send an active-zone removal to one client.
+ */
 static void send_remove_zone(int client_fd, uint32_t zone_id) {
     RemoveZonePacket pkt = {0};
     pkt.header.type         = PACKET_REMOVE_ZONE;
@@ -204,10 +206,11 @@ static void send_remove_zone(int client_fd, uint32_t zone_id) {
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// ---------------------------------------------------------------------------
-// Apply status effects (unchanged)
-// ---------------------------------------------------------------------------
-
+/**
+ * Install an ability effect in a player's first free effect slot.
+ *
+ * The caller must hold the player's lock.
+ */
 static void apply_effect_to_player(ActivePlayer* player, const AbilityEffectDef* effect,
                                    uint32_t source_id) {
     for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
@@ -251,10 +254,9 @@ static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
            effect->type, npc->id, effect->value, effect->duration);
 }
 
-// ---------------------------------------------------------------------------
-// Zone spawning (unchanged)
-// ---------------------------------------------------------------------------
-
+/**
+ * Allocate an active zone and notify the casting client.
+ */
 static void spawn_zone(const AbilityDef* ability, uint32_t caster_id,
                        float pos_x, float pos_y, int client_fd) {
     pthread_mutex_lock(&g_zones_lock);
@@ -310,10 +312,9 @@ static void spawn_zone(const AbilityDef* ability, uint32_t caster_id,
            zone->zone_id, ability->name, pos_x, pos_y, ability->spawn.duration);
 }
 
-// ---------------------------------------------------------------------------
-// Projectile spawning — delegates to the modular projectile system
-// ---------------------------------------------------------------------------
-
+/**
+ * Snapshot caster statistics and submit an ability projectile.
+ */
 static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_id,
                                      int client_fd, float ox, float oy,
                                      float aim_x, float aim_y) {
@@ -353,10 +354,11 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
     projectile_spawn(&info);
 }
 
-// ---------------------------------------------------------------------------
-// UPDATED: calc_damage now includes stat scaling and defense
-// ---------------------------------------------------------------------------
-
+/**
+ * Calculate ability damage after scaling, conditional bonuses, variance, and defense.
+ *
+ * @return Final damage clamped to at least one.
+ */
 static int calc_ability_damage(int base_damage, const AbilityBonusDamageDef* bonus,
                                int target_health, int target_max_health,
                                int target_defense,
@@ -389,10 +391,9 @@ static int calc_ability_damage(int base_damage, const AbilityBonusDamageDef* bon
     return damage;
 }
 
-// ============================================================================
-// INIT / CLEANUP
-// ============================================================================
-
+/**
+ * Initialize pending casts, active zones, and mana accumulators.
+ */
 void ability_handler_init(void) {
     memset(g_ability_casts, 0, sizeof(g_ability_casts));
     memset(g_zones, 0, sizeof(g_zones));
@@ -401,14 +402,16 @@ void ability_handler_init(void) {
     printf("[ABILITY] Handler initialized\n");
 }
 
+/**
+ * Log ability-handler shutdown.
+ */
 void ability_handler_cleanup(void) {
     printf("[ABILITY] Handler cleaned up\n");
 }
 
-// ============================================================================
-// SEND ABILITY DATA — tells the client which abilities are slotted
-// ============================================================================
-
+/**
+ * Send a player's first five slotted ability definitions to its client.
+ */
 void ability_send_data(int client_fd, ActivePlayer* player) {
     AbilityDataPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
@@ -437,10 +440,16 @@ void ability_send_data(int client_fd, ActivePlayer* player) {
            count, player->character_id);
 }
 
-// ============================================================================
-// CAST INTENT (unchanged logic, but mark combat time)
-// ============================================================================
-
+/**
+ * Validate an ability-cast request and queue its pending cast.
+ *
+ * Acquires player, NPC-world, and pending-cast locks during validation.
+ *
+ * @param world      NPC world used when the cast later resolves.
+ * @param client_fd  Socket that receives cast status packets.
+ * @param caster_id  Character issuing the cast.
+ * @param pkt        Decoded cast-intent payload in network byte order where specified.
+ */
 void ability_handle_cast_intent(NPCWorld* world,
                                 int client_fd,
                                 uint32_t caster_id,
@@ -458,8 +467,7 @@ void ability_handle_cast_intent(NPCWorld* world,
         return;
     }
 
-    // Snapshot target position for range check before acquiring any player lock
-    // to avoid potential deadlocks from nested player_acquire calls.
+    // snapshot targets before acquiring the caster lock
     float target_x = 0.0f, target_y = 0.0f;
     int   has_range_target = 0;
     if (target_id != 0 && ability->range > 0.0f) {
@@ -598,10 +606,9 @@ void ability_handle_cast_intent(NPCWorld* world,
            caster_id, ability->name, ability_id, ability->cast_time);
 }
 
-// ============================================================================
-// CAST CANCEL (unchanged)
-// ============================================================================
-
+/**
+ * Cancel a pending cast and refund its mana cost.
+ */
 void ability_handle_cast_cancel(int client_fd, uint32_t caster_id) {
     int slot = find_player_slot(caster_id);
     if (slot < 0) return;
@@ -629,10 +636,11 @@ void ability_handle_cast_cancel(int client_fd, uint32_t caster_id) {
     pthread_mutex_unlock(&g_ability_casts_lock);
 }
 
-// ============================================================================
-// RESOLVE CAST — UPDATED with stat scaling, defense, evasion, XP
-// ============================================================================
-
+/**
+ * Resolve a completed cast against players, NPCs, projectiles, or zones.
+ *
+ * The caller must hold the pending-cast lock.
+ */
 static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     const AbilityDef* ability = ability_get(cast->ability_id);
     if (!ability) {
@@ -773,8 +781,11 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             int total_heal = heal_crit ? (int)((float)base_heal * CRIT_DAMAGE_MULTIPLIER)
                                        : base_heal;
 
-            pthread_mutex_lock(&active_players_lock);
-            for (int i = 0; i < MAX_PLAYERS; i++) {
+            player_registry_rdlock();
+            int online_count = 0;
+            const int* online = player_active_list_locked(&online_count);
+            for (int n = 0; n < online_count; n++) {
+                int i = online[n];
                 if (!active_players[i].is_loaded) continue;
                 pthread_mutex_lock(&active_players[i].lock);
                 float d = dist2d(origin_x, origin_y,
@@ -802,7 +813,7 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                 }
                 pthread_mutex_unlock(&active_players[i].lock);
             }
-            pthread_mutex_unlock(&active_players_lock);
+            player_registry_unlock();
         }
         cast->is_active = 0;
         return;
@@ -992,17 +1003,17 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     cast->is_active = 0;
 }
 
-// ============================================================================
-// TICK — UPDATED: wisdom-scaled mana regen
-// ============================================================================
-
+/**
+ * Advance casts, cooldowns, status effects, zones, and mana regeneration.
+ *
+ * @param world       NPC world affected by completed casts and active zones.
+ * @param delta_time  Elapsed tick time in seconds.
+ */
 void ability_tick(NPCWorld* world, double delta_time) {
     float dt = (float)delta_time;
     double now = get_time();
 
-    // -----------------------------------------------------------------------
-    // 1. Resolve completed ability casts
-    // -----------------------------------------------------------------------
+    // resolve completed casts
     pthread_mutex_lock(&g_ability_casts_lock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         PendingAbilityCast* cast = &g_ability_casts[i];
@@ -1013,11 +1024,12 @@ void ability_tick(NPCWorld* world, double delta_time) {
     }
     pthread_mutex_unlock(&g_ability_casts_lock);
 
-    // -----------------------------------------------------------------------
-    // 2. Tick cooldowns
-    // -----------------------------------------------------------------------
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    // tick cooldowns
+    player_registry_rdlock();
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         pthread_mutex_lock(&active_players[i].lock);
         int acount = active_players[i].ability_count;
@@ -1031,13 +1043,14 @@ void ability_tick(NPCWorld* world, double delta_time) {
         }
         pthread_mutex_unlock(&active_players[i].lock);
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
-    // -----------------------------------------------------------------------
-    // 3. Tick status effects
-    // -----------------------------------------------------------------------
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    // tick status effects
+    player_registry_rdlock();
+    // refresh the list for this registry lock lifetime
+    online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         pthread_mutex_lock(&active_players[i].lock);
 
@@ -1090,24 +1103,22 @@ void ability_tick(NPCWorld* world, double delta_time) {
 
         pthread_mutex_unlock(&active_players[i].lock);
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
-    // -----------------------------------------------------------------------
-    // 4. Tick zones (unchanged)
-    // -----------------------------------------------------------------------
+    // tick zones
     pthread_mutex_lock(&g_zones_lock);
     for (int z = 0; z < MAX_ZONES; z++) {
         if (!g_zones[z].is_active) continue;
 
         g_zones[z].duration_remaining -= dt;
         if (g_zones[z].duration_remaining <= 0.0f) {
-            pthread_mutex_lock(&active_players_lock);
+            player_registry_rdlock();
             for (int p = 0; p < MAX_PLAYERS; p++) {
                 if (active_players[p].is_loaded) {
                     send_remove_zone(active_players[p].client_fd, g_zones[z].zone_id);
                 }
             }
-            pthread_mutex_unlock(&active_players_lock);
+            player_registry_unlock();
             g_zones[z].is_active = 0;
             continue;
         }
@@ -1116,7 +1127,7 @@ void ability_tick(NPCWorld* world, double delta_time) {
         if (g_zones[z].tick_timer <= 0.0f) {
             g_zones[z].tick_timer = g_zones[z].tick_rate;
 
-            pthread_mutex_lock(&active_players_lock);
+            player_registry_rdlock();
             for (int p = 0; p < MAX_PLAYERS; p++) {
                 if (!active_players[p].is_loaded) continue;
                 pthread_mutex_lock(&active_players[p].lock);
@@ -1138,7 +1149,7 @@ void ability_tick(NPCWorld* world, double delta_time) {
                 }
                 pthread_mutex_unlock(&active_players[p].lock);
             }
-            pthread_mutex_unlock(&active_players_lock);
+            player_registry_unlock();
 
             pthread_mutex_lock(&world->lock);
             for (int n = 0; n < MAX_NPCS; n++) {
@@ -1158,15 +1169,11 @@ void ability_tick(NPCWorld* world, double delta_time) {
     }
     pthread_mutex_unlock(&g_zones_lock);
 
-    // -----------------------------------------------------------------------
-    // 5. Tick projectiles — handled by projectile.c (projectile_tick)
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // 6. Mana regen — UPDATED: scaled by wisdom
-    // -----------------------------------------------------------------------
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    // regenerate mana
+    player_registry_rdlock();
+    online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         if (active_players[i].max_mana == 0) continue;
 
@@ -1194,5 +1201,5 @@ void ability_tick(NPCWorld* world, double delta_time) {
 
         pthread_mutex_unlock(&active_players[i].lock);
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 }

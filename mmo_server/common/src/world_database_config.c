@@ -1,8 +1,17 @@
+/**
+ * @file
+ * Map configured world names and identifiers to PostgreSQL endpoints.
+ */
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
 #include <stdint.h>
 
+/**
+ * Select a PostgreSQL connection string by case-insensitive world name.
+ *
+ * @return      A static connection string, or NULL for an unknown world.
+ */
 const char* get_database_for_world(const char* world_name) {
     if (!world_name) return NULL;
     
@@ -46,6 +55,11 @@ const char* get_database_for_world(const char* world_name) {
     return NULL;
 }
 
+/**
+ * Select a PostgreSQL connection string by world identifier.
+ *
+ * @return      A static connection string, or NULL for an invalid identifier.
+ */
 const char* get_database_for_world_id(uint32_t world_id) {
     switch(world_id) {
         case 1: return "host=localhost dbname=armeia_db user=postgres";
@@ -64,6 +78,11 @@ const char* get_database_for_world_id(uint32_t world_id) {
     }
 }
 
+/**
+ * Select a display name by world identifier.
+ *
+ * @return      A static world name, or "Unknown" for an invalid identifier.
+ */
 const char* get_world_name_by_id(uint32_t world_id) {
     switch(world_id) {
         case 1: return "Armeia";

@@ -1,9 +1,7 @@
-// ============================================================================
-// dialogue_loader.c — JSON parser for dialogue definitions
-//
-// Manual JSON parsing following the same pattern as ability_def.c.
-// No external JSON library used.
-// ============================================================================
+/**
+ * @file
+ * Parse per-NPC and legacy aggregate dialogue JSON documents.
+ */
 
 #include "dialogue_system.h"
 
@@ -12,10 +10,6 @@
 #include <string.h>
 #include <ctype.h>
 
-// ---------------------------------------------------------------------------
-// Forward declarations — JSON helpers
-// ---------------------------------------------------------------------------
-
 static const char* find_json_value(const char* json, const char* key);
 static int parse_json_string(const char* val, char* out, int out_size);
 static int parse_json_int(const char* val);
@@ -23,14 +17,9 @@ static const char* find_json_array(const char* json, const char* key);
 static const char* next_array_element(const char* arr_pos);
 static const char* skip_whitespace(const char* str);
 
-// ---------------------------------------------------------------------------
-// Main parser
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// parse_dialogue_object — shared helper, fills one DialogueDef from a JSON obj
-// ---------------------------------------------------------------------------
-
+/**
+ * Populate one dialogue definition from a JSON object.
+ */
 static void parse_dialogue_object(const char* obj, DialogueDef* dialogue) {
     const char* id_val = find_json_value(obj, "id");
     if (id_val) dialogue->dialogue_id = parse_json_int(id_val);
@@ -101,11 +90,16 @@ static void parse_dialogue_object(const char* obj, DialogueDef* dialogue) {
     dialogue->page_count = page_idx;
 }
 
-// ---------------------------------------------------------------------------
-// dialogue_parse_single — parse one per-NPC JSON file {"id":N,"pages":[...]}
-// Returns 1 on success, 0 on failure
-// ---------------------------------------------------------------------------
-
+/**
+ * Parse and install one per-NPC dialogue document.
+ *
+ * Replaces and frees an existing definition with the same identifier.
+ *
+ * @param json_content   Terminated JSON object containing an id and pages.
+ * @param dialogue_table Destination table that assumes ownership on success.
+ * @param max_dialogues  Number of available table slots; must be positive.
+ * @return               1 when installed, or 0 on allocation failure or an invalid identifier.
+ */
 int dialogue_parse_single(const char* json_content, DialogueDef** dialogue_table, int max_dialogues) {
     DialogueDef* dialogue = calloc(1, sizeof(DialogueDef));
     if (!dialogue) {
@@ -131,10 +125,16 @@ int dialogue_parse_single(const char* json_content, DialogueDef** dialogue_table
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// dialogue_parse_json — legacy: parse {"dialogues":[...]} multi-dialogue file
-// ---------------------------------------------------------------------------
-
+/**
+ * Parse and install dialogues from a legacy aggregate document.
+ *
+ * The destination table assumes ownership of every installed definition.
+ *
+ * @param json_content   Terminated JSON document containing a dialogues array.
+ * @param dialogue_table Destination definition table.
+ * @param max_dialogues  Number of available table slots; must be positive.
+ * @return               The number installed, or -1 when the array is absent or allocation fails.
+ */
 int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, int max_dialogues) {
     int loaded = 0;
 
@@ -169,16 +169,11 @@ int dialogue_parse_json(const char* json_content, DialogueDef** dialogue_table, 
     return loaded;
 }
 
-// ---------------------------------------------------------------------------
-// JSON helper functions (following ability_def.c pattern)
-// ---------------------------------------------------------------------------
-
 static const char* skip_whitespace(const char* str) {
     while (*str && isspace(*str)) str++;
     return str;
 }
 
-// Find "key": <value> and return pointer to <value>
 static const char* find_json_value(const char* json, const char* key) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -193,7 +188,13 @@ static const char* find_json_value(const char* json, const char* key) {
     return skip_whitespace(pos);
 }
 
-// Parse a JSON string value "..." into output buffer
+/**
+ * Decode a quoted JSON string and its supported escape sequences.
+ *
+ * @param out       Destination buffer.
+ * @param out_size  Destination capacity including the terminator.
+ * @return          1 for a quoted value, or 0 otherwise.
+ */
 static int parse_json_string(const char* val, char* out, int out_size) {
     val = skip_whitespace(val);
 
@@ -221,13 +222,11 @@ static int parse_json_string(const char* val, char* out, int out_size) {
     return 1;
 }
 
-// Parse a JSON integer
 static int parse_json_int(const char* val) {
     val = skip_whitespace(val);
     return atoi(val);
 }
 
-// Find "key": [...] and return pointer to start of array (after '[')
 static const char* find_json_array(const char* json, const char* key) {
     const char* val = find_json_value(json, key);
     if (!val) return NULL;
@@ -238,8 +237,11 @@ static const char* find_json_array(const char* json, const char* key) {
     return val + 1;  // Return position after '['
 }
 
-// Get next array element (handles objects and values)
-// Returns NULL when array ends
+/**
+ * Locate the next object element in a JSON array.
+ *
+ * @return The next opening brace, or NULL at the array end or for a non-object element.
+ */
 static const char* next_array_element(const char* arr_pos) {
     arr_pos = skip_whitespace(arr_pos);
 

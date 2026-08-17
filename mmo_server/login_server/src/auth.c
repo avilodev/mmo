@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Validate login and registration requests and issue staged authentication credentials.
+ */
 #include "auth.h"
 #include "rate_limiter.h"
 #include "users_database.h"
@@ -10,6 +14,11 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+/**
+ * Validate credentials and return a short-lived single-use authentication token.
+ *
+ * The response derives its player identifier from the account database and encodes protocol integers in network byte order.
+ */
 void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
     printf("[STAGE 1] Login validation: username=%s\n", packet->username);
 
@@ -90,6 +99,11 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
 }
 
 
+/**
+ * Consume a staged authentication token and return a new world-session key.
+ *
+ * Client-supplied identity fields do not authorize the request; identity comes from the consumed Redis token.
+ */
 void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
     // Consume the single-use stage-1 proof and derive identity from Redis.
     // Never authorize using the player ID supplied by the client.
@@ -143,6 +157,11 @@ void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
     }
 } 
 
+/**
+ * Validate registration fields, create an account, and send the resulting player identifier.
+ *
+ * Response integer fields are encoded in network byte order.
+ */
 void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     printf("[REGISTER] Username: '%s', Email: '%s', Birthday: '%s'\n",
            packet->username, packet->email, packet->birthday);

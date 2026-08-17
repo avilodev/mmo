@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Manage world-server parties, invitations, membership broadcasts, and shared XP.
+ */
+
 #include "party.h"
 #include "log.h"
 #include "player_level.h"
@@ -19,10 +24,6 @@ static pthread_mutex_t g_invites_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static uint32_t g_next_party_id = 1;
 
-// ============================================================================
-// Internal helpers
-// ============================================================================
-
 static double get_time_mono(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -37,10 +38,9 @@ static void send_to_character(uint32_t character_id, void* packet, size_t size) 
     if (fd > 0) server_send(fd, packet, size);
 }
 
-// ============================================================================
-// Party init
-// ============================================================================
-
+/**
+ * Initialize party slots, their mutexes, and pending invitations.
+ */
 void party_init(void) {
     memset(g_parties, 0, sizeof(g_parties));
     for (int i = 0; i < MAX_PARTIES; i++) {
@@ -50,10 +50,13 @@ void party_init(void) {
     LOG_INFO("[PARTY] Party system initialized (%d max parties, %d max size)", MAX_PARTIES, MAX_PARTY_SIZE);
 }
 
-// ============================================================================
-// Party find
-// ============================================================================
-
+/**
+ * Find a party by identifier without acquiring its lock.
+ *
+ * The returned pool pointer requires external synchronization before access.
+ *
+ * @return The matching party, or NULL for zero or absence.
+ */
 Party* party_find(uint32_t party_id) {
     if (party_id == 0) return NULL;
     for (int i = 0; i < MAX_PARTIES; i++) {
@@ -64,6 +67,13 @@ Party* party_find(uint32_t party_id) {
     return NULL;
 }
 
+/**
+ * Find a character's party without acquiring its lock.
+ *
+ * The returned pool pointer requires external synchronization before access.
+ *
+ * @return The containing party, or NULL for zero or absence.
+ */
 Party* party_find_by_player(uint32_t character_id) {
     if (character_id == 0) return NULL;
     for (int i = 0; i < MAX_PARTIES; i++) {
@@ -77,10 +87,11 @@ Party* party_find_by_player(uint32_t character_id) {
     return NULL;
 }
 
-// ============================================================================
-// Party create / add / remove
-// ============================================================================
-
+/**
+ * Create a party and assign its identifier to the leader.
+ *
+ * @return The assigned party identifier, or 0 when the pool is full.
+ */
 uint32_t party_create(uint32_t leader_id) {
     pthread_mutex_lock(&g_parties_lock);
 
@@ -123,6 +134,11 @@ uint32_t party_create(uint32_t leader_id) {
     return pid;
 }
 
+/**
+ * Add a character to a party's first free member slot.
+ *
+ * @return 1 on success, or 0 for absence or a full party.
+ */
 int party_add_member(uint32_t party_id, uint32_t character_id) {
     pthread_mutex_lock(&g_parties_lock);
     Party* p = party_find(party_id);
@@ -162,6 +178,9 @@ int party_add_member(uint32_t party_id, uint32_t character_id) {
     return 0;
 }
 
+/**
+ * Remove a character and promote or disband the party as required.
+ */
 void party_remove_member(uint32_t character_id) {
     pthread_mutex_lock(&g_parties_lock);
     Party* p = party_find_by_player(character_id);
@@ -260,6 +279,9 @@ void party_remove_member(uint32_t character_id) {
     party_broadcast_update(party_id);
 }
 
+/**
+ * Disband a party and notify every online member.
+ */
 void party_disband(uint32_t party_id) {
     pthread_mutex_lock(&g_parties_lock);
     Party* p = party_find(party_id);
@@ -298,6 +320,9 @@ void party_disband(uint32_t party_id) {
     pthread_mutex_unlock(&p->lock);
 }
 
+/**
+ * Remove a disconnected character's invitations and party membership.
+ */
 void party_handle_disconnect(uint32_t character_id) {
     // Also clean up any pending invites from/to this player
     party_invite_remove(character_id);
@@ -315,10 +340,9 @@ void party_handle_disconnect(uint32_t character_id) {
     party_remove_member(character_id);
 }
 
-// ============================================================================
-// Party broadcast
-// ============================================================================
-
+/**
+ * Broadcast current party membership and player statistics to its members.
+ */
 void party_broadcast_update(uint32_t party_id) {
     pthread_mutex_lock(&g_parties_lock);
     Party* p = party_find(party_id);
@@ -338,8 +362,7 @@ void party_broadcast_update(uint32_t party_id) {
     pkt.leader_id = htonl(p->leader_id);
     pkt.member_count = p->member_count;
 
-    // Build member list — collect fd and character_id in one pass to avoid
-    // a second player_find_active scan in the send loop.
+    // collect recipients while building member data
     int idx = 0;
     uint32_t member_ids[MAX_PARTY_SIZE];
     int      member_fds[MAX_PARTY_SIZE];
@@ -386,10 +409,11 @@ void party_broadcast_update(uint32_t party_id) {
     }
 }
 
-// ============================================================================
-// Invite system
-// ============================================================================
-
+/**
+ * Create a pending invitation after expiring stale entries.
+ *
+ * @return 1 when stored, or 0 when the target already has an invite or the pool is full.
+ */
 int party_invite_create(uint32_t from_id, uint32_t to_id, uint32_t party_id) {
     double now = get_time_mono();
 
@@ -427,6 +451,13 @@ int party_invite_create(uint32_t from_id, uint32_t to_id, uint32_t party_id) {
     return 0; // No slots
 }
 
+/**
+ * Find a non-expired invitation for a target without locking the invite pool.
+ *
+ * The returned pointer aliases mutable internal storage.
+ *
+ * @return The invitation, or NULL when absent or expired.
+ */
 PendingInvite* party_invite_find_for_player(uint32_t to_id) {
     double now = get_time_mono();
     for (int i = 0; i < MAX_PENDING_INVITES; i++) {
@@ -442,6 +473,9 @@ PendingInvite* party_invite_find_for_player(uint32_t to_id) {
     return NULL;
 }
 
+/**
+ * Remove a target's pending invitation.
+ */
 void party_invite_remove(uint32_t to_id) {
     pthread_mutex_lock(&g_invites_lock);
     for (int i = 0; i < MAX_PENDING_INVITES; i++) {
@@ -454,6 +488,9 @@ void party_invite_remove(uint32_t to_id) {
     pthread_mutex_unlock(&g_invites_lock);
 }
 
+/**
+ * Remove every expired pending invitation.
+ */
 void party_invite_cleanup_expired(void) {
     double now = get_time_mono();
     pthread_mutex_lock(&g_invites_lock);
@@ -466,10 +503,9 @@ void party_invite_cleanup_expired(void) {
     pthread_mutex_unlock(&g_invites_lock);
 }
 
-// ============================================================================
-// XP sharing
-// ============================================================================
-
+/**
+ * Split an XP award among living nearby party members or grant it to the killer.
+ */
 void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
     if (xp_amount == 0) return;
 

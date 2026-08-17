@@ -4,11 +4,11 @@
 #include <stdint.h>
 #include "protocol.h"
 
-// Maximum items the system can handle
+/** Bound loaded item definitions and their display names. */
 #define MAX_ITEMS 100000
 #define MAX_ITEM_NAME 64
 
-// Item types
+/** Identify an item's gameplay category. */
 typedef enum {
     ITEM_TYPE_ITEM = 0,        // Generic items (crafting materials, etc)
     ITEM_TYPE_WEAPON = 1,      // Weapons
@@ -18,7 +18,7 @@ typedef enum {
     ITEM_TYPE_QUEST = 5        // Quest items
 } ItemType;
 
-// Consumable effect types
+/** Identify resource changes produced by consumable use. */
 typedef enum {
     USE_EFFECT_NONE = 0,
     USE_EFFECT_RESTORE_HEALTH = 1,
@@ -26,7 +26,7 @@ typedef enum {
     USE_EFFECT_RESTORE_BOTH = 3,
 } UseEffectType;
 
-// Item rarity
+/** Order item rarity tiers used by presentation and loot data. */
 typedef enum {
     RARITY_COMMON = 0,
     RARITY_UNCOMMON = 1,
@@ -35,7 +35,7 @@ typedef enum {
     RARITY_LEGENDARY = 4
 } ItemRarity;
 
-// Class definitions
+/** Assign item-requirement identifiers to playable classes. */
 typedef enum {
     CLASS_GLADIATOR = 1,   // Tank - Heavy Armor
     CLASS_NINJA = 2,       // Damage - Light Armor
@@ -43,27 +43,24 @@ typedef enum {
     CLASS_SPIRIT = 4       // Healer - Light Armor
 } CharacterClass;
 
-// Race definitions
+/** Assign item-requirement identifiers to playable races. */
 typedef enum {
     RACE_HUMAN = 1,
     RACE_PYSECK = 2,   // Small
     RACE_INFOR = 3     // Infernal
 } CharacterRace;
 
-// Item definition structure
+/** Aggregate immutable JSON-backed properties for one item type. */
 typedef struct {
     uint32_t id;
     char name[MAX_ITEM_NAME];
     
-    // Type and slot
     ItemType type;
     EquipSlotType slot;
     
-    // Stats
     uint32_t damage;           // For weapons
     uint32_t defense;          // For armor/shields
 
-    // Stat bonuses (applied when equipped)
     int32_t bonus_strength;
     int32_t bonus_agility;
     int32_t bonus_intelligence;
@@ -73,58 +70,46 @@ typedef struct {
     int32_t bonus_vitality;
     int32_t bonus_luck;
     
-    // Requirements
     uint8_t level_req;         // Minimum level required
     uint8_t class_req[5];      // Required classes (0 = any, otherwise specific class IDs)
     uint8_t race_req[4];       // Required races (0 = any)
     
-    // Properties
     ItemRarity rarity;
     uint8_t craftable;         // 0 = no, 1 = yes
     uint8_t stackable;         // 0 = no, 1 = yes
     uint16_t max_stack;        // Maximum stack size
     uint32_t value;            // Gold value (for selling)
     
-    // Consumable
     uint8_t use_effect;        // UseEffectType — what happens when used
     int32_t use_value;         // How much to restore/apply
     float   use_cooldown;      // Seconds before this consumable can be used again
 
-    // Flags
     uint8_t is_two_handed;     // 1 if two-handed weapon
     uint8_t bind_on_pickup;    // 1 if binds when picked up
     uint8_t bind_on_equip;     // 1 if binds when equipped
 } ItemDefinition;
 
-// Initialize the item system from JSON file
+// load once during world-server startup
 int items_init(const char* json_filepath);
 
-// Get item definition by ID (O(1) lookup)
+// return a registry-owned definition or NULL when absent
 const ItemDefinition* item_get(uint32_t item_id);
 
-// Check if item exists
 int item_exists(uint32_t item_id);
 
-// Validate if a character can equip this item
 int item_can_equip(uint32_t item_id, uint8_t character_level, 
                    uint8_t character_class, uint8_t character_race);
 
-// Get total number of loaded items
 int items_get_count(void);
 
-// Cleanup item system
 void items_cleanup(void);
 
-// Helper: Get class name
 const char* class_get_name(uint8_t class_id);
 
-// Helper: Get race name
 const char* race_get_name(uint8_t race_id);
 
-// Helper: Get rarity name
 const char* rarity_get_name(ItemRarity rarity);
 
-// Helper: Get slot name
 const char* slot_get_name(EquipSlotType slot);
 
 #endif // ITEM_DEFINITIONS_H

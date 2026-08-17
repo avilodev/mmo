@@ -1,22 +1,21 @@
 #ifndef SERVER_TYPES_H
 #define SERVER_TYPES_H
 
+/** @file Define server-only player and world runtime state. */
+
 #include "protocol.h"
+#include "item_instance.h"
 
 #include <pthread.h>
 #include <time.h>
 
-// Movement allowance, in world pixels, accrued since the last move packet.
-// Credit accrues with elapsed real time and is capped, so a client that queues
-// up packets and releases them at once cannot bank more travel than the cap —
-// the burst is spent against one shared allowance rather than granting each
-// packet its own. See move_validator.h.
+/** Track capped movement credit accrued between packets. */
 typedef struct {
-    float           credit;
-    struct timespec last_tv;
+    float           credit;  /**< Available movement distance in world pixels. */
+    struct timespec last_tv; /**< Timestamp used to accrue additional credit. */
 } MoveBudget;
 
-// Server-only in-memory player state. This structure is never sent on the wire.
+/** Hold one active player's server-only mutable state. */
 typedef struct {
     uint32_t character_id;
     uint32_t account_id;
@@ -36,25 +35,15 @@ typedef struct {
     uint64_t experience;
     uint32_t gold;
 
-    uint32_t helmet;
-    uint32_t gloves;
-    uint32_t chest_armor;
-    uint32_t leggings;
-    uint32_t boots;
-    uint32_t main_hand;
-    uint32_t second_hand;
-    uint16_t blessing;
-    uint32_t inventory[150];
+    /** Preserve item identity when moving stacks between bag and equipment. */
+    ItemInstance inventory[INVENTORY_SLOTS];
+    ItemInstance equipment[EQUIP_SLOTS];
 
     double last_attack_time;
     float attack_cooldown;
 
     int is_loaded;
-    // Slot is claimed by a login that is still loading from the database.
-    // Gameplay scans test is_loaded and so correctly ignore a reserved slot,
-    // but slot allocation must test is_reserved too or two concurrent logins
-    // will claim the same slot while the first one is still loading.
-    int is_reserved;
+    int is_reserved; /**< Marks a slot claimed by an in-progress database load. */
     int is_ready;
     int is_dirty;
     time_t last_save;
@@ -83,7 +72,9 @@ typedef struct {
     uint8_t is_dead;
     double death_time;
 
+/** Bound concurrent status effects stored for one active player. */
 #define MAX_ACTIVE_EFFECTS 8
+    /** Track one active status effect and its remaining timers. */
     struct {
         uint8_t active;
         uint8_t effect_type;
@@ -100,7 +91,9 @@ typedef struct {
     uint32_t party_id;
     uint16_t ping_ms;
 
+/** Bound quest records retained in one active player slot. */
 #define MAX_PLAYER_QUESTS 32
+    /** Track one quest and its objective progress counters. */
     struct PlayerQuestSlot {
         uint32_t quest_id;
         uint8_t is_active;
@@ -113,7 +106,7 @@ typedef struct {
     pthread_mutex_t lock;
 } ActivePlayer;
 
-// Realm-server runtime state for a configured world process.
+/** Track one configured world process from the realm server. */
 typedef struct {
     char name[64];
     char host[64];

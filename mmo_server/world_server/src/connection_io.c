@@ -1,20 +1,7 @@
-// ============================================================================
-// connection_io.c — Per-connection outbound write queue.
-//
-// A send either goes out immediately or gets queued and drained when the socket
-// reports writable. That keeps a slow client from blocking a broadcast for
-// everyone else.
-//
-// Slots are indexed directly by file descriptor. The previous version scanned a
-// fixed array under one global mutex on every call, which put an O(n) walk and
-// a process-wide lock on the hottest path in the server — every broadcast, to
-// every player, every tick. Indexing by fd makes lookup a single load and
-// leaves the global lock out of the send path entirely.
-//
-// Threading: unlike the packet limiter, this genuinely needs per-slot locks.
-// Broadcast threads (combat, npc, projectile) write to connections they do not
-// own, so a slot can be touched by several threads at once.
-// ============================================================================
+/**
+ * @file
+ * Queue nonblocking world-server writes in descriptor-indexed connection slots.
+ */
 
 #include "connection_io.h"
 #include "log.h"
@@ -28,10 +15,12 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 
+/** Maximum unsent data retained for one connection. */
 #define CONNECTION_IO_MAX_QUEUED_BYTES (1024U * 1024U)
 #define CONNECTION_IO_MIN_SLOTS        1024
 #define CONNECTION_IO_MAX_SLOTS        65536   // see packet_limiter.c on why this is capped
 
+/** Own one queued write and its current transmission offset. */
 typedef struct PendingWrite {
     struct PendingWrite* next;
     size_t len;
@@ -39,6 +28,7 @@ typedef struct PendingWrite {
     uint8_t data[];
 } PendingWrite;
 
+/** Synchronize the outbound state associated with one descriptor. */
 typedef struct {
     pthread_mutex_t lock;
     int active;
@@ -58,6 +48,7 @@ static ConnectionOutput* slot_for(int fd) {
     return &g_outputs[fd];
 }
 
+/** Free every pending write and reset queue accounting while the slot is locked. */
 static void clear_queue(ConnectionOutput* output) {
     PendingWrite* write = output->head;
     while (write) {
@@ -70,6 +61,11 @@ static void clear_queue(ConnectionOutput* output) {
     output->queued_bytes = 0;
 }
 
+/**
+ * Copy a write onto a locked connection queue within its byte limit.
+ *
+ * @return      Nonzero when the data is queued, otherwise zero and the slot is marked failed.
+ */
 static int append_locked(ConnectionOutput* output, const void* data, size_t len) {
     if (len == 0) return 1;
     if (len > CONNECTION_IO_MAX_QUEUED_BYTES - output->queued_bytes) {
@@ -94,6 +90,7 @@ static int append_locked(ConnectionOutput* output, const void* data, size_t len)
     return 1;
 }
 
+/** Allocate and initialize output slots according to the descriptor limit. */
 void connection_io_init(void) {
     if (g_outputs) return;
 
@@ -121,6 +118,7 @@ void connection_io_init(void) {
     LOG_INFO("[NET] connection_io ready: %d slots", g_slot_count);
 }
 
+/** Clear all output queues and deactivate their slots. */
 void connection_io_shutdown(void) {
     if (!g_outputs) return;
     for (int i = 0; i < g_slot_count; i++) {
@@ -131,6 +129,11 @@ void connection_io_shutdown(void) {
     }
 }
 
+/**
+ * Activate a descriptor slot after clearing any recycled backlog.
+ *
+ * @return      Nonzero on success, otherwise zero for an unavailable slot.
+ */
 int connection_io_register(int fd) {
     ConnectionOutput* output = slot_for(fd);
     if (!output) {
@@ -148,6 +151,7 @@ int connection_io_register(int fd) {
     return 1;
 }
 
+/** Deactivate a descriptor slot and release its queued writes. */
 void connection_io_unregister(int fd) {
     ConnectionOutput* output = slot_for(fd);
     if (!output) return;
@@ -159,6 +163,11 @@ void connection_io_unregister(int fd) {
     pthread_mutex_unlock(&output->lock);
 }
 
+/**
+ * Send a complete framed packet immediately or queue its unsent suffix.
+ *
+ * @return      len when accepted, -1 for a socket or queue failure, or -2 for an unregistered descriptor.
+ */
 ssize_t connection_io_send(int fd, const void* data, size_t len) {
     ConnectionOutput* output = slot_for(fd);
     if (!output) return -2;
@@ -199,6 +208,11 @@ ssize_t connection_io_send(int fd, const void* data, size_t len) {
     return accepted ? (ssize_t)len : -1;
 }
 
+/**
+ * Drain queued output until complete, blocked, or failed.
+ *
+ * @return      Zero when the slot remains usable, otherwise -1.
+ */
 int connection_io_flush(int fd) {
     ConnectionOutput* output = slot_for(fd);
     if (!output) return -1;
@@ -237,6 +251,11 @@ int connection_io_flush(int fd) {
     return ok ? 0 : -1;
 }
 
+/**
+ * Report whether an active descriptor has queued output.
+ *
+ * @return      Nonzero when output is pending, otherwise zero.
+ */
 int connection_io_has_pending(int fd) {
     ConnectionOutput* output = slot_for(fd);
     if (!output) return 0;
@@ -247,6 +266,11 @@ int connection_io_has_pending(int fd) {
     return pending;
 }
 
+/**
+ * Report whether an active descriptor's output path has failed.
+ *
+ * @return      Nonzero when failed, otherwise zero.
+ */
 int connection_io_failed(int fd) {
     ConnectionOutput* output = slot_for(fd);
     if (!output) return 0;

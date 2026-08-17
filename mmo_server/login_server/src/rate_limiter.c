@@ -1,22 +1,7 @@
-// ============================================================================
-// rate_limiter.c — Per-IP brute-force protection for the login server
-//
-// Failed auth attempts are counted per source address. RL_MAX_FAILS failures
-// inside RL_WINDOW_SECS block that address for RL_BLOCK_SECS.
-//
-// The table is open-addressed with a hard probe bound, so a lookup costs a
-// handful of comparisons instead of a scan over every address ever seen. An
-// entry whose block has expired and whose window has lapsed is dead: the next
-// address that hashes near it takes the slot. That reclamation is what keeps a
-// long-uptime server from filling its table and quietly losing protection.
-//
-// When an address cannot be tracked, the limiter fails closed and tells the
-// caller to drop the connection. The moment the table is under real pressure is
-// exactly the moment we least want to hand out unpoliced attempts.
-//
-// Threading: every entry point takes g_lock. Accept and worker threads both
-// call in, so none of this state may be touched without it.
-// ============================================================================
+/**
+ * @file
+ * Enforce bounded per-address authentication and connection rates for the login server.
+ */
 
 #include "rate_limiter.h"
 
@@ -39,12 +24,11 @@
 #define RL_WINDOW_SECS  60      // counting window
 #define RL_BLOCK_SECS   300     // block duration
 
-// Connection budget. A real client opens a handful of connections per session
-// (login, start-game, patch notes), so this is far above honest use and only
-// bites on churn.
+/** Maximum accepted connections per address during one connection window. */
 #define RL_MAX_CONNS         30
 #define RL_CONN_WINDOW_SECS  60
 
+/** Track failure, connection, and blocking windows for one peer address. */
 typedef struct {
     char ip[RL_IP_MAXLEN];  // empty string = slot never used
     int  fail_count;
@@ -66,6 +50,7 @@ static long rl_now(void) {
     return (long)ts.tv_sec;
 }
 
+/** Compute the FNV-1a hash used to place a textual address. */
 static uint32_t hash_ip(const char* ip) {
     uint32_t h = 2166136261u;                   // FNV-1a
     for (const unsigned char* p = (const unsigned char*)ip; *p; p++) {
@@ -75,15 +60,18 @@ static uint32_t hash_ip(const char* ip) {
     return h;
 }
 
-// A live entry is one still worth remembering: blocked, or inside its window.
-// Anything else is dead and its slot may be handed to a different address.
+/** Report whether an occupied entry may be reclaimed. */
 static int entry_is_dead(const RateLimitEntry* e, long now) {
     if (e->ip[0] == '\0')      return 0;   // never used, not "dead"
     if (e->block_until > now)  return 0;   // actively blocked, must keep
     return (now - e->last_seen) > RL_WINDOW_SECS;
 }
 
-// Look up without creating. Returns NULL if the address is not tracked.
+/**
+ * Find a live entry without creating one.
+ *
+ * @return      The matching entry, or NULL when the address is absent or stale.
+ */
 static RateLimitEntry* find(const char* ip, long now) {
     uint32_t h = hash_ip(ip);
     for (uint32_t i = 0; i < RL_MAX_PROBES; i++) {
@@ -95,9 +83,11 @@ static RateLimitEntry* find(const char* ip, long now) {
     return NULL;
 }
 
-// Look up, or claim a slot. Prefers reusing a dead entry over consuming a fresh
-// one so the table stays compact. Returns NULL only when every probed slot
-// holds a live, different address — genuine saturation.
+/**
+ * Find an address entry or claim an empty or expired probe slot.
+ *
+ * @return      The matching or initialized entry, or NULL when the bounded probe range is saturated.
+ */
 static RateLimitEntry* find_or_create(const char* ip, long now) {
     uint32_t h = hash_ip(ip);
     RateLimitEntry* reusable = NULL;
@@ -146,12 +136,18 @@ static RateLimitEntry* find_or_create(const char* ip, long now) {
     return NULL;   // saturated — caller fails closed
 }
 
+/** Clear all rate-limit entries under the shared limiter lock. */
 void rate_limiter_init(void) {
     pthread_mutex_lock(&g_lock);
     memset(g_entries, 0, sizeof(g_entries));
     pthread_mutex_unlock(&g_lock);
 }
 
+/**
+ * Test whether an address is blocked or cannot be identified.
+ *
+ * @return      Nonzero when the connection must be rejected, otherwise zero.
+ */
 int rate_limiter_check(const char* ip) {
     // No usable address means no way to police this connection.
     if (!ip || ip[0] == '\0') return 1;
@@ -166,6 +162,11 @@ int rate_limiter_check(const char* ip) {
     return blocked;
 }
 
+/**
+ * Record an authentication failure and apply the failure threshold.
+ *
+ * @return      Nonzero when the connection must be dropped, otherwise zero.
+ */
 int rate_limiter_record_failure(const char* ip) {
     if (!ip || ip[0] == '\0') return 1;   // untrackable: fail closed
 
@@ -208,6 +209,11 @@ int rate_limiter_record_failure(const char* ip) {
     return drop;
 }
 
+/**
+ * Record an accepted connection and apply the connection-churn threshold.
+ *
+ * @return      Nonzero when the connection must be refused, otherwise zero.
+ */
 int rate_limiter_record_connection(const char* ip) {
     if (!ip || ip[0] == '\0') return 1;   // untrackable: fail closed
 
@@ -252,6 +258,7 @@ int rate_limiter_record_connection(const char* ip) {
     return refuse;
 }
 
+/** Clear expired failure history after successful authentication. */
 void rate_limiter_note_success(const char* ip) {
     if (!ip || ip[0] == '\0') return;
 
@@ -267,6 +274,11 @@ void rate_limiter_note_success(const char* ip) {
     pthread_mutex_unlock(&g_lock);
 }
 
+/**
+ * Write a socket peer's IPv4 or IPv6 address into a caller buffer.
+ *
+ * Failure is reported by leaving the output as an empty string.
+ */
 void rate_limiter_peer_ip(int fd, char* out, size_t out_size) {
     if (!out || out_size == 0) return;
     out[0] = '\0';

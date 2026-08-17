@@ -1,8 +1,13 @@
+/**
+ * @file
+ * Configure realm-server signals, listening sockets, and runtime identity.
+ */
 #include "config.h"
 
 ServerConfig g_server;
 ServerState g_state;
 
+/** Request realm-server shutdown for supported termination signals. */
 void signal_handler(int signum) {
     switch (signum) {
         case SIGINT: 
@@ -16,6 +21,7 @@ void signal_handler(int signum) {
     } 
 } 
 
+/** Install realm shutdown handlers and ignore broken-pipe signals. */
 void setup_signals(void) {
     signal(SIGPIPE, SIG_IGN);
     
@@ -30,6 +36,11 @@ void setup_signals(void) {
     sigaction(SIGQUIT, &sa, NULL);
 }
 
+/**
+ * Create, bind, and listen on a reusable IPv4 TCP socket.
+ *
+ * @return      The listening descriptor, or -1 when setup fails.
+ */
 int create_tcp_server_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -66,6 +77,11 @@ int create_tcp_server_socket(int port) {
     return sock;
 }
 
+/**
+ * Load the realm name and listening port from an ordered two-field configuration file.
+ *
+ * @return      Nonzero when both fields are valid, otherwise zero.
+ */
 int set_config(const char* filepath) {
     FILE* file = fopen(filepath, "r");
     if (!file) {

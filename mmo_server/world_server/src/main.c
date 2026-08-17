@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Initialize the world service and coordinate gameplay, networking, and broadcast threads.
+ */
 #include "types.h"
 #include "log.h"
 #include "packet_limiter.h"
@@ -24,6 +28,9 @@
 #include "player_data.h"
 #include "players_database.h"
 #include "session_registry.h"
+#include "spatial_grid.h"
+#include "broadcast_snapshot.h"
+#include "tick_scheduler.h"
 #include "party.h"
 #include "quest_system.h"
 #include "shop.h"
@@ -51,6 +58,7 @@ static char QUEST_SAVE_DIR[512];
 static char WORLD_DAT_PATH[512];
 static char ZONES_PATH[512];
 
+/** Build one bounded runtime asset path or terminate startup on overflow. */
 static void set_data_path(char* destination, size_t destination_size,
                           const char* directory, const char* relative_path) {
     size_t directory_length = strlen(directory);
@@ -66,6 +74,11 @@ static void set_data_path(char* destination, size_t destination_size,
     memcpy(destination + directory_length, relative_path, relative_length + 1);
 }
 
+/**
+ * Receive an exact byte count while applying a poll timeout to each read.
+ *
+ * @return      The requested byte count, or -1 on timeout, socket error, or disconnection.
+ */
 static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
     uint8_t* ptr = buffer;
     size_t total = 0;
@@ -80,6 +93,7 @@ static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeo
     return (ssize_t)total;
 }
 
+/** Resolve all world runtime assets relative to the server executable. */
 static void init_data_paths(void) {
     char exe[512] = {0};
     ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -107,20 +121,26 @@ static void init_data_paths(void) {
 }
 
 static pthread_t g_combat_thread;
-static pthread_t g_player_broadcast_thread;
-static pthread_t g_npc_broadcast_thread;
-static pthread_t g_projectile_broadcast_thread;
+
+// One thread now carries every outbound stream — see the WORLD BROADCAST block
+// below for why they were merged.
+static pthread_t g_broadcast_thread;
 
 static volatile int g_combat_running = 0;
-static volatile int g_player_broadcast_running = 0;
-static volatile int g_npc_broadcast_running = 0;
-static volatile int g_projectile_broadcast_running = 0;
+static volatile int g_broadcast_running = 0;
 
 // Global for tracking world server uptime
 time_t g_server_start_time = 0; 
 
 NPCWorld g_npc_world;
 
+/**
+ * Authenticate one realm connection and answer its world-status heartbeats.
+ *
+ * The function owns and frees the heap-allocated descriptor argument, then closes the realm descriptor before returning.
+ *
+ * @return      Always NULL.
+ */
 void* realm_handler_thread(void* arg) {
     int realm_fd = *(int*)arg;
     free(arg);
@@ -268,6 +288,11 @@ void* realm_handler_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * Classify accepted realm connections and submit player connections to event loops.
+ *
+ * @return      Always NULL after the server stops.
+ */
 void* accept_thread_func(void* arg) {
     (void)arg;
     
@@ -331,6 +356,52 @@ void* accept_thread_func(void* arg) {
     return NULL;
 }
 
+/** Number of measured phases in each gameplay tick. */
+#define TICK_PHASE_COUNT 6
+static const char* g_phase_name[TICK_PHASE_COUNT] = {
+    "snapshot", "combat", "ability", "projectile", "npc_ai", "loot"
+};
+static double g_phase_total_ms[TICK_PHASE_COUNT];
+static double g_phase_worst_ms[TICK_PHASE_COUNT];
+static long   g_phase_samples;
+
+static inline double mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+/** Log rolling mean and worst phase times, then clear the timing window. */
+static void tick_phase_report(void) {
+    if (g_phase_samples == 0) return;
+
+    char line[512];
+    int  n = snprintf(line, sizeof(line), "[TICK] over %ld ticks —", g_phase_samples);
+    double mean_total = 0.0;
+
+    for (int p = 0; p < TICK_PHASE_COUNT && n < (int)sizeof(line); p++) {
+        double mean = g_phase_total_ms[p] / (double)g_phase_samples;
+        mean_total += mean;
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " %s %.2f/%.2f",
+                      g_phase_name[p], mean, g_phase_worst_ms[p]);
+    }
+    if (n < (int)sizeof(line))
+        snprintf(line + n, sizeof(line) - (size_t)n,
+                 " | total mean %.2fms of 50ms budget", mean_total);
+
+    LOG_INFO("%s", line);
+    LOG_DEBUG("[TICK] figures are mean/worst milliseconds per phase");
+
+    memset(g_phase_total_ms, 0, sizeof(g_phase_total_ms));
+    memset(g_phase_worst_ms, 0, sizeof(g_phase_worst_ms));
+    g_phase_samples = 0;
+}
+
+/**
+ * Run snapshot, combat, ability, projectile, NPC, and loot updates at 20 Hz.
+ *
+ * @return      Always NULL after shutdown or snapshot initialization failure.
+ */
 void* combat_update_thread(void* arg) {
     (void)arg;
     const long TARGET_INTERVAL_NS = 50000000;  // 50ms = 20Hz
@@ -340,14 +411,39 @@ void* combat_update_thread(void* arg) {
     clock_gettime(CLOCK_MONOTONIC, &next_tick);
     g_combat_running = 1;
 
+    // One snapshot of the players, shared by every phase of the tick. See
+    // tick_snapshot.h for why the phases must not sample independently.
+    static TickSnapshot snapshot;
+    if (!tick_snapshot_init(&snapshot)) {
+        LOG_ERROR("[TICK] gameplay thread cannot start without an interest grid");
+        return NULL;
+    }
+
+    double phase_ms[TICK_PHASE_COUNT];
+    double last_report = mono_ms();
+
     printf("Combat update thread started (20Hz)\n");
 
     while (g_combat_running && g_server.running) {
-        combat_tick(&g_npc_world);           // basic attack resolution + death/respawn
-        ability_tick(&g_npc_world, DELTA_TIME); // ability resolution + effects
-        projectile_tick(&g_npc_world, DELTA_TIME); // projectile movement + collision
-        npc_ai_tick(&g_npc_world, DELTA_TIME);  // NPC AI: targeting, movement, abilities
-        loot_tick();                          // despawn expired ground items
+        double t0 = mono_ms(), t1;
+
+        tick_snapshot_build(&snapshot);       t1 = mono_ms(); phase_ms[0] = t1 - t0; t0 = t1;
+        combat_tick(&g_npc_world);            t1 = mono_ms(); phase_ms[1] = t1 - t0; t0 = t1;
+        ability_tick(&g_npc_world, DELTA_TIME);            t1 = mono_ms(); phase_ms[2] = t1 - t0; t0 = t1;
+        projectile_tick(&g_npc_world, &snapshot, DELTA_TIME); t1 = mono_ms(); phase_ms[3] = t1 - t0; t0 = t1;
+        npc_ai_tick(&g_npc_world, &snapshot, DELTA_TIME);  t1 = mono_ms(); phase_ms[4] = t1 - t0; t0 = t1;
+        loot_tick();                          t1 = mono_ms(); phase_ms[5] = t1 - t0;
+
+        for (int p = 0; p < TICK_PHASE_COUNT; p++) {
+            g_phase_total_ms[p] += phase_ms[p];
+            if (phase_ms[p] > g_phase_worst_ms[p]) g_phase_worst_ms[p] = phase_ms[p];
+        }
+        g_phase_samples++;
+
+        if (t1 - last_report >= 10000.0) {
+            tick_phase_report();
+            last_report = t1;
+        }
 
         // Calculate next tick time
         next_tick.tv_nsec += TARGET_INTERVAL_NS;
@@ -366,379 +462,301 @@ void* combat_update_thread(void* arg) {
         }
     }
 
+    tick_phase_report();          // final numbers before the counters go away
+    tick_snapshot_free(&snapshot);
+
     printf("Combat update thread exiting\n");
     return NULL;
 }
 
 
-void* player_broadcast_thread(void* arg) {
-    (void)arg;
-    const long TARGET_INTERVAL_NS = 50000000;  // 50ms = 20Hz
-    struct timespec next_tick, now;
-    
-    clock_gettime(CLOCK_MONOTONIC, &next_tick);
-    g_player_broadcast_running = 1;
-    
-    printf("Player broadcast thread started (20Hz)\n");
-    
-    while (g_player_broadcast_running && g_server.running) {
-        // --- Broadcast player positions to nearby players ---
-        extern ActivePlayer active_players[];
-        extern pthread_mutex_t active_players_lock;
+/** Player-to-player interest radius in world pixels. */
+#define PLAYER_VIEW_RADIUS 800.0f
 
-        // Snapshot all active players
-        typedef struct {
-            int      valid;
-            int      client_fd;
-            uint32_t character_id;
-            float    pos_x, pos_y;
-            int32_t  health, max_health;
-            uint8_t  player_class;
-            uint8_t  player_race;
-            uint8_t  level;
-            uint8_t  is_dead;
-            uint16_t ping_ms;
-        } PlayerSnapshot;
+/** Player-to-NPC interest radius in world pixels. */
+#define NPC_VIEW_RADIUS 2000.0f
 
-        PlayerSnapshot snapshots[MAX_PLAYERS];
+/** Own one shared player snapshot and broadcast-task scratch storage. */
+typedef struct {
+    BroadcastPlayer   players[MAX_PLAYERS];
+    SpatialPoint      player_points[MAX_PLAYERS];
+    BroadcastSnapshot snapshot;
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (active_players[i].is_loaded) {
-                snapshots[i].valid = 1;
-                snapshots[i].client_fd = active_players[i].client_fd;
-                snapshots[i].character_id = active_players[i].character_id;
+    // NPC scratch. Only the NPC task reads this, so it is filled there rather
+    // than in prepare — sampling 256 NPCs on every 30Hz pass to feed a 10Hz
+    // stream would be two thirds wasted.
+    NPCPositionData   npc_wire[MAX_NPCS];
+    SpatialPoint      npc_points[MAX_NPCS];
+    SpatialGrid*      npc_grid;
+} BroadcastContext;
 
-                pthread_mutex_lock(&active_players[i].lock);
-                snapshots[i].pos_x = active_players[i].pos_x;
-                snapshots[i].pos_y = active_players[i].pos_y;
-                snapshots[i].health = active_players[i].health;
-                snapshots[i].max_health = active_players[i].max_health;
-                snapshots[i].player_class = active_players[i].player_class;
-                snapshots[i].player_race = (uint8_t)active_players[i].player_race;
-                snapshots[i].level = (uint8_t)active_players[i].level;
-                snapshots[i].is_dead = active_players[i].is_dead;
-                snapshots[i].ping_ms = active_players[i].ping_ms;
-                pthread_mutex_unlock(&active_players[i].lock);
-            } else {
-                snapshots[i].valid = 0;
-            }
-        }
-        pthread_mutex_unlock(&active_players_lock);
+/** Snapshot active players and rebuild their interest grid for one scheduler pass. */
+static void broadcast_prepare(void* ctx) {
+    BroadcastContext* bc = ctx;
 
-        // For each player, build a packet of nearby players and send
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (!snapshots[i].valid) continue;
+    extern ActivePlayer active_players[];
 
-            PlayerPositionBroadcastPacket pkt;
-            memset(&pkt, 0, sizeof(pkt));
-            pkt.header.type = PACKET_PLAYER_POSITIONS;
-            pkt.header.player_id = htonl(snapshots[i].character_id);
-            pkt.count = 0;
+    int count = 0;
 
-            float px = snapshots[i].pos_x;
-            float py = snapshots[i].pos_y;
+    // Walk the online players, not all MAX_PLAYERS slots. This runs 30 times a
+    // second: at 30 players it is 30 iterations instead of 1000, and the cost
+    // now tracks who is actually here rather than the size of the table.
+    player_registry_rdlock();
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
+        if (!active_players[i].is_loaded) continue;   // reserved by an in-flight login
 
-            for (int j = 0; j < MAX_PLAYERS; j++) {
-                if (!snapshots[j].valid || j == i) continue;
-                if (pkt.count >= MAX_NEARBY_PLAYERS) break;
+        BroadcastPlayer* snap = &bc->players[count];
+        snap->client_fd = active_players[i].client_fd;
+        snap->character_id = active_players[i].character_id;
 
-                float dx = snapshots[j].pos_x - px;
-                float dy = snapshots[j].pos_y - py;
-                if (dx * dx + dy * dy > 800.0f * 800.0f) continue;
+        pthread_mutex_lock(&active_players[i].lock);
+        snap->pos_x = active_players[i].pos_x;
+        snap->pos_y = active_players[i].pos_y;
+        snap->health = active_players[i].health;
+        snap->max_health = active_players[i].max_health;
+        snap->player_class = active_players[i].player_class;
+        snap->player_race = (uint8_t)active_players[i].player_race;
+        snap->level = (uint8_t)active_players[i].level;
+        snap->is_dead = active_players[i].is_dead;
+        snap->ping_ms = active_players[i].ping_ms;
+        // Carried in the snapshot so the party stream does not have to look
+        // each player up again — that was one index lookup per player per tick
+        // for a field already sitting right here.
+        snap->party_id = active_players[i].party_id;
+        pthread_mutex_unlock(&active_players[i].lock);
 
-                NearbyPlayerData* np = &pkt.players[pkt.count];
-                np->player_id = htonl(snapshots[j].character_id);
-                np->pos_x = snapshots[j].pos_x;
-                np->pos_y = snapshots[j].pos_y;
-                np->health = htonl(snapshots[j].health);
-                np->max_health = htonl(snapshots[j].max_health);
-                np->player_class = snapshots[j].player_class;
-                np->player_race = snapshots[j].player_race;
-                np->level = snapshots[j].level;
-                np->is_dead = snapshots[j].is_dead;
-                np->ping_ms = htons(snapshots[j].ping_ms);
-                pkt.count++;
-            }
+        bc->player_points[count].x = snap->pos_x;
+        bc->player_points[count].y = snap->pos_y;
+        count++;
+    }
+    player_registry_unlock();
 
-            // Only send if there are nearby players
-            if (pkt.count > 0) {
-                size_t send_size = offsetof(PlayerPositionBroadcastPacket, players) +
-                                   pkt.count * sizeof(NearbyPlayerData);
-                pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-                server_send(snapshots[i].client_fd, &pkt, send_size);
-            }
-        }
+    bc->snapshot.count = count;
+    spatial_grid_build(bc->snapshot.grid, bc->player_points, count);
+}
 
-        // Broadcast party updates (HP/mana) for players in parties
-        // Track which parties we've already broadcast for this tick
-        {
-            uint32_t broadcast_parties[MAX_PLAYERS];
-            int broadcast_count = 0;
+/** Broadcast nearby player state and one update per represented party. */
+static void task_broadcast_players(void* ctx) {
+    BroadcastContext* bc = ctx;
+    const BroadcastSnapshot* snap = &bc->snapshot;
 
-            for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (!snapshots[i].valid) continue;
+    for (int i = 0; i < snap->count; i++) {
+        PlayerPositionBroadcastPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type = PACKET_PLAYER_POSITIONS;
+        pkt.header.player_id = htonl(snap->players[i].character_id);
+        pkt.count = 0;
 
-                ActivePlayer* ap = player_acquire(snapshots[i].character_id);
-                if (!ap) continue;
+        // One extra slot: the viewer is in the grid too and comes back as its
+        // own nearest result, so without it a full crowd would cost this
+        // player one visible neighbour.
+        int nearby[MAX_NEARBY_PLAYERS + 1];
+        int nearby_count = spatial_grid_query(snap->grid,
+                                              snap->players[i].pos_x,
+                                              snap->players[i].pos_y,
+                                              PLAYER_VIEW_RADIUS,
+                                              nearby, MAX_NEARBY_PLAYERS + 1);
 
-                uint32_t pid = ap->party_id;
-                player_release(ap);
+        // nearby[] is nearest-first, so stopping at the packet limit drops the
+        // most distant players rather than an arbitrary set — the cap behaves
+        // like a view radius instead of like a slot-order accident.
+        for (int k = 0; k < nearby_count && pkt.count < MAX_NEARBY_PLAYERS; k++) {
+            int j = nearby[k];
+            if (j == i) continue;
 
-                if (pid == 0) continue;
-
-                // Check if we already broadcast this party
-                int already = 0;
-                for (int b = 0; b < broadcast_count; b++) {
-                    if (broadcast_parties[b] == pid) { already = 1; break; }
-                }
-                if (already) continue;
-
-                broadcast_parties[broadcast_count++] = pid;
-                party_broadcast_update(pid);
-            }
+            NearbyPlayerData* np = &pkt.players[pkt.count];
+            np->player_id = htonl(snap->players[j].character_id);
+            np->pos_x = snap->players[j].pos_x;
+            np->pos_y = snap->players[j].pos_y;
+            np->health = htonl(snap->players[j].health);
+            np->max_health = htonl(snap->players[j].max_health);
+            np->player_class = snap->players[j].player_class;
+            np->player_race = snap->players[j].player_race;
+            np->level = snap->players[j].level;
+            np->is_dead = snap->players[j].is_dead;
+            np->ping_ms = htons(snap->players[j].ping_ms);
+            pkt.count++;
         }
 
-        // Calculate next tick time
-        next_tick.tv_nsec += TARGET_INTERVAL_NS;
-        if (next_tick.tv_nsec >= 1000000000) {
-            next_tick.tv_sec++;
-            next_tick.tv_nsec -= 1000000000;
-        }
-        
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_tick, NULL);
-        
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long drift_ns = (now.tv_sec - next_tick.tv_sec) * 1000000000 + 
-                        (now.tv_nsec - next_tick.tv_nsec);
-        if (drift_ns > 10000000) {
-            printf("[WARNING] Player broadcast thread lagging by %ldms\n", 
-                   drift_ns / 1000000);
+        if (pkt.count > 0) {
+            size_t send_size = offsetof(PlayerPositionBroadcastPacket, players) +
+                               pkt.count * sizeof(NearbyPlayerData);
+            pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+            server_send(snap->players[i].client_fd, &pkt, send_size);
         }
     }
-    
-    printf("Player broadcast thread exiting\n");
+
+    // Party HP/mana updates, one broadcast per party per tick.
+    uint32_t broadcast_parties[MAX_PLAYERS];
+    int broadcast_count = 0;
+
+    for (int i = 0; i < snap->count; i++) {
+        uint32_t pid = snap->players[i].party_id;
+        if (pid == 0) continue;
+
+        int already = 0;
+        for (int b = 0; b < broadcast_count; b++) {
+            if (broadcast_parties[b] == pid) { already = 1; break; }
+        }
+        if (already) continue;
+
+        broadcast_parties[broadcast_count++] = pid;
+        party_broadcast_update(pid);
+    }
+}
+
+/** Snapshot NPCs and broadcast nearest in-range entries to each player. */
+static void task_broadcast_npcs(void* ctx) {
+    BroadcastContext* bc = ctx;
+    const BroadcastSnapshot* snap = &bc->snapshot;
+
+    // Sample the NPCs once, under one lock acquisition. The previous version
+    // took this lock once per player per tick.
+    int npc_count = 0;
+
+    pthread_mutex_lock(&g_npc_world.lock);
+    for (int n = 0; n < MAX_NPCS; n++) {
+        NPCEntity* npc = &g_npc_world.npcs[n];
+        if (npc->id == 0) continue;
+
+        // Byte-swapped once here rather than once per recipient.
+        NPCPositionData* data = &bc->npc_wire[npc_count];
+        data->npc_id = htonl(npc->id);
+        data->pos_x = npc->pos_x;
+        data->pos_y = npc->pos_y;
+        data->health = htonl(npc->health);
+        data->max_health = htonl(npc->max_health);
+        data->is_alive = npc->is_alive;
+        data->category = npc->category;
+        data->is_interactable = npc->is_interactable;
+        data->npc_type_id = (uint8_t)npc->npc_type_id;
+
+        bc->npc_points[npc_count].x = npc->pos_x;
+        bc->npc_points[npc_count].y = npc->pos_y;
+        npc_count++;
+    }
+    pthread_mutex_unlock(&g_npc_world.lock);
+
+    if (npc_count == 0) return;
+
+    spatial_grid_build(bc->npc_grid, bc->npc_points, npc_count);
+
+    for (int i = 0; i < snap->count; i++) {
+        NPCPositionPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type = PACKET_NPC_POSITIONS;
+        pkt.header.player_id = htonl(snap->players[i].character_id);
+        pkt.header.payload_size = 0;
+        pkt.npc_count = 0;
+
+        int nearby[MAX_NPCS_PER_PACKET];
+        int nearby_count = spatial_grid_query(bc->npc_grid,
+                                              snap->players[i].pos_x,
+                                              snap->players[i].pos_y,
+                                              NPC_VIEW_RADIUS,
+                                              nearby, MAX_NPCS_PER_PACKET);
+
+        // Nearest-first, so a player in a dense spawn gets the NPCs actually
+        // around them rather than the lowest slot indices.
+        for (int k = 0; k < nearby_count; k++) {
+            pkt.npcs[pkt.npc_count++] = bc->npc_wire[nearby[k]];
+        }
+
+        if (pkt.npc_count > 0) {
+            size_t send_size = offsetof(NPCPositionPacket, npcs) +
+                               pkt.npc_count * sizeof(NPCPositionData);
+            pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+            server_send(snap->players[i].client_fd, &pkt, send_size);
+        }
+    }
+}
+
+static void task_broadcast_projectiles(void* ctx) {
+    BroadcastContext* bc = ctx;
+    projectile_broadcast(&bc->snapshot);
+}
+
+/**
+ * Schedule player, NPC, and projectile broadcasts from one consistent snapshot stream.
+ *
+ * Broadcast tasks must not block because they share this scheduler thread.
+ *
+ * @return      Always NULL after shutdown or allocation failure.
+ */
+void* world_broadcast_thread(void* arg) {
+    (void)arg;
+
+    // Heap, not stack: the context is roughly 50KB of snapshot arrays.
+    BroadcastContext* bc = calloc(1, sizeof(*bc));
+    if (!bc) {
+        LOG_ERROR("[BROADCAST] could not allocate the pass context");
+        return NULL;
+    }
+
+    float world_w = 0.0f, world_h = 0.0f;
+    world_collision_extent(&world_w, &world_h);
+
+    bc->snapshot.players = bc->players;
+    bc->snapshot.grid = spatial_grid_create(world_w, world_h,
+                                            SPATIAL_GRID_DEFAULT_CELL, MAX_PLAYERS);
+    bc->npc_grid = spatial_grid_create(world_w, world_h,
+                                       SPATIAL_GRID_DEFAULT_CELL, MAX_NPCS);
+    if (!bc->snapshot.grid || !bc->npc_grid) {
+        LOG_ERROR("[BROADCAST] could not allocate the interest grids");
+        spatial_grid_destroy(bc->snapshot.grid);
+        spatial_grid_destroy(bc->npc_grid);
+        free(bc);
+        return NULL;
+    }
+
+    // registration order determines overload shedding order
+    TickScheduler scheduler;
+    tick_scheduler_init(&scheduler, broadcast_prepare, bc);
+    tick_scheduler_add(&scheduler, "projectiles", 33333333L, task_broadcast_projectiles);
+    tick_scheduler_add(&scheduler, "players",     50000000L, task_broadcast_players);
+    tick_scheduler_add(&scheduler, "npcs",       100000000L, task_broadcast_npcs);
+
+    {
+        int cols = 0, rows = 0;
+        spatial_grid_dimensions(bc->snapshot.grid, &cols, &rows);
+        LOG_INFO("[BROADCAST] thread started — projectiles 30Hz, players 20Hz, "
+                 "npcs 10Hz, %dx%d interest grid @ %.0fpx",
+                 cols, rows, SPATIAL_GRID_DEFAULT_CELL);
+    }
+
+    // The flag is raised by main() before this thread is created, not here:
+    // setting it here would let a shutdown signal that arrives during startup
+    // be overwritten, leaving the loop running with nothing to stop it.
+    tick_scheduler_run(&scheduler, &g_broadcast_running);
+
+    tick_scheduler_report(&scheduler);
+
+    spatial_grid_destroy(bc->snapshot.grid);
+    spatial_grid_destroy(bc->npc_grid);
+    free(bc);
+
+    LOG_INFO("[BROADCAST] thread exiting");
     return NULL;
 }
 
-void broadcast_npc_positions_to_player(int client_fd, uint32_t character_id, NPCWorld* world) {
-    // Find player
-    ActivePlayer* player = player_acquire(character_id);
-    if (!player) return;
-    if (!player->is_loaded) { player_release(player); return; }
-
-    float px = player->pos_x;
-    float py = player->pos_y;
-    player_release(player);
-    
-    // Build packet with NPCs within 500 units
-    NPCPositionPacket pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.header.type = PACKET_NPC_POSITIONS;
-    pkt.header.player_id = htonl(character_id);
-    pkt.header.payload_size = 0;
-    pkt.npc_count = 0;
-    
-    pthread_mutex_lock(&world->lock);
-    
-    for (int i = 0; i < MAX_NPCS && pkt.npc_count < MAX_NPCS_PER_PACKET; i++) {
-        NPCEntity* npc = &world->npcs[i];
-        if (npc->id == 0) continue;  // Empty slot
-        
-        // Distance check (500 unit radius)
-        float dx = npc->pos_x - px;
-        float dy = npc->pos_y - py;
-        float dist_sq = dx*dx + dy*dy;
-        
-        if (dist_sq <= 2000.0f * 2000.0f) {
-            NPCPositionData* data = &pkt.npcs[pkt.npc_count];
-            data->npc_id = htonl(npc->id);
-            data->pos_x = npc->pos_x;
-            data->pos_y = npc->pos_y;
-            data->health = htonl(npc->health);
-            data->max_health = htonl(npc->max_health);
-            data->is_alive = npc->is_alive;
-            data->category = npc->category;
-            data->is_interactable = npc->is_interactable;
-            data->npc_type_id = (uint8_t)npc->npc_type_id;
-            pkt.npc_count++;
-        }
-    }
-
-    pthread_mutex_unlock(&world->lock);
-
-    // Only send if there are NPCs — send only actual data
-    if (pkt.npc_count > 0) {
-        size_t send_size = offsetof(NPCPositionPacket, npcs) +
-                           pkt.npc_count * sizeof(NPCPositionData);
-        pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-        server_send(client_fd, &pkt, send_size);
-    }
-}
-
-// Modify the npc_broadcast_thread function:
-void* npc_broadcast_thread(void* arg) {
-    (void)arg;
-    const long TARGET_INTERVAL_NS = 100000000;  // 100ms = 10Hz
-    struct timespec next_tick, now;
-    
-    clock_gettime(CLOCK_MONOTONIC, &next_tick);
-    g_npc_broadcast_running = 1;
-    
-    printf("NPC broadcast thread started (10Hz)\n");
-    
-    while (g_npc_broadcast_running && g_server.running) {
-        // Collect player info while holding the lock, then release before sending
-        extern ActivePlayer active_players[];
-        extern pthread_mutex_t active_players_lock;
-        
-        // Temporary storage for player data
-        struct {
-            int client_fd;
-            uint32_t character_id;
-            float pos_x;
-            float pos_y;
-            int valid;
-        } players_snapshot[MAX_PLAYERS];
-        
-        // Take a snapshot of active players
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (active_players[i].is_loaded && active_players[i].is_ready) {
-                players_snapshot[i].valid = 1;
-                players_snapshot[i].client_fd = active_players[i].client_fd;
-                players_snapshot[i].character_id = active_players[i].character_id;
-                
-                pthread_mutex_lock(&active_players[i].lock);
-                players_snapshot[i].pos_x = active_players[i].pos_x;
-                players_snapshot[i].pos_y = active_players[i].pos_y;
-                pthread_mutex_unlock(&active_players[i].lock);
-            } else {
-                players_snapshot[i].valid = 0;
-            }
-        }
-        pthread_mutex_unlock(&active_players_lock);
-        
-        // Now send to each player WITHOUT holding the players lock
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (!players_snapshot[i].valid) continue;
-            
-            // Build NPC packet for this player
-            NPCPositionPacket pkt;
-            memset(&pkt, 0, sizeof(pkt));
-            pkt.header.type = PACKET_NPC_POSITIONS;
-            pkt.header.player_id = htonl(players_snapshot[i].character_id);
-            pkt.header.payload_size = 0;
-            pkt.npc_count = 0;
-            
-            float px = players_snapshot[i].pos_x;
-            float py = players_snapshot[i].pos_y;
-            
-            pthread_mutex_lock(&g_npc_world.lock);
-            for (int n = 0; n < MAX_NPCS && pkt.npc_count < MAX_NPCS_PER_PACKET; n++) {
-                NPCEntity* npc = &g_npc_world.npcs[n];
-                if (npc->id == 0) continue;
-                
-                float dx = npc->pos_x - px;
-                float dy = npc->pos_y - py;
-                float dist_sq = dx*dx + dy*dy;
-                
-                if (dist_sq <= 2000.0f * 2000.0f) {
-                    NPCPositionData* data = &pkt.npcs[pkt.npc_count];
-                    data->npc_id = htonl(npc->id);
-                    data->pos_x = npc->pos_x;
-                    data->pos_y = npc->pos_y;
-                    data->health = htonl(npc->health);
-                    data->max_health = htonl(npc->max_health);
-                    data->is_alive = npc->is_alive;
-                    data->category = npc->category;
-                    data->is_interactable = npc->is_interactable;
-                    data->npc_type_id = (uint8_t)npc->npc_type_id;
-                    pkt.npc_count++;
-                }
-            }
-            pthread_mutex_unlock(&g_npc_world.lock);
-            
-            if (pkt.npc_count > 0) {
-                size_t send_size = offsetof(NPCPositionPacket, npcs) +
-                                   pkt.npc_count * sizeof(NPCPositionData);
-                pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-                static int s_npc_send_logged = 0;
-                if (!s_npc_send_logged) {
-                    printf("[NPC_BROADCAST] First NPC packet sent: %d NPCs to player %u\n",
-                           pkt.npc_count, players_snapshot[i].character_id);
-                    s_npc_send_logged = 1;
-                }
-                server_send(players_snapshot[i].client_fd, &pkt, send_size);
-            }
-        }
-        
-        // Calculate next tick time
-        next_tick.tv_nsec += TARGET_INTERVAL_NS;
-        if (next_tick.tv_nsec >= 1000000000) {
-            next_tick.tv_sec++;
-            next_tick.tv_nsec -= 1000000000;
-        }
-        
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_tick, NULL);
-        
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long drift_ns = (now.tv_sec - next_tick.tv_sec) * 1000000000 + 
-                        (now.tv_nsec - next_tick.tv_nsec);
-        if (drift_ns > 10000000) {
-            printf("[WARNING] NPC broadcast thread lagging by %ldms\n", 
-                   drift_ns / 1000000);
-        }
-    }
-    
-    printf("NPC broadcast thread exiting\n");
-    return NULL;
-}
-
-void* projectile_broadcast_thread(void* arg) {
-    (void)arg;
-    const long TARGET_INTERVAL_NS = 33333333;  // ~33ms = 30Hz
-    struct timespec next_tick, now;
-    
-    clock_gettime(CLOCK_MONOTONIC, &next_tick);
-    g_projectile_broadcast_running = 1;
-    
-    printf("Projectile broadcast thread started (30Hz)\n");
-    
-    while (g_projectile_broadcast_running && g_server.running) {
-        projectile_broadcast();
-        
-        // Calculate next tick time
-        next_tick.tv_nsec += TARGET_INTERVAL_NS;
-        if (next_tick.tv_nsec >= 1000000000) {
-            next_tick.tv_sec++;
-            next_tick.tv_nsec -= 1000000000;
-        }
-        
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_tick, NULL);
-        
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long drift_ns = (now.tv_sec - next_tick.tv_sec) * 1000000000 + 
-                        (now.tv_nsec - next_tick.tv_nsec);
-        if (drift_ns > 10000000) {
-            printf("[WARNING] Projectile broadcast thread lagging by %ldms\n", 
-                   drift_ns / 1000000);
-        }
-    }
-    
-    printf("Projectile broadcast thread exiting\n");
-    return NULL;
-}
-
+/** Request shutdown of the world server and its gameplay threads. */
 void signal_handler(int signum) {
     printf("\n[SIGNAL] Received signal %d, shutting down gracefully...\n", signum);
     g_server.running = 0;
     g_combat_running = 0;
-    g_player_broadcast_running = 0;
-    g_npc_broadcast_running = 0;
-    g_projectile_broadcast_running = 0;
+    g_broadcast_running = 0;
 }
 
+/**
+ * Initialize all world subsystems and run until a shutdown signal arrives.
+ *
+ * @param argc  Argument count; startup requires a configuration path in argv.
+ * @param argv  Argument vector containing the required world configuration path.
+ * @return      Zero after orderly shutdown, or one when initialization fails.
+ */
 int main(int argc, char** argv) {
     (void)argc;
 
@@ -841,7 +859,12 @@ int main(int argc, char** argv) {
     printf("Loading shop system... ");
     fflush(stdout);
     shop_init(SHOPS_PATH);
-    printf("OK\n");
+    {
+        // invalid shop content does not prevent startup
+        int shop_problems = shop_validate();
+        if (shop_problems == 0) printf("OK\n");
+        else                    printf("OK (%d content problems — see log)\n", shop_problems);
+    }
 
     printf("Loading zone definitions... ");
     fflush(stdout);
@@ -938,41 +961,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // START PLAYER BROADCAST THREAD (20Hz)
-    if (pthread_create(&g_player_broadcast_thread, NULL, player_broadcast_thread, NULL) != 0) {
-        fprintf(stderr, "FAILED - Player broadcast thread\n");
+    // START WORLD BROADCAST THREAD (projectiles 30Hz, players 20Hz, npcs 10Hz)
+    g_broadcast_running = 1;
+    if (pthread_create(&g_broadcast_thread, NULL, world_broadcast_thread, NULL) != 0) {
+        fprintf(stderr, "FAILED - World broadcast thread\n");
+        g_broadcast_running = 0;
         g_combat_running = 0;
         g_server.running = 0;
-        pthread_join(g_combat_thread, NULL);
-        pthread_join(g_server.accept_thread, NULL);
-        close(g_server.tcp_sockfd);
-        playerdata_close();
-        return 1;
-    }
-    
-    // START NPC BROADCAST THREAD (10Hz)
-    if (pthread_create(&g_npc_broadcast_thread, NULL, npc_broadcast_thread, NULL) != 0) {
-        fprintf(stderr, "FAILED - NPC broadcast thread\n");
-        g_player_broadcast_running = 0;
-        g_combat_running = 0;
-        g_server.running = 0;
-        pthread_join(g_player_broadcast_thread, NULL);
-        pthread_join(g_combat_thread, NULL);
-        pthread_join(g_server.accept_thread, NULL);
-        close(g_server.tcp_sockfd);
-        playerdata_close();
-        return 1;
-    }
-    
-    // START PROJECTILE BROADCAST THREAD (30Hz)
-    if (pthread_create(&g_projectile_broadcast_thread, NULL, projectile_broadcast_thread, NULL) != 0) {
-        fprintf(stderr, "FAILED - Projectile broadcast thread\n");
-        g_npc_broadcast_running = 0;
-        g_player_broadcast_running = 0;
-        g_combat_running = 0;
-        g_server.running = 0;
-        pthread_join(g_npc_broadcast_thread, NULL);
-        pthread_join(g_player_broadcast_thread, NULL);
         pthread_join(g_combat_thread, NULL);
         pthread_join(g_server.accept_thread, NULL);
         close(g_server.tcp_sockfd);
@@ -984,9 +979,7 @@ int main(int argc, char** argv) {
     printf("  - Accept thread: Running\n");
     printf("  - Event loops: epoll (see [NET] line above for counts)\n");
     printf("  - Combat thread: 20Hz\n");
-    printf("  - Player broadcast: 20Hz\n");
-    printf("  - NPC broadcast: 10Hz\n");
-    printf("  - Projectile broadcast: 30Hz\n");
+    printf("  - World broadcast thread: projectiles 30Hz, players 20Hz, npcs 10Hz\n");
     
     // MAIN THREAD: Wait for shutdown signal
     while (g_server.running) {
@@ -1004,15 +997,11 @@ int main(int argc, char** argv) {
     
     printf("\nShutting down...\n");
     
-    // Stop all broadcast threads
-    g_projectile_broadcast_running = 0;
-    g_npc_broadcast_running = 0;
-    g_player_broadcast_running = 0;
+    // Stop the broadcast and combat threads
+    g_broadcast_running = 0;
     g_combat_running = 0;
     
-    pthread_join(g_projectile_broadcast_thread, NULL);
-    pthread_join(g_npc_broadcast_thread, NULL);
-    pthread_join(g_player_broadcast_thread, NULL);
+    pthread_join(g_broadcast_thread, NULL);
     pthread_join(g_combat_thread, NULL);
     
     // Stop accept thread

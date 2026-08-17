@@ -1,11 +1,7 @@
-// Movement validation against a synthetic collision map. Covers the three ways
-// a client can lie about where it is: impossible coordinates, impossible speed,
-// and walking through geometry.
-//
-// Build:
-//   gcc -Wall -Wextra -pthread -Icommon/include -Iworld_server/include
-//       -o move_validator_test tests/move_validator_test.c
-//       world_server/src/move_validator.c world_server/src/world_collision.c -lm
+/**
+ * @file
+ * Check coordinate, speed-budget, and swept-collision movement rejection.
+ */
 
 #include "move_validator.h"
 #include "world_collision.h"
@@ -17,14 +13,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** Define the synthetic collision map geometry in tiles and pixels. */
 #define MAP_W       64
 #define MAP_H       64
 #define TILE_PX     16
 #define WALL_TILE_X 50               // solid column, pixels [800, 816)
 #define WORLD_PX    (MAP_W * TILE_PX)  // 1024
 
-// Writes a world.dat whose only solid tiles are the column at WALL_TILE_X.
-// Layout mirrors the loader in world_collision.c.
+/**
+ * Write a collision fixture containing one solid tile column.
+ *
+ * @return      A static buffer containing the fixture path.
+ */
 static const char* write_world_dat(void) {
     static char path[] = "/tmp/move_validator_world.dat";
     FILE* f = fopen(path, "wb");
@@ -59,13 +59,17 @@ static struct timespec at_ms(long ms) {
     return t;
 }
 
+/**
+ * Run movement validation against the synthetic collision map.
+ *
+ * @return      Zero after all assertions pass.
+ */
 int main(void) {
     assert(world_collision_init(write_world_dat()));
 
     const float SPEED = 200.0f;              // px/sec
     const float CEILING = SPEED * MOVE_SPEED_TOLERANCE * MOVE_BUDGET_BURST_SECONDS;
 
-    // ------------------------------------------------------------------
     printf("TEST 1: impossible coordinates are refused\n");
     {
         MoveBudget b;
@@ -88,11 +92,7 @@ int main(void) {
             assert(v == MOVE_REJECT_COORD);
         }
 
-        // The tile lookup itself must reject them too, without ever converting
-        // a non-finite float to int — that conversion is undefined behaviour,
-        // and it was the only thing standing between a NaN and the player's
-        // stored position. Run this file under -fsanitize=undefined to prove
-        // the cast is guarded.
+        // reject non-finite values before tile-index conversion
         assert(world_collision_check(NAN, 100.0f) == 1);
         assert(world_collision_check(100.0f, NAN) == 1);
         assert(world_collision_check(INFINITY, 100.0f) == 1);
@@ -103,7 +103,6 @@ int main(void) {
         printf("  non-finite tile lookups rejected without a bad cast\n");
     }
 
-    // ------------------------------------------------------------------
     printf("TEST 2: a normal step at a normal cadence is accepted\n");
     {
         MoveBudget b;
@@ -123,15 +122,13 @@ int main(void) {
         assert(x > 490.0f && x < 510.0f);
     }
 
-    // ------------------------------------------------------------------
     printf("TEST 3: a burst of queued packets cannot outrun the budget\n");
     {
         MoveBudget b;
         struct timespec t0 = at_ms(0);
         move_budget_reset(&b, &t0);
 
-        // One second idle banks the maximum allowance, then 300 packets — the
-        // movement burst capacity — arrive in the same millisecond.
+        // submit one full movement burst at one timestamp
         struct timespec burst = at_ms(1000);
         float x = 100.0f;
         int accepted = 0, rejected = 0;
@@ -150,12 +147,9 @@ int main(void) {
         assert(rejected > 0);
         assert(travelled <= CEILING + 0.001f);
 
-        // The old clamp granted each sub-millisecond packet 0.1s of travel, so
-        // the same burst would have covered the full 600px it asked for.
         assert(travelled < 600.0f);
     }
 
-    // ------------------------------------------------------------------
     printf("TEST 4: credit accrues again once time passes\n");
     {
         MoveBudget b;
@@ -175,12 +169,9 @@ int main(void) {
         printf("  spend, refuse, refill: ok\n");
     }
 
-    // ------------------------------------------------------------------
     printf("TEST 5: a wall cannot be stepped over in one move\n");
     {
-        // Both endpoints are clear of the solid column; only the segment
-        // between them crosses it. This is exactly what an endpoint-only
-        // collision test misses.
+        // cross the wall with two clear endpoints
         const float from_x = 760.0f, to_x = 832.0f, y = 300.0f;
         assert(world_collision_check_box(from_x, y, MOVE_PLAYER_HALF_SIZE) == 0);
         assert(world_collision_check_box(to_x,   y, MOVE_PLAYER_HALF_SIZE) == 0);
@@ -199,7 +190,6 @@ int main(void) {
         assert(move_validate(&b, from_x, y, 783.0f, y, SPEED, &t1) == MOVE_ACCEPT);
     }
 
-    // ------------------------------------------------------------------
     printf("TEST 6: with no map loaded, nothing is walkable\n");
     {
         world_collision_shutdown();

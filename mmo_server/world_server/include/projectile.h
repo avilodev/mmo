@@ -1,57 +1,46 @@
-// ============================================================================
-// projectile.h — Modular projectile system
-//
-// Manages all projectiles in the world: player skillshots, NPC ranged attacks.
-// Ticked from combat_update_thread, broadcast from projectile_broadcast_thread.
-// ============================================================================
+/** @file Define player and NPC projectiles, collision updates, and broadcasts. */
 
 #ifndef PROJECTILE_H
 #define PROJECTILE_H
 
+#include "broadcast_snapshot.h"
 #include "combat_config.h"
+#include "tick_snapshot.h"
 #include "ability_def.h"
 #include "types.h"
 
 #include <stdint.h>
 #include <pthread.h>
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
+/** Bound active projectiles and their visibility range in world units. */
 #define MAX_PROJECTILES           128
 #define PROJECTILE_VIEW_RANGE    2000.0f
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
-
+/** Identify whether a player or NPC owns a projectile. */
 typedef enum {
     PROJECTILE_OWNER_PLAYER = 0,
     PROJECTILE_OWNER_NPC    = 1
 } ProjectileOwnerType;
 
+/** Identify why a projectile left the world. */
 typedef enum {
     PROJECTILE_DESTROY_EXPIRED  = 0,
     PROJECTILE_DESTROY_HIT      = 1,
     PROJECTILE_DESTROY_CANCELLED = 2
 } ProjectileDestroyReason;
 
-// ---------------------------------------------------------------------------
-// Projectile entity
-// ---------------------------------------------------------------------------
-
+/** Track one active projectile's ownership, physics, damage, and effects. */
 typedef struct {
     uint8_t     is_active;
     uint32_t    projectile_id;
 
-    // Ownership
+    /** Retain ownership and client feedback routing. */
     uint8_t     owner_type;         // ProjectileOwnerType
     uint32_t    owner_id;           // Character ID or NPC ID
     uint16_t    ability_id;         // Source ability (client uses for VFX)
     int         owner_fd;           // Socket fd of the owner (for hit feedback)
 
-    // Physics
+    /** Track movement and traveled range in world units. */
     float       pos_x, pos_y;
     float       dir_x, dir_y;      // Unit direction vector
     float       speed;              // World units per second
@@ -59,82 +48,66 @@ typedef struct {
     float       max_range;
     float       distance_traveled;
 
-    // Damage
     int         damage;
     AbilityDamageType damage_type;
     AbilityBonusDamageDef bonus_damage;
 
-    // Caster stat snapshot (for player projectiles — damage calc at hit time)
+    /** Snapshot player stats used when damage resolves at impact. */
     int         caster_strength;
     int         caster_agility;
     int         caster_intelligence;
     int         caster_wisdom;
     int         damage_stat;        // StatType int — which stat scales this projectile's damage
 
-    // Status effects to apply on hit
+    /** Retain status effects applied on impact. */
     AbilityEffectDef effects[MAX_ABILITY_EFFECTS];
     uint8_t     effect_count;
 } Projectile;
 
-// ---------------------------------------------------------------------------
-// Spawn info — clean input struct for creating projectiles
-// ---------------------------------------------------------------------------
-
+/** Supply immutable inputs used to create one projectile. */
 typedef struct {
     uint8_t     owner_type;         // PROJECTILE_OWNER_PLAYER or _NPC
     uint32_t    owner_id;
     uint16_t    ability_id;
     int         owner_fd;
 
-    // Origin and aim
     float       origin_x, origin_y;
     float       aim_x, aim_y;
 
-    // Physics
     float       speed;
     float       width;
     float       max_range;
 
-    // Damage
     int         damage;
     AbilityDamageType damage_type;
     AbilityBonusDamageDef bonus_damage;
 
-    // Caster stats (for player projectiles)
     int         caster_strength;
     int         caster_agility;
     int         caster_intelligence;
     int         caster_wisdom;
     int         damage_stat;        // StatType int — which stat scales this projectile's damage
 
-    // Effects on hit
     AbilityEffectDef effects[MAX_ABILITY_EFFECTS];
     uint8_t     effect_count;
 } ProjectileSpawnInfo;
 
-// ---------------------------------------------------------------------------
-// API
-// ---------------------------------------------------------------------------
-
-// Initialize the projectile system. Call once at startup.
 void projectile_init(void);
 
-// Cleanup. Call at shutdown.
 void projectile_cleanup(void);
 
-// Spawn a new projectile. Returns the assigned projectile_id, or 0 on failure.
+// return the assigned projectile identifier or zero on failure
 uint32_t projectile_spawn(const ProjectileSpawnInfo* info);
 
-// Per-tick update. Moves projectiles, checks collisions, deals damage.
-// Call from combat_update_thread at 20Hz.
-void projectile_tick(NPCWorld* world, double delta_time);
+/** Bound nearest-first player collision candidates without limiting reach. */
+#define PROJECTILE_HIT_CANDIDATES 16
 
-// Broadcast projectile positions to nearby players.
-// Call from projectile_broadcast_thread at 30Hz.
-// Takes a snapshot of active players (pos + fd) to avoid holding locks during I/O.
-void projectile_broadcast(void);
+// update movement, collision, and damage from the 20 Hz combat tick
+void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time);
 
-// Remove a specific projectile by ID.
+// broadcast against the pass snapshot after releasing projectile locks
+void projectile_broadcast(const BroadcastSnapshot* snapshot);
+
 void projectile_remove(uint32_t projectile_id);
 
 #endif // PROJECTILE_H

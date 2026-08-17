@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Store login accounts and verify Argon2id password hashes in SQLite.
+ */
 #include "users_database.h"
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +11,11 @@
 static sqlite3* g_db = NULL;
 pthread_mutex_t g_db_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/**
+ * Initialize password hashing, open the account database, and create its user table.
+ *
+ * @return      Nonzero on success, otherwise zero.
+ */
 int db_init(const char* db_path) {
     if (sodium_init() < 0) {
         printf("Failed to initialize libsodium\n");
@@ -44,6 +53,7 @@ int db_init(const char* db_path) {
     return 1;
 }
 
+/** Close the account database when open. */
 void db_close(void) {
     if (g_db) {
         sqlite3_close(g_db);
@@ -51,6 +61,11 @@ void db_close(void) {
     }
 }
 
+/**
+ * Hash a password and insert a new account under the database mutex.
+ *
+ * @return      The generated player identifier, or zero when hashing or insertion fails.
+ */
 uint32_t db_create_user(const char* username, const char* password, const char* email, const char* birthday) {
     if (!g_db) {
         printf("db_create_user: g_db is NULL\n");
@@ -102,6 +117,11 @@ uint32_t db_create_user(const char* username, const char* password, const char* 
     return player_id;
 }
 
+/**
+ * Verify supplied credentials against the stored password hash under the database mutex.
+ *
+ * @return      The matching player identifier, or zero when credentials cannot be verified.
+ */
 uint32_t db_verify_user(const char* username, const char* password) {
     if (!g_db) return 0;
 

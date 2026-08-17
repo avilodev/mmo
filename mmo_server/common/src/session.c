@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Store sessions, authentication tokens, and game tickets in Redis.
+ */
 #define _POSIX_C_SOURCE 200809L
 
 #include "session.h"
@@ -13,6 +17,11 @@
 redisContext* g_redis = NULL;
 pthread_mutex_t g_redis_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/**
+ * Connect the shared session context to the configured Redis endpoint.
+ *
+ * @return      Nonzero when connected, otherwise zero.
+ */
 int session_init(void) {
     const char* redis_host = getenv("REDIS_HOST");
     if (!redis_host) {
@@ -42,6 +51,13 @@ int session_init(void) {
     return 1;
 }
 
+/**
+ * Generate and store a binary-safe account session with an expiry.
+ *
+ * @param ip_address      Source address to record, or NULL to store an unknown address.
+ * @param out_session_key Receives exactly 32 key bytes and is not terminated.
+ * @return                Nonzero on success, otherwise zero.
+ */
 int session_create(uint32_t account_id, const char* ip_address, char* out_session_key) {
     if (!g_redis || !out_session_key) {
         return 0;
@@ -89,23 +105,18 @@ int session_create(uint32_t account_id, const char* ip_address, char* out_sessio
     
     memcpy(out_session_key, key_buffer, 32);
     
-    //printf("Created session for account %u (key: %s, 32 bytes, expires in %d seconds)\n", 
-    //       account_id, redis_key, SESSION_EXPIRY_SECONDS);
-    //printf("DEBUG: Session key bytes being stored: ");
-    //for (int i = 0; i < 32; i++) {
-    //    printf("%c", key_buffer[i]);
-    //}
-    //printf("\n");
-    //printf("DEBUG: Session key bytes being returned: ");
-    //for (int i = 0; i < 32; i++) {
-    //    printf("%c", out_session_key[i]);
-    //}
-    //printf("\n");
     
     free(session_key);
     return 1;
 }
 
+/**
+ * Validate a 32-byte account session and refresh its Redis expiry.
+ *
+ * Legacy string-valued sessions are accepted when present.
+ *
+ * @return      Nonzero for a matching unexpired session, otherwise zero.
+ */
 int session_validate(uint32_t account_id, const char* session_key) {
     if (!g_redis || !session_key) {
         printf("Session validate: Invalid parameters (redis=%p, key=%p)\n", 
@@ -213,6 +224,11 @@ int session_validate(uint32_t account_id, const char* session_key) {
     return 1;
 }
 
+/**
+ * Delete an account session from Redis.
+ *
+ * @return      Nonzero when a stored session was deleted, otherwise zero.
+ */
 int session_invalidate(uint32_t account_id) {
     if (!g_redis) {
         return 0;
@@ -234,6 +250,7 @@ int session_invalidate(uint32_t account_id) {
     return success;
 }
 
+/** Scan session hashes and delete entries whose stored expiry has passed. */
 void session_cleanup_expired(void) {
     if (!g_redis) {
         return;
@@ -277,6 +294,7 @@ void session_cleanup_expired(void) {
     }
 }
 
+/** Close the shared Redis session context. */
 void session_close(void) {
     if (g_redis) {
         redisFree(g_redis);
@@ -285,7 +303,11 @@ void session_close(void) {
     }
 }
 
-// FIXED: Use HMSET format to match session_validate
+/**
+ * Store a supplied 32-byte player session in the hash format used by validation.
+ *
+ * @return      Nonzero on success, otherwise zero.
+ */
 int session_store(uint32_t player_id, const char* session_key) {
     if (!g_redis || !session_key || player_id == 0) {
         return 0;
@@ -330,6 +352,7 @@ int session_store(uint32_t player_id, const char* session_key) {
     return 1;
 }
 
+/** Mark a player active with the standard session expiry. */
 void session_mark_active(uint32_t player_id) {
     if (!g_redis || player_id == 0) {
         return;
@@ -346,6 +369,7 @@ void session_mark_active(uint32_t player_id) {
     pthread_mutex_unlock(&g_redis_lock);
 }
 
+/** Delete a player's session and active marker. */
 void session_remove(uint32_t player_id) {
     if (!g_redis || player_id == 0) {
         return;
@@ -363,6 +387,7 @@ void session_remove(uint32_t player_id) {
     pthread_mutex_unlock(&g_redis_lock);
 }
 
+/** Refresh a player's session expiry. */
 void session_refresh(uint32_t player_id) {
     if (!g_redis || player_id == 0) {
         return;
@@ -377,6 +402,13 @@ void session_refresh(uint32_t player_id) {
     pthread_mutex_unlock(&g_redis_lock);
 }
 
+/**
+ * Generate a random 32-character alphanumeric session key.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return      The allocated terminated key, or NULL when allocation or random input fails.
+ */
 char* generate_session_key(void) {
     const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     const size_t charset_size = 62;
@@ -406,6 +438,11 @@ char* generate_session_key(void) {
     return key;
 }
 
+/**
+ * Store a game-ticket value with a caller-selected Redis expiry.
+ *
+ * @return      Nonzero when Redis accepts the value, otherwise zero.
+ */
 int store_game_ticket_in_redis(const char* key, const char* value, int expiry_seconds) {
     if (!g_redis) return 0;
     
@@ -424,10 +461,11 @@ int store_game_ticket_in_redis(const char* key, const char* value, int expiry_se
     return success;
 }
 
-// ---------------------------------------------------------------------------
-// Stage 1 → Stage 2 auth token management
-// ---------------------------------------------------------------------------
-
+/**
+ * Store a single-use authentication token with its fixed 60-second lifetime.
+ *
+ * @return      Nonzero when Redis accepts the token, otherwise zero.
+ */
 int auth_token_store(const char* token, uint32_t player_id) {
     if (!g_redis || !token) return 0;
 
@@ -447,6 +485,11 @@ int auth_token_store(const char* token, uint32_t player_id) {
     return ok;
 }
 
+/**
+ * Atomically fetch and delete a single-use authentication token.
+ *
+ * @return      The associated player identifier, or zero when the token is absent or invalid.
+ */
 uint32_t auth_token_consume(const char* token) {
     if (!g_redis || !token) return 0;
 
@@ -476,8 +519,13 @@ uint32_t auth_token_consume(const char* token) {
     return player_id;
 }
 
-// ---------------------------------------------------------------------------
-
+/**
+ * Validate and consume a realm-issued game ticket.
+ *
+ * Ticket values use the character_id:world_id:account_id text layout.
+ *
+ * @return      Nonzero when the ticket is parsed and consumed, otherwise zero.
+ */
 int validate_game_ticket(const char* ticket, uint32_t* out_account_id, uint32_t* out_character_id, uint32_t* out_world_id) {
     if (!g_redis || !ticket) return 0;
     

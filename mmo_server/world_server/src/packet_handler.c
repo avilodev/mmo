@@ -1,34 +1,50 @@
+/**
+ * @file
+ * Handle authenticated world packets for movement, inventory, chat, parties, and sessions.
+ */
+
 #include "packet_handler.h"
 #include "log.h"
+#include "player_data.h"
 #include "zone_system.h"
 #include <stdlib.h>
 #include <string.h>
 #include <arpa/inet.h>
 
-void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id) {
-    // Extract client-reported ping_ms from payload if present
+static int equip_index_for(uint8_t equip_slot) {
+    switch (equip_slot) {
+        case SLOT_HELMET:    return EQUIP_HELMET;
+        case SLOT_GLOVES:    return EQUIP_GLOVES;
+        case SLOT_CHEST:     return EQUIP_CHEST;
+        case SLOT_LEGGINGS:  return EQUIP_LEGGINGS;
+        case SLOT_BOOTS:     return EQUIP_BOOTS;
+        case SLOT_MAIN_HAND: return EQUIP_MAIN_HAND;
+        case SLOT_OFF_HAND:  return EQUIP_SECOND_HAND;
+        default:             return -1;
+    }
+}
+
+/** Record client latency and echo its ping packet. */
+void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id, int player_slot) {
     PacketHeader* hdr = (PacketHeader*)buffer;
     if (ntohs(hdr->payload_size) >= sizeof(uint16_t)) {
         uint16_t* ping_ptr = (uint16_t*)(buffer + sizeof(PacketHeader));
         uint16_t client_ping = ntohs(*ping_ptr);
-        ActivePlayer* player = player_acquire(character_id);
+        ActivePlayer* player = player_acquire_hint(character_id, player_slot);
         if (player) {
             player->ping_ms = client_ping;
             player_release(player);
         }
     }
-    // Echo the full ping packet back (header + uint16_t payload) so the client
-    // can measure RTT. Sending only the 7-byte header while declaring
-    // payload_size=2 would desynchronize the client's TCP reassembly.
+    // echo the declared payload for stream framing
     server_send(client_fd, buffer, sizeof(PacketHeader) + sizeof(uint16_t));
 }
 
+/** Send the requested character data to a client. */
 void handle_request_player_data(int client_fd, uint32_t character_id) {
-    // Use the same function that sends CharacterInfo + PlayerStatsPacket
     player_send_data_response(client_fd, character_id);
 }
 
-// Snap the client back to the position the server still believes in.
 static void send_move_correction(int client_fd, float pos_x, float pos_y) {
     PlayerMoveAckPacket correction;
     memset(&correction, 0, sizeof(correction));
@@ -39,8 +55,9 @@ static void send_move_correction(int client_fd, float pos_x, float pos_y) {
     server_send(client_fd, &correction, sizeof(correction));
 }
 
-void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* pkt) {
-    ActivePlayer* player = player_acquire(character_id);
+/** Validate and apply a client movement proposal. */
+void handle_player_move(int client_fd, uint32_t character_id, int player_slot, PlayerMovePacket* pkt) {
+    ActivePlayer* player = player_acquire_hint(character_id, player_slot);
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
 
@@ -50,8 +67,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
-    // pkt->player_speed is deliberately never read: the budget is built from
-    // the server's own move_speed.
+    // use server-owned movement speed
     MoveVerdict verdict = move_validate(&player->move_budget,
                                         player->pos_x, player->pos_y,
                                         client_x, client_y,
@@ -74,7 +90,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     player->pos_y = client_y;
     player->is_dirty = 1;
 
-    // Zone boundary check — notify client if they crossed into a new zone
+    // notify only on zone transitions
     const WorldZone* zone = zone_lookup(client_x, client_y);
     uint8_t new_zone_id = zone ? zone->id : 0;
     if (new_zone_id != player->current_zone_id) {
@@ -96,6 +112,7 @@ void handle_player_move(int client_fd, uint32_t character_id, PlayerMovePacket* 
     }
 }
 
+/** Validate and apply an inventory-to-equipment transfer. */
 void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(EquipItemPacket)) {
         LOG_WARN_RL(5, 60, "Invalid equip packet size");
@@ -115,7 +132,9 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     if (!player->is_loaded) { player_release(player); return; }
 
     // Verify item is in inventory
-    if (inventory_slot >= 150 || player->inventory[inventory_slot] != item_id) {
+    if (inventory_slot >= INVENTORY_SLOTS ||
+        player->inventory[inventory_slot].instance_id == 0 ||
+        player->inventory[inventory_slot].item_id != item_id) {
         LOG_WARN_RL(5, 60, "Item %u not in inventory slot %u", item_id, inventory_slot);
         player_release(player);
         
@@ -174,94 +193,56 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         return;
     }
     
-    // Store the item currently equipped (for swapping back to inventory)
-    uint32_t old_item = 0;
-    
-    // Equip the item
-    switch (equip_slot) {
-        case SLOT_HELMET:
-            old_item = player->helmet;
-            player->helmet = item_id;
-            break;
-            
-        case SLOT_GLOVES:
-            old_item = player->gloves;
-            player->gloves = item_id;
-            break;
-            
-        case SLOT_CHEST:
-            old_item = player->chest_armor;
-            player->chest_armor = item_id;
-            break;
-            
-        case SLOT_LEGGINGS:
-            old_item = player->leggings;
-            player->leggings = item_id;
-            break;
-            
-        case SLOT_BOOTS:
-            old_item = player->boots;
-            player->boots = item_id;
-            break;
-            
-        case SLOT_MAIN_HAND:
-            old_item = player->main_hand;
-            player->main_hand = item_id;
-            
-            // If two-handed, move off-hand back to inventory
-            if (item->is_two_handed && player->second_hand != 0) {
-                int offhand_slot = -1;
-                for (int s = 0; s < 150; s++) {
-                    if (player->inventory[s] == 0) {
-                        offhand_slot = s;
-                        break;
-                    }
-                }
-                if (offhand_slot == -1) {
-                    // No room for off-hand — reject equip
-                    player_release(player);
-                    EquipItemResponsePacket response = {0};
-                    response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
-                    response.header.player_id = htonl(character_id);
-                    response.success = 0;
-                    strncpy(response.message, "Inventory full (off-hand)", sizeof(response.message) - 1);
-                    server_send(client_fd, &response, sizeof(response));
-                    return;
-                }
-                player->inventory[offhand_slot] = player->second_hand;
-                player->second_hand = 0;
-            }
-            break;
-            
-        case SLOT_OFF_HAND:
-            // Check if main hand is two-handed
-            if (player->main_hand != 0) {
-                const ItemDefinition* main_hand = item_get(player->main_hand);
-                if (main_hand && main_hand->is_two_handed) {
-                    player_release(player);
-                    
-                    EquipItemResponsePacket response = {0};
-                    response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
-                    response.header.player_id = htonl(character_id);
-                    response.success = 0;
-                    strncpy(response.message, "Cannot equip with two-handed weapon", sizeof(response.message) - 1);
-                    server_send(client_fd, &response, sizeof(response));
-                    return;
-                }
-            }
-            
-            old_item = player->second_hand;
-            player->second_hand = item_id;
-            break;
-            
-        default:
-            player_release(player);
-            return;
+    int equip_index = equip_index_for(equip_slot);
+    if (equip_index < 0) {
+        player_release(player);
+        return;
     }
-    
-    // Put old item back in inventory slot
-    player->inventory[inventory_slot] = old_item;
-    
+
+    // enforce two-handed and off-hand exclusivity
+    if (equip_slot == SLOT_MAIN_HAND && item->is_two_handed &&
+        player->equipment[EQUIP_SECOND_HAND].instance_id != 0) {
+
+        int offhand_slot = inventory_first_free(player->inventory);
+        if (offhand_slot < 0) {
+            player_release(player);
+            EquipItemResponsePacket response = {0};
+            response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
+            response.header.player_id = htonl(character_id);
+            response.success = 0;
+            strncpy(response.message, "Inventory full (off-hand)", sizeof(response.message) - 1);
+            server_send(client_fd, &response, sizeof(response));
+            return;
+        }
+        player->inventory[offhand_slot] = player->equipment[EQUIP_SECOND_HAND];
+        memset(&player->equipment[EQUIP_SECOND_HAND], 0, sizeof(ItemInstance));
+    }
+
+    if (equip_slot == SLOT_OFF_HAND &&
+        player->equipment[EQUIP_MAIN_HAND].instance_id != 0) {
+        const ItemDefinition* main_hand =
+            item_get(player->equipment[EQUIP_MAIN_HAND].item_id);
+        if (main_hand && main_hand->is_two_handed) {
+            player_release(player);
+            EquipItemResponsePacket response = {0};
+            response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
+            response.header.player_id = htonl(character_id);
+            response.success = 0;
+            strncpy(response.message, "Cannot equip with two-handed weapon", sizeof(response.message) - 1);
+            server_send(client_fd, &response, sizeof(response));
+            return;
+        }
+    }
+
+    // preserve instance identity across the swap
+    ItemInstance incoming = player->inventory[inventory_slot];
+    player->inventory[inventory_slot] = player->equipment[equip_index];
+    player->equipment[equip_index]    = incoming;
+
+    if (item->bind_on_equip) player->equipment[equip_index].is_bound = 1;
+
+    uint32_t returned_item = player->inventory[inventory_slot].item_id;
+
     player->is_dirty = 1;
 
     // Recalculate stats with new equipment
@@ -275,10 +256,17 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     response.header.player_id = htonl(character_id);
     response.success = 1;
     response.equipped_item = htonl(item_id);
-    response.returned_item = htonl(old_item);
+    response.returned_item = htonl(returned_item);
     snprintf(response.message, sizeof(response.message), "Equipped: %s", item->name);
 
     server_send(client_fd, &response, sizeof(response));
+
+    // synchronize both changed slots
+    {
+        uint16_t changed[2] = { inventory_slot,
+                                (uint16_t)(EQUIP_SLOT_BASE + equip_index) };
+        player_send_slot_updates(client_fd, character_id, changed, 2);
+    }
 
     // Send updated stats to client
     player_send_stats(client_fd, player);
@@ -286,6 +274,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     LOG_DEBUG("Character %u equipped %s", character_id, item->name);
 }
 
+/** Validate and move equipped gear into the inventory. */
 void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(UnequipItemPacket)) {
         LOG_WARN_RL(5, 60, "Invalid unequip packet size");
@@ -299,15 +288,8 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
 
-    // Find empty inventory slot
-    int inventory_slot = -1;
-    for (int i = 0; i < 150; i++) {
-        if (player->inventory[i] == 0) {
-            inventory_slot = i;
-            break;
-        }
-    }
-    
+    int inventory_slot = inventory_first_free(player->inventory);
+
     if (inventory_slot == -1) {
         player_release(player);
         
@@ -321,50 +303,21 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
         return;
     }
     
-    uint32_t unequipped_item = 0;
-    
-    // Unequip the item
-    switch (equip_slot) {
-        case SLOT_HELMET:
-            unequipped_item = player->helmet;
-            player->helmet = 0;
-            break;
-        case SLOT_GLOVES:
-            unequipped_item = player->gloves;
-            player->gloves = 0;
-            break;
-        case SLOT_CHEST:
-            unequipped_item = player->chest_armor;
-            player->chest_armor = 0;
-            break;
-        case SLOT_LEGGINGS:
-            unequipped_item = player->leggings;
-            player->leggings = 0;
-            break;
-        case SLOT_BOOTS:
-            unequipped_item = player->boots;
-            player->boots = 0;
-            break;
-        case SLOT_MAIN_HAND:
-            unequipped_item = player->main_hand;
-            player->main_hand = 0;
-            break;
-        case SLOT_OFF_HAND:
-            unequipped_item = player->second_hand;
-            player->second_hand = 0;
-            break;
-        default:
-            player_release(player);
-            return;
-    }
-    
-    if (unequipped_item == 0) {
+    int equip_index = equip_index_for(equip_slot);
+    if (equip_index < 0) {
         player_release(player);
-        return; // Nothing was equipped
+        return;
     }
-    
-    // Add to inventory
-    player->inventory[inventory_slot] = unequipped_item;
+
+    if (player->equipment[equip_index].instance_id == 0) {
+        player_release(player);
+        return;   // nothing was equipped
+    }
+
+    // preserve instance identity and binding
+    uint32_t unequipped_item = player->equipment[equip_index].item_id;
+    player->inventory[inventory_slot] = player->equipment[equip_index];
+    memset(&player->equipment[equip_index], 0, sizeof(ItemInstance));
     player->is_dirty = 1;
 
     // Recalculate stats without this equipment
@@ -383,12 +336,19 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
 
     server_send(client_fd, &response, sizeof(response));
 
+    {
+        uint16_t changed[2] = { (uint16_t)inventory_slot,
+                                (uint16_t)(EQUIP_SLOT_BASE + equip_index) };
+        player_send_slot_updates(client_fd, character_id, changed, 2);
+    }
+
     // Send updated stats to client
     player_send_stats(client_fd, player);
 
     LOG_DEBUG("Character %u unequipped item from slot %u", character_id, equip_slot);
 }
 
+/** Validate, consume, and apply one inventory item. */
 void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(UseItemPacket)) {
         LOG_WARN_RL(5, 60, "Invalid use item packet size");
@@ -408,7 +368,8 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     response.header.payload_size = htons(sizeof(UseItemResponsePacket) - sizeof(PacketHeader));
 
     // Validate slot
-    if (inventory_slot >= 150 || player->inventory[inventory_slot] == 0) {
+    if (inventory_slot >= INVENTORY_SLOTS ||
+        player->inventory[inventory_slot].instance_id == 0) {
         player_release(player);
         response.success = 0;
         strncpy(response.message, "No item in that slot", sizeof(response.message) - 1);
@@ -416,7 +377,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
         return;
     }
 
-    uint32_t item_id = player->inventory[inventory_slot];
+    uint32_t item_id = player->inventory[inventory_slot].item_id;
     const ItemDefinition* item = item_get(item_id);
     if (!item) {
         player_release(player);
@@ -483,8 +444,8 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
             break;
     }
 
-    // Consume the item
-    player->inventory[inventory_slot] = 0;
+    // consume one unit from the stack
+    inventory_remove_at(player->inventory, inventory_slot, 1);
     player->is_dirty = 1;
     player->last_consumable_time = now;
 
@@ -501,9 +462,17 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
 
     snprintf(response.message, sizeof(response.message), "Used %s", item->name);
     server_send(client_fd, &response, sizeof(response));
+
+    // synchronize the remaining stack
+    {
+        uint16_t changed[1] = { inventory_slot };
+        player_send_slot_updates(client_fd, character_id, changed, 1);
+    }
+
     LOG_DEBUG("Character %u used %s (HP+%d, MP+%d)", character_id, item->name, hp_changed, mp_changed);
 }
 
+/** Remove one inventory unit and create its ground item. */
 void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(DropItemPacket)) {
         LOG_WARN_RL(5, 60, "Invalid drop packet size");
@@ -517,15 +486,17 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
 
-    if (inventory_slot >= 150 || player->inventory[inventory_slot] == 0) {
+    if (inventory_slot >= INVENTORY_SLOTS ||
+        player->inventory[inventory_slot].instance_id == 0) {
         player_release(player);
         return;
     }
 
-    uint32_t item_id = player->inventory[inventory_slot];
+    uint32_t item_id = player->inventory[inventory_slot].item_id;
     float drop_x = player->pos_x;
     float drop_y = player->pos_y;
-    player->inventory[inventory_slot] = 0;
+    // match the removed quantity to the ground item
+    inventory_remove_at(player->inventory, inventory_slot, 1);
     player->is_dirty = 1;
 
     player_release(player);
@@ -541,8 +512,15 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     response.success = 1;
     response.dropped_item = htonl(item_id);
     server_send(client_fd, &response, sizeof(response));
+
+    // synchronize the remaining stack
+    {
+        uint16_t changed[1] = { inventory_slot };
+        player_send_slot_updates(client_fd, character_id, changed, 1);
+    }
 }
 
+/** Move, merge, or swap inventory slots requested by a client. */
 void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(MoveItemPacket)) {
         LOG_WARN_RL(5, 60, "Invalid move item packet size");
@@ -559,10 +537,10 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
 
-    // Swap items
-    uint32_t temp = player->inventory[from_slot];
-    player->inventory[from_slot] = player->inventory[to_slot];
-    player->inventory[to_slot] = temp;
+    // retain merge overflow in the source slot
+    const ItemDefinition* moved = item_get(player->inventory[from_slot].item_id);
+    inventory_move(player->inventory, from_slot, to_slot,
+                   moved ? moved->max_stack : 1);
     player->is_dirty = 1;
     
     player_release(player);
@@ -576,11 +554,19 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     response.to_slot = to_slot;
     
     server_send(client_fd, &response, sizeof(response));
+
+    // synchronize both merge or swap endpoints
+    {
+        uint16_t changed[2] = { from_slot, to_slot };
+        player_send_slot_updates(client_fd, character_id, changed, 2);
+    }
+
     LOG_DEBUG("Character %u moved item from slot %u to %u", character_id, from_slot, to_slot);
 }
 
 #define CHAT_LOCAL_RANGE 800.0f
 
+/** Sanitize and distribute a chat message by channel rules. */
 void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     (void)client_fd;  // Sender receives via broadcast loop
 
@@ -622,19 +608,22 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
     LOG_DEBUG("[CHAT] %s (ch=%u): %s", msg.sender_name, channel, msg.message);
 
-    // Broadcast based on channel
+    // collect recipients before performing socket writes
     extern ActivePlayer active_players[];
-    extern pthread_mutex_t active_players_lock;
 
-    pthread_mutex_lock(&active_players_lock);
+    int recipients[MAX_PLAYERS];
+    int recipient_count = 0;
+
+    player_registry_rdlock();
+    int n_slots = 0;
+    const int* slots = player_active_list_locked(&n_slots);
 
     if (channel == CHAT_CHANNEL_WHISPER) {
-        // Message format sent by client: "TargetName rest of message"
-        // Parse the first word as target name and remainder as the message body.
+        // split "TargetName message" whisper framing
         const char* space = strchr(msg.message, ' ');
         if (!space || space == msg.message || *(space + 1) == '\0') {
             // Malformed — no target name or no body; silently drop
-            pthread_mutex_unlock(&active_players_lock);
+            player_registry_unlock();
             return;
         }
 
@@ -652,69 +641,65 @@ void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
         LOG_DEBUG("[WHISPER] %s -> %s: %s", sender_name, target_name, msg.message);
 
-        // Find target and deliver
+        // Find target
         int target_fd = -1;
-        for (int i = 0; i < MAX_PLAYERS; i++) {
+        for (int s = 0; s < n_slots; s++) {
+            int i = slots[s];
             if (!active_players[i].is_loaded) continue;
             pthread_mutex_lock(&active_players[i].lock);
             int match = (strncmp(active_players[i].username, target_name, 31) == 0);
             int fd    = active_players[i].client_fd;
             pthread_mutex_unlock(&active_players[i].lock);
             if (match) {
-                server_send(fd, &msg, sizeof(msg));
                 target_fd = fd;
                 break;
             }
         }
 
+        player_registry_unlock();
+
         if (target_fd == -1) {
             LOG_WARN_RL(5, 60, "[WHISPER] Target '%s' not online", target_name);
         } else {
-            // Echo back to sender: sender_name field shows "→ TargetName"
-            // so the client renders it as "[W] → TargetName: message"
+            server_send(target_fd, &msg, sizeof(msg));
+            // label the sender's whisper echo with its target
             ChatMessagePacket echo = msg;
             memset(echo.sender_name, 0, sizeof(echo.sender_name));
             snprintf(echo.sender_name, sizeof(echo.sender_name), "-> %.28s", target_name);
             server_send(client_fd, &echo, sizeof(echo));
         }
-    } else {
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (!active_players[i].is_loaded) continue;
-
-            if (channel == CHAT_CHANNEL_LOCAL) {
-                pthread_mutex_lock(&active_players[i].lock);
-                float dx = active_players[i].pos_x - sender_x;
-                float dy = active_players[i].pos_y - sender_y;
-                float dist_sq = dx * dx + dy * dy;
-                int in_range = (dist_sq <= CHAT_LOCAL_RANGE * CHAT_LOCAL_RANGE);
-                int fd = active_players[i].client_fd;
-                pthread_mutex_unlock(&active_players[i].lock);
-                if (in_range) server_send(fd, &msg, sizeof(msg));
-
-            } else if (channel == CHAT_CHANNEL_GLOBAL) {
-                pthread_mutex_lock(&active_players[i].lock);
-                int fd = active_players[i].client_fd;
-                pthread_mutex_unlock(&active_players[i].lock);
-                server_send(fd, &msg, sizeof(msg));
-
-            } else if (channel == CHAT_CHANNEL_PARTY) {
-                pthread_mutex_lock(&active_players[i].lock);
-                uint32_t their_party = active_players[i].party_id;
-                int fd = active_players[i].client_fd;
-                pthread_mutex_unlock(&active_players[i].lock);
-                if (sender_party != 0 && their_party == sender_party)
-                    server_send(fd, &msg, sizeof(msg));
-            }
-        }
+        return;
     }
 
-    pthread_mutex_unlock(&active_players_lock);
+    for (int s = 0; s < n_slots; s++) {
+        int i = slots[s];
+        if (!active_players[i].is_loaded) continue;
+
+        pthread_mutex_lock(&active_players[i].lock);
+        int      fd          = active_players[i].client_fd;
+        float    dx          = active_players[i].pos_x - sender_x;
+        float    dy          = active_players[i].pos_y - sender_y;
+        uint32_t their_party = active_players[i].party_id;
+        pthread_mutex_unlock(&active_players[i].lock);
+
+        int wants = 0;
+        if (channel == CHAT_CHANNEL_LOCAL)
+            wants = (dx * dx + dy * dy) <= CHAT_LOCAL_RANGE * CHAT_LOCAL_RANGE;
+        else if (channel == CHAT_CHANNEL_GLOBAL)
+            wants = 1;
+        else if (channel == CHAT_CHANNEL_PARTY)
+            wants = (sender_party != 0 && their_party == sender_party);
+
+        if (wants) recipients[recipient_count++] = fd;
+    }
+
+    player_registry_unlock();
+
+    for (int r = 0; r < recipient_count; r++)
+        server_send(recipients[r], &msg, sizeof(msg));
 }
 
-// ============================================================================
-// PARTY PACKET HANDLERS
-// ============================================================================
-
+/** Validate and deliver a party invitation by player name. */
 void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     if (bytes < (ssize_t)sizeof(PartyInvitePacket)) return;
 
@@ -734,11 +719,13 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
 
     // Find target by name
     extern ActivePlayer active_players[];
-    extern pthread_mutex_t active_players_lock;
 
     uint32_t target_id = 0;
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    player_registry_rdlock();
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         pthread_mutex_lock(&active_players[i].lock);
         if (strncmp(active_players[i].username, target_name, 31) == 0) {
@@ -748,7 +735,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
         }
         pthread_mutex_unlock(&active_players[i].lock);
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
     if (target_id == 0) {
         LOG_WARN_RL(5, 60, "[PARTY] Invite failed: player '%s' not found", target_name);
@@ -812,6 +799,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     (void)client_fd;
 }
 
+/** Consume a pending invitation and join or create its party. */
 void handle_party_accept(int client_fd, uint32_t character_id) {
     (void)client_fd;
 
@@ -845,8 +833,7 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
         }
         party_id = existing_party;
     } else {
-        // Inviter had no party — create one with inviter as leader
-        // But first check inviter hasn't joined a party since
+        // reuse a party joined since the invitation
         Party* inviter_party = party_find_by_player(from_id);
         if (inviter_party) {
             party_id = inviter_party->party_id;
@@ -869,18 +856,21 @@ void handle_party_accept(int client_fd, uint32_t character_id) {
     party_broadcast_update(party_id);
 }
 
+/** Remove the character's pending party invitation. */
 void handle_party_decline(int client_fd, uint32_t character_id) {
     (void)client_fd;
     party_invite_remove(character_id);
     LOG_DEBUG("[PARTY] Player %u declined party invite", character_id);
 }
 
+/** Remove the character from its current party. */
 void handle_party_leave(int client_fd, uint32_t character_id) {
     (void)client_fd;
     party_remove_member(character_id);
     LOG_DEBUG("[PARTY] Player %u left their party", character_id);
 }
 
+/** Remove a target member when requested by the party leader. */
 void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
     (void)client_fd;
     if (bytes < (ssize_t)sizeof(PartyKickPacket)) return;
@@ -917,22 +907,16 @@ void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     LOG_DEBUG("[PARTY] Player %u kicked player %u from party", character_id, target_id);
     party_remove_member(target_id);
 }
+/** Build and send one page of online player summaries. */
 void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) {
     extern ActivePlayer active_players[];
-    extern pthread_mutex_t active_players_lock;
 
     if (bytes < (ssize_t)sizeof(SessionListRequestPacket)) return;
 
     SessionListRequestPacket* req = (SessionListRequestPacket*)buffer;
     uint16_t requested_page = ntohs(req->page);
 
-    // Snapshot counts and build entry list under lock
-    // We collect up to (requested_page+1)*SESSION_LIST_PAGE_SIZE entries
-    // then slice the right page out.
-    // For simplicity with potentially thousands of players, we collect all
-    // loaded player ids/data, sort by character_id, then page.
-
-    // Step 1: collect all online players
+    // snapshot online records before pagination
     typedef struct {
         uint32_t character_id;
         char     name[32];
@@ -945,9 +929,12 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
     Snap* snaps = NULL;
     int   snap_count = 0;
 
-    pthread_mutex_lock(&active_players_lock);
+    player_registry_rdlock();
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
     // Count first
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (active_players[i].is_loaded && active_players[i].is_ready)
             snap_count++;
     }
@@ -958,11 +945,11 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
             snap_count = 0;
         } else {
             int idx = 0;
-            for (int i = 0; i < MAX_PLAYERS && idx < snap_count; i++) {
+            for (int n = 0; n < online_count && idx < snap_count; n++) {
+                int i = online[n];
                 ActivePlayer* ap = &active_players[i];
                 if (!ap->is_loaded || !ap->is_ready) continue;
-                // Hold per-player lock while copying to avoid data races with
-                // threads that already hold ap->lock via player_acquire.
+                // copy each record under its player lock
                 pthread_mutex_lock(&ap->lock);
                 snaps[idx].character_id = ap->character_id;
                 strncpy(snaps[idx].name, ap->username, 31);
@@ -977,9 +964,8 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
             snap_count = idx;
         }
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
-    // Step 2: compute pagination
     uint32_t total_players = (uint32_t)snap_count;
     uint16_t total_pages   = (uint16_t)((snap_count + SESSION_LIST_PAGE_SIZE - 1) / SESSION_LIST_PAGE_SIZE);
     if (total_pages == 0) total_pages = 1;
@@ -990,7 +976,6 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
     if (page_count > SESSION_LIST_PAGE_SIZE) page_count = SESSION_LIST_PAGE_SIZE;
     if (page_count < 0) page_count = 0;
 
-    // Step 3: build and send response
     SessionListResponsePacket resp;
     memset(&resp, 0, sizeof(resp));
     resp.header.type         = PACKET_SESSION_LIST_RESPONSE;

@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Load item definitions and provide world-server item metadata lookups.
+ */
+
 #include "items_database.h"
 
 #include <stdio.h>
@@ -13,6 +18,14 @@ static int items_loaded = 0;
 static char* read_file(const char* filepath);
 static int parse_items_json(const char* json_content);
 
+/**
+ * Initialize the item registry from a JSON file.
+ *
+ * Replaces the current registry contents and retains definitions until items_cleanup().
+ *
+ * @param json_filepath  Path to the item-definition JSON file.
+ * @return               1 on success, or 0 when the file cannot be read or parsed.
+ */
 int items_init(const char* json_filepath) {
     printf("Loading items from: %s\n", json_filepath);
     
@@ -40,15 +53,36 @@ int items_init(const char* json_filepath) {
     return result;
 }
 
+/**
+ * Retrieve an item definition by identifier.
+ *
+ * The returned pointer remains owned by the item registry.
+ *
+ * @return The item definition, or NULL when the identifier is absent or out of range.
+ */
 const ItemDefinition* item_get(uint32_t item_id) {
     if (item_id >= MAX_ITEMS) return NULL;
     return item_table[item_id];
 }
 
+/**
+ * Determine whether an item identifier is registered.
+ *
+ * @return 1 when registered, or 0 otherwise.
+ */
 int item_exists(uint32_t item_id) {
     return item_get(item_id) != NULL;
 }
 
+/**
+ * Check an item's level, class, and race requirements for a character.
+ *
+ * @param item_id          Identifier of the item to validate.
+ * @param character_level  Current character level.
+ * @param character_class  CharacterClass identifier.
+ * @param character_race   CharacterRace identifier.
+ * @return                 1 when all requirements pass, or 0 otherwise.
+ */
 int item_can_equip(uint32_t item_id, uint8_t character_level, 
                    uint8_t character_class, uint8_t character_race) {
     const ItemDefinition* item = item_get(item_id);
@@ -86,10 +120,18 @@ int item_can_equip(uint32_t item_id, uint8_t character_level,
     return 1;
 }
 
+/**
+ * Report the number of registered item definitions.
+ *
+ * @return The number of loaded items.
+ */
 int items_get_count(void) {
     return items_loaded;
 }
 
+/**
+ * Release all item definitions and clear the registry.
+ */
 void items_cleanup(void) {
     for (int i = 0; i < MAX_ITEMS; i++) {
         if (item_table[i]) {
@@ -101,7 +143,11 @@ void items_cleanup(void) {
     printf("Items system cleaned up\n");
 }
 
-// Helper functions
+/**
+ * Map a character class identifier to its display name.
+ *
+ * @return A static class name, or "Unknown" for an unrecognized identifier.
+ */
 const char* class_get_name(uint8_t class_id) {
     switch (class_id) {
         case CLASS_GLADIATOR: return "Gladiator";
@@ -112,6 +158,11 @@ const char* class_get_name(uint8_t class_id) {
     }
 }
 
+/**
+ * Map a character race identifier to its display name.
+ *
+ * @return A static race name, or "Unknown" for an unrecognized identifier.
+ */
 const char* race_get_name(uint8_t race_id) {
     switch (race_id) {
         case RACE_HUMAN: return "Human";
@@ -121,6 +172,11 @@ const char* race_get_name(uint8_t race_id) {
     }
 }
 
+/**
+ * Map an item rarity to its display name.
+ *
+ * @return A static rarity name, or "Unknown" for an unrecognized value.
+ */
 const char* rarity_get_name(ItemRarity rarity) {
     switch (rarity) {
         case RARITY_COMMON: return "Common";
@@ -132,6 +188,11 @@ const char* rarity_get_name(ItemRarity rarity) {
     }
 }
 
+/**
+ * Map an equipment slot to its display name.
+ *
+ * @return A static slot name, or "None" for an unrecognized value.
+ */
 const char* slot_get_name(EquipSlotType slot) {
     switch (slot) {
         case SLOT_HELMET: return "Helmet";
@@ -146,10 +207,14 @@ const char* slot_get_name(EquipSlotType slot) {
     }
 }
 
-// ============================================================================
-// JSON Parsing Implementation (Minimal)
-// ============================================================================
-
+/**
+ * Read an entire file into a terminated buffer.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @param filepath  Path to the file to read.
+ * @return          An allocated buffer, or NULL when opening or allocation fails.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -209,7 +274,10 @@ static ItemRarity parse_rarity(const char* rarity_str) {
     return RARITY_COMMON;
 }
 
-// Simple JSON parsing - finds value after "key":
+/** Locate the first value text following a named JSON key.
+ *
+ * @return A pointer into json after leading whitespace, or NULL when the key or colon is absent.
+ */
 static const char* find_json_value(const char* json, const char* key) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -228,6 +296,12 @@ static const char* find_json_value(const char* json, const char* key) {
     return pos;
 }
 
+/**
+ * Parse item objects into the global registry.
+ *
+ * @param json_content  Terminated JSON document containing an items array.
+ * @return              1 after scanning the array, or 0 when the array is absent or malformed at its start.
+ */
 static int parse_items_json(const char* json_content) {
     // Find the "items" array
     const char* items_start = strstr(json_content, "\"items\"");
@@ -404,9 +478,23 @@ static int parse_items_json(const char* json_content) {
         const char* bl_val = find_json_value(obj_json, "bonus_luck");
         if (bl_val) item->bonus_luck = atoi(bl_val);
 
-        // Set default value based on rarity
-        item->value = (item->rarity + 1) * 10;
-        
+        // default absent or zero stack limits to one
+        const char* stack_val = find_json_value(obj_json, "max_stack");
+        item->max_stack = stack_val ? (uint16_t)atoi(stack_val) : 1;
+        if (item->max_stack == 0) item->max_stack = 1;
+        item->stackable = (item->max_stack > 1) ? 1 : 0;
+
+        // accept JSON booleans and numeric flags
+        const char* bop_val = find_json_value(obj_json, "bind_on_pickup");
+        item->bind_on_pickup = (bop_val && (*bop_val == 't' || *bop_val == '1')) ? 1 : 0;
+        const char* boe_val = find_json_value(obj_json, "bind_on_equip");
+        item->bind_on_equip = (boe_val && (*boe_val == 't' || *boe_val == '1')) ? 1 : 0;
+
+        // derive absent values from rarity
+        const char* value_val = find_json_value(obj_json, "value");
+        item->value = value_val ? (uint32_t)atoi(value_val)
+                                : (uint32_t)((item->rarity + 1) * 10);
+
         // Store in hash table
         if (item->id < MAX_ITEMS) {
             item_table[item->id] = item;

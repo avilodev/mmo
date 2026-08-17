@@ -1,6 +1,7 @@
-// ============================================================================
-// loot.c — Loot tables, ground items, and pickup logic
-// ============================================================================
+/**
+ * @file
+ * Load NPC loot tables and manage world-server ground-item lifetimes and pickup.
+ */
 
 #include "loot.h"
 #include "log.h"
@@ -18,16 +19,7 @@
 #include <sys/socket.h>
 #include "utils.h"
 
-// ---------------------------------------------------------------------------
-// Extern references
-// ---------------------------------------------------------------------------
-
 extern ActivePlayer active_players[];
-extern pthread_mutex_t active_players_lock;
-
-// ---------------------------------------------------------------------------
-// Static state
-// ---------------------------------------------------------------------------
 
 static LootTable      g_loot_tables[MAX_LOOT_TABLES];
 static int            g_loot_table_count = 0;
@@ -35,10 +27,6 @@ static int            g_loot_table_count = 0;
 static GroundItem     g_ground_items[MAX_GROUND_ITEMS];
 static pthread_mutex_t g_ground_items_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t       g_next_ground_item_id = 1;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 static double get_time(void) {
     struct timespec ts;
@@ -55,10 +43,13 @@ static const LootTable* find_loot_table(uint16_t npc_type_id) {
     return NULL;
 }
 
-// ---------------------------------------------------------------------------
-// JSON parsing — parse "loot_tables" section from items.json
-// ---------------------------------------------------------------------------
-
+/**
+ * Read an entire file into a terminated buffer.
+ *
+ * The caller must free the returned buffer.
+ *
+ * @return An allocated buffer, or NULL when opening or allocation fails.
+ */
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
@@ -73,13 +64,11 @@ static char* read_file(const char* filepath) {
     return buf;
 }
 
-// Skip whitespace
 static const char* skip_ws(const char* p) {
     while (*p && isspace((unsigned char)*p)) p++;
     return p;
 }
 
-// Find a key in a JSON object (current level only)
 static const char* find_key(const char* json, const char* key) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -91,7 +80,11 @@ static const char* find_key(const char* json, const char* key) {
     return skip_ws(pos);
 }
 
-// Find matching closing bracket/brace
+/**
+ * Find the delimiter that balances a nested JSON span.
+ *
+ * @return The matching delimiter, or NULL for an unterminated span.
+ */
 static const char* find_matching(const char* start, char open, char close) {
     int depth = 0;
     const char* p = start;
@@ -103,6 +96,11 @@ static const char* find_matching(const char* start, char open, char close) {
     return NULL;
 }
 
+/**
+ * Parse loot-table entries into the fixed registry.
+ *
+ * @return 1 when parsing completes or no section exists, or 0 on malformed input or allocation failure.
+ */
 static int parse_loot_tables(const char* json) {
     const char* tables_start = strstr(json, "\"loot_tables\"");
     if (!tables_start) {
@@ -224,10 +222,11 @@ static int parse_loot_tables(const char* json) {
     return 1;
 }
 
-// ---------------------------------------------------------------------------
-// Init / Cleanup
-// ---------------------------------------------------------------------------
-
+/**
+ * Initialize ground items and load NPC loot tables from JSON.
+ *
+ * @return 1 on success, or 0 when the file cannot be read or parsed.
+ */
 int loot_init(const char* json_path) {
     memset(g_ground_items, 0, sizeof(g_ground_items));
     g_loot_table_count = 0;
@@ -246,6 +245,9 @@ int loot_init(const char* json_path) {
     return result;
 }
 
+/**
+ * Clear all ground items and loaded loot tables.
+ */
 void loot_cleanup(void) {
     pthread_mutex_lock(&g_ground_items_lock);
     memset(g_ground_items, 0, sizeof(g_ground_items));
@@ -254,10 +256,15 @@ void loot_cleanup(void) {
     LOG_DEBUG("[LOOT] Cleaned up");
 }
 
-// ---------------------------------------------------------------------------
-// Loot rolling — spawn ground items when an NPC dies
-// ---------------------------------------------------------------------------
-
+/**
+ * Roll an NPC loot table and broadcast created ground items.
+ *
+ * @param npc_type_id  NPC type whose loot table is rolled; zero produces no drops.
+ * @param x            Drop origin X coordinate in world units.
+ * @param y            Drop origin Y coordinate in world units.
+ * @param killer_id    Character receiving the exclusive-pickup window.
+ * @return             The number of ground items created.
+ */
 int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
     if (npc_type_id == 0) return 0;
 
@@ -339,8 +346,11 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
         PlayerFd fds[64];
         int fd_count = 0;
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS && fd_count < 64; i++) {
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int n = 0; n < online_count && fd_count < 64; n++) {
+            int i = online[n];
             if (!active_players[i].is_loaded) continue;
             float dx = active_players[i].pos_x - x;
             float dy = active_players[i].pos_y - y;
@@ -348,7 +358,7 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
                 fds[fd_count++].fd = active_players[i].client_fd;
             }
         }
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
 
         for (int p = 0; p < pending_count; p++) {
             LootDropPacket pkt = {0};
@@ -370,10 +380,15 @@ int loot_roll(uint16_t npc_type_id, float x, float y, uint32_t killer_id) {
     return dropped;
 }
 
-// ---------------------------------------------------------------------------
-// Drop a single item on the ground (for player drops)
-// ---------------------------------------------------------------------------
-
+/**
+ * Create one ground item and broadcast it to nearby players.
+ *
+ * @param quantity  Stack quantity stored in the ground item.
+ * @param x         Ground X coordinate in world units.
+ * @param y         Ground Y coordinate in world units.
+ * @param owner_id  Character receiving the exclusive-pickup window.
+ * @return          The assigned ground-item identifier, or 0 when the pool is full.
+ */
 uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, uint32_t owner_id) {
     double now = get_time();
     uint32_t ground_id = 0;
@@ -415,8 +430,11 @@ uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, ui
     pkt.pos_x = x;
     pkt.pos_y = y;
 
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    player_registry_rdlock();
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         float dx = active_players[i].pos_x - x;
         float dy = active_players[i].pos_y - y;
@@ -424,16 +442,19 @@ uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, ui
             server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
         }
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
     LOG_DEBUG("[LOOT] Player %u dropped item %u (qty=%u) at (%.1f, %.1f) ground_id=%u", owner_id, item_id, quantity, x, y, ground_id);
     return ground_id;
 }
 
-// ---------------------------------------------------------------------------
-// Pickup — player tries to pick up a ground item
-// ---------------------------------------------------------------------------
-
+/**
+ * Claim a ground item after enforcing its ownership window.
+ *
+ * @param out_item_id   Receives the claimed item definition identifier.
+ * @param out_quantity  Receives the claimed stack quantity.
+ * @return              1 when claimed, or 0 when absent or still reserved for another player.
+ */
 int loot_try_pickup(uint32_t ground_item_id, uint32_t player_id,
                     uint32_t* out_item_id, uint8_t* out_quantity) {
     double now = get_time();
@@ -471,21 +492,23 @@ int loot_try_pickup(uint32_t ground_item_id, uint32_t player_id,
         pkt.header.payload_size = htons(sizeof(LootDespawnPacket) - sizeof(PacketHeader));
         pkt.ground_item_id = htonl(ground_item_id);
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int n = 0; n < online_count; n++) {
+            int i = online[n];
             if (!active_players[i].is_loaded) continue;
             server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
         }
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
     }
 
     return success;
 }
 
-// ---------------------------------------------------------------------------
-// Tick — despawn expired ground items
-// ---------------------------------------------------------------------------
-
+/**
+ * Despawn expired ground items and broadcast their removal.
+ */
 void loot_tick(void) {
     double now = get_time();
 
@@ -507,7 +530,20 @@ void loot_tick(void) {
 
     // Broadcast despawns
     if (despawn_count > 0) {
-        pthread_mutex_lock(&active_players_lock);
+        // reuse one recipient snapshot for all expirations
+        int recipients[MAX_PLAYERS];
+        int recipient_count = 0;
+
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int n = 0; n < online_count; n++) {
+            int i = online[n];
+            if (!active_players[i].is_loaded) continue;
+            recipients[recipient_count++] = active_players[i].client_fd;
+        }
+        player_registry_unlock();
+
         for (int d = 0; d < despawn_count; d++) {
             LootDespawnPacket pkt = {0};
             pkt.header.type         = PACKET_LOOT_DESPAWN;
@@ -515,21 +551,20 @@ void loot_tick(void) {
             pkt.header.payload_size = htons(sizeof(LootDespawnPacket) - sizeof(PacketHeader));
             pkt.ground_item_id = htonl(despawned[d]);
 
-            for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (!active_players[i].is_loaded) continue;
-                server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
-            }
+            for (int r = 0; r < recipient_count; r++)
+                server_send(recipients[r], &pkt, sizeof(pkt));
         }
-        pthread_mutex_unlock(&active_players_lock);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Get ground item (for distance checks)
-// ---------------------------------------------------------------------------
-
+/**
+ * Retrieve a ground item by identifier without locking its pool.
+ *
+ * The returned pool pointer may become stale immediately; callers must tolerate concurrent changes.
+ *
+ * @return The active ground item, or NULL when absent.
+ */
 const GroundItem* loot_get_ground_item(uint32_t ground_item_id) {
-    // No lock needed for read-only check — caller should tolerate stale data
     for (int i = 0; i < MAX_GROUND_ITEMS; i++) {
         if (g_ground_items[i].active && g_ground_items[i].id == ground_item_id) {
             return &g_ground_items[i];

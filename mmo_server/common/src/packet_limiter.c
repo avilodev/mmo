@@ -1,17 +1,7 @@
-// ============================================================================
-// packet_limiter.c — Token-bucket packet budgets, one set per connection.
-//
-// Buckets refill lazily: a bucket is brought up to date only when a packet is
-// about to be charged to it. The alternative — refilling every bucket on every
-// packet — costs O(classes) per packet on the hottest path in the server, which
-// makes adding classes progressively more expensive. Lazy refill makes the cost
-// of a packet independent of how many classes exist.
-//
-// Slots are indexed by file descriptor, and the table is sized from the
-// process's own descriptor limit at startup, so a live connection can never
-// land outside it. If one somehow does, that is a broken invariant rather than
-// an ordinary condition, and the connection is closed rather than waved through.
-// ============================================================================
+/**
+ * @file
+ * Enforce per-connection token-bucket budgets for inbound server packets.
+ */
 
 #include "packet_limiter.h"
 
@@ -22,6 +12,7 @@
 #include <sys/resource.h>
 #include <time.h>
 
+/** Hold lazily refilled class and overall budgets for one descriptor. */
 typedef struct {
     double   tokens[LIMIT_CLASS_COUNT];
     double   last_refill[LIMIT_CLASS_COUNT];
@@ -36,11 +27,7 @@ static PacketLimitProfile g_profile;
 static LimiterSlot*       g_slots      = NULL;
 static int                g_slot_count = 0;
 
-// Ceiling on the slot table. The size follows RLIMIT_NOFILE but does not chase
-// it upward without limit: hosts routinely set a descriptor limit in the
-// millions, and a world sized for hundreds of players should not pay 64MB of
-// buckets for that. A descriptor past the cap is refused, never served
-// unmetered — see packet_limiter_check.
+/** Cap descriptor-indexed limiter storage independently of RLIMIT_NOFILE. */
 #define LIMITER_MAX_SLOTS   65536
 #define LIMITER_MIN_SLOTS   1024
 
@@ -54,9 +41,7 @@ static double now_seconds(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
-// Bring one bucket up to date for the time that has passed since it was last
-// charged. Clock going backwards is treated as no elapsed time rather than as a
-// negative refill.
+/** Refill one bucket for elapsed monotonic time without exceeding its capacity. */
 static void refill(double* tokens, double* last_refill,
                    const LimitBudget* budget, double now) {
     double elapsed = now - *last_refill;
@@ -67,6 +52,11 @@ static void refill(double* tokens, double* last_refill,
     *tokens = filled > budget->capacity ? budget->capacity : filled;
 }
 
+/**
+ * Map a configured class name to its limiter index.
+ *
+ * @return      The class index, or -1 when the name is absent or unknown.
+ */
 int packet_limiter_class_from_name(const char* name) {
     if (!name) return -1;
     for (int i = 0; i < LIMIT_CLASS_COUNT; i++)
@@ -74,6 +64,7 @@ int packet_limiter_class_from_name(const char* name) {
     return -1;
 }
 
+/** Apply nonzero deployment overrides to a copied packet-limit profile. */
 void packet_limiter_apply_overrides(PacketLimitProfile* out,
                                     const PacketLimitProfile* base,
                                     const PacketLimitOverrides* overrides) {
@@ -112,6 +103,11 @@ void packet_limiter_apply_overrides(PacketLimitProfile* out,
     }
 }
 
+/**
+ * Install a packet-limit profile and allocate descriptor-indexed limiter slots.
+ *
+ * Unspecified opcode rules receive the fail-safe default class and cost.
+ */
 void packet_limiter_init(const PacketLimitProfile* profile) {
     if (!profile) return;
 
@@ -159,6 +155,7 @@ void packet_limiter_init(const PacketLimitProfile* profile) {
              g_profile.violation_limit, g_profile.violation_window);
 }
 
+/** Reset a descriptor's counters with full initial burst allowances. */
 void packet_limiter_reset(int fd) {
     if (!g_slots || fd < 0 || fd >= g_slot_count) return;
 
@@ -179,6 +176,11 @@ void packet_limiter_reset(int fd) {
     }
 }
 
+/**
+ * Charge an inbound packet to its class and overall token buckets.
+ *
+ * @return      Allow, drop, or disconnect according to available tokens and recent violations.
+ */
 PacketLimitVerdict packet_limiter_check(int fd, uint8_t packet_type) {
     // No table means init failed. Refuse rather than serve unmetered traffic.
     if (!g_slots) return PACKET_LIMIT_KICK;
@@ -239,6 +241,11 @@ PacketLimitVerdict packet_limiter_check(int fd, uint8_t packet_type) {
     return PACKET_LIMIT_DROP;
 }
 
+/**
+ * Estimate when both buckets could next afford a packet type.
+ *
+ * @return      The advisory delay in milliseconds, clamped to 65535, or zero for an unavailable slot.
+ */
 uint16_t packet_limiter_retry_after_ms(int fd, uint8_t packet_type) {
     if (!g_slots || fd < 0 || fd >= g_slot_count) return 0;
 
@@ -265,16 +272,27 @@ uint16_t packet_limiter_retry_after_ms(int fd, uint8_t packet_type) {
     return (uint16_t)ms;
 }
 
+/**
+ * Report whether a dropped packet's class requires an explicit rejection.
+ *
+ * @return      Nonzero when the caller should send a rejection, otherwise zero.
+ */
 int packet_limiter_wants_rejection(uint8_t packet_type) {
     if (!g_slots) return 0;
     return g_profile.notify_on_drop[g_profile.opcodes[packet_type].cls] != 0;
 }
 
+/** Return the limiter class assigned to an opcode. */
 PacketLimitClass packet_limiter_class_of(uint8_t packet_type) {
     if (!g_slots) return LIMIT_DEFAULT_CLASS;
     return (PacketLimitClass)g_profile.opcodes[packet_type].cls;
 }
 
+/**
+ * Return the display name for a limiter class.
+ *
+ * @return      The class name, or "unknown" for an invalid class.
+ */
 const char* packet_limiter_class_name(PacketLimitClass cls) {
     if (cls < 0 || cls >= LIMIT_CLASS_COUNT) return "unknown";
     return CLASS_NAMES[cls];

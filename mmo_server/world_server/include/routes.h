@@ -9,6 +9,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
-int process_packet(int client_fd, uint32_t character_id, ssize_t bytes, uint8_t* buffer);
+// treat player_slot as an untrusted cache hint, with -1 meaning unauthenticated
+int process_packet(int client_fd, uint32_t character_id, int player_slot,
+                   ssize_t bytes, uint8_t* buffer);
 
 #endif

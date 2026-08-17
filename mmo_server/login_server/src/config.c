@@ -1,17 +1,28 @@
+/**
+ * @file
+ * Configure login-server signals and its TCP listening socket.
+ */
 #include "config.h"
 
+/** Request termination of the login-server accept loop. */
 void signal_handler(int sig) {
     (void)sig;
     printf("\nReceived shutdown signal\n");
     g_server.running = 0;
 }
 
+/** Install shutdown handlers and ignore broken-pipe signals. */
 void setup_signals(void) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);
 }
 
+/**
+ * Create, bind, and listen on a reusable IPv4 TCP socket.
+ *
+ * @return      The listening descriptor, or -1 when socket setup fails.
+ */
 int create_tcp_server_socket(int port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {

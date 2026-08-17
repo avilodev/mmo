@@ -1,12 +1,8 @@
-// ============================================================================
-// projectile.c — Modular projectile system
-//
-// Handles spawning, movement, collision, damage, and broadcasting for all
-// projectiles (player skillshots and NPC ranged attacks).
-//
-// Threading: All state mutations happen under g_projectiles_lock.
-// All send() calls happen OUTSIDE locks to prevent blocking.
-// ============================================================================
+/**
+ * @file
+ * Manage movement, collision, damage, and broadcasts for world projectiles.
+ * Serialize projectile mutations while deferring network sends until locks are released.
+ */
 
 #include "projectile.h"
 #include "log.h"
@@ -26,24 +22,11 @@
 #include <time.h>
 #include "utils.h"
 
-// ---------------------------------------------------------------------------
-// Extern references
-// ---------------------------------------------------------------------------
-
 extern ActivePlayer active_players[];
-extern pthread_mutex_t active_players_lock;
-
-// ---------------------------------------------------------------------------
-// Static state
-// ---------------------------------------------------------------------------
 
 static Projectile      g_projectiles[MAX_PROJECTILES];
 static pthread_mutex_t g_projectiles_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t        g_next_projectile_id = 1;
-
-// ---------------------------------------------------------------------------
-// Deferred send queue — filled under lock, flushed after unlock
-// ---------------------------------------------------------------------------
 
 #define MAX_DEFERRED_SENDS 256
 
@@ -98,10 +81,6 @@ static void dq_push(DeferredQueue* q, const DeferredSend* item) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 static float dist2d(float ax, float ay, float bx, float by) {
     float dx = bx - ax;
     float dy = by - ay;
@@ -114,10 +93,9 @@ static double get_monotonic_time(void) {
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
-// ---------------------------------------------------------------------------
-// Send helpers (called OUTSIDE locks)
-// ---------------------------------------------------------------------------
-
+/**
+ * Send a projectile-spawn packet to one client.
+ */
 static void send_projectile_spawn_pkt(int client_fd, uint32_t projectile_id,
                                        uint16_t ability_id, uint32_t owner_id,
                                        uint8_t owner_type,
@@ -150,6 +128,9 @@ static void send_projectile_destroy(int client_fd, uint32_t projectile_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send projectile damage or healing results to one client.
+ */
 static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t target_id,
                                 uint16_t ability_id, int damage, int healing,
                                 int target_new_hp, uint8_t is_kill) {
@@ -167,10 +148,11 @@ static void send_ability_effect(int client_fd, uint32_t caster_id, uint32_t targ
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-// ---------------------------------------------------------------------------
-// Flush deferred queue (called OUTSIDE all locks)
-// ---------------------------------------------------------------------------
-
+/**
+ * Execute queued sends, rewards, loot rolls, and quest notifications.
+ *
+ * The caller must hold no projectile, player, or NPC-world locks.
+ */
 static void dq_flush(DeferredQueue* q) {
     for (int i = 0; i < q->count; i++) {
         DeferredSend* ds = &q->items[i];
@@ -215,14 +197,17 @@ static void dq_flush(DeferredQueue* q) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: queue destroy broadcast to nearby players
-// Caller must hold active_players_lock.
-// ---------------------------------------------------------------------------
-
+/**
+ * Queue projectile-destruction packets for nearby players.
+ *
+ * The caller must hold the player-registry read lock.
+ */
 static void queue_destroy_broadcast(DeferredQueue* q, float px, float py,
                                      uint32_t projectile_id, uint8_t reason) {
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         float d = dist2d(px, py, active_players[i].pos_x, active_players[i].pos_y);
         if (d <= PROJECTILE_VIEW_RANGE) {
@@ -236,10 +221,11 @@ static void queue_destroy_broadcast(DeferredQueue* q, float px, float py,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Damage calculation (same formula as ability_handler)
-// ---------------------------------------------------------------------------
-
+/**
+ * Calculate projectile damage after scaling, bonuses, variance, and defense.
+ *
+ * @return Final damage clamped to at least one.
+ */
 static int calc_projectile_damage(const Projectile* proj,
                                    int target_health, int target_max_health,
                                    int target_defense) {
@@ -269,26 +255,24 @@ static int calc_projectile_damage(const Projectile* proj,
     return damage;
 }
 
-// ---------------------------------------------------------------------------
-// Apply effects to NPC on hit
-// ---------------------------------------------------------------------------
-
 static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
                                 uint32_t source_id) {
     (void)source_id;
     LOG_DEBUG("[PROJ] Applied effect %d to NPC %u (val=%d, dur=%.1fs)", effect->type, npc->id, effect->value, effect->duration);
 }
 
-// ============================================================================
-// INIT / CLEANUP
-// ============================================================================
-
+/**
+ * Initialize the projectile pool and identifier sequence.
+ */
 void projectile_init(void) {
     memset(g_projectiles, 0, sizeof(g_projectiles));
     g_next_projectile_id = 1;
     LOG_INFO("[PROJECTILE] System initialized");
 }
 
+/**
+ * Clear the projectile pool while holding its state lock.
+ */
 void projectile_cleanup(void) {
     pthread_mutex_lock(&g_projectiles_lock);
     memset(g_projectiles, 0, sizeof(g_projectiles));
@@ -296,10 +280,12 @@ void projectile_cleanup(void) {
     LOG_DEBUG("[PROJECTILE] System cleaned up");
 }
 
-// ============================================================================
-// SPAWN
-// ============================================================================
-
+/**
+ * Spawn a projectile and notify nearby players.
+ *
+ * @param info  Complete immutable projectile creation parameters.
+ * @return      The assigned projectile identifier, or 0 when the pool is full.
+ */
 uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     // Calculate direction from origin to aim
     float dx = info->aim_x - info->origin_x;
@@ -366,11 +352,14 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     pthread_mutex_unlock(&g_projectiles_lock);
 
     // Broadcast spawn to nearby players (outside projectile lock)
-    pthread_mutex_lock(&active_players_lock);
+    player_registry_rdlock();
     typedef struct { int fd; } SpawnTarget;
     SpawnTarget spawn_targets[MAX_PLAYERS];
     int spawn_count = 0;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int n = 0; n < online_count; n++) {
+        int i = online[n];
         if (!active_players[i].is_loaded) continue;
         float d = dist2d(spawn_x, spawn_y,
                          active_players[i].pos_x, active_players[i].pos_y);
@@ -378,7 +367,7 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
             spawn_targets[spawn_count++].fd = active_players[i].client_fd;
         }
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
     // Send outside all locks
     for (int i = 0; i < spawn_count; i++) {
@@ -394,10 +383,9 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     return id;
 }
 
-// ============================================================================
-// REMOVE
-// ============================================================================
-
+/**
+ * Remove a projectile and notify nearby players.
+ */
 void projectile_remove(uint32_t projectile_id) {
     float px = 0, py = 0;
     int found = 0;
@@ -420,19 +408,22 @@ void projectile_remove(uint32_t projectile_id) {
     // Notify nearby players (outside projectile lock)
     DeferredQueue q;
     dq_init(&q);
-    pthread_mutex_lock(&active_players_lock);
+    player_registry_rdlock();
     queue_destroy_broadcast(&q, px, py, projectile_id, PROJECTILE_DESTROY_CANCELLED);
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
     dq_flush(&q);
 }
 
-// ============================================================================
-// TICK — movement, collision, damage
-//
-// Pattern: snapshot state under lock, release, then send.
-// ============================================================================
-
-void projectile_tick(NPCWorld* world, double delta_time) {
+/**
+ * Advance projectiles and resolve range expiry and entity collisions.
+ *
+ * Network sends and reward processing are deferred until state locks are released.
+ *
+ * @param world       NPC world used for player-owned projectile collisions.
+ * @param snap        Player snapshot used to select NPC-projectile candidates; may be NULL.
+ * @param delta_time  Elapsed tick time in seconds.
+ */
+void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
     float dt = (float)delta_time;
     DeferredQueue q;
     dq_init(&q);
@@ -458,10 +449,10 @@ void projectile_tick(NPCWorld* world, double delta_time) {
         if (proj->distance_traveled >= proj->max_range) {
             proj->is_active = 0;
             // Queue destroy broadcast
-            pthread_mutex_lock(&active_players_lock);
+            player_registry_rdlock();
             queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
                                      PROJECTILE_DESTROY_EXPIRED);
-            pthread_mutex_unlock(&active_players_lock);
+            player_registry_unlock();
             continue;
         }
 
@@ -494,10 +485,10 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                         }
                         proj->is_active = 0;
                         // Queue destroy broadcast
-                        pthread_mutex_lock(&active_players_lock);
+                        player_registry_rdlock();
                         queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
                                                  PROJECTILE_DESTROY_HIT);
-                        pthread_mutex_unlock(&active_players_lock);
+                        player_registry_unlock();
                         break;
                     }
 
@@ -554,10 +545,10 @@ void projectile_tick(NPCWorld* world, double delta_time) {
 
                     proj->is_active = 0;
                     // Queue destroy broadcast
-                    pthread_mutex_lock(&active_players_lock);
+                    player_registry_rdlock();
                     queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
                                              PROJECTILE_DESTROY_HIT);
-                    pthread_mutex_unlock(&active_players_lock);
+                    player_registry_unlock();
                     break;
                 }
             }
@@ -565,13 +556,24 @@ void projectile_tick(NPCWorld* world, double delta_time) {
 
         // --- NPC projectile: collide with players ---
         } else if (proj->owner_type == PROJECTILE_OWNER_NPC) {
-            pthread_mutex_lock(&active_players_lock);
-            for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (!active_players[i].is_loaded) continue;
+            float hit_range = proj->width / 2.0f + 20.0f; // 20 = player hitbox
 
+            // select bounded collision candidates from the snapshot grid
+            int nearby[PROJECTILE_HIT_CANDIDATES];
+            int n_near = snap ? tick_snapshot_query(snap, proj_px, proj_py, hit_range,
+                                                    nearby, PROJECTILE_HIT_CANDIDATES)
+                              : 0;
+
+            player_registry_rdlock();
+            for (int k = 0; k < n_near; k++) {
+                int i = snap->slot[nearby[k]];
+                if (!active_players[i].is_loaded) continue;
+                // reject slots recycled since the snapshot
+                if (active_players[i].character_id != snap->character_id[nearby[k]]) continue;
+
+                // confirm collisions against live positions
                 float d = dist2d(proj_px, proj_py,
                                  active_players[i].pos_x, active_players[i].pos_y);
-                float hit_range = proj->width / 2.0f + 20.0f; // 20 = player hitbox
 
                 if (d <= hit_range) {
                     pthread_mutex_lock(&active_players[i].lock);
@@ -637,7 +639,7 @@ void projectile_tick(NPCWorld* world, double delta_time) {
                     break;
                 }
             }
-            pthread_mutex_unlock(&active_players_lock);
+            player_registry_unlock();
         }
     }
     pthread_mutex_unlock(&g_projectiles_lock);
@@ -646,31 +648,19 @@ void projectile_tick(NPCWorld* world, double delta_time) {
     dq_flush(&q);
 }
 
-// ============================================================================
-// BROADCAST — send positions to nearby players at 30Hz
-// ============================================================================
+/**
+ * Broadcast active projectile positions to nearby snapshot players.
+ *
+ * Samples projectile state under its lock and performs sends after releasing it.
+ *
+ * @param snapshot  Broadcast-pass player snapshot; may be NULL or empty.
+ */
+void projectile_broadcast(const BroadcastSnapshot* snapshot) {
+    // share the broadcast pass snapshot across entity streams
+    if (!snapshot || snapshot->count == 0) return;
 
-void projectile_broadcast(void) {
-    // Snapshot active player positions and fds
-    typedef struct {
-        int client_fd;
-        float pos_x, pos_y;
-    } PlayerSnapshot;
-
-    PlayerSnapshot snapshots[MAX_PLAYERS];
-    int snapshot_count = 0;
-
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!active_players[i].is_loaded) continue;
-        snapshots[snapshot_count].client_fd = active_players[i].client_fd;
-        snapshots[snapshot_count].pos_x     = active_players[i].pos_x;
-        snapshots[snapshot_count].pos_y     = active_players[i].pos_y;
-        snapshot_count++;
-    }
-    pthread_mutex_unlock(&active_players_lock);
-
-    if (snapshot_count == 0) return;
+    const BroadcastPlayer* snapshots = snapshot->players;
+    const int snapshot_count = snapshot->count;
 
     // Snapshot projectile positions
     typedef struct {

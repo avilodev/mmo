@@ -1,36 +1,16 @@
-// ============================================================================
-// npc_ai.h — NPC AI system: behavior profiles, state machine, ability usage
-//
-// Data-driven NPC behaviors loaded from npc_types.json. Each NPC type gets
-// a movement pattern, aggro range, and a set of abilities:
-//   - Projectile: fires a traveling projectile (via projectile_spawn)
-//   - Telegraph:  FF14-style ground indicator with cast time, then AOE damage
-//
-// Telegraph flow:
-//   1. NPC starts cast -> NPC_TELEGRAPH_START sent to nearby players
-//   2. Client shows ground indicator (shape, position, duration)
-//   3. NPC is locked (no movement/other abilities) during cast
-//   4. Cast completes -> damage all players still in the shape
-//   5. NPC_TELEGRAPH_RESOLVE sent, ability goes on cooldown
-// ============================================================================
+/** @file Define data-driven NPC movement, targeting, abilities, and telegraph state. */
 
 #ifndef NPC_AI_H
 #define NPC_AI_H
 
 #include "combat_config.h"
+#include "tick_snapshot.h"
 #include <stdint.h>
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+#define MAX_NPC_ABILITIES     4       /**< Maximum abilities for one NPC type. */
+#define MAX_NPC_AI_PROFILES   32      /**< Maximum distinct NPC behavior profiles. */
 
-#define MAX_NPC_ABILITIES     4       // Max abilities per NPC type
-#define MAX_NPC_AI_PROFILES   32      // Max distinct NPC type profiles
-
-// ---------------------------------------------------------------------------
-// NPC AI state machine
-// ---------------------------------------------------------------------------
-
+/** Identify the current state of an NPC's behavior machine. */
 typedef enum {
     NPC_AI_IDLE       = 0,   // Standing at spawn, no target
     NPC_AI_AGGRO      = 1,   // Has a target, chasing/attacking
@@ -38,29 +18,20 @@ typedef enum {
     NPC_AI_CASTING    = 3    // Casting a telegraph ability (locked in place)
 } NPCAIState;
 
-// ---------------------------------------------------------------------------
-// NPC movement behavior
-// ---------------------------------------------------------------------------
-
+/** Identify how an NPC positions itself relative to its target. */
 typedef enum {
     NPC_MOVE_STATIONARY      = 0,   // Never moves, shoots from spawn
     NPC_MOVE_FOLLOW          = 1,   // Chases target into melee range
     NPC_MOVE_MAINTAIN_RANGE  = 2    // Keeps preferred_range distance from target
 } NPCMovementType;
 
-// ---------------------------------------------------------------------------
-// Ability delivery type
-// ---------------------------------------------------------------------------
-
+/** Select projectile or delayed-area delivery for an NPC ability. */
 typedef enum {
     NPC_DELIVERY_PROJECTILE  = 0,   // Fires a traveling projectile
     NPC_DELIVERY_TELEGRAPH   = 1    // Ground indicator -> AOE damage after cast time
 } NPCDeliveryType;
 
-// ---------------------------------------------------------------------------
-// Telegraph shape (for ground indicators)
-// ---------------------------------------------------------------------------
-
+/** Identify the client-visible geometry of an NPC telegraph. */
 typedef enum {
     NPC_TELEGRAPH_CIRCLE     = 0,
     NPC_TELEGRAPH_CONE       = 1,
@@ -68,24 +39,20 @@ typedef enum {
     NPC_TELEGRAPH_LINE       = 3
 } NPCTelegraphShape;
 
-// ---------------------------------------------------------------------------
-// NPC ability definition
-// ---------------------------------------------------------------------------
-
+/** Define one NPC attack's range, timing, and delivery geometry. */
 typedef struct {
     uint16_t ability_id;         // For client VFX lookup
     int      damage;             // Base damage
     float    range;              // Max range to use this ability
     float    cooldown;           // Seconds between uses
 
-    // Delivery type
     uint8_t  delivery;           // NPCDeliveryType
 
-    // Projectile fields (delivery == NPC_DELIVERY_PROJECTILE)
+    /** Configure projectile delivery when selected. */
     float    projectile_speed;   // >0 spawns projectile
     float    projectile_width;   // Hitbox width
 
-    // Telegraph fields (delivery == NPC_DELIVERY_TELEGRAPH)
+    /** Configure delayed telegraph delivery when selected. */
     float    cast_time;          // Seconds of telegraph before damage resolves
     uint8_t  telegraph_shape;    // NPCTelegraphShape
     float    telegraph_radius;   // Circle/cone radius
@@ -96,42 +63,33 @@ typedef struct {
     uint8_t  teleport_on_resolve;  // 1 = NPC teleports to end of line at cast resolve
 } NPCAbilityDef;
 
-// ---------------------------------------------------------------------------
-// NPC AI profile — one per npc_type_id, loaded from JSON
-// ---------------------------------------------------------------------------
-
+/** Associate movement, aggro, and ability settings with one NPC type. */
 typedef struct {
     uint16_t        npc_type_id;
 
-    // Movement
     NPCMovementType movement_type;
     float           move_speed;         // World units per second
     float           preferred_range;    // For MAINTAIN_RANGE: desired distance to target
 
-    // Aggro
     float           aggro_range;        // Detection distance
     float           leash_range;        // Max distance from spawn before giving up
 
-    // Abilities
     NPCAbilityDef   abilities[MAX_NPC_ABILITIES];
     int             ability_count;
 } NPCAIProfile;
 
-// ---------------------------------------------------------------------------
-// API
-// ---------------------------------------------------------------------------
-
-// Load NPC AI profiles from JSON. Call once at startup.
+// load once during world-server startup
 int npc_ai_init(const char* json_path);
 
-// Cleanup.
 void npc_ai_cleanup(void);
 
-// Per-tick AI update. Call from combat_update_thread at 20Hz.
-// Handles: target acquisition, movement, ability usage, casting, telegraph resolve.
-void npc_ai_tick(NPCWorld* world, double delta_time);
+/** Bound each NPC's nearest-first candidate search without changing reachability. */
+#define NPC_AGGRO_CANDIDATES 16
 
-// Get the AI profile for a given npc_type_id. Returns NULL if none.
+// update targeting, movement, abilities, and telegraphs at 20 Hz
+void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time);
+
+// return a registry-owned profile or NULL when absent
 const NPCAIProfile* npc_ai_get_profile(uint16_t npc_type_id);
 
 #endif // NPC_AI_H

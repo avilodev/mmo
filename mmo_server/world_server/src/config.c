@@ -1,8 +1,17 @@
+/**
+ * @file
+ * Load world-server identity, endpoint, capacity, and packet-budget settings.
+ */
 #include "config.h"
 
 ServerConfig g_server;
 ServerState g_state;
 
+/**
+ * Create, bind, and listen on a reusable IPv4 TCP socket.
+ *
+ * @return      The listening descriptor, or -1 when setup fails.
+ */
 int create_tcp_server_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -45,11 +54,11 @@ static void rtrim(char* s) {
     while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
 }
 
-// Apply one `key = value` pair. Returns 1 if the key was recognized.
-//
-// Only the limiter budgets are addressable this way. The positional fields
-// below predate it and are left alone so every existing world .conf keeps
-// working untouched.
+/**
+ * Apply one named packet-limit override to the global world configuration.
+ *
+ * @return      Nonzero when the key is recognized, otherwise zero.
+ */
 static int apply_keyed_setting(const char* key, const char* value) {
     // limit_overall_rate / limit_overall_burst
     if (strcmp(key, "limit_overall_rate") == 0) {
@@ -96,6 +105,11 @@ static int apply_keyed_setting(const char* key, const char* value) {
     return 0;
 }
 
+/**
+ * Load five positional world fields followed by optional named limit overrides.
+ *
+ * @return      Nonzero when all required fields are valid, otherwise zero.
+ */
 int set_config(const char* filepath) {
     FILE* file = fopen(filepath, "r");
     if (!file) {

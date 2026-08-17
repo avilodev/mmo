@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Check queued partial writes for byte integrity and packet ordering.
+ */
+
 #include "connection_io.h"
 
 #include <errno.h>
@@ -8,9 +13,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/** Configure the packet volume used to force socket backpressure. */
 #define PACKET_COUNT 256
 #define PACKET_SIZE 1024
 
+/**
+ * Run the queued connection I/O stress check.
+ *
+ * @return      Zero on success, or one on setup, transfer, or validation failure.
+ */
 int main(void) {
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {

@@ -1,6 +1,7 @@
-// Concurrency test for the real player_add_active() in world_server/src/player_data.c.
-// The database layer is stubbed with a deliberately slow load so we can measure
-// whether the global table lock is held across it.
+/**
+ * @file
+ * Check concurrent player activation and registry-lock availability during database loads.
+ */
 
 #include "types.h"
 #include "log.h"
@@ -17,18 +18,37 @@
 #include <string.h>
 #include <unistd.h>
 
-#define LOAD_DELAY_US 200000   // 200ms — stands in for a slow Postgres query
+/** Simulated database latency in microseconds. */
+#define LOAD_DELAY_US 200000
 
 extern ActivePlayer active_players[MAX_PLAYERS];
-extern pthread_mutex_t active_players_lock;
 
 static atomic_int g_loads_started = 0;
 
-// ---- stubs -----------------------------------------------------------------
+/** Stub successful database initialization. */
 int character_database_init(const char* c) { (void)c; return 1; }
+/** Stub database shutdown. */
 void character_database_close(void) {}
+/** Stub successful character persistence. */
 int character_update_full_data(const CharacterInfo* d) { (void)d; return 1; }
 
+/** Stub loading empty inventory and equipment arrays. */
+int character_items_load(uint32_t c, ItemInstance* inv, int n_inv,
+                         ItemInstance* eq, int n_eq) {
+    (void)c;
+    if (inv) memset(inv, 0, (size_t)n_inv * sizeof(*inv));
+    if (eq)  memset(eq,  0, (size_t)n_eq  * sizeof(*eq));
+    return 1;
+}
+/** Stub successful inventory persistence. */
+int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
+                         const ItemInstance* eq, int n_eq) {
+    (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
+}
+/** Stub an empty persisted instance-id range. */
+uint64_t character_items_max_instance_id(void) { return 0; }
+
+/** Simulate a delayed successful character load. */
 int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
     atomic_fetch_add(&g_loads_started, 1);
     usleep(LOAD_DELAY_US);                 // the slow part we must not hold locks across
@@ -40,47 +60,59 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
     return 1;
 }
 
+/** Stub class-stat application. */
 void player_apply_class_stats(ActivePlayer* p) { (void)p; }
+/** Stub equipment-stat application. */
 void player_apply_equipment_bonuses(ActivePlayer* p) { (void)p; }
+/** Stub an empty class ability list. */
 int  ability_get_class_abilities(uint8_t c, uint16_t* out, int max) { (void)c; (void)out; (void)max; return 0; }
+/** Stub an absent ability definition. */
 const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
+/** Stub an empty persisted quest list. */
 int  quest_player_load(uint32_t c, PlayerQuestEntry* q, int max) { (void)c; (void)q; (void)max; return 0; }
+/** Stub successful quest persistence. */
 int  quest_player_save(uint32_t c, const PlayerQuestEntry* q, int n) { (void)c; (void)q; (void)n; return 1; }
+/** Stub successful packet transmission. */
 ssize_t server_send(int fd, void* d, size_t n) { (void)fd; (void)d; (void)n; return (ssize_t)n; }
 
-// ---- test 1: concurrent logins of distinct characters ----------------------
+/** Carry one concurrent login request and its result. */
 typedef struct { uint32_t cid; int fd; int result; } LoginArg;
 
+/** Activate the character described by a LoginArg. */
 static void* do_login(void* a) {
     LoginArg* arg = (LoginArg*)a;
-    arg->result = player_add_active(arg->cid, arg->fd);
+    arg->result = player_add_active(arg->cid, arg->fd, NULL);
     return NULL;
 }
 
-// ---- scanner: proves the global lock is free during the load ---------------
 static atomic_int g_scan_count = 0;
 static atomic_int g_scanner_run = 1;
 
+/** Repeatedly acquire the registry read lock while logins load. */
 static void* scanner(void* a) {
     (void)a;
     while (atomic_load(&g_scanner_run)) {
-        pthread_mutex_lock(&active_players_lock);
+        player_registry_rdlock();
         int n = 0;
         for (int i = 0; i < MAX_PLAYERS; i++) if (active_players[i].is_loaded) n++;
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
         (void)n;
         atomic_fetch_add(&g_scan_count, 1);
-        usleep(1000);   // 1ms between scans, like a 60Hz broadcast tick
+        usleep(1000);
     }
     return NULL;
 }
 
+/**
+ * Run concurrent activation and registry visibility assertions.
+ *
+ * @return      Zero after all assertions pass.
+ */
 int main(void) {
     log_init();
     log_set_level(LOG_LEVEL_ERROR);   // keep the test output readable
     assert(playerdata_init("stub") == 1);
 
-    // -------------------------------------------------------------------
     printf("TEST 1: 16 concurrent logins of distinct characters\n");
     enum { N = 16 };
     pthread_t th[N]; LoginArg args[N];
@@ -102,7 +134,7 @@ int main(void) {
     printf("  logins succeeded : %d/%d\n", ok, N);
     assert(ok == N);
 
-    // Every character must occupy exactly one distinct slot.
+    // require one committed slot per character
     int loaded = 0, dupes = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!active_players[i].is_loaded) continue;
@@ -115,14 +147,12 @@ int main(void) {
     printf("  duplicate slots  : %d (expect 0)\n", dupes);
     assert(loaded == N && dupes == 0);
 
-    // The decisive measurement: with a 200ms load, a lock held across it would
-    // let the scanner run only a handful of times.
+    // require registry progress during delayed loads
     int scans = atomic_load(&g_scan_count);
     printf("  scanner acquired global lock %d times during the loads\n", scans);
     printf("  -> lock free during DB load: %s\n", scans > 50 ? "YES" : "NO (still serialized)");
     assert(scans > 50);
 
-    // -------------------------------------------------------------------
     printf("\nTEST 2: 8 concurrent logins of the SAME character (reconnect race)\n");
     int before = atomic_load(&g_loads_started);
     enum { M = 8 };
@@ -141,7 +171,6 @@ int main(void) {
     assert(slots_for_7777 == 1);
     assert(loads == 1);
 
-    // -------------------------------------------------------------------
     printf("\nTEST 3: reserved slot is invisible to gameplay until committed\n");
     int reserved_and_loaded = 0;
     for (int i = 0; i < MAX_PLAYERS; i++)

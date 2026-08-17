@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Exercise registration, realm selection, character entry, and world connectivity end to end.
+ */
+
 #include "types.h"
 #include <stdio.h>
 #include <string.h>
@@ -6,6 +11,13 @@
 #include <arpa/inet.h>
 #include <time.h>
 
+/**
+ * Connect a TCP socket to an IPv4 server.
+ *
+ * @param host  Numeric IPv4 address.
+ * @param port  TCP port in host byte order.
+ * @return      Connected descriptor, or -1 on socket or connection failure.
+ */
 int connect_to_server(const char* host, int port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -27,6 +39,13 @@ int connect_to_server(const char* host, int port) {
     return sockfd;
 }
 
+/**
+ * Run the interactive end-to-end server connection test.
+ *
+ * @param argc  Command-line argument count.
+ * @param argv  Command-line arguments; argv[1] optionally supplies the username.
+ * @return      Zero on completion, or one when a required protocol step fails.
+ */
 int main(int argc, char** argv) {
     char username[32];
     char password[64] = "TestPass123";
@@ -40,7 +59,6 @@ int main(int argc, char** argv) {
     printf("=== MMO CLIENT TEST ===\n");
     printf("User: %s\n\n", username);
     
-    // ===== STEP 1: LOGIN =====
     printf("[1/5] Connecting to login server...\n");
     int login_fd = connect_to_server("127.0.0.1", LOGIN_SERVER_PORT);
     if (login_fd < 0) return 1;
@@ -80,7 +98,6 @@ int main(int argc, char** argv) {
     printf("✅ Logged in! Player ID: %u\n\n", player_id);
     close(login_fd);
     
-    // ===== STEP 2: CONNECT TO REALM =====
     printf("[2/5] Connecting to realm server...\n");
     int realm_fd = connect_to_server("127.0.0.1", REALM_SERVER_PORT);
     if (realm_fd < 0) return 1;
@@ -101,7 +118,6 @@ int main(int argc, char** argv) {
     
     printf("✅ Realm authenticated\n\n");
     
-    // ===== STEP 3: GET WORLD LIST =====
     printf("[3/5] Requesting world list...\n");
     
     WorldListRequestPacket world_req = {0};
@@ -148,7 +164,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // ===== STEP 4: GET/CREATE CHARACTER =====
     printf("[4/5] Checking characters...\n");
     
     CharacterListRequestPacket char_req = {0};
@@ -198,7 +213,6 @@ int main(int argc, char** argv) {
         recv(realm_fd, &char_list, sizeof(char_list), 0);
     }
     
-    // ===== STEP 5: ENTER WORLD =====
     printf("[5/5] Entering world...\n");
     
     EnterWorldPacket enter_req = {0};
@@ -221,7 +235,6 @@ int main(int argc, char** argv) {
     
     close(realm_fd);
     
-    // ===== STEP 6: CONNECT TO WORLD SERVER =====
     printf("Connecting to world server...\n");
     int world_fd = connect_to_server(enter_resp.world_ip, ntohs(enter_resp.world_port));
     if (world_fd < 0) return 1;
@@ -244,7 +257,6 @@ int main(int argc, char** argv) {
     printf("✅ Connected to world server!\n");
     printf("   Message: %s\n\n", world_ack.welcome_message);
     
-    // ===== STAY CONNECTED =====
     printf("╔═══════════════════════════════════════════════════╗\n");
     printf("║     SUCCESSFULLY CONNECTED TO WORLD SERVER        ║\n");
     printf("╚═══════════════════════════════════════════════════╝\n\n");

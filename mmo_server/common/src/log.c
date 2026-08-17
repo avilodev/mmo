@@ -1,16 +1,7 @@
-// ============================================================================
-// log.c — Implementation of the leveled, rate-limited logger.
-//
-// Design notes:
-//   - One mutex guards the output stream so lines from different threads never
-//     interleave mid-message. The formatted line is built in a stack buffer
-//     first, so the lock is held only for the write itself.
-//   - ERROR and WARN go to stderr; everything else to stdout. Both are line
-//     buffered when attached to a terminal and block buffered when redirected,
-//     which is what the supervisor scripts want.
-//   - Rate-limit state lives at the call site (see LOG_AT_RL); this file only
-//     provides the window arithmetic, guarded by its own small lock.
-// ============================================================================
+/**
+ * @file
+ * Emit synchronized server logs and enforce per-call-site rate windows.
+ */
 
 #include "log.h"
 
@@ -43,6 +34,7 @@ static LogLevel parse_level(const char* s) {
     return LOG_LEVEL_INFO;
 }
 
+/** Initialize the runtime log level and source-location setting from the environment. */
 void log_init(void) {
     g_level = parse_level(getenv("MMO_LOG_LEVEL"));
 
@@ -51,10 +43,17 @@ void log_init(void) {
         g_show_source = 0;
 }
 
+/** Set the maximum enabled logging level. */
 void log_set_level(LogLevel level) { g_level = level; }
 
+/** Return the maximum enabled logging level. */
 LogLevel log_get_level(void) { return g_level; }
 
+/**
+ * Test whether a logging level is enabled.
+ *
+ * @return      Nonzero when the level should be emitted, otherwise zero.
+ */
 int log_level_enabled(LogLevel level) { return (int)level <= (int)g_level; }
 
 // Strip directories so "world_server/src/packet_handler.c" logs as
@@ -64,6 +63,11 @@ static const char* basename_of(const char* path) {
     return slash ? slash + 1 : path;
 }
 
+/**
+ * Format and emit one timestamped log record without interleaving threads.
+ *
+ * This function serializes writes through the process-wide output mutex.
+ */
 void log_emit(LogLevel level, const char* file, int line, const char* fmt, ...) {
     if (!log_level_enabled(level)) return;
     if ((int)level < 0 || (int)level > LOG_LEVEL_TRACE) level = LOG_LEVEL_INFO;
@@ -95,6 +99,14 @@ void log_emit(LogLevel level, const char* file, int line, const char* fmt, ...) 
     pthread_mutex_unlock(&g_out_lock);
 }
 
+/**
+ * Consume one event from a shared rate window when capacity remains.
+ *
+ * This function serializes rate-state updates through the process-wide rate mutex.
+ *
+ * @param out_suppressed  Receives the prior window's suppressed count when a new window begins; may be NULL.
+ * @return                Nonzero when the caller may emit, otherwise zero.
+ */
 int log_rate_allow(LogRateState* st, uint32_t max_per_window,
                    uint32_t window_secs, uint32_t* out_suppressed) {
     if (!st) return 1;

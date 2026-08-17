@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Store and validate realm-to-world authentication data in Redis.
+ */
 #include "realm_world_auth.h"
 #include "session.h"
 
@@ -7,8 +11,13 @@
 #include <string.h>
 #include <hiredis/hiredis.h>
 
-// Get the current server-to-server auth key from Redis
-// Returns NULL if not found
+/**
+ * Retrieve a server-to-server authentication key by server name.
+ *
+ * The caller must free the returned string.
+ *
+ * @return      The allocated key, or NULL when unavailable.
+ */
 char* get_server_auth_key_from_redis(const char* server_name) {
     if (!g_redis || !server_name) {
         return NULL;
@@ -32,6 +41,12 @@ char* get_server_auth_key_from_redis(const char* server_name) {
     return auth_key;
 }
 
+/**
+ * Store a server authentication key with an optional Redis expiry.
+ *
+ * @param ttl_seconds  Lifetime in seconds, or a nonpositive value for no expiry.
+ * @return             Nonzero when Redis accepts the key, otherwise zero.
+ */
 int set_server_auth_key_in_redis(const char* server_name, const char* auth_key, int ttl_seconds) {
     if (!g_redis || !server_name || !auth_key) {
         return 0;
@@ -64,8 +79,11 @@ int set_server_auth_key_in_redis(const char* server_name, const char* auth_key, 
     return success;
 }
 
-// Validate a server auth key against Redis
-// Returns 1 if valid, 0 if invalid
+/**
+ * Compare a provided server key with the value stored for a world.
+ *
+ * @return      Nonzero for a matching stored key, otherwise zero.
+ */
 int validate_server_auth_key(const char* provided_key, const char* world_name) {
     char* expected_key = get_server_auth_key_from_redis(world_name);
     
@@ -79,7 +97,11 @@ int validate_server_auth_key(const char* provided_key, const char* world_name) {
     return valid;
 }
 
-// NEW: Extract account_id from game ticket stored in Redis
+/**
+ * Read the account identifier from a Redis game-ticket hash.
+ *
+ * @return      The stored account identifier, or zero when unavailable or invalid.
+ */
 uint32_t get_account_from_ticket(const char* game_ticket) {
     if (!game_ticket || !g_redis) {
         fprintf(stderr, "get_account_from_ticket: invalid parameters\n");

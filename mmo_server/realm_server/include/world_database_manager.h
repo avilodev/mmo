@@ -8,15 +8,19 @@
 #include <time.h>
 #include <errno.h>
 
+/** Set the fixed PostgreSQL connection count allocated per world. */
 #define CONN_PER_WORLD 4
+/** Bound the world database pools retained by the realm. */
 #define MAX_WORLDS 10
 
+/** Track one lock-protected connection slot in a world pool. */
 typedef struct {
     PGconn* conn;
     int in_use;
     pthread_mutex_t lock;
 } WorldConnection;
 
+/** Coordinate a world's bounded PostgreSQL connection pool. */
 typedef struct {
     uint32_t world_id;
     char db_name[64];

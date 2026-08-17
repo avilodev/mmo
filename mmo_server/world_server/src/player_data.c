@@ -1,3 +1,9 @@
+/**
+ * @file
+ * Manage active-player slots, persistence, synchronized access, and player-data packets.
+ */
+
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include "types.h"
@@ -24,30 +30,323 @@
 
 #define SAVE_INTERVAL_SECONDS 120 
 
-// Global active players array
 ActivePlayer active_players[MAX_PLAYERS];
-pthread_mutex_t active_players_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// protects slot occupancy, the identifier index, and active-slot list
+static pthread_rwlock_t g_registry_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+/** Acquire the shared player-registry lock. */
+void player_registry_rdlock(void) { pthread_rwlock_rdlock(&g_registry_lock); }
+/** Acquire the exclusive player-registry lock. */
+void player_registry_wrlock(void) { pthread_rwlock_wrlock(&g_registry_lock); }
+/** Release the held player-registry lock. */
+void player_registry_unlock(void) { pthread_rwlock_unlock(&g_registry_lock); }
+
+#define PLAYER_INDEX_CAP   2048           // power of two, > 2 * MAX_PLAYERS
+#define PLAYER_INDEX_MASK  (PLAYER_INDEX_CAP - 1)
+
+#define IDX_EMPTY      (-1)
+#define IDX_TOMBSTONE  (-2)
+
+typedef struct {
+    uint32_t key;    // character_id
+    int32_t  slot;   // >= 0 live, IDX_EMPTY, or IDX_TOMBSTONE
+} IndexEntry;
+
+static IndexEntry g_index[PLAYER_INDEX_CAP];
+static int        g_index_tombstones = 0;
+
+// includes loaded and reserved slots
+static int g_active_slots[MAX_PLAYERS];
+static int g_active_count = 0;
+static int g_slot_position[MAX_PLAYERS];   // slot -> index into g_active_slots, or -1
+
+static inline uint32_t index_hash(uint32_t key) {
+    return (key * 2654435769u) >> 21;   // top 11 bits -> 2048 buckets
+}
+
+static void index_reset(void) {
+    for (int i = 0; i < PLAYER_INDEX_CAP; i++) {
+        g_index[i].key  = 0;
+        g_index[i].slot = IDX_EMPTY;
+    }
+    g_index_tombstones = 0;
+}
+
+/**
+ * Find a character in the open-addressed slot index.
+ *
+ * The caller must hold at least the registry read lock.
+ *
+ * @return The slot index, or -1 when absent.
+ */
+static int index_find(uint32_t character_id) {
+    uint32_t pos = index_hash(character_id) & PLAYER_INDEX_MASK;
+    for (int probe = 0; probe < PLAYER_INDEX_CAP; probe++) {
+        const IndexEntry* e = &g_index[pos];
+        if (e->slot == IDX_EMPTY) return -1;                  // chain ends: miss
+        if (e->slot >= 0 && e->key == character_id) return e->slot;
+        pos = (pos + 1) & PLAYER_INDEX_MASK;                  // tombstone or collision
+    }
+    return -1;
+}
+
+/**
+ * Insert or rebind a character in the slot index.
+ *
+ * The caller must hold the registry write lock.
+ */
+static void index_insert(uint32_t character_id, int slot) {
+    uint32_t pos = index_hash(character_id) & PLAYER_INDEX_MASK;
+    int reuse = -1;
+    for (int probe = 0; probe < PLAYER_INDEX_CAP; probe++) {
+        IndexEntry* e = &g_index[pos];
+        if (e->slot == IDX_TOMBSTONE) {
+            // probe past tombstones to avoid shadowing a live duplicate
+            if (reuse < 0) reuse = (int)pos;
+        } else if (e->slot == IDX_EMPTY) {
+            if (reuse >= 0) { g_index_tombstones--; pos = (uint32_t)reuse; }
+            g_index[pos].key  = character_id;
+            g_index[pos].slot = slot;
+            return;
+        } else if (e->key == character_id) {
+            e->slot = slot;      // rebind an existing character to a new slot
+            return;
+        }
+        pos = (pos + 1) & PLAYER_INDEX_MASK;
+    }
+    // Unreachable while capacity > MAX_PLAYERS, but never silently corrupt.
+    LOG_ERROR("[INDEX] table full inserting character %u", character_id);
+}
+
+/**
+ * Rebuild the identifier index from occupied slots.
+ *
+ * The caller must hold the registry write lock.
+ */
+static void index_rebuild(void) {
+    index_reset();
+    for (int i = 0; i < g_active_count; i++) {
+        int slot = g_active_slots[i];
+        index_insert(active_players[slot].character_id, slot);
+    }
+}
+
+/**
+ * Remove a character from the slot index and collect excess tombstones.
+ *
+ * The caller must hold the registry write lock.
+ */
+static void index_remove(uint32_t character_id) {
+    uint32_t pos = index_hash(character_id) & PLAYER_INDEX_MASK;
+    for (int probe = 0; probe < PLAYER_INDEX_CAP; probe++) {
+        IndexEntry* e = &g_index[pos];
+        if (e->slot == IDX_EMPTY) return;
+        if (e->slot >= 0 && e->key == character_id) {
+            e->slot = IDX_TOMBSTONE;
+            e->key  = 0;
+            g_index_tombstones++;
+            break;
+        }
+        pos = (pos + 1) & PLAYER_INDEX_MASK;
+    }
+
+    // rebuild after sustained login and logout churn
+    if (g_index_tombstones > PLAYER_INDEX_CAP / 4) index_rebuild();
+}
+
+static void active_list_add(int slot) {
+    if (g_slot_position[slot] >= 0) return;          // already listed
+    g_slot_position[slot] = g_active_count;
+    g_active_slots[g_active_count++] = slot;
+}
+
+static void active_list_remove(int slot) {
+    int pos = g_slot_position[slot];
+    if (pos < 0) return;
+    int last = g_active_slots[--g_active_count];     // swap the tail into the hole
+    g_active_slots[pos] = last;
+    g_slot_position[last] = pos;
+    g_slot_position[slot] = -1;
+}
+
+/**
+ * Copy occupied slot indices under the registry read lock.
+ *
+ * The snapshot may be stale immediately after return.
+ *
+ * @param out_slots  Destination array.
+ * @param max_slots  Destination capacity.
+ * @return           The number of indices copied.
+ */
+int player_active_slots(int* out_slots, int max_slots) {
+    if (!out_slots || max_slots <= 0) return 0;
+    player_registry_rdlock();
+    int n = g_active_count < max_slots ? g_active_count : max_slots;
+    memcpy(out_slots, g_active_slots, (size_t)n * sizeof(int));
+    player_registry_unlock();
+    return n;
+}
+
+/**
+ * Resolve a loaded character to its current slot index.
+ *
+ * @return The slot index, or -1 when offline.
+ */
+int player_slot_of(uint32_t character_id) {
+    player_registry_rdlock();
+    int slot = index_find(character_id);
+    if (slot >= 0 && !active_players[slot].is_loaded) slot = -1;
+    player_registry_unlock();
+    return slot;
+}
+
+/**
+ * Borrow the occupied-slot list while holding the registry lock.
+ *
+ * The returned pointer is valid only until the caller releases that lock.
+ *
+ * @param out_count  Receives the number of entries; may be NULL.
+ * @return           The internal occupied-slot array.
+ */
+const int* player_active_list_locked(int* out_count) {
+    if (out_count) *out_count = g_active_count;
+    return g_active_slots;
+}
+
+/**
+ * Report the current occupied-slot count.
+ *
+ * @return An advisory count sampled under the registry read lock.
+ */
+int player_active_count(void) {
+    player_registry_rdlock();
+    int n = g_active_count;
+    player_registry_unlock();
+    return n;
+}
 
 static pthread_t g_save_thread;
 static pthread_mutex_t g_save_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_save_cond = PTHREAD_COND_INITIALIZER;
 static volatile int g_save_thread_running = 0;
 
-// Reset a slot to "free" without disturbing its mutex.
-//
-// The mutex is the final member of ActivePlayer, so clearing exactly the
-// bytes before it wipes every data field and leaves the lock intact. The
-// previous approach copied the pthread_mutex_t out to a local, memset the
-// whole struct, then copied it back — copying a held mutex by value is not
-// something POSIX defines, so this avoids the question entirely.
-//
-// Caller must hold both active_players_lock and the slot's own lock.
+/**
+ * Clear a player slot without overwriting its trailing mutex.
+ *
+ * The caller must hold the registry write lock followed by the slot lock.
+ */
 static void player_slot_clear(int slot) {
+    uint32_t character_id = active_players[slot].character_id;
+
+    // remove from the rebuild source before tombstoning the index
+    active_list_remove(slot);
+    if (character_id != 0) index_remove(character_id);
+
     memset(&active_players[slot], 0, offsetof(ActivePlayer, lock));
 }
 
+/**
+ * Replace the unused initial registry lock with a writer-preferring lock when supported.
+ *
+ * Call this before any worker can acquire the registry lock.
+ */
+static void registry_lock_prefer_writers(void) {
+#if defined(__GLIBC__)
+    pthread_rwlockattr_t attr;
+    if (pthread_rwlockattr_init(&attr) != 0) return;
+
+    if (pthread_rwlockattr_setkind_np(
+            &attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) == 0) {
+        pthread_rwlock_destroy(&g_registry_lock);
+        if (pthread_rwlock_init(&g_registry_lock, &attr) != 0) {
+            // Fall back to a default lock rather than leaving it destroyed.
+            pthread_rwlock_init(&g_registry_lock, NULL);
+            LOG_ERROR("[REGISTRY] writer-preferring lock unavailable; "
+                      "logins may queue behind readers under load");
+        }
+    }
+    pthread_rwlockattr_destroy(&attr);
+#else
+    LOG_WARN("[REGISTRY] platform lacks writer-preferring rwlocks; "
+             "logins may queue behind readers under load");
+#endif
+}
+
+/**
+ * Copy persistable state from a locked player into a save snapshot.
+ *
+ * The caller must hold the player's slot lock.
+ */
+void player_snapshot_for_save(const ActivePlayer* player, PlayerSaveData* out) {
+    if (!player || !out) return;
+
+    memset(out, 0, sizeof(*out));
+
+    CharacterInfo* d = &out->scalars;
+    d->character_id = player->character_id;
+    d->level        = player->level;
+    d->pos_x        = player->pos_x;
+    d->pos_y        = player->pos_y;
+    d->health       = player->health;
+    d->max_health   = player->max_health;
+    d->mana         = player->mana;
+    d->max_mana     = player->max_mana;
+    d->experience   = player->experience;
+    d->gold         = player->gold;
+
+    memcpy(out->inventory, player->inventory, sizeof(out->inventory));
+    memcpy(out->equipment, player->equipment, sizeof(out->equipment));
+
+    out->quest_count = player->quest_count;
+    if (out->quest_count > MAX_PLAYER_QUESTS) out->quest_count = MAX_PLAYER_QUESTS;
+    memcpy(out->quests, player->quests,
+           (size_t)out->quest_count * sizeof(out->quests[0]));
+}
+
+/**
+ * Persist scalar, item, and quest portions of a player snapshot.
+ *
+ * This function performs blocking database and file I/O and must be called without player locks.
+ *
+ * @return 1 when every portion succeeds, or 0 after any partial or total failure.
+ */
+int player_commit_save(const PlayerSaveData* snapshot) {
+    if (!snapshot) return 0;
+
+    uint32_t character_id = snapshot->scalars.character_id;
+    int ok = 1;
+
+    if (!character_update_full_data(&snapshot->scalars)) {
+        LOG_ERROR("Failed to save character %u", character_id);
+        ok = 0;
+    }
+
+    // scalar and item writes can fail independently
+    if (!character_items_save(character_id,
+                              snapshot->inventory, INVENTORY_SLOTS,
+                              snapshot->equipment, EQUIP_SLOTS)) {
+        LOG_ERROR("Failed to save items for character %u", character_id);
+        ok = 0;
+    }
+
+    if (!quest_player_save(character_id, snapshot->quests, snapshot->quest_count)) {
+        LOG_ERROR("Failed to save quests for character %u", character_id);
+        ok = 0;
+    }
+
+    return ok;
+}
+
+/**
+ * Initialize the character database, registry structures, and slot mutexes.
+ *
+ * @return 1 on success, or 0 when database initialization fails.
+ */
 int playerdata_init(const char* conn_str) {
     LOG_DEBUG("Initializing player data system...");
+
+    registry_lock_prefer_writers();
     LOG_DEBUG("PostgreSQL connection: %s", conn_str);
     
     // Initialize the character database
@@ -60,75 +359,57 @@ int playerdata_init(const char* conn_str) {
     memset(active_players, 0, sizeof(active_players));
     for (int i = 0; i < MAX_PLAYERS; i++) {
         pthread_mutex_init(&active_players[i].lock, NULL);
+        g_slot_position[i] = -1;
     }
+    g_active_count = 0;
+    index_reset();
     
     LOG_INFO("Player data system initialized successfully");
     return 1;
 }
 
+/**
+ * Save loaded players, destroy slot mutexes, and close the character database.
+ *
+ * This function performs blocking persistence after releasing registry and slot locks.
+ */
 void playerdata_close(void) {
     LOG_DEBUG("Closing player data system...");
 
     // Snapshot all loaded players, clear slots, then save lock-free
-    typedef struct {
-        CharacterInfo data;
-        PlayerQuestEntry quests[MAX_PLAYER_QUESTS];
-        int quest_count;
-    } ShutdownSave;
-    ShutdownSave save_buf[MAX_PLAYERS];
+    PlayerSaveData save_buf[MAX_PLAYERS];
     int save_count = 0;
 
-    pthread_mutex_lock(&active_players_lock);
+    player_registry_wrlock();
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (active_players[i].is_loaded) {
             pthread_mutex_lock(&active_players[i].lock);
-            ShutdownSave* entry = &save_buf[save_count++];
-            CharacterInfo* d = &entry->data;
-            memset(d, 0, sizeof(*d));
-            d->character_id = active_players[i].character_id;
-            d->level        = active_players[i].level;
-            d->pos_x        = active_players[i].pos_x;
-            d->pos_y        = active_players[i].pos_y;
-            d->health       = active_players[i].health;
-            d->max_health   = active_players[i].max_health;
-            d->mana         = active_players[i].mana;
-            d->max_mana     = active_players[i].max_mana;
-            d->experience   = active_players[i].experience;
-            d->gold         = active_players[i].gold;
-            d->helmet       = active_players[i].helmet;
-            d->gloves       = active_players[i].gloves;
-            d->chest_armor  = active_players[i].chest_armor;
-            d->leggings     = active_players[i].leggings;
-            d->boots        = active_players[i].boots;
-            d->main_hand    = active_players[i].main_hand;
-            d->second_hand  = active_players[i].second_hand;
-            d->blessing     = active_players[i].blessing;
-            memcpy(d->inventory, active_players[i].inventory, sizeof(d->inventory));
-            entry->quest_count = active_players[i].quest_count;
-            memcpy(entry->quests, active_players[i].quests,
-                   (size_t)entry->quest_count * sizeof(entry->quests[0]));
+            player_snapshot_for_save(&active_players[i], &save_buf[save_count++]);
             pthread_mutex_unlock(&active_players[i].lock);
         }
         pthread_mutex_destroy(&active_players[i].lock);
     }
-    pthread_mutex_unlock(&active_players_lock);
+    g_active_count = 0;
+    index_reset();
+    player_registry_unlock();
 
     for (int i = 0; i < save_count; i++) {
-        if (!character_update_full_data(&save_buf[i].data)) {
-            LOG_ERROR("Shutdown save failed for character %u", save_buf[i].data.character_id);
-        }
-        if (!quest_player_save(save_buf[i].data.character_id,
-                               save_buf[i].quests, save_buf[i].quest_count)) {
-            LOG_ERROR("Shutdown quest save failed for character %u", save_buf[i].data.character_id);
-        }
+        if (!player_commit_save(&save_buf[i]))
+            LOG_ERROR("Shutdown save failed for character %u",
+                      save_buf[i].scalars.character_id);
     }
-    
-    // Close database connection
+
     character_database_close();
     
     LOG_DEBUG("Player data system closed");
 }
 
+/**
+ * Load database, item, quest, ability, and derived-stat state into a player.
+ *
+ * @param player  Destination staging or active-player object; may not be NULL.
+ * @return        1 when character scalar data loads, or 0 otherwise.
+ */
 int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     if (!player) {
         LOG_ERROR("playerdata_load: NULL player pointer"); 
@@ -154,10 +435,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     player->pos_x = char_info.pos_x;
     player->pos_y = char_info.pos_y;
     
-    // ============================================================
-    // FIX: Set default spawn position if position is (0,0)
-    // This handles new characters that haven't been placed yet
-    // ============================================================
+    // assign the default spawn to unplaced characters
     if (player->pos_x == 0.0f && player->pos_y == 0.0f) {
         // Default spawn point (center of your walkable area)
         player->pos_x = 1608.0f;  // Or wherever your spawn should be
@@ -182,7 +460,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     
     player->player_class = char_info.player_class;
 
-    // --- Compute all derived stats from class + level + equipment ---
+    // compute derived class statistics
     player_apply_class_stats(player);
 
     // For first login (DB has default health=100), use the class max
@@ -196,7 +474,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     // Start at full mana
     player->mana = player->max_mana;
 
-    // --- Assign abilities for this class + level ---
+    // assign unlocked class abilities
     {
         uint16_t class_abilities[10];
         int total = ability_get_class_abilities(player->player_class, class_abilities, 10);
@@ -218,18 +496,14 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
 
     player->player_race = char_info.player_race;
     
-    // Copy equipment data
-    player->helmet = char_info.helmet;
-    player->gloves = char_info.gloves;
-    player->chest_armor = char_info.chest_armor;
-    player->leggings = char_info.leggings;
-    player->boots = char_info.boots;
-    player->main_hand = char_info.main_hand;
-    player->second_hand = char_info.second_hand;
-    player->blessing = char_info.blessing;
-    
-    // Copy inventory data
-    memcpy(player->inventory, char_info.inventory, sizeof(player->inventory));
+    // clear both item arrays after any item-load failure
+    if (!character_items_load(character_id,
+                              player->inventory, INVENTORY_SLOTS,
+                              player->equipment, EQUIP_SLOTS)) {
+        LOG_ERROR("Failed to load items for character %u", character_id);
+        memset(player->inventory, 0, sizeof(player->inventory));
+        memset(player->equipment, 0, sizeof(player->equipment));
+    }
 
     // Load quest state from file
     player->quest_count = quest_player_load(character_id, (PlayerQuestEntry*)player->quests,
@@ -251,86 +525,58 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     return 1;
 }
 
+/**
+ * Snapshot and save one loaded player while retaining its caller-held lock.
+ *
+ * This function blocks on persistence; unlocked paths should use player_snapshot_for_save() and player_commit_save().
+ *
+ * @return 1 on success, or 0 for invalid state or persistence failure.
+ */
 int playerdata_save(ActivePlayer* player) {
     if (!player || !player->is_loaded) {
         LOG_ERROR("playerdata_save: Invalid player or not loaded");
         return 0;
     }
-    
-    // Prepare character info structure for database
-    CharacterInfo char_info = {0};
-    char_info.character_id = player->character_id;
-    strncpy(char_info.name, player->username, sizeof(char_info.name) - 1);
-    char_info.level = player->level;
-    char_info.pos_x = player->pos_x;
-    char_info.pos_y = player->pos_y;
-    char_info.health = player->health;
-    char_info.max_health = player->max_health;
-    char_info.mana = player->mana;
-    char_info.max_mana = player->max_mana;
-    char_info.experience = player->experience;
-    char_info.gold = player->gold;
-    
-    // Copy equipment data
-    char_info.helmet = player->helmet;
-    char_info.gloves = player->gloves;
-    char_info.chest_armor = player->chest_armor;
-    char_info.leggings = player->leggings;
-    char_info.boots = player->boots;
-    char_info.main_hand = player->main_hand;
-    char_info.second_hand = player->second_hand;
-    char_info.blessing = player->blessing;
-    
-    // Copy inventory data
-    memcpy(char_info.inventory, player->inventory, sizeof(char_info.inventory));
 
-    // Save quest state to file
-    if (!quest_player_save(player->character_id,
-                           (const PlayerQuestEntry*)player->quests,
-                           player->quest_count)) {
-        LOG_ERROR("Failed to save quests for character %u", player->character_id);
-        return 0;
-    }
+    PlayerSaveData snapshot;
+    player_snapshot_for_save(player, &snapshot);
+    snprintf(snapshot.scalars.name, sizeof(snapshot.scalars.name), "%s",
+             player->username);
 
-    // DEBUG — print what we're about to save
-    LOG_DEBUG("[SAVE DEBUG] char %u: player->pos = (%f, %f), char_info->pos = (%f, %f)", player->character_id, player->pos_x, player->pos_y, char_info.pos_x, char_info.pos_y);
-    
-    // Save to database
-    if (!character_update_full_data(&char_info)) {
-        LOG_ERROR("Failed to save character %u to database", player->character_id);
-        return 0;
-    }
-    
+    if (!player_commit_save(&snapshot)) return 0;
+
     player->is_dirty = 0;
     player->last_save = time(NULL);
-    
+
     LOG_DEBUG("Saved character %u to database", player->character_id);
     return 1;
 }
 
-int player_add_active(uint32_t character_id, int client_fd) {
-    // ------------------------------------------------------------------
-    // Phase 1 — reserve a slot. The global lock is held only for this
-    // scan, never across I/O.
-    // ------------------------------------------------------------------
-    pthread_mutex_lock(&active_players_lock);
+/**
+ * Reserve, load, and publish an active-player slot or rebind an existing slot.
+ *
+ * Database and quest-file reads occur without registry or slot locks.
+ *
+ * @param out_slot  Receives the occupied slot on success; may be NULL.
+ * @return          1 on success, or 0 when no slot is available or loading fails.
+ */
+int player_add_active(uint32_t character_id, int client_fd, int* out_slot) {
+    if (out_slot) *out_slot = -1;
 
-    // A fast reconnect can arrive before the old socket handler has completed
-    // cleanup. Rebind the existing in-memory player atomically instead of
-    // creating a duplicate character slot and loading stale DB state. A slot
-    // still being loaded (is_reserved) counts as existing, so a reconnect that
-    // races the initial load rebinds rather than starting a second load.
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if ((active_players[i].is_loaded || active_players[i].is_reserved) &&
-            active_players[i].character_id == character_id) {
-            pthread_mutex_lock(&active_players[i].lock);
-            active_players[i].client_fd = client_fd;
-            active_players[i].is_ready = 0;
-            pthread_mutex_unlock(&active_players[i].lock);
-            pthread_mutex_unlock(&active_players_lock);
-            LOG_DEBUG("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d", character_id, client_fd, i);
-            return 1;
-        }
+    // reserve a slot without performing I/O
+    player_registry_wrlock();
+
+    // rebind reconnects to loaded or reserved slots
+    int existing = index_find(character_id);
+    if (existing >= 0) {
+        pthread_mutex_lock(&active_players[existing].lock);
+        active_players[existing].client_fd = client_fd;
+        active_players[existing].is_ready = 0;
+        pthread_mutex_unlock(&active_players[existing].lock);
+        player_registry_unlock();
+        if (out_slot) *out_slot = existing;
+        LOG_DEBUG("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d", character_id, client_fd, existing);
+        return 1;
     }
 
     // Find an empty slot — must skip slots reserved by an in-flight login.
@@ -343,7 +589,7 @@ int player_add_active(uint32_t character_id, int client_fd) {
     }
 
     if (slot == -1) {
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
         LOG_ERROR("[PLAYER_ADD] char=%u fd=%d: no available slots!", character_id, client_fd);
         return 0;
     }
@@ -353,16 +599,15 @@ int player_add_active(uint32_t character_id, int client_fd) {
     active_players[slot].is_reserved  = 1;   // claimed, not yet visible to gameplay
     active_players[slot].character_id = character_id;
     active_players[slot].client_fd    = client_fd;
+    // Publish to the index while still reserved, so a racing reconnect finds
+    // this login and rebinds to it instead of starting a second DB load.
+    index_insert(character_id, slot);
+    active_list_add(slot);
     pthread_mutex_unlock(&active_players[slot].lock);
 
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
-    // ------------------------------------------------------------------
-    // Phase 2 — the slow part (PostgreSQL query + quest file read) runs
-    // with NO locks held, so broadcast and combat threads keep ticking
-    // while this player logs in. Loading into a staging struct means a
-    // partially-populated player is never visible in the table.
-    // ------------------------------------------------------------------
+    // load into staging without holding registry or slot locks
     LOG_DEBUG("[PLAYER_ADD] char=%u fd=%d: slot=%d loading from DB (unlocked)", character_id, client_fd, slot);
 
     ActivePlayer staging;
@@ -372,22 +617,19 @@ int player_add_active(uint32_t character_id, int client_fd) {
 
     int loaded = playerdata_load(character_id, &staging);
 
-    // ------------------------------------------------------------------
-    // Phase 3 — publish the result under the lock.
-    // ------------------------------------------------------------------
-    pthread_mutex_lock(&active_players_lock);
+    // publish the completed staging record under both locks
+    player_registry_wrlock();
     pthread_mutex_lock(&active_players[slot].lock);
 
     if (!loaded) {
         player_slot_clear(slot);   // drops the reservation, frees the slot
         pthread_mutex_unlock(&active_players[slot].lock);
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
         LOG_ERROR("[PLAYER_ADD] char=%u fd=%d: DB load failed!", character_id, client_fd);
         return 0;
     }
 
-    // A reconnect may have rebound the slot to a newer socket while we were
-    // loading; that fd wins, otherwise we would publish a stale descriptor.
+    // preserve any descriptor rebound during loading
     int current_fd = active_players[slot].client_fd;
 
     // Copy every field except the trailing mutex, which must stay the one
@@ -399,94 +641,115 @@ int player_add_active(uint32_t character_id, int client_fd) {
     active_players[slot].is_loaded   = 1;   // now visible to gameplay scans
 
     pthread_mutex_unlock(&active_players[slot].lock);
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
+    if (out_slot) *out_slot = slot;
     LOG_INFO("[PLAYER_ADD] char=%u fd=%d: slot=%d loaded successfully", character_id, client_fd, slot);
     return 1;
 }
 
+/**
+ * Borrow an active-player pointer without locking its slot.
+ *
+ * The returned pointer may become stale immediately; use player_acquire() when accessing contents.
+ *
+ * @return The current pool address, or NULL when offline.
+ */
 ActivePlayer* player_find_active(uint32_t character_id) {
-    pthread_mutex_lock(&active_players_lock);
-    
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded && 
-            active_players[i].character_id == character_id) {
-            pthread_mutex_unlock(&active_players_lock);
-            return &active_players[i];
-        }
-    }
-    
-    pthread_mutex_unlock(&active_players_lock);
-    return NULL;
+    player_registry_rdlock();
+    int slot = index_find(character_id);
+    int ok = (slot >= 0 && active_players[slot].is_loaded);
+    player_registry_unlock();
+    return ok ? &active_players[slot] : NULL;
 }
 
+/**
+ * Lock a known slot and verify that it still holds the expected character.
+ *
+ * The caller must release a successful result with player_release().
+ *
+ * @return The locked player, or NULL for an invalid, unloaded, or recycled slot.
+ */
+ActivePlayer* player_acquire_slot(int slot, uint32_t expected_character_id) {
+    if (slot < 0 || slot >= MAX_PLAYERS) return NULL;
+
+    // fixed slot addresses permit direct mutex acquisition
+    ActivePlayer* p = &active_players[slot];
+    pthread_mutex_lock(&p->lock);
+
+    // reject slots recycled to another character
+    if (!p->is_loaded || p->character_id != expected_character_id) {
+        pthread_mutex_unlock(&p->lock);
+        return NULL;
+    }
+    return p;
+}
+
+/**
+ * Acquire a character through a cached slot hint with indexed fallback.
+ *
+ * The caller must release a successful result with player_release().
+ *
+ * @return The locked player, or NULL when offline.
+ */
+ActivePlayer* player_acquire_hint(uint32_t character_id, int slot_hint) {
+    if (slot_hint >= 0) {
+        ActivePlayer* p = player_acquire_slot(slot_hint, character_id);
+        if (p) return p;
+        // Hint was stale or the connection never authenticated. Fall through to
+        // the index rather than reporting the player offline on a bad guess.
+    }
+    return player_acquire(character_id);
+}
+
+/**
+ * Resolve, lock, and revalidate an active character.
+ *
+ * The caller must release a successful result with player_release().
+ *
+ * @return The locked player, or NULL when offline or concurrently removed.
+ */
 ActivePlayer* player_acquire(uint32_t character_id) {
-    pthread_mutex_lock(&active_players_lock);
+    player_registry_rdlock();
+    int slot = index_find(character_id);
+    player_registry_unlock();
 
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded &&
-            active_players[i].character_id == character_id) {
-            pthread_mutex_lock(&active_players[i].lock);
-            // Re-check after acquiring the per-player lock
-            if (!active_players[i].is_loaded ||
-                active_players[i].character_id != character_id) {
-                pthread_mutex_unlock(&active_players[i].lock);
-                pthread_mutex_unlock(&active_players_lock);
-                return NULL;
-            }
-            pthread_mutex_unlock(&active_players_lock);
-            return &active_players[i];
-        }
-    }
+    if (slot < 0) return NULL;
 
-    pthread_mutex_unlock(&active_players_lock);
-    return NULL;
+    // release the registry before waiting for the slot mutex
+    return player_acquire_slot(slot, character_id);
 }
 
+/**
+ * Unlock a player returned by an acquire function.
+ */
 void player_release(ActivePlayer* player) {
     if (player) {
         pthread_mutex_unlock(&player->lock);
     }
 }
 
+/**
+ * Remove an active character and persist dirty state after releasing locks.
+ */
 void player_remove_active(uint32_t character_id) {
-    LOG_DEBUG("[PLAYER_REMOVE] char=%u: acquiring active_players_lock", character_id);
-    pthread_mutex_lock(&active_players_lock);
+    LOG_DEBUG("[PLAYER_REMOVE] char=%u: acquiring registry write lock", character_id);
+    player_registry_wrlock();
 
-    CharacterInfo save_data;
+    PlayerSaveData save_data;
     int do_save = 0;
 
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded &&
-            active_players[i].character_id == character_id) {
+    {
+        int i = index_find(character_id);
+        if (i >= 0 && active_players[i].is_loaded) {
 
             int slot_fd = active_players[i].client_fd;
             LOG_DEBUG("[PLAYER_REMOVE] char=%u: found in slot=%d (fd=%d), clearing", character_id, i, slot_fd);
             pthread_mutex_lock(&active_players[i].lock);
 
             if (active_players[i].is_dirty) {
-                // Copy data out while we hold the lock, then save after releasing
-                LOG_DEBUG("[PLAYER_REMOVE] char=%u: slot is dirty — copying for lock-free save", character_id);
-                memset(&save_data, 0, sizeof(save_data));
-                save_data.character_id = active_players[i].character_id;
-                save_data.level        = active_players[i].level;
-                save_data.pos_x        = active_players[i].pos_x;
-                save_data.pos_y        = active_players[i].pos_y;
-                save_data.health       = active_players[i].health;
-                save_data.max_health   = active_players[i].max_health;
-                save_data.mana         = active_players[i].mana;
-                save_data.max_mana     = active_players[i].max_mana;
-                save_data.experience   = active_players[i].experience;
-                save_data.gold         = active_players[i].gold;
-                save_data.helmet       = active_players[i].helmet;
-                save_data.gloves       = active_players[i].gloves;
-                save_data.chest_armor  = active_players[i].chest_armor;
-                save_data.leggings     = active_players[i].leggings;
-                save_data.boots        = active_players[i].boots;
-                save_data.main_hand    = active_players[i].main_hand;
-                save_data.second_hand  = active_players[i].second_hand;
-                save_data.blessing     = active_players[i].blessing;
-                memcpy(save_data.inventory, active_players[i].inventory, sizeof(save_data.inventory));
+                // Copy out while holding the lock, write after releasing it.
+                player_snapshot_for_save(&active_players[i], &save_data);
                 do_save = 1;
             }
 
@@ -494,59 +757,124 @@ void player_remove_active(uint32_t character_id) {
 
             pthread_mutex_unlock(&active_players[i].lock);
             LOG_DEBUG("[PLAYER_REMOVE] char=%u: slot=%d cleared (was fd=%d)", character_id, i, slot_fd);
-            break;
         }
     }
 
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
 
     // DB write is done after all locks are released
     if (do_save) {
         LOG_DEBUG("[PLAYER_REMOVE] char=%u: writing to DB (lock-free)", character_id);
-        character_update_full_data(&save_data);
+        if (!player_commit_save(&save_data))
+            LOG_ERROR("[PLAYER_REMOVE] char=%u: save failed", character_id);
     }
 
     LOG_DEBUG("[PLAYER_REMOVE] char=%u: done", character_id);
 }
 
+/**
+ * Remove a character only when its current connection matches a descriptor.
+ *
+ * @return 1 when removed, or 0 after a mismatch or absence.
+ */
 int player_remove_active_if_fd(uint32_t character_id, int client_fd) {
     int removed = 0;
-    pthread_mutex_lock(&active_players_lock);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    player_registry_wrlock();
+    int i = index_find(character_id);
+    if (i >= 0 &&
+        active_players[i].is_loaded &&
+        active_players[i].client_fd == client_fd) {
+        pthread_mutex_lock(&active_players[i].lock);
+        // Recheck after acquiring the slot lock; a reconnect may have
+        // rebound it while this cleanup thread was waiting.
         if (active_players[i].is_loaded &&
             active_players[i].character_id == character_id &&
             active_players[i].client_fd == client_fd) {
-            pthread_mutex_lock(&active_players[i].lock);
-            // Recheck after acquiring the slot lock; a reconnect may have
-            // rebound it while this cleanup thread was waiting.
-            if (active_players[i].is_loaded &&
-                active_players[i].character_id == character_id &&
-                active_players[i].client_fd == client_fd) {
-                player_slot_clear(i);
-                removed = 1;
-            }
-            pthread_mutex_unlock(&active_players[i].lock);
-            break;
+            player_slot_clear(i);
+            removed = 1;
         }
+        pthread_mutex_unlock(&active_players[i].lock);
     }
-    pthread_mutex_unlock(&active_players_lock);
+    player_registry_unlock();
     return removed;
 }
 
+/**
+ * Encode one item instance for an inventory packet.
+ */
+static void pack_slot(InventorySlotData* out, const ItemInstance* in) {
+    out->instance_id = mmo_htonll(in->instance_id);
+    out->item_id     = htonl(in->item_id);
+    out->quantity    = htons(in->quantity);
+    out->is_bound    = in->is_bound;
+    out->_reserved   = 0;
+}
+
+/**
+ * Send authoritative contents for selected inventory or equipment slots.
+ *
+ * Acquires the player's slot lock internally.
+ *
+ * @param slot_ids  Wire-numbered slot identifiers.
+ * @param count     Number of identifiers, capped at MAX_SLOT_UPDATES.
+ */
+void player_send_slot_updates(int client_fd, uint32_t character_id,
+                              const uint16_t* slot_ids, int count) {
+    if (client_fd < 0 || !slot_ids || count <= 0) return;
+    if (count > MAX_SLOT_UPDATES) count = MAX_SLOT_UPDATES;
+
+    ActivePlayer* player = player_acquire(character_id);
+    if (!player) return;
+
+    InventoryUpdatePacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type      = PACKET_INVENTORY_UPDATE;
+    pkt.header.player_id = htonl(character_id);
+
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        uint16_t slot = slot_ids[i];
+        const ItemInstance* src = NULL;
+
+        if (slot < INVENTORY_SLOTS) {
+            src = &player->inventory[slot];
+        } else if (slot >= EQUIP_SLOT_BASE && slot < EQUIP_SLOT_BASE + EQUIP_SLOTS) {
+            src = &player->equipment[slot - EQUIP_SLOT_BASE];
+        } else {
+            LOG_WARN_RL(5, 60, "[INVENTORY] refusing to broadcast slot %u", slot);
+            continue;
+        }
+
+        pkt.slots[n].slot = htons(slot);
+        pack_slot(&pkt.slots[n].data, src);
+        n++;
+    }
+    player_release(player);
+
+    if (n == 0) return;
+    pkt.count = (uint8_t)n;
+
+    // transmit only populated update entries
+    size_t send_size = offsetof(InventoryUpdatePacket, slots) +
+                       (size_t)n * sizeof(SlotUpdateEntry);
+    pkt.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+    server_send(client_fd, &pkt, send_size);
+}
+
+/**
+ * Send a character's scalar, inventory, and equipment state.
+ */
 void player_send_data_response(int client_fd, uint32_t character_id) {
-    ActivePlayer* player = player_find_active(character_id);
+    ActivePlayer* player = player_acquire(character_id);
     if (!player) {
         LOG_ERROR("Cannot send data for inactive player %u", character_id);
         return;
     }
-    
-    pthread_mutex_lock(&player->lock);
-    
-    // ALLOCATE ON HEAP instead of stack
+
     CharacterInfo* response = malloc(sizeof(CharacterInfo));
     if (!response) {
         LOG_ERROR("Failed to allocate response packet");
-        pthread_mutex_unlock(&player->lock);
+        player_release(player);
         return;
     }
     
@@ -568,27 +896,17 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     response->pos_x = player->pos_x;
     response->pos_y = player->pos_y;
 
-    strncpy(response->name, player->username, sizeof(response->name) - 1);
-    response->name[sizeof(response->name) - 1] = '\0';
+    snprintf(response->name, sizeof(response->name), "%s", player->username);
     response->player_class = htonl(player->player_class);
     response->player_race  = htonl(player->player_race);
     
-    // Equipment
-    response->helmet = htonl(player->helmet);
-    response->gloves = htonl(player->gloves);
-    response->chest_armor = htonl(player->chest_armor);
-    response->leggings = htonl(player->leggings);
-    response->boots = htonl(player->boots);
-    response->main_hand = htonl(player->main_hand);
-    response->second_hand = htonl(player->second_hand);
-    response->blessing = htons(player->blessing);
-    
-    // Inventory
-    for (int i = 0; i < 150; i++) {
-        response->inventory[i] = htonl(player->inventory[i]);
-    }
-    
-    pthread_mutex_unlock(&player->lock);
+    // encode complete inventory and equipment slots
+    for (int i = 0; i < INVENTORY_SLOTS; i++)
+        pack_slot(&response->inventory[i], &player->inventory[i]);
+    for (int i = 0; i < EQUIP_SLOTS; i++)
+        pack_slot(&response->equipment[i], &player->equipment[i]);
+
+    player_release(player);
 
     // Send packet
     server_send(client_fd, response, sizeof(CharacterInfo));
@@ -597,6 +915,13 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     LOG_DEBUG("Sent player data for character %u", character_id);
 }
 
+/**
+ * Periodically snapshot and persist dirty active players.
+ *
+ * Waits on the save condition and performs database I/O without registry or slot locks.
+ *
+ * @return Always NULL when shutdown is requested.
+ */
 void* periodic_save_thread(void* arg) {
     (void)arg;
     g_save_thread_running = 1;
@@ -617,69 +942,39 @@ void* periodic_save_thread(void* arg) {
         // If we were told to stop, exit immediately
         if (!g_save_thread_running) break;
 
-        // Do the save pass.
-        // Copy dirty players out while holding locks (fast), then save to DB
-        // without holding any lock so broadcast threads aren't starved.
-        typedef struct {
-            uint32_t character_id;
-            CharacterInfo data;
-            PlayerQuestEntry quests[MAX_PLAYER_QUESTS];
-            int quest_count;
-        } SaveEntry;
-        SaveEntry save_queue[MAX_PLAYERS];
+        // snapshot dirty players before database I/O
+        PlayerSaveData save_queue[MAX_PLAYERS];
         int save_count = 0;
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
+        // retain shared occupancy access while locking individual slots
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int s_i = 0; s_i < online_count; s_i++) {
+            int i = online[s_i];
             if (!active_players[i].is_loaded) continue;
             pthread_mutex_lock(&active_players[i].lock);
             if (active_players[i].is_dirty) {
-                SaveEntry* e = &save_queue[save_count++];
-                e->character_id             = active_players[i].character_id;
-                e->data.character_id        = active_players[i].character_id;
-                e->data.level               = active_players[i].level;
-                e->data.pos_x               = active_players[i].pos_x;
-                e->data.pos_y               = active_players[i].pos_y;
-                e->data.health              = active_players[i].health;
-                e->data.max_health          = active_players[i].max_health;
-                e->data.mana                = active_players[i].mana;
-                e->data.max_mana            = active_players[i].max_mana;
-                e->data.experience          = active_players[i].experience;
-                e->data.gold                = active_players[i].gold;
-                e->data.helmet              = active_players[i].helmet;
-                e->data.gloves              = active_players[i].gloves;
-                e->data.chest_armor         = active_players[i].chest_armor;
-                e->data.leggings            = active_players[i].leggings;
-                e->data.boots               = active_players[i].boots;
-                e->data.main_hand           = active_players[i].main_hand;
-                e->data.second_hand         = active_players[i].second_hand;
-                e->data.blessing            = active_players[i].blessing;
-                memcpy(e->data.inventory, active_players[i].inventory, sizeof(e->data.inventory));
-                e->quest_count = active_players[i].quest_count;
-                memcpy(e->quests, active_players[i].quests,
-                       (size_t)e->quest_count * sizeof(e->quests[0]));
-                active_players[i].is_dirty = 0;  // Clear dirty flag while we have the lock
+                player_snapshot_for_save(&active_players[i], &save_queue[save_count++]);
+                active_players[i].is_dirty = 0;  // cleared while we hold the lock
             }
             pthread_mutex_unlock(&active_players[i].lock);
         }
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
 
         // Now write to DB without holding any locks
         for (int i = 0; i < save_count; i++) {
-            LOG_DEBUG("Periodic save: character %u", save_queue[i].character_id);
-            int db_ok = character_update_full_data(&save_queue[i].data);
-            int quest_ok = quest_player_save(save_queue[i].character_id,
-                                             save_queue[i].quests,
-                                             save_queue[i].quest_count);
-            if (!db_ok || !quest_ok) {
-                // The dirty bit was cleared while taking the snapshot. Restore
-                // it on failure so the next save pass retries this character.
-                ActivePlayer* player = player_acquire(save_queue[i].character_id);
+            uint32_t character_id = save_queue[i].scalars.character_id;
+            LOG_DEBUG("Periodic save: character %u", character_id);
+
+            if (!player_commit_save(&save_queue[i])) {
+                // restore dirty state after a failed commit
+                ActivePlayer* player = player_acquire(character_id);
                 if (player) {
                     player->is_dirty = 1;
                     player_release(player);
                 }
-                LOG_ERROR("Periodic save failed for character %u; queued for retry", save_queue[i].character_id);
+                LOG_ERROR("Periodic save failed for character %u; queued for retry", character_id);
             }
         }
     }
@@ -688,6 +983,11 @@ void* periodic_save_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * Start the periodic-save worker unless it is already running.
+ *
+ * @return 1 when running, or 0 when thread creation fails.
+ */
 int playerdata_start_save_thread(void) {
     if (g_save_thread_running) return 1;
 
@@ -698,6 +998,9 @@ int playerdata_start_save_thread(void) {
     return 1;
 }
 
+/**
+ * Signal and join the periodic-save worker.
+ */
 void playerdata_stop_save_thread(void) {
     if (!g_save_thread_running) return;
 

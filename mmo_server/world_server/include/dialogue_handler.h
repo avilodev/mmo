@@ -1,7 +1,3 @@
-// ============================================================================
-// dialogue_handler.h — Dialogue packet handler declarations
-// ============================================================================
-
 #ifndef DIALOGUE_HANDLER_H
 #define DIALOGUE_HANDLER_H
 

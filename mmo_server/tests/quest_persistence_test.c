@@ -1,5 +1,10 @@
 #define _GNU_SOURCE
 
+/**
+ * @file
+ * Check quest-state file round trips and rejection of a corrupt record count.
+ */
+
 #include "quest_system.h"
 
 #include <stdio.h>
@@ -7,6 +12,11 @@
 #include <string.h>
 #include <unistd.h>
 
+/**
+ * Run quest persistence assertions in a temporary directory.
+ *
+ * @return      Zero on success, or one on setup, persistence, or validation failure.
+ */
 int main(void) {
     char directory[] = "/tmp/mmo-quest-test-XXXXXX";
     if (!mkdtemp(directory)) return 1;

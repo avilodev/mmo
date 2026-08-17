@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Load rectangular world zones and resolve positions to the most specific zone.
+ */
+
 #include "zone_system.h"
 
 #include <stdio.h>
@@ -7,18 +12,11 @@
 static WorldZone g_zones[MAX_WORLD_ZONES];
 static int       g_zone_count = 0;
 
-// ============================================================================
-// Minimal JSON parser — pulls "id", "name", "type", "x","y","w","h" per object.
-// No external dependency needed for a flat array like this.
-// ============================================================================
-
 static const char* skip_ws(const char* p) {
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
     return p;
 }
 
-// Advance past a JSON string and return pointer to first char of content.
-// On return *end_out points to the closing quote.
 static const char* parse_string(const char* p, char* out, int cap) {
     if (*p != '"') return p;
     p++;
@@ -38,7 +36,11 @@ static const char* parse_number(const char* p, float* out) {
     return end;
 }
 
-// Find key in current JSON object scope (linear scan — fine for tiny files).
+/**
+ * Locate a key's value within the current flat JSON object.
+ *
+ * @return The value position, or NULL when the key is absent.
+ */
 static const char* find_key(const char* obj_start, const char* key) {
     const char* p = obj_start;
     while (*p && *p != '}') {
@@ -66,6 +68,11 @@ static const char* find_key(const char* obj_start, const char* key) {
     return NULL;
 }
 
+/**
+ * Initialize world zones from a JSON file.
+ *
+ * @return The number of loaded zones, or -1 when opening or allocation fails.
+ */
 int zone_system_init(const char* json_path) {
     FILE* f = fopen(json_path, "r");
     if (!f) {
@@ -141,10 +148,22 @@ int zone_system_init(const char* json_path) {
     return g_zone_count;
 }
 
+/**
+ * Clear the world-zone registry.
+ */
 void zone_system_cleanup(void) {
     g_zone_count = 0;
 }
 
+/**
+ * Find the smallest registered zone containing a world position.
+ *
+ * The returned pointer remains owned by the zone registry.
+ *
+ * @param wx  World X coordinate.
+ * @param wy  World Y coordinate.
+ * @return    The most specific containing zone, or NULL when outside every zone.
+ */
 const WorldZone* zone_lookup(float wx, float wy) {
     const WorldZone* best = NULL;
     float best_area = 1e30f;

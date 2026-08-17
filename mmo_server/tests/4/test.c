@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Exercise authentication, character creation, equipment, and inventory protocols end to end.
+ */
+
 #include "types.h"
 #include <stdio.h>
 #include <string.h>
@@ -9,7 +14,7 @@
 #include <errno.h>
 #include <pthread.h>
 
-// Equipment slot definitions (from items_database.h)
+/** Mirror equipment-slot values used by item data and packets. */
 typedef enum {
     SLOT_NONE = 0,
     SLOT_HELMET = 1,
@@ -22,7 +27,7 @@ typedef enum {
     SLOT_TWO_HANDED = 8
 } EquipSlot;
 
-// Color codes for better output
+/** ANSI formatting sequences used by the test reporter. */
 #define GREEN "\033[0;32m"
 #define RED "\033[0;31m"
 #define YELLOW "\033[0;33m"
@@ -32,7 +37,7 @@ typedef enum {
 #define RESET "\033[0m"
 #define BOLD "\033[1m"
 
-// Test statistics
+/** Track synchronized assertion totals and elapsed wall time. */
 typedef struct {
     int total_steps;
     int passed_steps;
@@ -44,77 +49,98 @@ typedef struct {
 
 TestStats g_stats = {0};
 
-// Thread-safe stats updates
+/** Initialize the shared test statistics and start time. */
 void stats_init(void) {
     memset(&g_stats, 0, sizeof(g_stats));
     pthread_mutex_init(&g_stats.lock, NULL);
     gettimeofday(&g_stats.start_time, NULL);
 }
 
+/** Capture the test end time. */
 void stats_finish(void) {
     gettimeofday(&g_stats.end_time, NULL);
 }
 
+/** Increment the synchronized passing-step count. */
 void stats_inc_passed(void) {
     pthread_mutex_lock(&g_stats.lock);
     g_stats.passed_steps++;
     pthread_mutex_unlock(&g_stats.lock);
 }
 
+/** Increment the synchronized failing-step count. */
 void stats_inc_failed(void) {
     pthread_mutex_lock(&g_stats.lock);
     g_stats.failed_steps++;
     pthread_mutex_unlock(&g_stats.lock);
 }
 
+/** Increment the synchronized total-step count. */
 void stats_inc_total(void) {
     pthread_mutex_lock(&g_stats.lock);
     g_stats.total_steps++;
     pthread_mutex_unlock(&g_stats.lock);
 }
 
+/** Return the captured test duration in seconds. */
 double stats_elapsed_time(void) {
     return (g_stats.end_time.tv_sec - g_stats.start_time.tv_sec) + 
            (g_stats.end_time.tv_usec - g_stats.start_time.tv_usec) / 1000000.0;
 }
 
+/** Print a titled test section. */
 void print_header(const char* title) {
     printf("\n" BLUE BOLD "╔═══════════════════════════════════════════════════════════════╗\n");
     printf("║ %-61s ║\n", title);
     printf("╚═══════════════════════════════════════════════════════════════╝" RESET "\n\n");
 }
 
+/** Print and count one numbered test step. */
 void print_step(int step, int total, const char* description) {
     stats_inc_total();
     printf(CYAN "[Step %d/%d] %s" RESET "\n", step, total, description);
 }
 
+/** Print and count a successful step. */
 void print_success(const char* msg) {
     stats_inc_passed();
     printf(GREEN "  ✓ SUCCESS: %s" RESET "\n", msg);
 }
 
+/** Print and count a failed step. */
 void print_error(const char* msg) {
     stats_inc_failed();
     printf(RED "  ✗ FAILED: %s" RESET "\n", msg);
 }
 
+/** Print an informational test message. */
 void print_info(const char* msg) {
     printf(YELLOW "  → %s" RESET "\n", msg);
 }
 
+/** Print a labeled string value. */
 void print_detail(const char* key, const char* value) {
     printf("     %s: " BOLD "%s" RESET "\n", key, value);
 }
 
+/** Print a labeled signed integer value. */
 void print_detail_int(const char* key, int value) {
     printf("     %s: " BOLD "%d" RESET "\n", key, value);
 }
 
+/** Print a labeled unsigned integer value. */
 void print_detail_uint(const char* key, uint32_t value) {
     printf("     %s: " BOLD "%u" RESET "\n", key, value);
 }
 
+/**
+ * Connect a TCP socket to an IPv4 server.
+ *
+ * @param host  Numeric IPv4 address.
+ * @param port  TCP port in host byte order.
+ * @param server_name  Descriptive server label; currently unused.
+ * @return      Connected descriptor, or -1 on failure.
+ */
 int connect_to_server(const char* host, int port, const char* server_name) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -138,12 +164,18 @@ int connect_to_server(const char* host, int port, const char* server_name) {
     return sockfd;
 }
 
+/**
+ * Receive one test response from a socket.
+ *
+ * @param context  Operation label; currently unused.
+ * @return      The recv() result.
+ */
 ssize_t safe_recv(int sockfd, void* buf, size_t len, const char* context) {
     ssize_t bytes = recv(sockfd, buf, len, 0);
     return bytes;
 }
 
-// Helper to get class name
+/** Return the display name for a class identifier. */
 const char* get_class_name(uint32_t class_id) {
     switch (class_id) {
         case 1: return "Gladiator";
@@ -154,7 +186,7 @@ const char* get_class_name(uint32_t class_id) {
     }
 }
 
-// Helper to get race name
+/** Return the display name for a race identifier. */
 const char* get_race_name(uint32_t race_id) {
     switch (race_id) {
         case 1: return "Human";
@@ -164,6 +196,11 @@ const char* get_race_name(uint32_t race_id) {
     }
 }
 
+/**
+ * Run the item-system integration scenario.
+ *
+ * @return      Zero when no test step fails, or one otherwise.
+ */
 int main(int argc, char** argv) {
     stats_init();
     
@@ -206,9 +243,6 @@ int main(int argc, char** argv) {
     printf("Password: " BOLD "%s" RESET "\n", password);
     printf("Timestamp: " BOLD "%ld" RESET "\n", time(NULL));
     
-    // ==========================================
-    // STEP 1: REGISTER & LOGIN
-    // ==========================================
     print_step(1, 10, "Authentication (Register + Login)");
     
     print_info("Attempting registration...");
@@ -288,9 +322,6 @@ int main(int argc, char** argv) {
     close(login_fd);
     sleep(1);
     
-    // ==========================================
-    // STEP 2: CONNECT TO REALM SERVER
-    // ==========================================
     print_step(2, 10, "Realm Server Connection");
     
     int realm_fd = connect_to_server("127.0.0.1", REALM_SERVER_PORT, "Realm Server");
@@ -326,9 +357,6 @@ int main(int argc, char** argv) {
     print_success("Realm server authenticated");
     sleep(1);
     
-    // ==========================================
-    // STEP 3: GET WORLD LIST
-    // ==========================================
     print_step(3, 10, "World List Retrieval");
     
     WorldListRequestPacket world_req = {0};
@@ -379,9 +407,6 @@ int main(int argc, char** argv) {
     
     sleep(1);
     
-    // ==========================================
-    // STEP 4: CHARACTER CUSTOMIZATION
-    // ==========================================
     print_step(4, 10, "Character Customization");
     
     // If class/race not specified via command line, prompt user or use defaults
@@ -412,9 +437,6 @@ int main(int argc, char** argv) {
     
     sleep(1);
     
-    // ==========================================
-    // STEP 5: CHARACTER CREATION
-    // ==========================================
     print_step(5, 10, "Character Creation with Customization");
     
     print_info("Checking for existing characters...");
@@ -489,8 +511,7 @@ int main(int argc, char** argv) {
     print_detail("Character Name", character_name);
     print_detail_uint("Character ID", character_id);
     
-    // IMPORTANT: Realm server automatically sends updated character list after creation
-    // We need to consume this packet before moving to the next step
+    // consume the realm's automatic list refresh
     print_info("Receiving updated character list...");
     CharacterListResponsePacket updated_list;
     bytes = safe_recv(realm_fd, &updated_list, sizeof(updated_list), "updated character list");
@@ -500,9 +521,6 @@ int main(int argc, char** argv) {
     
     sleep(1);
     
-    // ==========================================
-    // STEP 6: ENTER WORLD
-    // ==========================================
     print_step(6, 10, "Enter World (Ticket Generation)");
     
     EnterWorldPacket enter_req = {0};
@@ -549,9 +567,6 @@ int main(int argc, char** argv) {
     close(realm_fd);
     sleep(1);
     
-    // ==========================================
-    // STEP 7: CONNECT TO WORLD SERVER
-    // ==========================================
     print_step(7, 10, "World Server Connection");
     
     int world_fd = connect_to_server(enter_resp.world_ip, ntohs(enter_resp.world_port), "World Server");
@@ -588,9 +603,6 @@ int main(int argc, char** argv) {
     print_success("Connected to world server");
     sleep(1);
     
-    // ==========================================
-    // STEP 8: REQUEST PLAYER DATA
-    // ==========================================
     print_step(8, 10, "Request Player Data (Items & Equipment)");
     
     PacketHeader data_req = {0};
@@ -643,9 +655,6 @@ int main(int argc, char** argv) {
     
     sleep(1);
     
-    // ==========================================
-    // STEP 9: TEST EQUIPMENT SYSTEM
-    // ==========================================
     print_step(9, 10, "Equipment System Testing");
     
     // Find an item in inventory to equip
@@ -669,9 +678,7 @@ int main(int argc, char** argv) {
         // Determine equip slot based on item ID (simplified)
         uint8_t equip_slot = SLOT_MAIN_HAND; // Default
         
-        // Based on your items.json:
-        // 1000-1004 are weapons (main_hand or two_handed)
-        // 2000-2004 are armor pieces
+        // map fixture item ranges to equipment slots
         if (test_item_id >= 2000 && test_item_id <= 2004) {
             // Armor pieces
             if (test_item_id == 2000) equip_slot = SLOT_HELMET;
@@ -744,9 +751,6 @@ int main(int argc, char** argv) {
     
     sleep(1);
     
-    // ==========================================
-    // STEP 10: TEST INVENTORY MANAGEMENT
-    // ==========================================
     print_step(10, 10, "Inventory Management Testing");
     
     // Test moving items between slots
@@ -793,9 +797,6 @@ int main(int argc, char** argv) {
     
     close(world_fd);
     
-    // ==========================================
-    // TEST SUMMARY
-    // ==========================================
     stats_finish();
     
     print_header("ITEM SYSTEM TEST SUMMARY");

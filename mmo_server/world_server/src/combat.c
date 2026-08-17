@@ -1,7 +1,7 @@
-// ============================================================================
-// combat.c — implementation (UPDATED with stat scaling, defense, evasion,
-//            XP on kill, HP regen)
-// ============================================================================
+/**
+ * @file
+ * Load basic-attack profiles and manage NPC combat, cast resolution, regeneration, death, and respawn.
+ */
 
 #include "combat.h"
 #include "log.h"
@@ -78,9 +78,6 @@ ClassAttackProfile g_class_profiles[5] = {
       .projectile_damage_type  = 2 }  // ABILITY_DMG_SPIRIT
 };
 
-// ---------------------------------------------------------------------------
-// Load attack profiles from JSON. Falls back to compiled-in defaults on error.
-// ---------------------------------------------------------------------------
 static const char* ap_find_value(const char* json, const char* key) {
     char search[64];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -93,6 +90,13 @@ static const char* ap_find_value(const char* json, const char* key) {
     return pos;
 }
 
+/**
+ * Override compiled class attack profiles from a JSON file.
+ *
+ * Existing defaults remain for missing fields and when loading fails.
+ *
+ * @return The number of class profiles encountered, or 0 on open or allocation failure.
+ */
 int combat_profiles_load(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -171,18 +175,11 @@ int combat_profiles_load(const char* path) {
     return loaded;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers: time
-// ---------------------------------------------------------------------------
 static double combat_get_time(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers: geometry
-// ---------------------------------------------------------------------------
 
 static float combat_dist(float ax, float ay, float bx, float by) {
     float dx = bx - ax;
@@ -190,6 +187,11 @@ static float combat_dist(float ax, float ay, float bx, float by) {
     return sqrtf(dx * dx + dy * dy);
 }
 
+/**
+ * Test whether a point lies within an aimed cone.
+ *
+ * @return 1 when inside, or 0 otherwise.
+ */
 static int combat_point_in_cone(float ox, float oy,
                                 float aim_x, float aim_y,
                                 float half_angle_rad,
@@ -208,6 +210,11 @@ static int combat_point_in_cone(float ox, float oy,
     return (fabsf(delta) <= half_angle_rad) ? 1 : 0;
 }
 
+/**
+ * Test whether a point lies within an oriented line rectangle.
+ *
+ * @return 1 when inside, or 0 otherwise.
+ */
 static int combat_point_in_line(float ox, float oy,
                                 float dir_x, float dir_y,
                                 float range,
@@ -226,12 +233,11 @@ static int combat_point_in_line(float ox, float oy,
     return (perp_dist <= half_width) ? 1 : 0;
 }
 
-// ---------------------------------------------------------------------------
-// NPC world management
-// ---------------------------------------------------------------------------
-
 static uint32_t g_next_npc_id = 1000;
 
+/**
+ * Initialize an NPC world and its mutex.
+ */
 void combat_npc_init(NPCWorld* world) {
     memset(world->npcs, 0, sizeof(world->npcs));
     world->count = 0;
@@ -239,6 +245,22 @@ void combat_npc_init(NPCWorld* world) {
     LOG_INFO("[COMBAT] NPC world initialized");
 }
 
+/**
+ * Spawn an NPC in a free or reclaimable world slot.
+ *
+ * @param world            NPC world receiving the entity.
+ * @param name             Terminated NPC display name.
+ * @param x                Spawn X coordinate in world units.
+ * @param y                Spawn Y coordinate in world units.
+ * @param health           Initial and maximum health.
+ * @param hitbox_radius    Collision radius in world units.
+ * @param dialogue_id      Associated dialogue identifier, or zero.
+ * @param is_interactable  Nonzero when client interaction is allowed.
+ * @param npc_type_id      Content type used for AI, loot, and quests.
+ * @param respawn_time     Respawn delay in seconds; nonpositive disables respawn.
+ * @param category         NPC_CATEGORY_* value controlling default rewards.
+ * @return                 The assigned identifier, or 0 when the pool is full.
+ */
 uint32_t combat_npc_spawn(NPCWorld* world,
                           const char* name,
                           float x, float y,
@@ -311,6 +333,13 @@ uint32_t combat_npc_spawn(NPCWorld* world,
     return id;
 }
 
+/**
+ * Find an NPC by identifier.
+ *
+ * The caller must hold world->lock while using the returned pool pointer.
+ *
+ * @return The matching entity, or NULL when absent.
+ */
 NPCEntity* combat_npc_find(NPCWorld* world, uint32_t npc_id) {
     for (int i = 0; i < MAX_NPCS; i++) {
         if (world->npcs[i].id == npc_id) {
@@ -320,6 +349,9 @@ NPCEntity* combat_npc_find(NPCWorld* world, uint32_t npc_id) {
     return NULL;
 }
 
+/**
+ * Remove an NPC from the world by identifier.
+ */
 void combat_npc_remove(NPCWorld* world, uint32_t npc_id) {
     pthread_mutex_lock(&world->lock);
     for (int i = 0; i < MAX_NPCS; i++) {
@@ -332,27 +364,18 @@ void combat_npc_remove(NPCWorld* world, uint32_t npc_id) {
     pthread_mutex_unlock(&world->lock);
 }
 
-// ---------------------------------------------------------------------------
-// Pending casts
-// ---------------------------------------------------------------------------
-
 static PendingCast g_pending_casts[MAX_PLAYERS];
 static pthread_mutex_t g_pending_casts_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int combat_find_player_slot(uint32_t character_id) {
-    extern ActivePlayer active_players[];
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded &&
-            active_players[i].character_id == character_id) {
-            return i;
-        }
-    }
-    return -1;
+    return player_slot_of(character_id);
 }
 
-// ---------------------------------------------------------------------------
-// NEW: Compute final damage with stat scaling, variance, and defense
-// ---------------------------------------------------------------------------
+/**
+ * Calculate basic-attack damage after strength scaling, variance, and defense.
+ *
+ * @return Final damage clamped to at least one.
+ */
 static int compute_final_damage(int base_damage, int damage_variance,
                                 int attacker_str, int attacker_agi,
                                 int attacker_int, int attacker_wis,
@@ -377,16 +400,18 @@ static int compute_final_damage(int base_damage, int damage_variance,
     return damage;
 }
 
-// ---------------------------------------------------------------------------
-// Attack intent handler
-// ---------------------------------------------------------------------------
-
+/**
+ * Validate a basic-attack intent and queue a cast with snapshot targeting data.
+ *
+ * @param world       NPC world searched for eligible targets.
+ * @param client_fd   Socket receiving cast or rejection packets.
+ * @param attacker_id Character issuing the attack.
+ * @param pkt         Attack intent containing aim coordinates.
+ */
 void combat_handle_attack_intent(NPCWorld* world,
                                  int client_fd,
                                  uint32_t attacker_id,
                                  AttackIntentPacket* pkt) {
-    extern ActivePlayer active_players[];
-
     ActivePlayer* attacker = player_acquire(attacker_id);
     if (!attacker) {
         LOG_DEBUG("[COMBAT] Attack intent from unknown attacker %u", attacker_id);
@@ -438,7 +463,7 @@ void combat_handle_attack_intent(NPCWorld* world,
 
     player_release(attacker);
 
-    // --- Resolve targets ---
+    // resolve targets
     uint32_t hit_targets[MAX_CAST_TARGETS];
     uint8_t  hit_count = 0;
 
@@ -585,10 +610,9 @@ void combat_handle_attack_intent(NPCWorld* world,
     LOG_INFO("[COMBAT] Player %u cast started: type=%d, targets=%d, cast_time=%.2fs", attacker_id, profile->attack_type, hit_count, profile->cast_time);
 }
 
-// ---------------------------------------------------------------------------
-// Cast cancel handler
-// ---------------------------------------------------------------------------
-
+/**
+ * Cancel a character's pending basic-attack cast.
+ */
 void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
     int slot = combat_find_player_slot(attacker_id);
     if (slot < 0) return;
@@ -611,18 +635,14 @@ void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
     pthread_mutex_unlock(&g_pending_casts_lock);
 }
 
-// ---------------------------------------------------------------------------
-// Per-tick combat resolution + HP regen
-// ---------------------------------------------------------------------------
-
+/**
+ * Resolve pending attacks and advance regeneration, deaths, and respawns.
+ */
 void combat_tick(NPCWorld* world) {
     extern ActivePlayer active_players[];
-    extern pthread_mutex_t active_players_lock;
     double now = combat_get_time();
 
-    // -------------------------------------------------------------------
-    // 1. Resolve pending basic-attack casts
-    // -------------------------------------------------------------------
+    // resolve pending basic attacks
     pthread_mutex_lock(&g_pending_casts_lock);
 
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -712,7 +732,7 @@ void combat_tick(NPCWorld* world) {
 
         pthread_mutex_lock(&world->lock);
 
-        // --- SINGLE target: find closest, damage it ---
+        // resolve the closest single target
         if (attack_type == ATTACK_TYPE_SINGLE) {
             NPCEntity* best = NULL;
             float best_dist = 1e9f;
@@ -804,7 +824,7 @@ void combat_tick(NPCWorld* world) {
             continue;  // Next pending cast
         }
 
-        // --- AOE / CONE / LINE targets ---
+        // resolve area targets
         for (int n = 0; n < MAX_NPCS; n++) {
             NPCEntity* npc = &world->npcs[n];
             if (!npc->is_alive || npc->id == 0) continue;
@@ -939,15 +959,16 @@ void combat_tick(NPCWorld* world) {
 
     pthread_mutex_unlock(&g_pending_casts_lock);
 
-    // -------------------------------------------------------------------
-    // 2. HP regen (out-of-combat only)
-    // -------------------------------------------------------------------
+    // regenerate out-of-combat health
     {
         static float hp_accum[MAX_PLAYERS];
         float dt = 0.05f;  // 20Hz tick
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int n = 0; n < online_count; n++) {
+            int i = online[n];
             if (!active_players[i].is_loaded) continue;
 
             pthread_mutex_lock(&active_players[i].lock);
@@ -969,8 +990,7 @@ void combat_tick(NPCWorld* world) {
                     if (active_players[i].health > active_players[i].max_health)
                         active_players[i].health = active_players[i].max_health;
 
-                    // Don't spam packets — client can interpolate
-                    // Only send on significant changes (every ~1 second)
+                    // clients interpolate regeneration between updates
                 }
             } else {
                 hp_accum[i] = 0.0f;  // Reset accumulator when in combat
@@ -978,12 +998,10 @@ void combat_tick(NPCWorld* world) {
 
             pthread_mutex_unlock(&active_players[i].lock);
         }
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
     }
 
-    // -------------------------------------------------------------------
-    // 3. Player death detection — snapshot deaths under lock, send after
-    // -------------------------------------------------------------------
+    // snapshot newly dead players before sending
     {
         #define MAX_DEATH_EVENTS 16
         typedef struct {
@@ -994,8 +1012,11 @@ void combat_tick(NPCWorld* world) {
         DeathEvent deaths[MAX_DEATH_EVENTS];
         int death_count = 0;
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int n = 0; n < online_count; n++) {
+            int i = online[n];
             if (!active_players[i].is_loaded) continue;
             pthread_mutex_lock(&active_players[i].lock);
 
@@ -1015,7 +1036,7 @@ void combat_tick(NPCWorld* world) {
 
             pthread_mutex_unlock(&active_players[i].lock);
         }
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
 
         // Send death packets outside lock
         for (int d = 0; d < death_count; d++) {
@@ -1030,9 +1051,7 @@ void combat_tick(NPCWorld* world) {
         }
     }
 
-    // -------------------------------------------------------------------
-    // 4. Player respawn — 3 seconds after death
-    // -------------------------------------------------------------------
+    // respawn players after the configured local delay
     {
         #define RESPAWN_DELAY 3.0
         #define RESPAWN_X 608.0f
@@ -1051,8 +1070,11 @@ void combat_tick(NPCWorld* world) {
         RespawnEvent respawns[MAX_RESPAWN_EVENTS];
         int respawn_count = 0;
 
-        pthread_mutex_lock(&active_players_lock);
-        for (int i = 0; i < MAX_PLAYERS; i++) {
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int n = 0; n < online_count; n++) {
+            int i = online[n];
             if (!active_players[i].is_loaded) continue;
             pthread_mutex_lock(&active_players[i].lock);
 
@@ -1081,7 +1103,7 @@ void combat_tick(NPCWorld* world) {
 
             pthread_mutex_unlock(&active_players[i].lock);
         }
-        pthread_mutex_unlock(&active_players_lock);
+        player_registry_unlock();
 
         for (int r = 0; r < respawn_count; r++) {
             PlayerRespawnPacket pkt = {0};
@@ -1099,9 +1121,7 @@ void combat_tick(NPCWorld* world) {
         }
     }
 
-    // -------------------------------------------------------------------
-    // 5. NPC respawn — check dead NPCs with respawn timers
-    // -------------------------------------------------------------------
+    // respawn eligible NPCs
     pthread_mutex_lock(&world->lock);
     for (int i = 0; i < MAX_NPCS; i++) {
         NPCEntity* npc = &world->npcs[i];

@@ -1,8 +1,7 @@
-// ============================================================================
-// dialogue_handler.c — Packet handlers for NPC dialogue system
-//
-// Handles client requests for dialogue interactions and option selections.
-// ============================================================================
+/**
+ * @file
+ * Validate and dispatch client packets for NPC dialogue interactions.
+ */
 
 #include "dialogue_handler.h"
 #include "dialogue_system.h"
@@ -20,22 +19,15 @@
 #include <arpa/inet.h>
 #include "utils.h"
 
-// External references
 extern NPCWorld g_npc_world;
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
-// Calculate 2D distance between two points
 static float dist2d(float x1, float y1, float x2, float y2) {
     float dx = x2 - x1;
     float dy = y2 - y1;
     return sqrtf(dx * dx + dy * dy);
 }
 
-// Snapshot of NPC data copied under the world lock — avoids holding the lock
-// after the function returns and prevents use-after-free of NPC array entries.
+/** Snapshot the NPC fields required after releasing the world lock. */
 typedef struct {
     uint32_t id;
     float    pos_x, pos_y;
@@ -45,7 +37,12 @@ typedef struct {
     char     name[32];
 } NPCSnapshot;
 
-// Returns 1 and populates *out if the NPC is found and alive; 0 otherwise.
+/**
+ * Snapshot an alive NPC while holding the world lock.
+ *
+ * @param out  Receives the copied NPC fields.
+ * @return     1 when found and alive, or 0 otherwise.
+ */
 static int find_npc_snapshot(uint32_t npc_id, NPCSnapshot* out) {
     pthread_mutex_lock(&g_npc_world.lock);
 
@@ -69,15 +66,18 @@ static int find_npc_snapshot(uint32_t npc_id, NPCSnapshot* out) {
     return 0;
 }
 
-// Send packet helper
 static void send_packet(int client_fd, void* packet, size_t size) {
     server_send(client_fd, packet, size);
 }
 
-// ---------------------------------------------------------------------------
-// Packet Handlers
-// ---------------------------------------------------------------------------
-
+/**
+ * Validate an NPC interaction request and open its initial dialogue page.
+ *
+ * @param client_fd     Socket that receives the dialogue response.
+ * @param character_id Character initiating the interaction.
+ * @param buffer        Packet buffer containing NPCInteractRequestPacket.
+ * @param bytes         Available packet bytes; negative values are rejected.
+ */
 void handle_npc_interact_request(int client_fd, uint32_t character_id,
                                  uint8_t* buffer, ssize_t bytes) {
     if (bytes < 0 || (size_t)bytes < sizeof(NPCInteractRequestPacket)) {
@@ -175,6 +175,14 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
            character_id, npc.dialogue_id);
 }
 
+/**
+ * Validate a dialogue option selection and execute its configured action.
+ *
+ * @param client_fd     Socket that receives navigation or close packets.
+ * @param character_id Character selecting the option.
+ * @param buffer        Packet buffer containing DialogueOptionSelectPacket.
+ * @param bytes         Available packet bytes; negative values are rejected.
+ */
 void handle_dialogue_option_select(int client_fd, uint32_t character_id,
                                    uint8_t* buffer, ssize_t bytes) {
     if (bytes < 0 || (size_t)bytes < sizeof(DialogueOptionSelectPacket)) {
@@ -333,6 +341,9 @@ void handle_dialogue_option_select(int client_fd, uint32_t character_id,
     printf("[DIALOGUE] Sent page %d to player %u\n", next_page, character_id);
 }
 
+/**
+ * Close a character's dialogue session.
+ */
 void handle_dialogue_close(uint32_t character_id) {
     printf("[DIALOGUE] Closing dialogue for player %u\n", character_id);
     dialogue_session_close(character_id);

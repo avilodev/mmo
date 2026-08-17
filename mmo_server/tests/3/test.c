@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Exercise database-backed character creation, listing, deletion, and world isolation.
+ */
+
 #include "headers.h"
 #include "database_operations.h"
 #include <stdio.h>
@@ -5,31 +10,41 @@
 #include <string.h>
 #include <assert.h>
 
-// Color codes for output
+/** ANSI color sequences used by the test reporter. */
 #define GREEN "\033[0;32m"
 #define RED "\033[0;31m"
 #define YELLOW "\033[0;33m"
 #define BLUE "\033[0;34m"
 #define RESET "\033[0m"
 
+/** Print a titled test section. */
 void print_test_header(const char* test_name) {
     printf("\n" BLUE "╔════════════════════════════════════════════════════════════╗\n");
     printf("║ %-58s ║\n", test_name);
     printf("╚════════════════════════════════════════════════════════════╝" RESET "\n");
 }
 
+/** Print a passing assertion message. */
 void print_pass(const char* msg) {
     printf(GREEN "✓ PASS: %s" RESET "\n", msg);
 }
 
+/** Print a failing assertion message. */
 void print_fail(const char* msg) {
     printf(RED "✗ FAIL: %s" RESET "\n", msg);
 }
 
+/** Print an informational test message. */
 void print_info(const char* msg) {
     printf(YELLOW "→ %s" RESET "\n", msg);
 }
 
+/**
+ * Check database initialization and the global connection handle.
+ *
+ * @param conn_str  PostgreSQL connection string.
+ * @return      One on success, or zero on failure.
+ */
 int test_database_connection(const char* conn_str) {
     print_test_header("TEST 1: Database Connection");
     
@@ -50,6 +65,7 @@ int test_database_connection(const char* conn_str) {
     return 1;
 }
 
+/** Check creation of a character in the primary test world. */
 int test_character_creation(void) {
     print_test_header("TEST 2: Character Creation");
     
@@ -85,6 +101,7 @@ int test_character_creation(void) {
     return 1;
 }
 
+/** Check retrieval of the test account's character list. */
 int test_character_list(void) {
     print_test_header("TEST 3: Character List Retrieval");
     
@@ -122,6 +139,7 @@ int test_character_list(void) {
     return 1;
 }
 
+/** Check the character count for the primary test world. */
 int test_character_count(void) {
     print_test_header("TEST 4: Character Count");
     
@@ -141,6 +159,7 @@ int test_character_count(void) {
     return 1;
 }
 
+/** Check rejection of a duplicate character name. */
 int test_duplicate_name(void) {
     print_test_header("TEST 5: Duplicate Name Prevention");
     
@@ -163,6 +182,7 @@ int test_duplicate_name(void) {
     return 1;
 }
 
+/** Check creation of several characters for one account. */
 int test_multiple_characters(void) {
     print_test_header("TEST 6: Multiple Character Creation");
     
@@ -199,6 +219,7 @@ int test_multiple_characters(void) {
     return 1;
 }
 
+/** Check character deletion and the resulting count. */
 int test_character_deletion(void) {
     print_test_header("TEST 7: Character Deletion");
     
@@ -239,6 +260,7 @@ int test_character_deletion(void) {
     return 1;
 }
 
+/** Check that character queries remain isolated by world. */
 int test_cross_world_isolation(void) {
     print_test_header("TEST 8: Cross-World Isolation");
     
@@ -275,6 +297,7 @@ int test_cross_world_isolation(void) {
     return 1;
 }
 
+/** Delete character records created by this suite. */
 int test_cleanup(void) {
     print_test_header("TEST 9: Cleanup");
     
@@ -296,6 +319,11 @@ int test_cleanup(void) {
     return 1;
 }
 
+/**
+ * Run the character database integration suite.
+ *
+ * @return      Zero when every check passes, or one otherwise.
+ */
 int main(int argc, char** argv) {
     printf("\n");
     printf(BLUE "╔═══════════════════════════════════════════════════════════════╗\n");
@@ -315,7 +343,6 @@ int main(int argc, char** argv) {
     int total_tests = 0;
     int passed_tests = 0;
     
-    // Test 1: Database Connection
     total_tests++;
     if (test_database_connection(conn_str)) {
         passed_tests++;
@@ -324,49 +351,41 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // Test 2: Character Creation
     total_tests++;
     if (test_character_creation()) {
         passed_tests++;
     }
     
-    // Test 3: Character List
     total_tests++;
     if (test_character_list()) {
         passed_tests++;
     }
     
-    // Test 4: Character Count
     total_tests++;
     if (test_character_count()) {
         passed_tests++;
     }
     
-    // Test 5: Duplicate Name Prevention
     total_tests++;
     if (test_duplicate_name()) {
         passed_tests++;
     }
     
-    // Test 6: Multiple Characters
     total_tests++;
     if (test_multiple_characters()) {
         passed_tests++;
     }
     
-    // Test 7: Character Deletion
     total_tests++;
     if (test_character_deletion()) {
         passed_tests++;
     }
     
-    // Test 8: Cross-World Isolation
     total_tests++;
     if (test_cross_world_isolation()) {
         passed_tests++;
     }
     
-    // Test 9: Cleanup
     total_tests++;
     if (test_cleanup()) {
         passed_tests++;

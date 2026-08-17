@@ -1,6 +1,7 @@
-// ============================================================================
-// quest_system.c — Server-side quest tracking
-// ============================================================================
+/**
+ * @file
+ * Load quest definitions, persist player quest state, and update objectives and rewards.
+ */
 
 #include "quest_system.h"
 #include "log.h"
@@ -17,16 +18,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-// ---------------------------------------------------------------------------
-// Quest table (loaded from quests.json)
-// ---------------------------------------------------------------------------
-
 static QuestDef* g_quest_table[MAX_QUESTS];  // indexed by quest_id
 static int        g_quest_count = 0;
-
-// ---------------------------------------------------------------------------
-// Simple JSON helpers (same pattern as dialogue_loader.c)
-// ---------------------------------------------------------------------------
 
 static const char* qs_skip_ws(const char* s) {
     while (*s && isspace((unsigned char)*s)) s++;
@@ -68,6 +61,16 @@ static const char* qs_find_array(const char* json, const char* key) {
     return val + 1;
 }
 
+static const char* qs_first_element(const char* pos) {
+    pos = qs_skip_ws(pos);
+    return (*pos == '{') ? pos : NULL;
+}
+
+/**
+ * Advance from one object to the next object in a JSON array.
+ *
+ * @return The next opening brace, or NULL at the array end or for a non-object element.
+ */
 static const char* qs_next_element(const char* pos) {
     pos = qs_skip_ws(pos);
     if (*pos == '{') {
@@ -84,10 +87,13 @@ static const char* qs_next_element(const char* pos) {
     return (*pos == '{') ? pos : NULL;
 }
 
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
-
+/**
+ * Initialize quest definitions from a JSON file.
+ *
+ * A missing file or quests array is treated as a nonfatal empty quest registry.
+ *
+ * @return 1 after loading or a nonfatal absence, or 0 on allocation failure.
+ */
 int quest_system_init(const char* json_path) {
     memset(g_quest_table, 0, sizeof(g_quest_table));
     g_quest_count = 0;
@@ -115,8 +121,8 @@ int quest_system_init(const char* json_path) {
         return 1;
     }
 
-    const char* obj = quests_arr;
-    while ((obj = qs_next_element(obj)) != NULL) {
+    const char* obj = qs_first_element(quests_arr);
+    for (; obj != NULL; obj = qs_next_element(obj)) {
         QuestDef* q = calloc(1, sizeof(QuestDef));
         if (!q) break;
 
@@ -129,8 +135,8 @@ int quest_system_init(const char* json_path) {
         // Objectives array
         const char* objs = qs_find_array(obj, "objectives");
         if (objs) {
-            const char* o = objs;
-            while ((o = qs_next_element(o)) != NULL && q->obj_count < MAX_QUEST_OBJECTIVES) {
+            const char* o = qs_first_element(objs);
+            for (; o != NULL && q->obj_count < MAX_QUEST_OBJECTIVES; o = qs_next_element(o)) {
                 QuestObjectiveDef* od = &q->objectives[q->obj_count];
                 char type_str[16] = {0};
                 v = qs_find_value(o, "type");  if (v) qs_parse_string(v, type_str, sizeof(type_str));
@@ -147,8 +153,8 @@ int quest_system_init(const char* json_path) {
         // Item rewards array
         const char* rewards = qs_find_array(obj, "item_rewards");
         if (rewards) {
-            const char* r = rewards;
-            while ((r = qs_next_element(r)) != NULL && q->item_reward_count < MAX_QUEST_OBJECTIVES) {
+            const char* r = qs_first_element(rewards);
+            for (; r != NULL && q->item_reward_count < MAX_QUEST_OBJECTIVES; r = qs_next_element(r)) {
                 QuestItemReward* ir = &q->item_rewards[q->item_reward_count];
                 v = qs_find_value(r, "item_id");  if (v) ir->item_id  = qs_parse_int(v);
                 v = qs_find_value(r, "quantity"); if (v) ir->quantity  = qs_parse_int(v);
@@ -170,29 +176,47 @@ int quest_system_init(const char* json_path) {
     return 1;
 }
 
+/**
+ * Release all loaded quest definitions.
+ */
 void quest_system_cleanup(void) {
     for (int i = 0; i < MAX_QUESTS; i++) {
         if (g_quest_table[i]) { free(g_quest_table[i]); g_quest_table[i] = NULL; }
     }
 }
 
+/**
+ * Retrieve a quest definition by identifier.
+ *
+ * The returned pointer remains owned by the quest registry.
+ *
+ * @return The definition, or NULL when absent or out of range.
+ */
 const QuestDef* quest_get(uint32_t quest_id) {
     if (quest_id == 0 || quest_id >= MAX_QUESTS) return NULL;
     return g_quest_table[quest_id];
 }
 
-// ---------------------------------------------------------------------------
-// File-based persistence  (<exe_dir>/data/quests/<character_id>.bin)
-// ---------------------------------------------------------------------------
-
 static char g_quest_dir[512] = {0};
 
+/**
+ * Set and create the directory used for binary quest-state files.
+ */
 void quest_system_set_dir(const char* dir) {
     snprintf(g_quest_dir, sizeof(g_quest_dir), "%s", dir);
     // Create directory if it doesn't exist
     mkdir(g_quest_dir, 0755);
 }
 
+/**
+ * Atomically write a character's quest entries through a temporary file.
+ *
+ * The file stores native integer and structure representations.
+ *
+ * @param quests  Array containing count quest entries.
+ * @param count   Number of entries; must be between zero and MAX_PLAYER_QUESTS.
+ * @return        1 when the temporary file is written and renamed, or 0 on failure.
+ */
 int quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count) {
     if (g_quest_dir[0] == '\0' || count < 0 || count > MAX_PLAYER_QUESTS) return 0;
     char path[600], temp_path[640];
@@ -211,6 +235,13 @@ int quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int
     return ok;
 }
 
+/**
+ * Load a character's native-format quest-state file.
+ *
+ * @param quests     Output array with room for max_count entries.
+ * @param max_count  Maximum accepted entry count.
+ * @return           The loaded count, or 0 when absent, invalid, or unreadable.
+ */
 int quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_count) {
     if (g_quest_dir[0] == '\0') return 0;
     char path[600];
@@ -231,16 +262,15 @@ int quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_c
     return count;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 static struct PlayerQuestSlot* find_player_quest(ActivePlayer* p, uint32_t quest_id) {
     for (int i = 0; i < p->quest_count; i++)
         if (p->quests[i].quest_id == quest_id) return &p->quests[i];
     return NULL;
 }
 
+/**
+ * Send a quest definition and its current objective progress.
+ */
 static void send_quest_accept_packet(int client_fd, uint32_t character_id,
                                      const QuestDef* q, const PlayerQuestEntry* pq) {
     QuestAcceptPacket pkt;
@@ -274,10 +304,11 @@ static void send_quest_accept_packet(int client_fd, uint32_t character_id,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Player operations
-// ---------------------------------------------------------------------------
-
+/**
+ * Add a quest to a character and send its initial state.
+ *
+ * @return 1 when accepted, or 0 when unavailable, duplicated, or the quest log is full.
+ */
 int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id) {
     const QuestDef* q = quest_get(quest_id);
     if (!q) {
@@ -315,6 +346,11 @@ int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id)
     return 1;
 }
 
+/**
+ * Complete an eligible quest and grant its configured rewards.
+ *
+ * @return 1 when turned in, or 0 when absent, inactive, or incomplete.
+ */
 int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id) {
     const QuestDef* q = quest_get(quest_id);
     if (!q) return 0;
@@ -353,27 +389,49 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
     cpkt.gold_reward = htonl(q->gold_reward);
 
     for (int i = 0; i < q->item_reward_count && i < MAX_QUEST_OBJECTIVES; i++) {
-        // Find empty slot
-        int slot = -1;
-        for (int s = 0; s < 150; s++) {
-            if (p->inventory[s] == 0) { slot = s; break; }
-        }
-        if (slot >= 0) {
-            p->inventory[slot] = q->item_rewards[i].item_id;
-            cpkt.items[cpkt.item_count].item_id       = htonl(q->item_rewards[i].item_id);
-            cpkt.items[cpkt.item_count].quantity      = q->item_rewards[i].quantity;
-            cpkt.items[cpkt.item_count].inventory_slot = (uint8_t)slot;
+        uint32_t reward_id = q->item_rewards[i].item_id;
+        uint16_t want      = q->item_rewards[i].quantity ? q->item_rewards[i].quantity : 1;
+
+        const ItemDefinition* def = item_get(reward_id);
+        int slot = inventory_first_free(p->inventory);
+
+        // retain unplaced reward quantities for warning output
+        uint16_t left   = inventory_add(p->inventory, reward_id, want,
+                                        def ? def->max_stack : 1,
+                                        def ? def->bind_on_pickup : 0);
+        uint16_t stored = (uint16_t)(want - left);
+
+        if (stored > 0) {
+            cpkt.items[cpkt.item_count].item_id        = htonl(reward_id);
+            cpkt.items[cpkt.item_count].quantity       = (uint8_t)stored;
+            cpkt.items[cpkt.item_count].inventory_slot = (uint8_t)(slot < 0 ? 0 : slot);
             cpkt.item_count++;
         }
+        if (left > 0)
+            LOG_WARN("[QUEST] character %u had no room for %u x item %u",
+                     character_id, left, reward_id);
     }
 
     player_release(p);
 
     server_send(client_fd, &cpkt, sizeof(cpkt));
+
+    // report current slots after stack merges
+    if (cpkt.item_count > 0) {
+        uint16_t changed[MAX_SLOT_UPDATES];
+        int n = 0;
+        for (int i = 0; i < cpkt.item_count && n < MAX_SLOT_UPDATES; i++)
+            changed[n++] = cpkt.items[i].inventory_slot;
+        player_send_slot_updates(client_fd, character_id, changed, n);
+    }
+
     LOG_DEBUG("[QUEST] Player %u completed quest %u '%s'", character_id, quest_id, q->title);
     return 1;
 }
 
+/**
+ * Advance matching kill objectives for a character.
+ */
 void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_id) {
     ActivePlayer* p = player_acquire(character_id);
     if (!p) return;
@@ -431,6 +489,9 @@ void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_i
     player_release(p);
 }
 
+/**
+ * Advance matching item-collection objectives for a character.
+ */
 void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_id) {
     ActivePlayer* p = player_acquire(character_id);
     if (!p) return;
@@ -482,6 +543,9 @@ void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_i
     player_release(p);
 }
 
+/**
+ * Advance matching NPC-conversation objectives for a character.
+ */
 void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_id) {
     ActivePlayer* p = player_acquire(character_id);
     if (!p) return;
@@ -533,6 +597,9 @@ void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_i
     player_release(p);
 }
 
+/**
+ * Send every active quest and its progress to a character's client.
+ */
 void quest_send_all(uint32_t character_id, int client_fd) {
     ActivePlayer* p = player_acquire(character_id);
     if (!p) return;

@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Manage per-world PostgreSQL connection pools and realm character operations.
+ */
 #include "world_database_manager.h"
 #include "world_database_config.h"
 
@@ -15,7 +19,9 @@ static WorldDatabasePool g_world_pools[MAX_WORLDS + 1] = {0}; // index 0 unused,
 static pthread_mutex_t g_manager_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /**
- * Initialize database pool for a specific world
+ * Initialize a world's fixed-size PostgreSQL connection pool.
+ *
+ * @return      Nonzero when the pool is ready, otherwise zero.
  */
 static int init_world_pool(uint32_t world_id) {
     if (world_id < 1 || world_id > MAX_WORLDS) {
@@ -72,7 +78,11 @@ static int init_world_pool(uint32_t world_id) {
 }
 
 /**
- * Get a connection for a specific world
+ * Acquire a connection from a world's pool, initializing the pool when needed.
+ *
+ * This function may block for up to 30 seconds waiting for a connection; the caller must release a returned connection.
+ *
+ * @return      An acquired connection, or NULL for an invalid world, initialization failure, or timeout.
  */
 static PGconn* acquire_world_connection(uint32_t world_id) {
     if (world_id < 1 || world_id > MAX_WORLDS) {
@@ -119,9 +129,7 @@ static PGconn* acquire_world_connection(uint32_t world_id) {
     }
 }
 
-/**
- * Release a connection back to the pool
- */
+/** Return an acquired connection to its world pool and wake one waiter. */
 static void release_world_connection(uint32_t world_id, PGconn* conn) {
     if (world_id < 1 || world_id > MAX_WORLDS || !conn) {
         return;
@@ -144,7 +152,9 @@ static void release_world_connection(uint32_t world_id, PGconn* conn) {
 }
 
 /**
- * PUBLIC API: Get character list for a world
+ * Load an account's characters from a world's database.
+ *
+ * @return      The number of records written, or zero when the query fails or the output is invalid.
  */
 int world_character_get_list(uint32_t account_id, uint32_t world_id,
                              CharacterInfo* characters, int max_count) {
@@ -212,6 +222,11 @@ int world_character_get_list(uint32_t account_id, uint32_t world_id,
     return count;
 }
 
+/**
+ * Count an account's characters in a world database.
+ *
+ * @return      The character count, or -1 when a connection or query fails.
+ */
 int world_character_count(uint32_t account_id, uint32_t world_id) {
     PGconn* conn = acquire_world_connection(world_id);
     if (!conn) return -1;
@@ -238,7 +253,10 @@ int world_character_count(uint32_t account_id, uint32_t world_id) {
 }
 
 /**
- * PUBLIC API: Create character in a world
+ * Insert a character within a PostgreSQL transaction.
+ *
+ * @param out_character_id  Receives the generated identifier on success.
+ * @return                  Nonzero on success, otherwise zero.
  */
 int world_character_create(uint32_t account_id, uint32_t world_id,
                            const char* name, int class_id, int race_id,
@@ -305,7 +323,9 @@ int world_character_create(uint32_t account_id, uint32_t world_id,
 }
 
 /**
- * Check if character belongs to account (world-aware)
+ * Test whether a character belongs to an account in a world database.
+ *
+ * @return      Nonzero when an ownership row exists, otherwise zero.
  */
 int world_character_belongs_to_account(uint32_t character_id, uint32_t account_id, uint32_t world_id) {
     PGconn* conn = acquire_world_connection(world_id);
@@ -333,7 +353,9 @@ int world_character_belongs_to_account(uint32_t character_id, uint32_t account_i
 }
 
 /**
- * PUBLIC API: Delete character from a world
+ * Delete an account-owned character within a PostgreSQL transaction.
+ *
+ * @return      Nonzero when a row is deleted, otherwise zero.
  */
 int world_character_delete(uint32_t account_id, uint32_t character_id,
                            uint32_t world_id) {
@@ -380,9 +402,7 @@ int world_character_delete(uint32_t account_id, uint32_t character_id,
     return success;
 }
 
-/**
- * Cleanup all world database pools
- */
+/** Close all initialized world pools and destroy their synchronization objects. */
 void world_databases_cleanup(void) {
     for (int w = 1; w <= MAX_WORLDS; w++) {
         WorldDatabasePool* pool = &g_world_pools[w];

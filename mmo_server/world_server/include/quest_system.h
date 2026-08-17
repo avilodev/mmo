@@ -3,16 +3,18 @@
 
 #include <stdint.h>
 
+/** Bound loaded quests, per-player records, objectives, and item rewards. */
 #define MAX_QUESTS          256
 #define MAX_PLAYER_QUESTS   32
 
 #define MAX_QUEST_OBJECTIVES 4
 
-// Types of quest objectives
+/** Identify objective progress sources. */
 #define QUEST_OBJ_KILL    0
 #define QUEST_OBJ_COLLECT 1
 #define QUEST_OBJ_TALK    2
 
+/** Define one objective's event type, target, description, and required count. */
 typedef struct {
     uint8_t  type;              // QUEST_OBJ_KILL / QUEST_OBJ_COLLECT
     uint32_t target_id;         // npc_type_id (kill) or item_id (collect)
@@ -20,11 +22,13 @@ typedef struct {
     int32_t  required_count;
 } QuestObjectiveDef;
 
+/** Define one item stack granted as a quest reward. */
 typedef struct {
     uint32_t item_id;
     uint8_t  quantity;
 } QuestItemReward;
 
+/** Aggregate objectives and completion rewards for one quest. */
 typedef struct {
     uint32_t          quest_id;
     char              title[48];
@@ -36,8 +40,7 @@ typedef struct {
     QuestItemReward   item_rewards[MAX_QUEST_OBJECTIVES];
 } QuestDef;
 
-// Per-player runtime quest state (stored in ActivePlayer).
-// Layout MUST match struct PlayerQuestSlot in headers.h.
+/** Mirror ActivePlayer.PlayerQuestSlot for persistence and packet handling. */
 typedef struct {
     uint32_t quest_id;
     uint8_t  is_active;
@@ -46,35 +49,30 @@ typedef struct {
     int32_t  progress[4];   // MAX_QUEST_OBJECTIVES
 } PlayerQuestEntry;
 
-// Init: load quests.json
+// load quest definitions from JSON
 int  quest_system_init(const char* json_path);
 void quest_system_cleanup(void);
 void quest_system_set_dir(const char* dir);
 
-// Look up a quest definition
+// return a registry-owned definition or NULL when absent
 const QuestDef* quest_get(uint32_t quest_id);
 
-// Player operations (client_fd needed to push packets)
-// Returns 1 on success, 0 on failure (already accepted, quest not found, etc.)
+// return nonzero after accepting and notifying the player
 int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id);
 
-// Returns 1 = turned in successfully, 0 = not complete yet
+// return nonzero after successful completed-quest turn-in
 int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id);
 
-// Called on NPC kill — updates kill objectives for the attacker
 void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_id);
 
-// Called when a player picks up a ground item — updates collect objectives
 void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_id);
 
-// Called when a player opens dialogue with an NPC — updates talk objectives
 void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_id);
 
-// Save/load quest state for a character (file-based)
+// persist and restore per-character quest state from files
 int quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count);
 int  quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_count);
 
-// Send the full quest log to a client (called on login)
 void quest_send_all(uint32_t character_id, int client_fd);
 
 #endif // QUEST_SYSTEM_H

@@ -17,6 +17,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+/** Hold world-server identity, listener state, and packet-limit overrides. */
 typedef struct {
     int tcp_sockfd;
     int running;
@@ -29,15 +30,14 @@ typedef struct {
     uint16_t max_players;
     bool hardcore;
 
-    // Per-world packet budget tuning. Anything left at 0 keeps the compiled
-    // default from limit_profiles.c, so a world only states what it changes.
+    /** Retain compiled packet budgets for override fields left at zero. */
     PacketLimitOverrides limits;
 } ServerConfig;
 
+/** Track aggregate world state shared by client-handler threads. */
 typedef struct {
-    _Atomic int current_players;  // Incremented/decremented by client handler threads concurrently
+    _Atomic int current_players;  /**< Updated concurrently by client-handler threads. */
 
-    //ticks....
 } ServerState;
 
 extern ServerConfig g_server;

@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Start the TLS login service and accept one authentication request per connection.
+ */
 #include "types.h"
 #include "log.h"
 #include "session.h"
@@ -19,6 +23,13 @@
 ServerConfig g_server;
 SSL_CTX* g_tls_ctx = NULL;
 
+/**
+ * Complete a TLS handshake, reassemble one packet, and route it for a login client.
+ *
+ * The function owns and frees the heap-allocated descriptor argument, then closes the client descriptor before returning.
+ *
+ * @return      Always NULL.
+ */
 void* client_handler_thread(void* arg) {
     int client_fd = *(int*)arg;
     free(arg);
@@ -77,6 +88,11 @@ void* client_handler_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * Accept rate-limited login connections and detach one handler thread per client.
+ *
+ * @return      Always NULL after the server stops or the accept loop fails.
+ */
 void* accept_thread_func(void* arg) {
     (void)arg;
     
@@ -151,6 +167,13 @@ void* accept_thread_func(void* arg) {
     return NULL;
 }
 
+/**
+ * Initialize login-server dependencies and run until a shutdown signal arrives.
+ *
+ * @param argc  Argument count; an optional first argument overrides the listening port.
+ * @param argv  Argument vector containing the optional listening port.
+ * @return      Zero after orderly shutdown, or one when initialization fails.
+ */
 int main(int argc, char** argv) {
     // chdir to the directory containing the binary so all relative paths work
     // regardless of where the server is launched from

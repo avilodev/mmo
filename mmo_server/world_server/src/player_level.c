@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Derive player statistics, apply equipment and buffs, grant rewards, and send stat packets.
+ */
+
 #include "types.h"
 #include "player_level.h"
 #include "class_stats.h"
@@ -14,6 +19,9 @@
 
 #define VITALITY_HP_PER_POINT 5
 
+/**
+ * Reset a player's derived statistics to class-and-level values.
+ */
 void player_apply_class_stats(ActivePlayer* player) {
     if (!player) return;
 
@@ -42,22 +50,21 @@ void player_apply_class_stats(ActivePlayer* player) {
     if (player->mana > player->max_mana)     player->mana = player->max_mana;
 }
 
+/**
+ * Rebuild derived statistics from class values and equipped items.
+ */
 void player_apply_equipment_bonuses(ActivePlayer* player) {
     if (!player) return;
 
     // Reset to class base first
     player_apply_class_stats(player);
 
-    // Gather all 7 equipment slot IDs
-    uint32_t equipped[] = {
-        player->helmet, player->gloves, player->chest_armor,
-        player->leggings, player->boots, player->main_hand,
-        player->second_hand
-    };
+    // Every worn slot except the blessing, which carries no item stats.
+    for (int i = 0; i < EQUIP_SLOTS; i++) {
+        if (i == EQUIP_BLESSING) continue;
+        if (player->equipment[i].instance_id == 0) continue;
 
-    for (int i = 0; i < 7; i++) {
-        if (equipped[i] == 0) continue;
-        const ItemDefinition* item = item_get(equipped[i]);
+        const ItemDefinition* item = item_get(player->equipment[i].item_id);
         if (!item) continue;
 
         // Weapon damage stacks (main_hand + off_hand)
@@ -92,10 +99,9 @@ void player_apply_equipment_bonuses(ActivePlayer* player) {
     if (player->mana > player->max_mana)     player->mana = player->max_mana;
 }
 
-// ---------------------------------------------------------------------------
-// player_reapply_stat_buffs — called when an EFFECT_BUFF expires.
-// Resets stats to base+equipment, then re-adds any still-active buffs.
-// ---------------------------------------------------------------------------
+/**
+ * Rebuild equipment statistics and reapply every active stat buff.
+ */
 void player_reapply_stat_buffs(ActivePlayer* player) {
     player_apply_equipment_bonuses(player);
 
@@ -120,6 +126,9 @@ void player_reapply_stat_buffs(ActivePlayer* player) {
     }
 }
 
+/**
+ * Grant XP while locking the player and process any resulting level gain.
+ */
 void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
     if (!player || xp_amount == 0) return;
 
@@ -197,6 +206,11 @@ void player_award_xp(ActivePlayer* player, uint64_t xp_amount) {
     }
 }
 
+/**
+ * Grant XP to an already locked player and process any resulting level gain.
+ *
+ * The caller must hold player->lock.
+ */
 void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
     if (!player || xp_amount == 0) return;
 
@@ -265,6 +279,9 @@ void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
     }
 }
 
+/**
+ * Grant gold while locking the player.
+ */
 void player_award_gold(ActivePlayer* player, uint32_t amount) {
     if (!player || amount == 0) return;
 
@@ -274,12 +291,20 @@ void player_award_gold(ActivePlayer* player, uint32_t amount) {
     pthread_mutex_unlock(&player->lock);
 }
 
+/**
+ * Grant gold to an already locked player.
+ *
+ * The caller must hold player->lock.
+ */
 void player_award_gold_locked(ActivePlayer* player, uint32_t amount) {
     if (!player || amount == 0) return;
     player->gold += amount;
     player->is_dirty = 1;
 }
 
+/**
+ * Send a kill-reward packet after snapshotting totals under the player lock.
+ */
 void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
     if (!player) return;
 
@@ -299,6 +324,11 @@ void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, u
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send a kill-reward packet for an already locked player.
+ *
+ * The caller must hold player->lock.
+ */
 void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
     if (!player) return;
 
@@ -315,6 +345,9 @@ void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send a player's current derived statistics after locking it.
+ */
 void player_send_stats(int client_fd, ActivePlayer* player) {
     if (!player) return;
 
@@ -347,6 +380,11 @@ void player_send_stats(int client_fd, ActivePlayer* player) {
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
+/**
+ * Send current derived statistics for an already locked player.
+ *
+ * The caller must hold player->lock.
+ */
 void player_send_stats_locked(int client_fd, ActivePlayer* player) {
     if (!player) return;
 

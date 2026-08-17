@@ -1,11 +1,14 @@
+/**
+ * @file
+ * Enforce realm packet budgets and dispatch authenticated character requests.
+ */
 #include "routes.h"
 #include "packet_limiter.h"
 #include "net_notify.h"
 
 #include <sys/socket.h>
 
-// The realm server writes straight to the socket, so these send inline. The
-// world server has a queued-write path and uses its own equivalents.
+/** Send an inline rate-limit response on a realm client socket. */
 static void realm_send_rate_limited(int fd, uint8_t rejected_type) {
     uint8_t buf[sizeof(RateLimitedPacket)];
     size_t n = net_build_rate_limited(buf, sizeof(buf), rejected_type,
@@ -14,12 +17,20 @@ static void realm_send_rate_limited(int fd, uint8_t rejected_type) {
     if (n) send(fd, buf, n, MSG_NOSIGNAL);
 }
 
+/** Send an inline protocol disconnect on a realm client socket. */
 static void realm_send_disconnect(int fd, uint8_t reason) {
     uint8_t buf[sizeof(DisconnectPacket)];
     size_t n = net_build_disconnect(buf, sizeof(buf), reason, NULL);
     if (n) send(fd, buf, n, MSG_NOSIGNAL);
 }
 
+/**
+ * Rate-limit and dispatch one complete authenticated realm packet.
+ *
+ * Character names in mutable request buffers are forced to terminate before dispatch.
+ *
+ * @return      One after ordinary dispatch, zero for an ignored packet, or -1 when the caller must disconnect.
+ */
 int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {
     printf("Processing packet from account %u (fd: %d), %zd bytes\n",
            account_id, client_fd, bytes);

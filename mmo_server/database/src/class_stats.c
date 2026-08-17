@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Define class growth profiles and derive level-dependent character statistics and XP thresholds.
+ */
+
 #include "class_stats.h"
 #include <stdio.h>
 #include <string.h>
@@ -6,6 +11,9 @@ static ClassStatProfile g_class_stats[NUM_CLASSES + 1];
 static int g_initialized = 0;
 static uint64_t g_xp_table[MAX_LEVEL + 1];
 
+/**
+ * Initialize class profiles and the cumulative XP threshold table once.
+ */
 void class_stats_init(void) {
     if (g_initialized) return;
     memset(g_class_stats, 0, sizeof(g_class_stats));
@@ -90,11 +98,26 @@ void class_stats_init(void) {
            g_xp_table[2], g_xp_table[10], g_xp_table[25], g_xp_table[50]);
 }
 
+/**
+ * Retrieve a class growth profile.
+ *
+ * The returned pointer remains owned by the class-stat registry.
+ *
+ * @return The profile for identifiers 1 through NUM_CLASSES, or NULL otherwise.
+ */
 const ClassStatProfile* class_stats_get_profile(uint8_t class_id) {
     if (class_id < 1 || class_id > NUM_CLASSES) return NULL;
     return &g_class_stats[class_id];
 }
 
+/**
+ * Compute base derived statistics for a class and clamped level.
+ *
+ * @param class_id  Class identifier from 1 through NUM_CLASSES.
+ * @param level     Requested level, clamped to 1 through MAX_LEVEL.
+ * @param out       Receives the derived statistics; may not be NULL.
+ * @return          1 on success, or 0 for an invalid class or NULL output.
+ */
 int class_stats_compute(uint8_t class_id, int level, DerivedStats* out) {
     if (!out) return 0;
     if (class_id < 1 || class_id > NUM_CLASSES) return 0;
@@ -119,12 +142,22 @@ int class_stats_compute(uint8_t class_id, int level, DerivedStats* out) {
     return 1;
 }
 
+/**
+ * Retrieve the cumulative XP threshold for a level.
+ *
+ * @return Zero below level one, the maximum-level threshold above MAX_LEVEL, or the indexed threshold.
+ */
 uint64_t class_stats_xp_for_level(int level) {
     if (level < 1) return 0;
     if (level > MAX_LEVEL) return g_xp_table[MAX_LEVEL];
     return g_xp_table[level];
 }
 
+/**
+ * Advance a current level through every XP threshold already reached.
+ *
+ * @return The resulting level capped at MAX_LEVEL.
+ */
 int class_stats_check_level(int current_level, uint64_t current_xp) {
     if (current_level >= MAX_LEVEL) return MAX_LEVEL;
     int new_level = current_level;

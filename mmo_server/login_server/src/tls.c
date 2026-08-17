@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Manage login-server TLS contexts and thread-local client sessions.
+ */
 #include "tls.h"
 
 #include <stdio.h>
@@ -7,6 +11,13 @@
 // One SSL* per handler thread, set via tls_set_conn().
 static __thread SSL* g_tls_ssl = NULL;
 
+/**
+ * Create a TLS server context from matching PEM certificate and key files.
+ *
+ * TLS versions below 1.2 are rejected.
+ *
+ * @return      The initialized context, or NULL when setup or credential loading fails.
+ */
 SSL_CTX* tls_server_init(const char* cert_path, const char* key_path) {
     // In OpenSSL 1.1+ these are no-ops, kept for 1.0.x compatibility.
     SSL_library_init();
@@ -48,11 +59,19 @@ SSL_CTX* tls_server_init(const char* cert_path, const char* key_path) {
     return ctx;
 }
 
+/** Release a TLS server context and OpenSSL algorithm state. */
 void tls_server_cleanup(SSL_CTX* ctx) {
     if (ctx) SSL_CTX_free(ctx);
     EVP_cleanup();
 }
 
+/**
+ * Perform a server-side TLS handshake on an accepted descriptor.
+ *
+ * The caller retains ownership of client_fd and must close it separately.
+ *
+ * @return      The negotiated session, or NULL when allocation or negotiation fails.
+ */
 SSL* tls_accept(SSL_CTX* ctx, int client_fd) {
     SSL* ssl = SSL_new(ctx);
     if (!ssl) {
@@ -74,10 +93,16 @@ SSL* tls_accept(SSL_CTX* ctx, int client_fd) {
     return ssl;
 }
 
+/** Associate a TLS session with the calling handler thread. */
 void tls_set_conn(SSL* ssl) {
     g_tls_ssl = ssl;
 }
 
+/**
+ * Write through the calling thread's TLS session.
+ *
+ * @return      The SSL_write result, or -1 when no session is associated with the thread.
+ */
 ssize_t tls_send(int fd, const void* buf, size_t len, int flags) {
     (void)fd; (void)flags;
     if (!g_tls_ssl) {
@@ -92,6 +117,11 @@ ssize_t tls_send(int fd, const void* buf, size_t len, int flags) {
     return (ssize_t)ret;
 }
 
+/**
+ * Read through the calling thread's TLS session.
+ *
+ * @return      The SSL_read result, or -1 when no session is associated with the thread.
+ */
 ssize_t tls_recv(int fd, void* buf, size_t len, int flags) {
     (void)fd; (void)flags;
     if (!g_tls_ssl) {
@@ -107,6 +137,7 @@ ssize_t tls_recv(int fd, void* buf, size_t len, int flags) {
     return (ssize_t)ret;
 }
 
+/** Shut down a TLS session, release it, and clear the thread-local association. */
 void tls_close(SSL* ssl) {
     if (!ssl) return;
     SSL_shutdown(ssl);

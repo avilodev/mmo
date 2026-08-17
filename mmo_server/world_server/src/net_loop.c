@@ -1,16 +1,7 @@
-// ============================================================================
-// net_loop.c — epoll event loops plus a small blocking worker pool.
-//
-// See net_loop.h for the ownership model. The short version: a connection is
-// owned by its loop while it is in that loop's epoll set, and by a worker while
-// it is not. Handoff always goes through epoll_ctl(DEL) first, so the two never
-// touch a connection at the same time.
-//
-// Sockets are non-blocking and registered edge-triggered. Edge-triggered writes
-// are safe here because connection_io only ever queues after send() returned
-// EAGAIN — that is, after the socket buffer filled — so a writable transition
-// is guaranteed to follow and re-arm the flush.
-// ============================================================================
+/**
+ * @file
+ * Coordinate edge-triggered world connections and blocking lifecycle workers.
+ */
 
 #include "net_loop.h"
 
@@ -47,10 +38,6 @@
 #include <time.h>
 #include <unistd.h>
 
-// ---------------------------------------------------------------------------
-// Tunables
-// ---------------------------------------------------------------------------
-
 #define NET_LOOP_MAX_LOOPS     8
 #define NET_LOOP_WORKERS      32     // blocking pool: bounds login/logout rate
 #define NET_LOOP_EVENTS      256     // events pulled per epoll_wait
@@ -61,15 +48,10 @@
 
 #define JOB_QUEUE_CAP       4096
 
-// Upper bound on tracked descriptors. Matches the packet limiter and
-// connection_io so a connection is either fully tracked by all three or
-// refused outright -- never half-tracked.
+/** Match descriptor tracking limits across network subsystems. */
 #define NET_LOOP_MAX_SLOTS  65536
 
-// ---------------------------------------------------------------------------
-// Connection state
-// ---------------------------------------------------------------------------
-
+/** Identify the current owner and lifecycle phase of a connection. */
 typedef enum {
     CONN_AUTH_READING = 1,   // loop-owned: waiting for a full WorldConnectPacket
     CONN_AUTH_WORKING,       // worker-owned: blocking ticket/DB work
@@ -78,36 +60,30 @@ typedef enum {
     CONN_DEAD                // worker finished; the owning loop reaps it
 } ConnState;
 
+/** Hold one connection's affinity, authentication identity, and reassembly buffer. */
 typedef struct {
     int          fd;
     int          loop;
     _Atomic int  state;
     uint32_t     account_id;
     uint32_t     character_id;
+    // cached slot, validated on acquisition; -1 before authentication
+    int          player_slot;
     _Atomic long last_recv;          // seconds, CLOCK_MONOTONIC
     ssize_t      buf_len;
     uint8_t      buf[MAX_PACKET_SIZE * 2];
 } Connection;
 
-// Indexed by fd. Pointers rather than inline structs: each Connection carries a
-// 16KB reassembly buffer, so a table sized to the descriptor limit would cost
-// gigabytes if it held them directly.
-//
-// The slots are atomic because the idle sweep walks the table while other
-// threads are publishing and retiring entries. Atomicity alone would not be
-// enough to make that safe, so it is paired with a strict rule:
-//
-//   ONLY THE OWNING LOOP CLEARS A SLOT, FREES A CONNECTION, OR CLOSES ITS FD.
-//
-// A worker that finishes its blocking work marks the connection CONN_DEAD and
-// stops there. The loop reaps it on the next sweep. That ordering matters for
-// more than the pointer: if a worker closed the descriptor itself, the kernel
-// could hand the same number to a fresh accept() before the loop had cleared
-// the slot, and the new connection would land on top of the old one.
+/**
+ * Index atomic connection pointers by descriptor for loop and worker handoff.
+ *
+ * Only the owning loop may clear a slot, close its descriptor, or free its connection.
+ */
 static _Atomic(Connection*)* g_conns = NULL;
 static int          g_conn_count = 0;   // table size, not live connections
 static atomic_int   g_live       = 0;
 
+/** Describe one epoll loop and its worker thread. */
 typedef struct {
     int       epfd;
     int       id;
@@ -118,10 +94,7 @@ static NetLoop  g_loops[NET_LOOP_MAX_LOOPS];
 static int      g_loop_count = 0;
 static atomic_int g_running  = 0;
 
-// ---------------------------------------------------------------------------
-// Blocking job queue
-// ---------------------------------------------------------------------------
-
+/** Identify blocking authentication and cleanup work. */
 typedef enum { JOB_AUTH = 1, JOB_CLEANUP } JobType;
 
 typedef struct {
@@ -141,6 +114,11 @@ static long mono_seconds(void) {
     return (long)ts.tv_sec;
 }
 
+/**
+ * Enqueue blocking connection work and wake one worker.
+ *
+ * @return      Nonzero when queued, otherwise zero when the bounded queue is full.
+ */
 static int job_push(int fd, JobType type) {
     pthread_mutex_lock(&g_job_lock);
     if (g_job_count >= JOB_QUEUE_CAP) {
@@ -157,7 +135,11 @@ static int job_push(int fd, JobType type) {
     return 1;
 }
 
-// Returns 0 with job->fd == -1 when the pool is shutting down.
+/**
+ * Wait for and remove one blocking job.
+ *
+ * @return      Nonzero when a job is returned, otherwise zero during shutdown.
+ */
 static int job_pop(Job* out) {
     pthread_mutex_lock(&g_job_lock);
     while (g_job_count == 0) {
@@ -177,10 +159,6 @@ static int job_pop(Job* out) {
     return 1;
 }
 
-// ---------------------------------------------------------------------------
-// Connection lifecycle
-// ---------------------------------------------------------------------------
-
 static int set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
@@ -192,8 +170,7 @@ static Connection* conn_for(int fd) {
     return atomic_load_explicit(&g_conns[fd], memory_order_acquire);
 }
 
-// Detach from epoll so no loop can touch this connection, then hand it to the
-// worker pool. Must be called from the owning loop.
+/** Detach a loop-owned connection and submit it to a lifecycle worker. */
 static void hand_to_worker(Connection* conn, ConnState next, JobType job) {
     epoll_ctl(g_loops[conn->loop].epfd, EPOLL_CTL_DEL, conn->fd, NULL);
     atomic_store(&conn->state, next);
@@ -204,8 +181,11 @@ static void hand_to_worker(Connection* conn, ConnState next, JobType job) {
     }
 }
 
-// Re-arm a connection on its loop. Called by a worker once its blocking work is
-// done and ownership returns to the loop.
+/**
+ * Return a worker-owned connection to its pinned epoll loop.
+ *
+ * @return      Nonzero when registered, otherwise zero.
+ */
 static int arm_on_loop(Connection* conn) {
     struct epoll_event ev = {0};
     ev.events  = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
@@ -218,6 +198,11 @@ static int arm_on_loop(Connection* conn) {
     return 1;
 }
 
+/**
+ * Take ownership of an accepted socket and register it with a pinned event loop.
+ *
+ * This function closes fd when setup fails; callers must not use it after submission.
+ */
 void net_loop_submit(int fd) {
     if (fd < 0) return;
 
@@ -243,6 +228,7 @@ void net_loop_submit(int fd) {
     conn->fd   = fd;
     conn->loop = fd % g_loop_count;   // pinned for life; never migrated
     conn->buf_len = 0;
+    conn->player_slot = -1;
     atomic_store(&conn->state, CONN_AUTH_READING);
     atomic_store(&conn->last_recv, mono_seconds());
 
@@ -265,16 +251,12 @@ void net_loop_submit(int fd) {
     }
 }
 
+/** Return the current number of tracked world connections. */
 int net_loop_connection_count(void) {
     return atomic_load(&g_live);
 }
 
-// ---------------------------------------------------------------------------
-// Worker: session start
-// ---------------------------------------------------------------------------
-
-// Tell the client why it is not getting in, then retire the connection. The
-// socket stays open until the owning loop reaps it — see the g_conns comment.
+/** Send an authentication rejection and mark the connection for loop-owned reaping. */
 static void reject_connection(Connection* conn, const char* message) {
     WorldConnectAckPacket response = {0};
     response.header.type = PACKET_WORLD_CONNECT_ACK;
@@ -286,7 +268,7 @@ static void reject_connection(Connection* conn, const char* message) {
     atomic_store(&conn->state, CONN_DEAD);
 }
 
-// Runs on a worker thread. Everything here may block.
+/** Authenticate, load, and publish a world session on a blocking worker. */
 static void worker_authenticate(Connection* conn) {
     WorldConnectPacket* pkt = (WorldConnectPacket*)conn->buf;
 
@@ -317,7 +299,8 @@ static void worker_authenticate(Connection* conn) {
         return;
     }
 
-    if (!player_add_active(character_id, conn->fd)) {
+    int player_slot = -1;
+    if (!player_add_active(character_id, conn->fd, &player_slot)) {
         session_registry_remove(conn->fd);
         reject_connection(conn, "Invalid ticket");
         return;
@@ -332,6 +315,7 @@ static void worker_authenticate(Connection* conn) {
 
     conn->account_id   = account_id;
     conn->character_id = character_id;
+    conn->player_slot  = player_slot;
     g_state.current_players++;
 
     WorldConnectAckPacket response = {0};
@@ -374,11 +358,7 @@ static void worker_authenticate(Connection* conn) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Worker: session end
-// ---------------------------------------------------------------------------
-
-// Lifted verbatim in behaviour from the old client_handler_thread cleanup path.
+/** Save and detach an authenticated player before loop-owned connection reaping. */
 static void worker_cleanup(Connection* conn) {
     int      client_fd    = conn->fd;
     uint32_t character_id = conn->character_id;
@@ -399,9 +379,7 @@ static void worker_cleanup(Connection* conn) {
         // character by the time we get here.
         ActivePlayer* player = player_acquire(character_id);
         int do_save = 0;
-        CharacterInfo save_data;
-        PlayerQuestEntry quest_save[MAX_PLAYER_QUESTS];
-        int quest_save_count = 0;
+        PlayerSaveData save_data;
 
         if (player) {
             if (player->client_fd == client_fd) {
@@ -409,32 +387,10 @@ static void worker_cleanup(Connection* conn) {
                     // Copy out under the slot lock, write to the database after
                     // releasing it, so broadcast threads aren't blocked for the
                     // full duration of the write (~1-2s).
-                    memset(&save_data, 0, sizeof(save_data));
-                    save_data.character_id  = player->character_id;
-                    save_data.level         = player->level;
-                    save_data.pos_x         = player->pos_x;
-                    save_data.pos_y         = player->pos_y;
-                    save_data.health        = player->health;
-                    save_data.max_health    = player->max_health;
-                    save_data.mana          = player->mana;
-                    save_data.max_mana      = player->max_mana;
-                    save_data.experience    = player->experience;
-                    save_data.gold          = player->gold;
-                    save_data.helmet        = player->helmet;
-                    save_data.gloves        = player->gloves;
-                    save_data.chest_armor   = player->chest_armor;
-                    save_data.leggings      = player->leggings;
-                    save_data.boots         = player->boots;
-                    save_data.main_hand     = player->main_hand;
-                    save_data.second_hand   = player->second_hand;
-                    save_data.blessing      = player->blessing;
-                    memcpy(save_data.inventory, player->inventory, sizeof(save_data.inventory));
-                    quest_save_count = player->quest_count;
-                    memcpy(quest_save, player->quests,
-                           (size_t)quest_save_count * sizeof(*quest_save));
+                    player_snapshot_for_save(player, &save_data);
                     do_save = 1;
                     // Clear dirty so player_remove_active won't repeat the write
-                    // while holding active_players_lock.
+                    // while holding the player registry lock.
                     player->is_dirty = 0;
                 }
                 player_release(player);
@@ -457,12 +413,8 @@ static void worker_cleanup(Connection* conn) {
                    client_fd, character_id);
         }
 
-        if (do_save) {
-            if (!character_update_full_data(&save_data))
-                fprintf(stderr, "[CLEANUP] failed to save character %u\n", character_id);
-            if (!quest_player_save(character_id, quest_save, quest_save_count))
-                fprintf(stderr, "[CLEANUP] failed to save quests for character %u\n", character_id);
-        }
+        if (do_save && !player_commit_save(&save_data))
+            fprintf(stderr, "[CLEANUP] failed to save character %u\n", character_id);
         printf("Account %u, Character %u disconnected (fd=%d)\n",
                account_id, character_id, client_fd);
     }
@@ -477,6 +429,11 @@ static void worker_cleanup(Connection* conn) {
     atomic_store(&conn->state, CONN_DEAD);
 }
 
+/**
+ * Execute queued authentication and cleanup jobs until shutdown.
+ *
+ * @return      Always NULL.
+ */
 static void* worker_thread(void* arg) {
     (void)arg;
     Job job;
@@ -489,12 +446,11 @@ static void* worker_thread(void* arg) {
     return NULL;
 }
 
-// ---------------------------------------------------------------------------
-// Loop: reading and dispatch
-// ---------------------------------------------------------------------------
-
-// Drain every complete packet sitting in the reassembly buffer.
-// Returns 0 to keep the connection, -1 to close it.
+/**
+ * Dispatch all complete packets currently present in a connection buffer.
+ *
+ * @return      Zero to retain the connection, or -1 to close it.
+ */
 static int dispatch_packets(Connection* conn) {
     uint8_t* ptr = conn->buf;
     ssize_t remaining = conn->buf_len;
@@ -515,7 +471,8 @@ static int dispatch_packets(Connection* conn) {
         if (remaining < (ssize_t)packet_size) break;   // incomplete, carry over
 
         session_update_activity(conn->fd);
-        int result = process_packet(conn->fd, conn->character_id, (ssize_t)packet_size, ptr);
+        int result = process_packet(conn->fd, conn->character_id, conn->player_slot,
+                                    (ssize_t)packet_size, ptr);
 
         ptr       += packet_size;
         remaining -= packet_size;
@@ -533,9 +490,11 @@ static int dispatch_packets(Connection* conn) {
     return 0;
 }
 
-// Read until EAGAIN. Edge-triggered epoll only reports the transition, so
-// stopping early would leave bytes unread until the next one.
-// Returns 0 to keep the connection, -1 to close it, 1 if it was handed off.
+/**
+ * Drain an edge-triggered socket and process or hand off its accumulated data.
+ *
+ * @return      Zero to retain loop ownership, -1 to close, or one after worker handoff.
+ */
 static int loop_read(Connection* conn) {
     while (1) {
         size_t space = sizeof(conn->buf) - (size_t)conn->buf_len;
@@ -572,16 +531,12 @@ static int loop_read(Connection* conn) {
     }
 }
 
-// Close a loop-owned connection by handing it to a worker for the blocking
-// save. Unauthenticated connections have nothing to save but still go through
-// the pool so there is exactly one teardown path.
+/** Hand a loop-owned connection to the cleanup path. */
 static void loop_close(Connection* conn) {
     hand_to_worker(conn, CONN_CLEANUP, JOB_CLEANUP);
 }
 
-// Retire a connection a worker has finished with. Only ever called from the
-// owning loop, which is what makes closing the descriptor here safe: the number
-// cannot be recycled by accept() until after the slot is cleared.
+/** Close and free a completed connection from its owning loop. */
 static void reap(Connection* conn) {
     int fd = conn->fd;
 
@@ -594,7 +549,7 @@ static void reap(Connection* conn) {
     free(conn);
 }
 
-// Walk this loop's connections: reap the finished ones, close the quiet ones.
+/** Reap completed connections and close idle connections owned by one loop. */
 static void sweep_idle(int loop_id) {
     long now = mono_seconds();
 
@@ -632,6 +587,11 @@ static void sweep_idle(int loop_id) {
     }
 }
 
+/**
+ * Process edge-triggered socket events and periodic idle sweeps for one loop.
+ *
+ * @return      Always NULL after shutdown or an unrecoverable epoll error.
+ */
 static void* loop_thread(void* arg) {
     NetLoop* loop = (NetLoop*)arg;
     struct epoll_event events[NET_LOOP_EVENTS];
@@ -689,10 +649,11 @@ static void* loop_thread(void* arg) {
     return NULL;
 }
 
-// ---------------------------------------------------------------------------
-// Startup / shutdown
-// ---------------------------------------------------------------------------
-
+/**
+ * Start descriptor tracking, per-core event loops, and blocking workers.
+ *
+ * @return      Zero on success, or -1 when allocation or thread setup fails.
+ */
 int net_loop_start(void) {
     struct rlimit rl;
     long slots = 1024;
@@ -742,6 +703,7 @@ int net_loop_start(void) {
     return 0;
 }
 
+/** Stop, wake, and join all event loops and workers before releasing connections. */
 void net_loop_stop(void) {
     atomic_store(&g_running, 0);
 

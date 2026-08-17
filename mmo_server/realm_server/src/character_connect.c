@@ -1,3 +1,7 @@
+/**
+ * @file
+ * Handle realm character listing, creation, and deletion requests.
+ */
 #include "types.h"
 #include "players_database.h"
 #include "character_connect.h"
@@ -14,6 +18,11 @@ extern PGconn* g_pg;
 
 #define MAX_CHARACTERS_PER_WORLD 10
 
+/**
+ * Query and send an account's characters for one world.
+ *
+ * Response identifiers and numeric character fields are encoded in network byte order.
+ */
 void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t world_id) {
     CharacterInfo characters[MAX_CHARACTERS_PER_WORLD];
     
@@ -43,6 +52,11 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
     printf("Sent %d characters to account %u for world %u\n", count, account_id, world_id);
 }
 
+/**
+ * Validate and create a character, then send the result and refreshed list.
+ *
+ * The supplied name must contain 3 through 31 ASCII letters.
+ */
 void handle_character_create_request(int client_fd, uint32_t account_id, 
                                       uint32_t world_id, const char* name, 
                                       int class_id, int race_id) {
@@ -112,6 +126,7 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     }
 }
 
+/** Delete an owned character and send the result and refreshed list. */
 void handle_character_delete_request(int client_fd, uint32_t account_id, 
                                       uint32_t character_id, uint32_t world_id) {
     CharacterDeleteResponsePacket response = {0};

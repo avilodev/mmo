@@ -1,9 +1,4 @@
-// ============================================================================
-// dialogue_system.h — NPC dialogue tree system
-//
-// Manages dialogue definitions loaded from JSON and tracks active dialogue
-// sessions between players and NPCs.
-// ============================================================================
+/** @file Define JSON dialogue trees and active player/NPC conversations. */
 
 #ifndef DIALOGUE_SYSTEM_H
 #define DIALOGUE_SYSTEM_H
@@ -11,6 +6,7 @@
 #include <stdint.h>
 #include <pthread.h>
 
+/** Bound loaded dialogue trees, pages, text, options, and active players. */
 #define MAX_DIALOGUES 1000
 #define MAX_PAGES_PER_DIALOGUE 32
 #define MAX_DIALOGUE_TEXT 512
@@ -18,28 +14,24 @@
 #define MAX_OPTION_TEXT 128
 #define MAX_PLAYERS 1000
 
-// ---------------------------------------------------------------------------
-// Dialogue definition structures (loaded from JSON)
-// ---------------------------------------------------------------------------
-
-// Action types for dialogue options
+/** Identify server actions triggered by dialogue choices. */
 #define DIALOGUE_ACTION_NONE         0
 #define DIALOGUE_ACTION_OPEN_SHOP    1   // action_value = shop_id
 #define DIALOGUE_ACTION_QUEST_ACCEPT 2   // action_value = quest_id
 #define DIALOGUE_ACTION_QUEST_TURNIN 3   // action_value = quest_id; fail_page used if not complete
 
-// Single dialogue option (player choice)
+/** Define one player choice and its navigation or server action. */
 typedef struct {
     uint8_t  option_id;
     char     text[MAX_OPTION_TEXT];
-    int8_t   next_page;          // -1 = close dialogue, >= 0 = page number
-    int8_t   fail_page;          // page override when action fails; -2 = use next_page
+    int8_t   next_page;          /**< Page number, or -1 to close dialogue. */
+    int8_t   fail_page;          /**< Failure page, or -2 to use next_page. */
     uint8_t  action;             // DIALOGUE_ACTION_*
     uint8_t  enabled;
     uint32_t action_value;       // shop_id or quest_id depending on action
 } DialogueOptionDef;
 
-// Single page of dialogue
+/** Define one text page and its available choices. */
 typedef struct {
     uint8_t  page_num;
     char     text[MAX_DIALOGUE_TEXT];
@@ -47,7 +39,7 @@ typedef struct {
     DialogueOptionDef options[MAX_DIALOGUE_OPTIONS];
 } DialoguePageDef;
 
-// Complete dialogue tree
+/** Define one complete named dialogue tree. */
 typedef struct {
     uint32_t dialogue_id;
     char     name[64];
@@ -55,11 +47,7 @@ typedef struct {
     DialoguePageDef pages[MAX_PAGES_PER_DIALOGUE];
 } DialogueDef;
 
-// ---------------------------------------------------------------------------
-// Active dialogue sessions (runtime state)
-// ---------------------------------------------------------------------------
-
-// Tracks an active conversation between a player and NPC
+/** Track one active conversation between a player and NPC. */
 typedef struct {
     uint32_t player_id;
     uint32_t npc_id;
@@ -69,44 +57,27 @@ typedef struct {
     double   last_interaction_time;
 } DialogueSession;
 
-// ---------------------------------------------------------------------------
-// Dialogue system API
-// ---------------------------------------------------------------------------
-
-// Initialize dialogue system from JSON file
-// Returns 1 on success, 0 on failure
+// return nonzero when the JSON registry loads successfully
 int dialogue_system_init(const char* json_path);
 
-// Cleanup dialogue system (free all memory)
 void dialogue_system_cleanup(void);
 
-// Get dialogue definition by ID
-// Returns NULL if not found
+// return a registry-owned definition or NULL when absent
 const DialogueDef* dialogue_get(uint32_t dialogue_id);
 
-// Get total number of loaded dialogues
 int dialogues_get_count(void);
 
-// ---------------------------------------------------------------------------
-// Session management
-// ---------------------------------------------------------------------------
-
-// Create a new dialogue session for a player
-// Returns pointer to session on success, NULL on failure
+// return a system-owned session or NULL when creation fails
 DialogueSession* dialogue_session_create(uint32_t player_id, uint32_t npc_id, uint32_t dialogue_id);
 
-// Get active dialogue session for a player
-// Returns NULL if no active session
+// return the system-owned active session or NULL when absent
 DialogueSession* dialogue_session_get(uint32_t player_id);
 
-// Close dialogue session for a player
 void dialogue_session_close(uint32_t player_id);
 
-// Update the current page of a dialogue session
 void dialogue_session_update_page(uint32_t player_id, uint8_t new_page);
 
-// Check for timed-out sessions and auto-close them
-// Call periodically (e.g., every second)
+// expire inactive sessions from a periodic world update
 void dialogue_check_timeouts(void);
 
 #endif // DIALOGUE_SYSTEM_H

@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <math.h>
 
+/** Hold the login server socket, lifecycle flag, and accept thread. */
 typedef struct {
     int tcp_sockfd;
     int port;
