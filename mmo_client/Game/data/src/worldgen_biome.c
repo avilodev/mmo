@@ -60,11 +60,11 @@ int worldgen_is_ocean(int x, int y) {
  * footprint and margin rather than letting the city straddle two biomes.
  */
 BiomeId worldgen_biome_at(int x, int y) {
+    if (worldgen_is_ocean(x, y)) return BIOME_OCEAN;
+
     if (in_region(x, y, ENNARA_X, ENNARA_Y,
                   CAPITAL_HALF + ENNARA_BIOME_MARGIN))
         return BIOME_DESERT;
-
-    if (worldgen_is_ocean(x, y)) return BIOME_OCEAN;
 
     float wob = worldgen_noise_octaves(x / 64, y / 64, 7000, 2) * BAND_WOBBLE;
     float fy  = (float)y + wob;

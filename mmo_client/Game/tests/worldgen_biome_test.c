@@ -43,6 +43,19 @@ int main(void) {
         assert(n >= -1.5f && n <= 1.5f);
     }
 
+    // Ocean and biome classification must never disagree: anything is_ocean()
+    // calls water must classify as BIOME_OCEAN, or terrain paints land on sea.
+    for (int y = 0; y < WORLDGEN_HEIGHT; y += 37)
+        for (int x = 0; x < WORLDGEN_WIDTH; x += 41)
+            if (worldgen_is_ocean(x, y))
+                assert(worldgen_biome_at(x, y) == BIOME_OCEAN);
+
+    // The bay east of Ennara is water on both accessors, right up to the wall.
+    for (int x = ENNARA_X + CAPITAL_HALF + 1; x <= ENNARA_X + CAPITAL_HALF + 200; x++) {
+        assert(worldgen_is_ocean(x, ENNARA_Y));
+        assert(worldgen_biome_at(x, ENNARA_Y) == BIOME_OCEAN);
+    }
+
     printf("worldgen_biome_test: OK\n");
     return 0;
 }
