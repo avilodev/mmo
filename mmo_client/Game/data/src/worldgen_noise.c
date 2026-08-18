@@ -4,16 +4,18 @@
  */
 #include "world/worldgen.h"
 
+#include <stdint.h>
+
 /**
  * Generate deterministic coordinate noise.
  *
  * @return A repeatable pseudo-random value in roughly [-1, 1].
  */
 float worldgen_noise(int x, int y, int seed) {
-    int n = x + y * 57 + seed * 131;
+    uint32_t n = (uint32_t)x + (uint32_t)y * 57u + (uint32_t)seed * 131u;
     n = (n << 13) ^ n;
-    return (1.0f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff)
-                    / 1073741824.0f);
+    uint32_t h = (n * (n * n * 15731u + 789221u) + 1376312589u) & 0x7fffffffu;
+    return 1.0f - (float)h / 1073741824.0f;
 }
 
 /**
