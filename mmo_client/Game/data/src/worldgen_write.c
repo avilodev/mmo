@@ -28,7 +28,7 @@ int worldgen_write(const char* path, int width, int height) {
     if (!path || width <= 0 || height <= 0) return 0;
 
     FILE*     tmp[TILE_LAYERS + 1] = {0};
-    char      tmp_path[TILE_LAYERS + 1][256];
+    char      tmp_path[TILE_LAYERS + 1][256] = {{0}};
     uint16_t* rows[TILE_LAYERS]    = {0};
     uint8_t*  collision_row        = NULL;
     FILE*     out                  = NULL;
@@ -92,6 +92,7 @@ int worldgen_write(const char* path, int width, int height) {
         while ((n = fread(copy_buf, 1, sizeof(copy_buf), in)) > 0) {
             if (fwrite(copy_buf, 1, n, out) != n) { fclose(in); goto cleanup; }
         }
+        if (ferror(in)) { fclose(in); goto cleanup; }
         fclose(in);
     }
 
@@ -103,8 +104,9 @@ cleanup:
     for (int l = 0; l <= TILE_LAYERS; l++)
         if (tmp[l]) fclose(tmp[l]);
     if (out) fclose(out);
+    if (!ok) remove(path);
     for (int l = 0; l < TILE_LAYERS; l++) free(rows[l]);
     free(collision_row);
-    for (int l = 0; l <= TILE_LAYERS; l++) remove(tmp_path[l]);
+    for (int l = 0; l <= TILE_LAYERS; l++) if (tmp_path[l][0]) remove(tmp_path[l]);
     return ok;
 }

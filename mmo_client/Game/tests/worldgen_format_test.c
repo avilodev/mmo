@@ -63,6 +63,13 @@ int main(void) {
     fclose(f);
     remove(path);
 
+    // A write to an unopenable path must fail cleanly. This drives the early
+    // cleanup path, where the later tmp_path[] entries are never populated.
+    assert(worldgen_write("/nonexistent_dir_xyz/world.dat", 64, 64) == 0);
+
+    // And it must not strand temp files anywhere.
+    assert(system("test -z \"$(ls /tmp/*.layer*.tmp 2>/dev/null)\"") == 0);
+
     printf("worldgen_format_test: OK\n");
     return 0;
 }
