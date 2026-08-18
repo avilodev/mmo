@@ -106,4 +106,6 @@ typedef struct {
 void worldgen_tile_at(int x, int y, WorldGenTile* out);
 void worldgen_spawn_point(float* out_x, float* out_y);
 
+int worldgen_write(const char* path, int width, int height);
+
 #endif // WORLDGEN_H
