@@ -94,4 +94,16 @@ int          worldgen_is_road(int x, int y);
 DistrictId   worldgen_district_at(int x, int y);
 BuildingPart worldgen_building_at(int x, int y);
 
+/** Carry every layer value and the collision flag for one tile. */
+typedef struct {
+    uint16_t base;
+    uint16_t overlay_floor;
+    uint16_t overlay_interior;
+    uint16_t overlay_above;
+    uint8_t  collision;
+} WorldGenTile;
+
+void worldgen_tile_at(int x, int y, WorldGenTile* out);
+void worldgen_spawn_point(float* out_x, float* out_y);
+
 #endif // WORLDGEN_H

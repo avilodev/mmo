@@ -298,11 +298,12 @@ TEST_BIN = Game/tests/bin
 TEST_CFLAGS = -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR)
 
 WORLDGEN_SRC = Game/data/src/worldgen_noise.c Game/data/src/worldgen_biome.c \
-               Game/data/src/worldgen_city.c
+               Game/data/src/worldgen_city.c Game/data/src/worldgen_tile.c
 
 TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/worldgen_biome_test \
-        $(TEST_BIN)/worldgen_city_test
+        $(TEST_BIN)/worldgen_city_test \
+        $(TEST_BIN)/worldgen_tile_test
 
 $(TEST_BIN):
 	mkdir -p $(TEST_BIN)
