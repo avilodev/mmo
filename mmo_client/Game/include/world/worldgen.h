@@ -51,4 +51,47 @@ float worldgen_noise_octaves(int x, int y, int seed, int octaves);
 int     worldgen_is_ocean(int x, int y);
 BiomeId worldgen_biome_at(int x, int y);
 
+/** Wall thickness and road width inside capitals, in tiles. */
+#define CITY_WALL_THICKNESS 12
+#define CITY_ROAD_HALF      14
+
+/** Ennara building block grid pitch and size bounds, in tiles. */
+#define BUILDING_CELL     72
+#define BUILDING_MIN      24
+#define BUILDING_MAX      48
+#define COURTYARD_RADIUS 220
+
+/** Identify a capital. */
+typedef enum {
+    CITY_NONE = 0,
+    CITY_K1,
+    CITY_K2,
+    CITY_K3,
+    CITY_ENNARA
+} CityId;
+
+/** Identify an Ennara district. */
+typedef enum {
+    DISTRICT_NONE = 0,
+    DISTRICT_COURTYARD,
+    DISTRICT_HARBOR,
+    DISTRICT_MARKET,
+    DISTRICT_BLESSED,
+    DISTRICT_HUMAN,
+    DISTRICT_GUILD
+} DistrictId;
+
+/** Identify a tile's role within a building footprint. */
+typedef enum {
+    BUILDING_NONE = 0,
+    BUILDING_INTERIOR,
+    BUILDING_EDGE
+} BuildingPart;
+
+CityId       worldgen_city_at(int x, int y);
+int          worldgen_is_city_wall(int x, int y);
+int          worldgen_is_road(int x, int y);
+DistrictId   worldgen_district_at(int x, int y);
+BuildingPart worldgen_building_at(int x, int y);
+
 #endif // WORLDGEN_H
