@@ -285,4 +285,29 @@ list-objects:
 	@echo =============
 	@for %%f in ($(GAME_OBJECTS)) do @echo   %%f
 
-.PHONY: all launcher game dirs clean clean-launcher clean-game run run-launcher run-game list-sources list-objects
+# ---------------------------------------------------------------------------
+# Tests — standalone, host-compiled, no GLFW/OpenGL required.
+#
+# Every test is one .c file in Game/tests linked against the generator sources.
+# Later tasks extend WORLDGEN_SRC and TESTS by rewriting those two lines; the
+# pattern rule below never changes. Both variables must be defined before the
+# pattern rule, because make expands prerequisites as it reads the rule.
+# ---------------------------------------------------------------------------
+TEST_DIR = Game/tests
+TEST_BIN = Game/tests/bin
+TEST_CFLAGS = -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR)
+
+WORLDGEN_SRC =
+
+TESTS = $(TEST_BIN)/tile_palette_test
+
+$(TEST_BIN):
+	mkdir -p $(TEST_BIN)
+
+$(TEST_BIN)/%: $(TEST_DIR)/%.c $(WORLDGEN_SRC) | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+test: $(TESTS)
+	@for t in $(TESTS); do echo "=== $$t ==="; ./$$t || exit 1; done
+
+.PHONY: all launcher game dirs clean clean-launcher clean-game run run-launcher run-game list-sources list-objects test
