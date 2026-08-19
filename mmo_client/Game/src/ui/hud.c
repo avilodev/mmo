@@ -98,13 +98,9 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
         return;
     }
 
-    // Don't touch projection - just set up ortho for screen space
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0, hud->screen_width, hud->screen_height, 0, -1, 1);
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    // Screen space is established by renderer_end_2d before the UI phase; this
+    // keeps the HUD self-contained and restores the caller's matrices.
+    renderer_begin_screen_space();
 
     int own_ping = network_get_ping_ms();
 
@@ -126,6 +122,8 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
         hud_render_session_panel(hud, game, own_ping);
 
     hud_render_zone_banner(hud, game);
+
+    renderer_end_screen_space();
 }
 
 /**

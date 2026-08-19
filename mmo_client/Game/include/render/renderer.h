@@ -12,8 +12,23 @@ void renderer_clear(float r, float g, float b);
 // Begin 2D rendering mode
 void renderer_begin_2d(void);
 
-// End 2D rendering mode
+// Leave world space and establish screen space for UI drawing.
+//
+// Every overlay drawn after this call is in screen coordinates: (0,0) at the
+// top-left of the logical viewport passed to renderer_init. This is a one-way
+// transition for the frame's UI phase and does not need a matching call.
 void renderer_end_2d(void);
+
+// Enter screen space for a self-contained overlay, saving the current matrices.
+//
+// Use this when a panel must draw in screen coordinates regardless of what the
+// caller had bound, and must leave the caller's matrices untouched. Screen space
+// is already active after renderer_end_2d, so overlays in the normal UI phase
+// only need this if they cannot rely on that ordering.
+void renderer_begin_screen_space(void);
+
+// Restore the matrices saved by renderer_begin_screen_space.
+void renderer_end_screen_space(void);
  
 // Draw a colored rectangle
 void renderer_draw_rect(float x, float y, float width, float height,

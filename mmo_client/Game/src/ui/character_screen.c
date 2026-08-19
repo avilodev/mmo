@@ -620,14 +620,7 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
 void character_screen_render(const CharacterScreenState* char_screen, const GameState* game) {
     if (!char_screen->is_open) return;
     
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0, char_screen->screen_width, char_screen->screen_height, 0, -1, 1);
-    
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
+    renderer_begin_screen_space();
     
     // Window background
     renderer_draw_rect(char_screen->window_x, char_screen->window_y, 
@@ -709,8 +702,5 @@ void character_screen_render(const CharacterScreenState* char_screen, const Game
     // Render tooltip
     render_tooltip(char_screen, game);
     
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
+    renderer_end_screen_space();
 }

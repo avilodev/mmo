@@ -68,7 +68,50 @@ void renderer_begin_2d(void) {
  * Finish a 2D drawing pass.
  */
 void renderer_end_2d(void) {
-    // Nothing needed here for now
+    // Establish screen space for the frame's UI phase.
+    //
+    // This used to be empty, which meant screen space was only ever set as a
+    // side effect of hud_render happening to call glOrtho. Any overlay drawn
+    // before the HUD therefore inherited the camera's WORLD projection and was
+    // positioned in world coordinates -- invisible once the player was far from
+    // the origin. Making the transition explicit here means every UI caller has
+    // a defined coordinate system regardless of draw order.
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, screen_width, screen_height, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    // World rendering toggles GL_TEXTURE_2D directly, bypassing the cache below,
+    // which can leave the cache disagreeing with GL and make the next
+    // set_texture_enabled call a no-op against the wrong state. Force both to a
+    // known value so the UI phase starts consistent.
+    glEnable(GL_TEXTURE_2D);
+    g_texture_enabled = 1;
+}
+
+/**
+ * Enter screen space, saving the caller's projection and model-view matrices.
+ */
+void renderer_begin_screen_space(void) {
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, screen_width, screen_height, 0, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+}
+
+/**
+ * Restore the matrices saved by renderer_begin_screen_space.
+ */
+void renderer_end_screen_space(void) {
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
 }
 
 /**

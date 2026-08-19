@@ -749,13 +749,7 @@ static void render_tooltip(const InventoryState* inv) {
  */
 void inventory_render(const InventoryState* inv) {
     if (!inv->is_open) return;
-    glMatrixMode(GL_PROJECTION); 
-    glPushMatrix(); 
-    glLoadIdentity();
-    glOrtho(0, inv->screen_width, inv->screen_height, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW); 
-    glPushMatrix(); 
-    glLoadIdentity();
+    renderer_begin_screen_space();
     
     render_inventory_window(inv);
     render_inventory_slots(inv);
@@ -764,10 +758,7 @@ void inventory_render(const InventoryState* inv) {
     // Render dragged item on top of everything
     render_dragged_item(inv);
     
-    glMatrixMode(GL_PROJECTION); 
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW); 
-    glPopMatrix();
+    renderer_end_screen_space();
 }
 
 /**
