@@ -37,6 +37,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Companion overview for the in-game map. The world file is far too large
+    // to back a whole-continent view, so the map reads this instead.
+    char ov_path[512];
+    snprintf(ov_path, sizeof(ov_path), "%s.overview", output);
+    if (!worldgen_write_overview(ov_path, width, height,
+                                 WORLDGEN_OVERVIEW_SCALE)) {
+        fprintf(stderr, "[WORLDGEN] FAILED to write %s\n", ov_path);
+        return 1;
+    }
+    printf("[WORLDGEN] Overview: %s (1/%d scale)\n",
+           ov_path, WORLDGEN_OVERVIEW_SCALE);
+
     float sx = 0.0f, sy = 0.0f;
     worldgen_spawn_point(&sx, &sy);
     printf("[WORLDGEN] Done.\n");

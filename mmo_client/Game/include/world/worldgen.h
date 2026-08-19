@@ -108,4 +108,9 @@ void worldgen_spawn_point(float* out_x, float* out_y);
 
 int worldgen_write(const char* path, int width, int height);
 
+/** Tiles per overview cell. 15400x7700 downscales to 963x482 (~453 KB). */
+#define WORLDGEN_OVERVIEW_SCALE 16
+
+int worldgen_write_overview(const char* path, int width, int height, int scale);
+
 #endif // WORLDGEN_H
