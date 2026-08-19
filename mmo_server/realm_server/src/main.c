@@ -23,6 +23,7 @@
 #include <poll.h>
 #include <arpa/inet.h>
 #include <limits.h>
+#include <string.h>
 
 #define WORLD_QUERY_TIMEOUT 15
 
@@ -314,10 +315,28 @@ void* world_monitor_thread_func(void* arg) {
             continue;
         }
         
+        // Probe every world against a private snapshot, with the lock RELEASED.
+        //
+        // This loop performs blocking network I/O: a connect per offline world
+        // and, per online world, a 5s poll plus a 5s receive. Holding
+        // world_servers_lock across all of that stalled every client that
+        // wanted to list worlds or enter one, because those paths take the same
+        // lock -- so one unresponsive world delayed everybody's login by up to
+        // its full timeout, over and over. Only this thread ever mutates fd,
+        // and the shutdown sweep below runs after this loop exits on this same
+        // thread, so the snapshot cannot race another writer.
+        WorldServer probe[MAX_WORLDS];
+        int probe_count;
+
         pthread_mutex_lock(&g_server.world_servers_lock);
-        
-        for (int i = 0; i < g_server.num_world_servers; i++) {
-            WorldServer* ws = &g_server.world_servers[i];
+        probe_count = g_server.num_world_servers;
+        if (probe_count > MAX_WORLDS) probe_count = MAX_WORLDS;
+        memcpy(probe, g_server.world_servers,
+               sizeof(WorldServer) * (size_t)probe_count);
+        pthread_mutex_unlock(&g_server.world_servers_lock);
+
+        for (int i = 0; i < probe_count; i++) {
+            WorldServer* ws = &probe[i];
             
             // Try to connect if not connected (throttle reconnect attempts)
             if (ws->fd < 0) {
@@ -397,6 +416,18 @@ void* world_monitor_thread_func(void* arg) {
             }
         }
         
+        // Publish the probe results. Name, host and port come from config and
+        // are never mutated here, so only live status is written back.
+        pthread_mutex_lock(&g_server.world_servers_lock);
+        for (int i = 0; i < probe_count; i++) {
+            WorldServer* dst = &g_server.world_servers[i];
+            dst->fd                = probe[i].fd;
+            dst->online            = probe[i].online;
+            dst->player_count      = probe[i].player_count;
+            dst->max_players       = probe[i].max_players;
+            dst->last_heartbeat    = probe[i].last_heartbeat;
+            dst->connection_logged = probe[i].connection_logged;
+        }
         pthread_mutex_unlock(&g_server.world_servers_lock);
         
         free(server_key);

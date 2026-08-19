@@ -126,15 +126,31 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
         return;
     }
     
+    // Copy out what we need and release the lock immediately. Everything that
+    // follows -- generating a ticket, a Redis round-trip, and the socket send --
+    // used to run with world_servers_lock held, which blocked every other
+    // client's world list or world entry behind this one player's Redis latency.
+    int      world_found  = 0;
+    int      world_online = 0;
+    char     world_name[64];
+    char     world_host[64];
+    uint16_t world_port   = 0;
+
+    world_name[0] = '\0';
+    world_host[0] = '\0';
+
+    int world_index = requested_world_id - 1;  // world_id is 1-indexed
+
     pthread_mutex_lock(&g_server.world_servers_lock);
-    
-    // Find the requested world (world_id is 1-indexed, array is 0-indexed)
-    WorldServer* selected_world = NULL;
-    int world_index = requested_world_id - 1;
-    
     if (world_index >= 0 && world_index < g_server.num_world_servers) {
-        selected_world = &g_server.world_servers[world_index];
+        const WorldServer* ws = &g_server.world_servers[world_index];
+        world_found  = 1;
+        world_online = ws->online;
+        world_port   = ws->port;
+        snprintf(world_name, sizeof(world_name), "%s", ws->name);
+        snprintf(world_host, sizeof(world_host), "%s", ws->host);
     }
+    pthread_mutex_unlock(&g_server.world_servers_lock);
     
     EnterWorldResponsePacket response;
     memset(&response, 0, sizeof(response));
@@ -142,8 +158,7 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     response.header.player_id = htonl(account_id);
     response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
     
-    if (!selected_world) {
-        pthread_mutex_unlock(&g_server.world_servers_lock);
+    if (!world_found) {
         response.success = 0;
         strncpy(response.message, "World not found", sizeof(response.message) - 1);
         response.message[sizeof(response.message) - 1] = '\0';
@@ -152,8 +167,7 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
         return;
     }
     
-    if (!selected_world->online) {
-        pthread_mutex_unlock(&g_server.world_servers_lock);
+    if (!world_online) {
         response.success = 0;
         strncpy(response.message, "World is offline", sizeof(response.message) - 1);
         response.message[sizeof(response.message) - 1] = '\0';
@@ -176,7 +190,6 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
              character_id, requested_world_id, account_id);
     
     if (!store_game_ticket_in_redis(ticket_key, ticket_value, 60)) {
-        pthread_mutex_unlock(&g_server.world_servers_lock);
         response.success = 0;
         strncpy(response.message, "Failed to generate ticket", sizeof(response.message) - 1);
         response.message[sizeof(response.message) - 1] = '\0';
@@ -188,15 +201,13 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     response.success = 1;
     strncpy(response.game_ticket, game_ticket, sizeof(response.game_ticket) - 1);
     response.game_ticket[sizeof(response.game_ticket) - 1] = '\0';
-    strncpy(response.world_ip, selected_world->host, sizeof(response.world_ip) - 1);
+    strncpy(response.world_ip, world_host, sizeof(response.world_ip) - 1);
     response.world_ip[sizeof(response.world_ip) - 1] = '\0';
-    response.world_port = htons(selected_world->port);
-    snprintf(response.message, sizeof(response.message), "Connecting to %s...", selected_world->name);
+    response.world_port = htons(world_port);
+    snprintf(response.message, sizeof(response.message), "Connecting to %s...", world_name);
     response.message[sizeof(response.message) - 1] = '\0';
-    
-    pthread_mutex_unlock(&g_server.world_servers_lock);
     
     send(client_fd, &response, sizeof(response), 0);
     printf("Sent game ticket for world '%s' (%s:%d) to account %u\n", 
-           selected_world->name, selected_world->host, selected_world->port, account_id);
+           world_name, world_host, world_port, account_id);
 }
