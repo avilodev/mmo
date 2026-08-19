@@ -1175,6 +1175,24 @@ static void playing_render(GameState* game) {
  */
 static void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
 
+    // TEMPORARY DIAGNOSTIC for the "M does not open the map" report. Fires only
+    // on an actual M press, so it cannot spam. Delete once resolved.
+    if (input_key_just_pressed(&game->input, GLFW_KEY_M)) {
+        printf("[MAPDIAG] M seen | paused=%d settings=%d questlog=%d shop=%d "
+               "typing=%d dead=%d dialogue=%d | show_map=%d zoom=%.4f overview=%d\n",
+               game->playing->is_paused,
+               game->show_settings,
+               game->playing->quest_log.is_open,
+               game->playing->shop.is_open,
+               game->playing->chat.is_typing,
+               game->playing->is_dead,
+               dialogue_is_active(),
+               game->playing->show_map,
+               game->playing->map_zoom,
+               world_overview_ready());
+        fflush(stdout);
+    }
+
     if (game->playing->is_paused) {
         // ESC or R unpause
         if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE) ||

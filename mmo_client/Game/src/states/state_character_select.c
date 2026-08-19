@@ -131,12 +131,29 @@ static void char_select_update(GameState* game, float delta_time) {
             {
                 CharacterCreateResponsePacket response;
                 if (network_get_character_create_response(&response)) {
-                    game->net_state = NET_STATE_IDLE;
                     if (response.success) {
                         game->char_select.show_creation = 0;
-                        game->char_select.loaded = 0;  // Reload list
                         memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
+
+                        // The list is about to change, and the old highlight
+                        // refers to a position in the OLD list. Drop it rather
+                        // than let it point at a different character.
+                        game->char_select.selected_index = -1;
+
+                        // The server pushes a refreshed list immediately after
+                        // this response, so wait for THAT instead of asking for
+                        // another one. Going through NET_STATE_IDLE would have
+                        // issued a second request whose first act is to discard
+                        // the pushed list -- a wasted round-trip, and a window in
+                        // which the screen showed the pre-create list. Waiting
+                        // here consumes the push, usually already buffered from
+                        // the same read, so the new character appears in the
+                        // same frame the response is handled.
+                        game->char_select.loaded = 0;
+                        game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
+                        game->net_wait_seconds = 0.0f;
                     } else {
+                        game->net_state = NET_STATE_IDLE;
                         strncpy(game->char_select.error_message, response.message, 127);
                         game->char_select.error_message[127] = '\0';
                     }
@@ -148,11 +165,16 @@ static void char_select_update(GameState* game, float delta_time) {
             {
                 CharacterDeleteResponsePacket response;
                 if (network_get_character_delete_response(&response)) {
-                    game->net_state = NET_STATE_IDLE;
                     if (response.success) {
-                        game->char_select.loaded = 0;  // Server sends updated list automatically
+                        // Same as create: the server pushes the refreshed list,
+                        // so consume that rather than issuing a request that
+                        // would only discard it.
+                        game->char_select.loaded = 0;
                         game->char_select.selected_index = -1;
+                        game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
+                        game->net_wait_seconds = 0.0f;
                     } else {
+                        game->net_state = NET_STATE_IDLE;
                         strncpy(game->char_select.error_message, response.message, 127);
                         game->char_select.error_message[127] = '\0';
                     }
