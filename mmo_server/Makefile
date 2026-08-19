@@ -71,8 +71,14 @@ $(WORLD_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(WORLD_OBJS)
 	@echo "Built world_server -> $@"
 
 # Copy all world server data files (always runs so edits to JSON are picked up without a recompile)
+#
+# world.dat is deliberately NOT copied here. At ~1 GB it took 15s of the ~15.1s
+# this target used to cost, on every single `make run`, even when unchanged.
+# It is a separate file rule below so make skips it unless the source is newer.
+WORLD_DAT_SRC := $(wildcard world_server/data/world.dat)
+
 .PHONY: data
-data:
+data: $(if $(WORLD_DAT_SRC),$(WORLD_BIN)/data/world.dat)
 	@mkdir -p $(WORLD_BIN)/data
 	@cp world_server/data/items.json $(WORLD_BIN)/data/
 	@cp world_server/data/abilities.json $(WORLD_BIN)/data/
@@ -83,8 +89,14 @@ data:
 	@cp world_server/data/quests.json $(WORLD_BIN)/data/
 	@cp world_server/data/shops.json $(WORLD_BIN)/data/
 	@cp world_server/data/zones.json $(WORLD_BIN)/data/
-	@cp world_server/data/world.dat $(WORLD_BIN)/data/
 	@echo "Data files copied -> $(WORLD_BIN)/data/"
+
+# ~1 GB: copy only when the generated world is actually newer than the deployed
+# one. Regenerate it with `make world` in mmo_client.
+$(WORLD_BIN)/data/world.dat: world_server/data/world.dat
+	@mkdir -p $(WORLD_BIN)/data
+	@echo "Copying world.dat (~1 GB, changed since last copy)..."
+	@cp $< $@
 
 # Common object files
 $(COMMON_OBJ)/%.o: $(COMMON_DIR)/src/%.c
