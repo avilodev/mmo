@@ -98,10 +98,10 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
         return;
     }
     
-    // Set initial player position (center of walkable area - top third)
-    // World is 256x256 tiles, so place player at (128, 64) in tiles
-    game->player.x = 128 * 16 + 8;  // Center horizontally, tile_size=16
-    game->player.y = 64 * 16 + 8;   // In the grass area (top third)
+    // Ennara Courtyard centre — matches worldgen_spawn_point() and the
+    // server-side default in player_data.c.
+    game->player.x = 222400.0f;
+    game->player.y = 89280.0f;
     
     camera_set_position(&game->camera, game->player.x, game->player.y);
     
