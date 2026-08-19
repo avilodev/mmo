@@ -6,6 +6,9 @@
 #include "world/tile_palette.h"
 
 #include <GLFW/glfw3.h>
+// Windows/MinGW ships OpenGL 1.1 headers, which predate GL_CLAMP_TO_EDGE (1.2).
+// texture.h already carries the guarded fallback this needs.
+#include "texture/texture.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
