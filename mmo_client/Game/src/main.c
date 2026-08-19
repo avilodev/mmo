@@ -33,8 +33,11 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
     if (game->playing && game->playing->show_map) {
         // Scroll zooms the full map (faster rate than camera)
         game->playing->map_zoom *= (1.0f + (float)yoffset * 0.15f);
-        if (game->playing->map_zoom < 0.25f) game->playing->map_zoom = 0.25f;
-        if (game->playing->map_zoom > 4.0f)  game->playing->map_zoom = 4.0f;
+        // Lower bound must reach continent scale: at base_radius 1050 world px,
+        // 0.008 shows a ~131,000 px half-extent, enough to frame the whole
+        // 15,400 x 7,700 tile world (246,400 x 123,200 px) at once.
+        if (game->playing->map_zoom < MAP_ZOOM_MIN) game->playing->map_zoom = MAP_ZOOM_MIN;
+        if (game->playing->map_zoom > MAP_ZOOM_MAX) game->playing->map_zoom = MAP_ZOOM_MAX;
     } else {
         game->camera.zoom *= (1.0f + (float)yoffset * 0.1f);
         if (game->camera.zoom < 1.0f) game->camera.zoom = 1.0f;

@@ -6,6 +6,7 @@
 #include "game_types.h"
 #include "renderer.h"
 #include "texture/texture.h"
+#include "world/world_overview.h"
 #include <GLFW/glfw3.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,9 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
         world->chunks[i].is_loaded = 0;
 
+    // Companion overview for the full map screen; absence is not fatal.
+    world_overview_load(world_file_path);
+
     printf("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets%s\n",
            world->world_width, world->world_height,
            world->world_width_chunks, world->world_height_chunks,
@@ -161,6 +165,7 @@ void world_cleanup(WorldState* world) {
             world->tileset_textures[i] = 0;
         }
     }
+    world_overview_unload();
     world->loaded_chunk_count = 0;
     world->modification_count = 0;
     printf("[WORLD] Cleaned up\n");

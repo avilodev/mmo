@@ -11,6 +11,7 @@
 #include "input.h"
 #include "network.h"
 #include "world.h"
+#include "world/world_overview.h"
 #include "npc.h"
 #include "player.h"
 #include "combat_system.h"
@@ -935,8 +936,34 @@ static void render_big_map(GameState* game) {
     float view_radius = base_radius / game->playing->map_zoom;
     float scale = (mw * 0.5f) / view_radius;
 
-    // Grid lines every 200 world units
+    // Terrain: the generator's downscaled overview, drawn as the map backdrop.
+    // The streamed world file is far too large to sample here, so the map shows
+    // this instead; without it the map falls back to grid lines only.
+    if (world_overview_ready()) {
+        int ow = 0, oh = 0, ocell = 0;
+        world_overview_dims(&ow, &oh, &ocell);
+
+        float tile_px = (float)game->world.tile_size;
+        float world_px_w = (float)ow * (float)ocell * tile_px;
+        float world_px_h = (float)oh * (float)ocell * tile_px;
+
+        if (world_px_w > 0.0f && world_px_h > 0.0f) {
+            float half_h = (mh * 0.5f) / scale;
+            float u0 = (player_wx - view_radius) / world_px_w;
+            float u1 = (player_wx + view_radius) / world_px_w;
+            float v0 = (player_wy - half_h)      / world_px_h;
+            float v1 = (player_wy + half_h)      / world_px_h;
+
+            renderer_draw_sprite_uv(mx, my, mw, mh,
+                                    world_overview_texture(),
+                                    u0, v0, u1, v1);
+        }
+    }
+
+    // Grid lines. The spacing steps up as the view widens so the grid stays a
+    // reference instead of collapsing into a solid block at continent scale.
     float grid_spacing = 200.0f;
+    while (view_radius / grid_spacing > 12.0f) grid_spacing *= 5.0f;
     float grid_start_x = player_wx - view_radius;
     float grid_start_y = player_wy - view_radius;
     // Snap to grid

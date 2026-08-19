@@ -13,6 +13,17 @@ typedef struct GameState GameState;
 typedef struct CharacterScreenState CharacterScreenState;
 typedef struct WorldState WorldState;
 
+/**
+ * Full-map zoom limits.
+ *
+ * render_big_map shows base_radius/map_zoom world pixels to each edge, with
+ * base_radius = 1050. MAP_ZOOM_MIN therefore yields a ~131,000 px half-extent,
+ * enough to frame the whole 15,400 x 7,700 tile continent (246,400 x 123,200 px)
+ * in one view; MAP_ZOOM_MAX keeps the close-in detail the map had before.
+ */
+#define MAP_ZOOM_MIN 0.008f
+#define MAP_ZOOM_MAX 4.0f
+
 /** Bound fixed-capacity client presentation collections. */
 #define MAX_VISIBLE_NPCS        64
 #define MAX_DAMAGE_NUMBERS      10
@@ -470,7 +481,7 @@ typedef struct {
 
     int               is_paused;
 
-    int               show_map;
+    int               show_map;   /**< Full map open; zoom clamped to [MAP_ZOOM_MIN, MAP_ZOOM_MAX]. */
     float             map_zoom;
 
     uint32_t          target_player_id;
