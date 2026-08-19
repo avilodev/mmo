@@ -896,6 +896,24 @@ static void render_big_map(GameState* game) {
     float vw = (float)game->camera.viewport_width;
     float vh = (float)game->camera.viewport_height;
 
+    // Establish screen space explicitly.
+    //
+    // This runs before hud_render, and hud_render is what sets the screen-space
+    // ortho for every later overlay; renderer_end_2d() is a no-op, so without
+    // this the camera's WORLD projection is still bound and the panel is drawn
+    // at world (0,0) instead of screen (0,0). That was invisible in the old
+    // 30x31-tile world, where the origin sat inside the view, and became a
+    // blank screen once the player spawned 222,400 px away in Ennara.
+    // Push/pop so the caller's matrices are restored either way.
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, vw, vh, 0, -1, 1);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
     // Dim world behind the map
     renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.65f);
 
@@ -1016,6 +1034,12 @@ static void render_big_map(GameState* game) {
     snprintf(info, sizeof(info), "X: %.0f  Y: %.0f    Zoom: %.1fx",
              player_wx, player_wy, game->playing->map_zoom);
     renderer_draw_text(px + 10.0f, bar_y + 14.0f, info);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
 }
 
 /**
@@ -1175,23 +1199,6 @@ static void playing_render(GameState* game) {
  */
 static void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
 
-    // TEMPORARY DIAGNOSTIC for the "M does not open the map" report. Fires only
-    // on an actual M press, so it cannot spam. Delete once resolved.
-    if (input_key_just_pressed(&game->input, GLFW_KEY_M)) {
-        printf("[MAPDIAG] M seen | paused=%d settings=%d questlog=%d shop=%d "
-               "typing=%d dead=%d dialogue=%d | show_map=%d zoom=%.4f overview=%d\n",
-               game->playing->is_paused,
-               game->show_settings,
-               game->playing->quest_log.is_open,
-               game->playing->shop.is_open,
-               game->playing->chat.is_typing,
-               game->playing->is_dead,
-               dialogue_is_active(),
-               game->playing->show_map,
-               game->playing->map_zoom,
-               world_overview_ready());
-        fflush(stdout);
-    }
 
     if (game->playing->is_paused) {
         // ESC or R unpause
