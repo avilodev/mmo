@@ -32,6 +32,7 @@ int worldgen_write(const char* path, int width, int height) {
     uint16_t* rows[TILE_LAYERS]    = {0};
     uint8_t*  collision_row        = NULL;
     FILE*     out                  = NULL;
+    int       out_opened           = 0;
     int       ok                   = 0;
 
     for (int l = 0; l < TILE_LAYERS; l++) {
@@ -77,6 +78,7 @@ int worldgen_write(const char* path, int width, int height) {
 
     out = fopen(path, "wb");
     if (!out) goto cleanup;
+    out_opened = 1;  // past this point the old file is already truncated
 
     int32_t header[3] = { width, height, WORLDGEN_TILE_PX };
     if (fwrite(header, sizeof(int32_t), 3, out) != 3) goto cleanup;
@@ -104,7 +106,10 @@ cleanup:
     for (int l = 0; l <= TILE_LAYERS; l++)
         if (tmp[l]) fclose(tmp[l]);
     if (out) fclose(out);
-    if (!ok) remove(path);
+    // Only discard the destination if this call actually opened (and so
+    // truncated) it. Failing before that point — a temp file that cannot be
+    // created, a full disk — must leave any previous world.dat intact.
+    if (!ok && out_opened) remove(path);
     for (int l = 0; l < TILE_LAYERS; l++) free(rows[l]);
     free(collision_row);
     for (int l = 0; l <= TILE_LAYERS; l++) if (tmp_path[l][0]) remove(tmp_path[l]);

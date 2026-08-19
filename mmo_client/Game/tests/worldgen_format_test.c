@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define TEST_W 128
 #define TEST_H 96
@@ -69,6 +70,26 @@ int main(void) {
 
     // And it must not strand temp files anywhere.
     assert(system("test -z \"$(ls /tmp/*.layer*.tmp 2>/dev/null)\"") == 0);
+
+    // A failure that occurs BEFORE the destination is opened must leave any
+    // previous world.dat intact. Regression: cleanup once ran remove(path)
+    // unconditionally, so a full disk or an uncreatable temp file destroyed the
+    // last good 1 GB world instead of just declining to replace it.
+    assert(system("rm -rf /tmp/wg_keep && mkdir -p /tmp/wg_keep") == 0);
+    FILE* prev = fopen("/tmp/wg_keep/world.dat", "wb");
+    assert(prev);
+    assert(fputs("PREVIOUS", prev) >= 0);
+    assert(fclose(prev) == 0);
+    // Occupy layer 0's temp name with a directory so fopen(..,"wb") must fail.
+    assert(system("mkdir -p /tmp/wg_keep/world.dat.layer0.tmp") == 0);
+    assert(worldgen_write("/tmp/wg_keep/world.dat", 64, 64) == 0);
+    prev = fopen("/tmp/wg_keep/world.dat", "rb");
+    assert(prev);  // must still exist
+    char kept[16] = {0};
+    assert(fread(kept, 1, 8, prev) == 8);
+    assert(fclose(prev) == 0);
+    assert(strcmp(kept, "PREVIOUS") == 0);
+    assert(system("rm -rf /tmp/wg_keep") == 0);
 
     printf("worldgen_format_test: OK\n");
     return 0;
