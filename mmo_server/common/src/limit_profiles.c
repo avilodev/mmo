@@ -40,6 +40,10 @@ static const PacketLimitProfile WORLD_PROFILE = {
         [PACKET_CAST_CANCEL]           = { LIMIT_CLASS_COMBAT,   1 },
         [PACKET_ABILITY_CAST_INTENT]   = { LIMIT_CLASS_COMBAT,   2 },
         [PACKET_ABILITY_CAST_CANCEL]   = { LIMIT_CLASS_COMBAT,   1 },
+        /* A swap recomputes stats and re-resolves the race passive, so it costs more
+         * than a cast intent. The shared swap cooldown already limits the useful rate;
+         * this bounds the wasted work when a client spams refused requests. */
+        [PACKET_FORM_SWAP]             = { LIMIT_CLASS_COMBAT,   3 },
 
         // Inventory — each one mutates persistent state.
         [PACKET_EQUIP_ITEM]            = { LIMIT_CLASS_ITEM,     2 },

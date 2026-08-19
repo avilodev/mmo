@@ -15,8 +15,8 @@ typedef struct {
     uint32_t character_id;
     float    pos_x, pos_y;
     int32_t  health, max_health;
-    uint8_t  player_class;
-    uint8_t  player_race;
+    /** Fused race/class identifier. Both wire fields carry it; see protocol.h. */
+    uint8_t  race_id;
     uint8_t  level;
     uint8_t  is_dead;
     uint16_t ping_ms;

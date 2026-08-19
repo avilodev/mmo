@@ -380,11 +380,11 @@ void party_broadcast_update(uint32_t party_id) {
             pkt.members[idx].character_id = htonl(mp->character_id);
             strncpy(pkt.members[idx].name, mp->username, 31);
             pkt.members[idx].level = (uint8_t)mp->level;
-            pkt.members[idx].player_class = (uint8_t)mp->player_class;
+            pkt.members[idx].player_class = (uint8_t)mp->race_id;
             pkt.members[idx].health = htonl(mp->health);
             pkt.members[idx].max_health = htonl(mp->max_health);
-            pkt.members[idx].mana = htonl(mp->mana);
-            pkt.members[idx].max_mana = htonl(mp->max_mana);
+            pkt.members[idx].mana = htonl(mp->resource);
+            pkt.members[idx].max_mana = htonl(mp->max_resource);
             player_release(mp);
         } else {
             member_ids[member_count] = mid;

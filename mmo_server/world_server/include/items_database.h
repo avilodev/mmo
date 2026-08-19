@@ -1,8 +1,9 @@
 #ifndef ITEM_DEFINITIONS_H
 #define ITEM_DEFINITIONS_H
 
-#include <stdint.h>
 #include "protocol.h"
+
+#include <stdint.h>
 
 /** Bound loaded item definitions and their display names. */
 #define MAX_ITEMS 100000
@@ -35,51 +36,41 @@ typedef enum {
     RARITY_LEGENDARY = 4
 } ItemRarity;
 
-/** Assign item-requirement identifiers to playable classes. */
-typedef enum {
-    CLASS_GLADIATOR = 1,   // Tank - Heavy Armor
-    CLASS_NINJA = 2,       // Damage - Light Armor
-    CLASS_LANDWEAVER = 3,  // Support - Medium Armor
-    CLASS_SPIRIT = 4       // Healer - Light Armor
-} CharacterClass;
-
-/** Assign item-requirement identifiers to playable races. */
-typedef enum {
-    RACE_HUMAN = 1,
-    RACE_PYSECK = 2,   // Small
-    RACE_INFOR = 3     // Infernal
-} CharacterRace;
+/** Item requirements name races by their registry identifier.
+ *
+ * Race and class fuse into one identifier, so class_req and race_req below are two
+ * views of the same thing. Both are kept because an item may sensibly restrict on
+ * either, and both are matched against the character's single race identifier.
+ */
 
 /** Aggregate immutable JSON-backed properties for one item type. */
 typedef struct {
     uint32_t id;
     char name[MAX_ITEM_NAME];
-    
+
     ItemType type;
     EquipSlotType slot;
-    
+
     uint32_t damage;           // For weapons
     uint32_t defense;          // For armor/shields
 
-    int32_t bonus_strength;
-    int32_t bonus_agility;
-    int32_t bonus_intelligence;
-    int32_t bonus_wisdom;
-    int32_t bonus_defense;
-    int32_t bonus_evasion;
-    int32_t bonus_vitality;
-    int32_t bonus_luck;
-    
+    /** Hold attribute bonuses indexed by StatId, keyed in JSON by stat name.
+     *
+     * An array rather than named fields, for the same reason the wire carries one:
+     * adding a stat is one enum entry and one JSON key, not an edit to every struct
+     * that mentions attributes. */
+    int32_t bonus_stats[STAT_COUNT];
+
     uint8_t level_req;         // Minimum level required
     uint8_t class_req[5];      // Required classes (0 = any, otherwise specific class IDs)
     uint8_t race_req[4];       // Required races (0 = any)
-    
+
     ItemRarity rarity;
     uint8_t craftable;         // 0 = no, 1 = yes
     uint8_t stackable;         // 0 = no, 1 = yes
     uint16_t max_stack;        // Maximum stack size
     uint32_t value;            // Gold value (for selling)
-    
+
     uint8_t use_effect;        // UseEffectType — what happens when used
     int32_t use_value;         // How much to restore/apply
     float   use_cooldown;      // Seconds before this consumable can be used again
@@ -97,7 +88,7 @@ const ItemDefinition* item_get(uint32_t item_id);
 
 int item_exists(uint32_t item_id);
 
-int item_can_equip(uint32_t item_id, uint8_t character_level, 
+int item_can_equip(uint32_t item_id, uint8_t character_level,
                    uint8_t character_class, uint8_t character_race);
 
 int items_get_count(void);

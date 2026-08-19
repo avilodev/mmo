@@ -21,8 +21,8 @@ typedef struct {
     uint32_t account_id;
     int client_fd;
 
-    Class player_class;
-    Race player_race;
+    /** Fused race/class identifier; indexes the race registry loaded from races.json. */
+    uint32_t race_id;
 
     char username[32];
     float pos_x, pos_y;
@@ -30,8 +30,10 @@ typedef struct {
     int level;
     int health;
     int max_health;
-    int32_t mana;
-    int32_t max_mana;
+    /** Hold whichever pool the active spec's role selects; see resource_type. */
+    int32_t resource;
+    int32_t max_resource;
+    uint8_t resource_type;  /**< ResourceType; RESOURCE_NONE while in Human Form. */
     uint64_t experience;
     uint32_t gold;
 
@@ -52,19 +54,21 @@ typedef struct {
 
     uint8_t current_zone_id;
 
-    float ability_cooldowns[5];
-    uint16_t ability_slots[5];
-    uint8_t ability_count;
+    /** Hold one hotbar per form. Swapping forms swaps which row is live. */
+    uint16_t ability_slots[FORM_COUNT][MAX_ABILITY_SLOTS];
+    uint8_t  ability_count[FORM_COUNT];
+    /** Store an absolute expiry instant on the monotonic clock, not a remaining time.
+     *
+     * Cooldowns therefore keep ticking for the form the player is not in, and no
+     * swap sequence can shorten one. A slot is ready when now >= its entry. */
+    double   ability_ready_at[FORM_COUNT][MAX_ABILITY_SLOTS];
+    uint8_t  form;              /**< PlayerForm currently active. */
+    double   form_swap_ready_at; /**< Absolute expiry of the shared swap cooldown. */
 
-    int strength;
-    int agility;
-    int intelligence;
-    int wisdom;
-    int defense;
-    int evasion;
-    int vitality;
-    int luck;
-    int reg;
+    /** Hold the eleven attributes indexed by StatId, after gear and buffs. */
+    int stats[STAT_COUNT];
+    /** Hold the same attributes before gear and buffs, straight from the race curve. */
+    int base_stats[STAT_COUNT];
     float move_speed;
     int weapon_damage;
     double last_combat_time;

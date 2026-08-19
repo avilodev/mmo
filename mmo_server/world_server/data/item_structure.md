@@ -1,34 +1,5 @@
-Classes
-1 - Gladiator (Tank)
-  Heavy Armor
-    Helmet
-    Gloves
-    Chest
-    Leggings
-    Boots
-2 - Ninja (Damage)
-  Light Armor
-    Helmet
-    Gloves
-    Chest
-    Leggings
-    Boots
-3 - Landweaver (Support)
-  Medium Armor
-    Helmet
-    Gloves
-    Chest
-    Leggings
-    Boots
-4 - Spirit (Healer)
-  Light Armor
-    Helmet
-    Gloves
-    Chest
-    Leggings
-    Boots
+Reset — pending redesign per the new world bible (Hana to Taiga).
 
-Races
-1 - Human
-2 - Pyseck (Small)
-3 - Infor (Infernal)
+See world_server/Story/hana_to_taiga_mmo_world_bible.docx for the current
+race/class/item direction (races and classes are fused as "The Blessed";
+see section 3 for the race list and section 6 for loot/crafting notes).

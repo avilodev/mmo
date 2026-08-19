@@ -62,6 +62,9 @@ $(LOGIN_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(LOGIN_OBJS)
 $(REALM_EXEC): $(COMMON_OBJS) $(REALM_OBJS) $(DB_OBJS)
 	@mkdir -p $(REALM_BIN)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
+	@mkdir -p $(REALM_BIN)/data
+	@cp world_server/data/races.json $(REALM_BIN)/data/
+	@cp world_server/data/progression.json $(REALM_BIN)/data/
 	@echo "Built realm_server -> $@"
 
 # World server (needs PostgreSQL and Redis for game state) - FIXED: Added $(DB_OBJS)
@@ -82,6 +85,8 @@ data: $(if $(WORLD_DAT_SRC),$(WORLD_BIN)/data/world.dat)
 	@mkdir -p $(WORLD_BIN)/data
 	@cp world_server/data/items.json $(WORLD_BIN)/data/
 	@cp world_server/data/abilities.json $(WORLD_BIN)/data/
+	@cp world_server/data/races.json $(WORLD_BIN)/data/
+	@cp world_server/data/progression.json $(WORLD_BIN)/data/
 	@cp -r world_server/data/dialogues $(WORLD_BIN)/data/
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
@@ -266,7 +271,32 @@ TEST_CFLAGS_BASE = $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$
 TEST_CFLAGS = -Wall -Wextra -g -pthread $(TEST_CFLAGS_BASE)
 
 .PHONY: test
-test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
+      $(TEST_BIN)/stats_test $(TEST_BIN)/passive_gating_test $(TEST_BIN)/cooldown_test $(TEST_BIN)/ability_data_test
+	@echo "=== Running JSON parser test ==="
+	@./$(TEST_BIN)/json_util_test
+	@echo ""
+	@echo "=== Running race registry test ==="
+	@./$(TEST_BIN)/race_registry_test
+	@echo ""
+	@echo "=== Running progression test ==="
+	@./$(TEST_BIN)/progression_test
+	@echo ""
+	@echo "=== Running damage stacking test ==="
+	@./$(TEST_BIN)/damage_stacking_test
+	@echo ""
+	@echo "=== Running stats test ==="
+	@./$(TEST_BIN)/stats_test
+	@echo ""
+	@echo "=== Running passive gating test ==="
+	@./$(TEST_BIN)/passive_gating_test
+	@echo ""
+	@echo "=== Running cooldown test ==="
+	@./$(TEST_BIN)/cooldown_test
+	@echo ""
+	@echo "=== Running ability data test ==="
+	@./$(TEST_BIN)/ability_data_test
+	@echo ""
 	@echo "=== Running packet limiter test ==="
 	@./$(TEST_BIN)/packet_limiter_test
 	@echo ""
@@ -362,7 +392,7 @@ $(TEST_BIN)/login_concurrency_test: tests/login_concurrency_test.c $(WORLD_DIR)/
 
 # Round-trips character_items through a real PostgreSQL. Skips itself (exit 0)
 # unless MMO_TEST_PGCONN is set, so the suite stays green without a database.
-$(TEST_BIN)/character_items_db_test: tests/character_items_db_test.c $(DB_DIR)/src/players_database.c $(DB_DIR)/src/class_stats.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+$(TEST_BIN)/character_items_db_test: tests/character_items_db_test.c $(DB_DIR)/src/players_database.c $(DB_DIR)/src/class_stats.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lpq -lm
 
@@ -374,7 +404,61 @@ $(TEST_BIN)/item_instance_test: tests/item_instance_test.c $(WORLD_DIR)/src/item
 
 # Covers item definition parsing and shop content validation, including the
 # shipped data files so a bad content edit fails here rather than in play.
-$(TEST_BIN)/item_data_test: tests/item_data_test.c $(WORLD_DIR)/src/items_database.c $(WORLD_DIR)/src/shop.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+# Covers the shared JSON parser every data file is read through: nested and
+# repeated keys, escape decoding, total accessors, and rejection of malformed input.
+$(TEST_BIN)/json_util_test: tests/json_util_test.c $(COMMON_DIR)/src/json_util.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Covers the race registry and, with it, contract M1: adding a race is a data
+# change. The eleventh-race fixture is the executable form of that promise.
+$(TEST_BIN)/race_registry_test: tests/race_registry_test.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/json_util.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Covers the level and experience curve and, with it, contract M3: retuning never
+# needs a recompile.
+$(TEST_BIN)/progression_test: tests/progression_test.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Covers the percentage-stacking rule all mitigation runs through: additive
+# stacking, order independence across every permutation, and the immunity clamp.
+$(TEST_BIN)/damage_stacking_test: tests/damage_stacking_test.c $(COMMON_DIR)/src/damage_model.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The stat model, the derived values it produces, and the role-to-resource mapping.
+BLESSED_CORE_SRC = $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/progression.c \
+                   $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/damage_model.c \
+                   $(DB_DIR)/src/class_stats.c
+BLESSED_PLAYER_SRC = $(BLESSED_CORE_SRC) $(WORLD_DIR)/src/player_effects.c \
+                     $(WORLD_DIR)/src/items_database.c $(WORLD_DIR)/src/item_instance.c \
+                     $(COMMON_DIR)/src/log.c
+
+$(TEST_BIN)/stats_test: tests/stats_test.c $(BLESSED_PLAYER_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Contract D10: the race passive resolves in Animal Form and nowhere else, which is
+# what makes Human Form provably identical across all ten races.
+$(TEST_BIN)/passive_gating_test: tests/passive_gating_test.c $(BLESSED_PLAYER_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Contract D7: cooldowns are absolute expiry instants, so they tick in both forms and
+# no swap sequence can shorten one.
+$(TEST_BIN)/cooldown_test: tests/cooldown_test.c $(BLESSED_PLAYER_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The joins between races.json and abilities.json, and a round-trip of every new
+# effect primitive through the loader.
+$(TEST_BIN)/ability_data_test: tests/ability_data_test.c $(WORLD_DIR)/src/ability_def.c $(BLESSED_CORE_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+$(TEST_BIN)/item_data_test: tests/item_data_test.c $(WORLD_DIR)/src/items_database.c $(WORLD_DIR)/src/shop.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/json_util.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 

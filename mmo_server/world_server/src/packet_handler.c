@@ -118,12 +118,12 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         LOG_WARN_RL(5, 60, "Invalid equip packet size");
         return;
     }
-    
+
     EquipItemPacket* equip = (EquipItemPacket*)buffer;
     uint32_t item_id = ntohl(equip->item_id);
     uint8_t inventory_slot = equip->inventory_slot;
     uint8_t equip_slot = equip->equip_slot;
-    
+
     ActivePlayer* player = player_acquire(character_id);
     if (!player) {
         LOG_WARN_RL(5, 60, "Player not found for equip");
@@ -137,39 +137,39 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         player->inventory[inventory_slot].item_id != item_id) {
         LOG_WARN_RL(5, 60, "Item %u not in inventory slot %u", item_id, inventory_slot);
         player_release(player);
-        
+
         // Send error response
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
         response.header.player_id = htonl(character_id);
-        response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader)); 
+        response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader));
         response.success = 0;
         strncpy(response.message, "Item not in inventory", sizeof(response.message) - 1);
         server_send(client_fd, &response, sizeof(response));
         return;
     }
-    
+
     // Get item definition
     const ItemDefinition* item = item_get(item_id);
     if (!item) {
         LOG_WARN_RL(5, 60, "Item %u does not exist", item_id);
         player_release(player);
-        
+
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
         response.header.player_id = htonl(character_id);
-        response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader)); 
+        response.header.payload_size = htons(sizeof(EquipItemResponsePacket) - sizeof(PacketHeader));
         response.success = 0;
         strncpy(response.message, "Invalid item", sizeof(response.message) - 1);
         server_send(client_fd, &response, sizeof(response));
         return;
     }
-    
+
     // Validate slot
     if (item->slot != equip_slot && !(item->is_two_handed && equip_slot == SLOT_MAIN_HAND)) {
         LOG_WARN_RL(5, 60, "Item %s cannot be equipped in slot %u", item->name, equip_slot);
         player_release(player);
-        
+
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
         response.header.player_id = htonl(character_id);
@@ -178,12 +178,12 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         server_send(client_fd, &response, sizeof(response));
         return;
     }
-    
+
     // Check if player meets requirements
-    if (!item_can_equip(item_id, player->level, player->player_class, player->player_race)) {
+    if (!item_can_equip(item_id, player->level, player->race_id, player->race_id)) {
         LOG_WARN_RL(5, 60, "Player cannot equip item: %s", item->name);
         player_release(player);
-        
+
         EquipItemResponsePacket response = {0};
         response.header.type = PACKET_EQUIP_ITEM_RESPONSE;
         response.header.player_id = htonl(character_id);
@@ -192,7 +192,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         server_send(client_fd, &response, sizeof(response));
         return;
     }
-    
+
     int equip_index = equip_index_for(equip_slot);
     if (equip_index < 0) {
         player_release(player);
@@ -280,10 +280,10 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
         LOG_WARN_RL(5, 60, "Invalid unequip packet size");
         return;
     }
-    
+
     UnequipItemPacket* unequip = (UnequipItemPacket*)buffer;
     uint8_t equip_slot = unequip->equip_slot;
-    
+
     ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
@@ -292,7 +292,7 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
 
     if (inventory_slot == -1) {
         player_release(player);
-        
+
         // Send error - inventory full
         UnequipItemResponsePacket response = {0};
         response.header.type = PACKET_UNEQUIP_ITEM_RESPONSE;
@@ -302,7 +302,7 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
         server_send(client_fd, &response, sizeof(response));
         return;
     }
-    
+
     int equip_index = equip_index_for(equip_slot);
     if (equip_index < 0) {
         player_release(player);
@@ -354,7 +354,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
         LOG_WARN_RL(5, 60, "Invalid use item packet size");
         return;
     }
-    
+
     UseItemPacket* use = (UseItemPacket*)buffer;
     uint8_t inventory_slot = use->inventory_slot;
 
@@ -425,9 +425,12 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
             break;
         }
         case USE_EFFECT_RESTORE_MANA: {
-            int32_t missing = player->max_mana - player->mana;
+            /* Restores whichever pool the character's role selects. Human Form has no
+             * pool, so max_resource is zero there and the item restores nothing. */
+            int32_t missing = player->max_resource - player->resource;
             mp_changed = (item->use_value > missing) ? missing : item->use_value;
-            player->mana += mp_changed;
+            if (mp_changed < 0) mp_changed = 0;
+            player->resource += mp_changed;
             break;
         }
         case USE_EFFECT_RESTORE_BOTH: {
@@ -435,9 +438,10 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
             hp_changed = (item->use_value > hp_missing) ? hp_missing : item->use_value;
             player->health += hp_changed;
 
-            int32_t mp_missing = player->max_mana - player->mana;
+            int32_t mp_missing = player->max_resource - player->resource;
             mp_changed = (item->use_value > mp_missing) ? mp_missing : item->use_value;
-            player->mana += mp_changed;
+            if (mp_changed < 0) mp_changed = 0;
+            player->resource += mp_changed;
             break;
         }
         default:
@@ -455,7 +459,7 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     response.health_changed = htonl((uint32_t)hp_changed);
     response.mana_changed = htonl((uint32_t)mp_changed);
     response.new_health = htonl((uint32_t)player->health);
-    response.new_mana = htonl((uint32_t)player->mana);
+    response.new_mana = htonl((uint32_t)player->resource);
     response.item_id = htonl(item_id);
 
     player_release(player);
@@ -478,10 +482,10 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
         LOG_WARN_RL(5, 60, "Invalid drop packet size");
         return;
     }
-    
+
     DropItemPacket* drop = (DropItemPacket*)buffer;
     uint8_t inventory_slot = drop->inventory_slot;
-    
+
     ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
@@ -504,11 +508,11 @@ void handle_drop_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     // Spawn item on the ground near the player
     loot_drop_item(item_id, 1, drop_x, drop_y, character_id);
     LOG_DEBUG("Character %u dropped item %u", character_id, item_id);
-    
+
     DropItemResponsePacket response = {0};
     response.header.type = PACKET_DROP_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
-    response.header.payload_size = htons(sizeof(DropItemResponsePacket) - sizeof(PacketHeader)); 
+    response.header.payload_size = htons(sizeof(DropItemResponsePacket) - sizeof(PacketHeader));
     response.success = 1;
     response.dropped_item = htonl(item_id);
     server_send(client_fd, &response, sizeof(response));
@@ -526,13 +530,13 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
         LOG_WARN_RL(5, 60, "Invalid move item packet size");
         return;
     }
-    
+
     MoveItemPacket* move = (MoveItemPacket*)buffer;
     uint8_t from_slot = move->from_slot;
     uint8_t to_slot = move->to_slot;
-    
+
     if (from_slot >= 150 || to_slot >= 150) return;
-    
+
     ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
     if (!player->is_loaded) { player_release(player); return; }
@@ -542,17 +546,17 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     inventory_move(player->inventory, from_slot, to_slot,
                    moved ? moved->max_stack : 1);
     player->is_dirty = 1;
-    
+
     player_release(player);
-    
+
     MoveItemResponsePacket response = {0};
     response.header.type = PACKET_MOVE_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
-    response.header.payload_size = htons(sizeof(MoveItemResponsePacket) - sizeof(PacketHeader)); 
+    response.header.payload_size = htons(sizeof(MoveItemResponsePacket) - sizeof(PacketHeader));
     response.success = 1;
     response.from_slot = from_slot;
     response.to_slot = to_slot;
-    
+
     server_send(client_fd, &response, sizeof(response));
 
     // synchronize both merge or swap endpoints
@@ -921,8 +925,7 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
         uint32_t character_id;
         char     name[32];
         int      level;
-        uint8_t  player_class;
-        uint8_t  player_race;
+        uint8_t  race_id;
         uint16_t ping_ms;
     } Snap;
 
@@ -955,8 +958,7 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
                 strncpy(snaps[idx].name, ap->username, 31);
                 snaps[idx].name[31]     = '\0';
                 snaps[idx].level        = ap->level;
-                snaps[idx].player_class = (uint8_t)ap->player_class;
-                snaps[idx].player_race  = (uint8_t)ap->player_race;
+                snaps[idx].race_id = (uint8_t)ap->race_id;
                 snaps[idx].ping_ms      = ap->ping_ms;
                 pthread_mutex_unlock(&ap->lock);
                 idx++;
@@ -992,8 +994,9 @@ void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) 
         strncpy(e->name, s->name, 31);
         e->name[31]     = '\0';
         e->level        = (uint8_t)(s->level > 255 ? 255 : s->level);
-        e->player_class = s->player_class;
-        e->player_race  = s->player_race;
+        /* Race and class fuse into one identifier; both wire fields carry it. */
+        e->player_class = s->race_id;
+        e->player_race  = s->race_id;
         e->ping_ms      = htons(s->ping_ms);
     }
 

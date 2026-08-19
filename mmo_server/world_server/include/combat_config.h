@@ -3,12 +3,19 @@
 #ifndef COMBAT_CONFIG_H
 #define COMBAT_CONFIG_H
 
+#include "protocol.h"
+
 #include <stdint.h>
 #include <pthread.h>
 
 #define MAX_NPC_ABILITIES_RT 4  /**< Match MAX_NPC_ABILITIES in npc_ai.h. */
 
-/** Define authoritative timing, geometry, and damage for one class attack. */
+/** Define authoritative timing, geometry, and damage for one race's basic attack.
+ *
+ * One profile per race, loaded from attack_profiles.json. Nothing here knows how many
+ * races exist: the array is sized by the MAX_RACES bound and indexed by the same
+ * fused identifier everything else uses.
+ */
 typedef struct {
     float       cast_time;          // Seconds from intent to damage resolution
     float       cooldown;           // Seconds after damage before next attack can start
@@ -22,13 +29,16 @@ typedef struct {
     uint8_t     is_ranged;          // 1 = spawn projectile at cast resolution instead of instant damage
     float       projectile_speed;   // World units per second
     float       projectile_width;   // Hitbox width of the projectile
-    uint8_t     projectile_damage_stat;  // StatType that scales projectile damage
+    uint8_t     projectile_damage_stat;  // StatId that scales projectile damage
     uint8_t     projectile_damage_type;  // AbilityDamageType (0=phys, 1=earth, 2=spirit)
-} ClassAttackProfile;
+    /** Which attribute scales this attack's damage. */
+    uint8_t     damage_stat;             // StatId
+    uint8_t     is_loaded;               /**< Nonzero once a profile has been read for this race. */
+} RaceAttackProfile;
 
-/** Index class attack profiles by one-based class identifier, leaving index zero unused. */
-extern ClassAttackProfile g_class_profiles[5];
- 
+/** Index attack profiles by race identifier, leaving index zero unused. */
+extern RaceAttackProfile g_race_profiles[MAX_RACES + 1];
+
 /** Identify NPC disposition used by AI and client presentation. */
 typedef enum {
     NPC_CATEGORY_PASSIVE    = 0,   // Village NPCs, vendors — never attacks
@@ -45,8 +55,11 @@ typedef struct {
     int         max_health;
     float       hitbox_radius;     // For collision / hit detection
 
-    int         defense;           // Damage reduction stat
-    int         evasion;           // Dodge chance stat
+    /** Flat damage reduction, matching the Armor attribute players carry.
+     *
+     * There is no evasion counterpart: the Blessed model drops dodge entirely, so an
+     * attack that reaches an NPC always connects. */
+    int         armor;
     uint32_t    xp_reward;         // XP granted to killer
     uint32_t    gold_reward;       // Gold granted to killer
 
@@ -66,6 +79,13 @@ typedef struct {
     /** Track mutable AI target and cooldown state. */
     uint8_t     ai_state;          // NPCAIState: 0=idle, 1=aggro, 2=returning, 3=casting
     uint32_t    ai_target_id;      // Current target character_id (0 = no target)
+    /** Force this NPC's target while a taunt holds.
+     *
+     * Roar is the tank's whole job in one ability, so the taunt has to override
+     * target selection rather than merely nudge it. It is an absolute expiry on the
+     * monotonic clock, for the same reason ability cooldowns are. */
+    uint32_t    taunt_source_id;
+    double      taunt_expires_at;
     double      ai_ability_cooldowns[MAX_NPC_ABILITIES_RT]; // Last use time per ability slot
     uint8_t     ai_cd_seeded;      // 1 once per-enemy cooldown phases have been randomized
 
@@ -93,16 +113,17 @@ typedef struct {
 typedef struct {
     uint8_t     is_active;          // 1 if this attacker has a pending cast
     double      cast_start_time;    // Epoch seconds when cast began
-    float       cast_duration;      // How long it takes (from class profile)
+    float       cast_duration;      // How long it takes (from the race's profile)
     uint8_t     attack_type;        // Which shape to resolve at completion
     float       origin_x, origin_y; // Attacker position AT CAST START (snapshot)
     float       aim_x, aim_y;       // Aim point AT CAST START (snapshot)
-    float       range;              // From class profile, snapshotted
+    float       range;              // From the race's profile, snapshotted
     int         base_damage;
     int         damage_variance;
-    float       cone_half_angle;    // Degrees, from class profile
-    float       line_width;         // World units, from class profile
+    float       cone_half_angle;    // Degrees, from the race's profile
+    float       line_width;         // World units, from the race's profile
     float       cooldown;           // Stored so we can set last_attack_time on resolve
+    uint8_t     damage_stat;        // StatId the race's profile scales this attack with
     /** Retain projectile parameters when the cast resolves at range. */
     uint8_t     is_ranged;
     float       projectile_speed;

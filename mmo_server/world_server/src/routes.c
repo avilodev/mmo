@@ -87,6 +87,7 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
     if (header->type == PACKET_PLAYER_MOVE ||
         header->type == PACKET_ATTACK_INTENT ||
         header->type == PACKET_ABILITY_CAST_INTENT ||
+        header->type == PACKET_FORM_SWAP ||
         header->type == PACKET_EQUIP_ITEM ||
         header->type == PACKET_USE_ITEM ||
         header->type == PACKET_DROP_ITEM ||
@@ -127,23 +128,23 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
                 LOG_WARN_RL(5, 60, "[MOVE] Malformed move packet (size: %zd)", bytes);
             }
             break;
-            
+
         case PACKET_EQUIP_ITEM:
             handle_equip_item(client_fd, character_id, buffer, bytes);
-            break; 
-            
+            break;
+
         case PACKET_UNEQUIP_ITEM:
             handle_unequip_item(client_fd, character_id, buffer, bytes);
             break;
-            
+
         case PACKET_USE_ITEM:
             handle_use_item(client_fd, character_id, buffer, bytes);
             break;
-            
+
         case PACKET_DROP_ITEM:
             handle_drop_item(client_fd, character_id, buffer, bytes);
             break;
-            
+
         case PACKET_MOVE_ITEM:
             handle_move_item(client_fd, character_id, buffer, bytes);
             break;
@@ -151,13 +152,13 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
         case PACKET_ATTACK_INTENT: {
             if (bytes >= (ssize_t)sizeof(AttackIntentPacket)) {
                 AttackIntentPacket* intent = (AttackIntentPacket*)buffer;
-                
+
                 uint32_t packet_char_id = ntohl(intent->header.player_id);
                 if (packet_char_id != character_id) {
                     LOG_WARN_RL(5, 60, "[ATTACK] Character ID mismatch: packet=%u, session=%u", packet_char_id, character_id);
                     break;
                 }
-                
+
                 if (!valid_coord(intent->aim_x, intent->aim_y)) {
                     LOG_WARN_RL(5, 60, "[ATTACK] Rejected: invalid aim coords from character %u", character_id);
                     break;
@@ -174,7 +175,7 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
             }
             break;
         }
-            
+
         case PACKET_CAST_CANCEL: {
             LOG_DEBUG("[ATTACK] Character %u cancelled cast", character_id);
             combat_handle_cast_cancel(client_fd, character_id);
@@ -211,6 +212,26 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
         case PACKET_ABILITY_CAST_CANCEL: {
             LOG_DEBUG("[ABILITY] Character %u cancelled ability cast", character_id);
             ability_handle_cast_cancel(client_fd, character_id);
+            break;
+        }
+
+        case PACKET_FORM_SWAP: {
+            if (bytes < (ssize_t)sizeof(FormSwapPacket)) {
+                LOG_WARN_RL(5, 60, "[FORM] Malformed form-swap packet (size: %zd)", bytes);
+                break;
+            }
+
+            FormSwapPacket* swap = (FormSwapPacket*)buffer;
+            uint32_t packet_char_id = ntohl(swap->header.player_id);
+            if (packet_char_id != character_id) {
+                LOG_WARN_RL(5, 60, "[FORM] Character ID mismatch: packet=%u, session=%u",
+                            packet_char_id, character_id);
+                break;
+            }
+
+            /* The requested form is validated inside the handler, which replies with
+             * the authoritative state whether or not the swap is allowed. */
+            ability_handle_form_swap(client_fd, character_id, swap->requested_form);
             break;
         }
 

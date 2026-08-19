@@ -4,6 +4,7 @@
  */
 
 #include "items_database.h"
+#include "race_registry.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,28 +29,28 @@ static int parse_items_json(const char* json_content);
  */
 int items_init(const char* json_filepath) {
     printf("Loading items from: %s\n", json_filepath);
-    
+
     // Clear the item table
     memset(item_table, 0, sizeof(item_table));
     items_loaded = 0;
-    
+
     // Read JSON file
     char* json_content = read_file(json_filepath);
     if (!json_content) {
         fprintf(stderr, "Failed to read items file: %s\n", json_filepath);
         return 0;
     }
-    
+
     // Parse JSON
     int result = parse_items_json(json_content);
     free(json_content);
-    
+
     if (result) {
         printf("Successfully loaded %d items\n", items_loaded);
     } else {
         fprintf(stderr, "Failed to parse items JSON\n");
     }
-    
+
     return result;
 }
 
@@ -83,16 +84,16 @@ int item_exists(uint32_t item_id) {
  * @param character_race   CharacterRace identifier.
  * @return                 1 when all requirements pass, or 0 otherwise.
  */
-int item_can_equip(uint32_t item_id, uint8_t character_level, 
+int item_can_equip(uint32_t item_id, uint8_t character_level,
                    uint8_t character_class, uint8_t character_race) {
     const ItemDefinition* item = item_get(item_id);
     if (!item) return 0;
-    
+
     // Check level requirement
     if (character_level < item->level_req) {
         return 0;
     }
-    
+
     // Check class requirement
     if (item->class_req[0] != 0) {
         int class_valid = 0;
@@ -104,7 +105,7 @@ int item_can_equip(uint32_t item_id, uint8_t character_level,
         }
         if (!class_valid) return 0;
     }
-    
+
     // Check race requirement
     if (item->race_req[0] != 0) {
         int race_valid = 0;
@@ -116,7 +117,7 @@ int item_can_equip(uint32_t item_id, uint8_t character_level,
         }
         if (!race_valid) return 0;
     }
-    
+
     return 1;
 }
 
@@ -144,32 +145,25 @@ void items_cleanup(void) {
 }
 
 /**
- * Map a character class identifier to its display name.
+ * Map a character identifier to its display name.
  *
- * @return A static class name, or "Unknown" for an unrecognized identifier.
+ * Race and class fuse into one identifier, so both spellings answer from the race
+ * registry and there is no table of names to keep in step with the data.
+ *
+ * @return A registry-owned name, or "Unknown" for an unrecognized identifier.
  */
 const char* class_get_name(uint8_t class_id) {
-    switch (class_id) {
-        case CLASS_GLADIATOR: return "Gladiator";
-        case CLASS_NINJA: return "Ninja";
-        case CLASS_LANDWEAVER: return "Landweaver";
-        case CLASS_SPIRIT: return "Spirit";
-        default: return "Unknown";
-    }
+    return race_get_name(class_id);
 }
 
 /**
  * Map a character race identifier to its display name.
  *
- * @return A static race name, or "Unknown" for an unrecognized identifier.
+ * @return A registry-owned name, or "Unknown" for an unrecognized identifier.
  */
 const char* race_get_name(uint8_t race_id) {
-    switch (race_id) {
-        case RACE_HUMAN: return "Human";
-        case RACE_PYSECK: return "Pyseck";
-        case RACE_INFOR: return "Infor";
-        default: return "Unknown";
-    }
+    const RaceDef* race = race_get(race_id);
+    return race ? race->name : "Unknown";
 }
 
 /**
@@ -218,21 +212,21 @@ const char* slot_get_name(EquipSlotType slot) {
 static char* read_file(const char* filepath) {
     FILE* f = fopen(filepath, "rb");
     if (!f) return NULL;
-    
+
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    
+
     char* buffer = malloc(size + 1);
     if (!buffer) {
         fclose(f);
         return NULL;
     }
-    
+
     fread(buffer, 1, size, f);
     buffer[size] = '\0';
     fclose(f);
-    
+
     return buffer;
 }
 
@@ -281,18 +275,18 @@ static ItemRarity parse_rarity(const char* rarity_str) {
 static const char* find_json_value(const char* json, const char* key) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
-    
+
     const char* pos = strstr(json, search);
     if (!pos) return NULL;
-    
+
     // Skip past the key and find the colon
     pos = strchr(pos, ':');
     if (!pos) return NULL;
     pos++;
-    
+
     // Skip whitespace
     while (*pos && isspace(*pos)) pos++;
-    
+
     return pos;
 }
 
@@ -309,29 +303,29 @@ static int parse_items_json(const char* json_content) {
         fprintf(stderr, "No 'items' array found in JSON\n");
         return 0;
     }
-    
+
     // Find the opening bracket of the array
     const char* array_start = strchr(items_start, '[');
     if (!array_start) return 0;
-    
+
     const char* pos = array_start + 1;
-    
+
     // Parse each item object
     while (*pos) {
         // Skip whitespace
         while (*pos && isspace(*pos)) pos++;
-        
+
         if (*pos == ']') break; // End of array
         if (*pos != '{') {
             pos++;
             continue;
         }
-        
+
         // Find the end of this object
         const char* obj_start = pos;
         int brace_count = 0;
         const char* obj_end = pos;
-        
+
         while (*obj_end) {
             if (*obj_end == '{') brace_count++;
             if (*obj_end == '}') {
@@ -340,22 +334,22 @@ static int parse_items_json(const char* json_content) {
             }
             obj_end++;
         }
-        
+
         if (brace_count != 0) break; // Malformed JSON
-        
+
         // Extract this object
         int obj_len = obj_end - obj_start + 1;
         char* obj_json = malloc(obj_len + 1);
         memcpy(obj_json, obj_start, obj_len);
         obj_json[obj_len] = '\0';
-        
+
         // Parse the item
         ItemDefinition* item = calloc(1, sizeof(ItemDefinition));
-        
+
         // Parse ID
         const char* id_val = find_json_value(obj_json, "id");
         if (id_val) item->id = atoi(id_val);
-        
+
         // Parse name
         const char* name_val = find_json_value(obj_json, "name");
         if (name_val && *name_val == '"') {
@@ -367,7 +361,7 @@ static int parse_items_json(const char* json_content) {
                 item->name[name_len] = '\0';
             }
         }
-        
+
         // Parse type
         const char* type_val = find_json_value(obj_json, "type");
         if (type_val && *type_val == '"') {
@@ -381,7 +375,7 @@ static int parse_items_json(const char* json_content) {
                 }
             }
         }
-        
+
         // Parse slot
         const char* slot_val = find_json_value(obj_json, "slot");
         if (slot_val && *slot_val == '"') {
@@ -396,19 +390,19 @@ static int parse_items_json(const char* json_content) {
                 }
             }
         }
-        
+
         // Parse damage
         const char* dmg_val = find_json_value(obj_json, "damage");
         if (dmg_val) item->damage = atoi(dmg_val);
-        
+
         // Parse defense
         const char* def_val = find_json_value(obj_json, "defense");
         if (def_val) item->defense = atoi(def_val);
-        
+
         // Parse level requirement
         const char* lvl_val = find_json_value(obj_json, "level_req");
         if (lvl_val) item->level_req = atoi(lvl_val);
-        
+
         // Parse class requirements
         const char* class_val = find_json_value(obj_json, "class_req");
         if (class_val && *class_val == '[') {
@@ -423,7 +417,7 @@ static int parse_items_json(const char* json_content) {
                 }
             }
         }
-        
+
         // Parse rarity
         const char* rarity_val = find_json_value(obj_json, "rarity");
         if (rarity_val && *rarity_val == '"') {
@@ -437,7 +431,7 @@ static int parse_items_json(const char* json_content) {
                 }
             }
         }
-        
+
         // Parse consumable effect
         const char* effect_val = find_json_value(obj_json, "use_effect");
         if (effect_val && *effect_val == '"') {
@@ -461,22 +455,15 @@ static int parse_items_json(const char* json_content) {
         if (cd_val) item->use_cooldown = (float)atof(cd_val);
 
         // Parse stat bonuses
-        const char* bs_val = find_json_value(obj_json, "bonus_strength");
-        if (bs_val) item->bonus_strength = atoi(bs_val);
-        const char* ba_val = find_json_value(obj_json, "bonus_agility");
-        if (ba_val) item->bonus_agility = atoi(ba_val);
-        const char* bi_val = find_json_value(obj_json, "bonus_intelligence");
-        if (bi_val) item->bonus_intelligence = atoi(bi_val);
-        const char* bw_val = find_json_value(obj_json, "bonus_wisdom");
-        if (bw_val) item->bonus_wisdom = atoi(bw_val);
-        const char* bd_val = find_json_value(obj_json, "bonus_defense");
-        if (bd_val) item->bonus_defense = atoi(bd_val);
-        const char* be_val = find_json_value(obj_json, "bonus_evasion");
-        if (be_val) item->bonus_evasion = atoi(be_val);
-        const char* bv_val = find_json_value(obj_json, "bonus_vitality");
-        if (bv_val) item->bonus_vitality = atoi(bv_val);
-        const char* bl_val = find_json_value(obj_json, "bonus_luck");
-        if (bl_val) item->bonus_luck = atoi(bl_val);
+        /* Attribute bonuses are keyed by stat name, so an item gains a bonus to a
+         * newly added stat without this loader changing at all. */
+        for (int stat = 0; stat < STAT_COUNT; stat++) {
+            char field[64];
+            snprintf(field, sizeof(field), "bonus_%s", stat_key((StatId)stat));
+
+            const char* val = find_json_value(obj_json, field);
+            if (val) item->bonus_stats[stat] = atoi(val);
+        }
 
         // default absent or zero stack limits to one
         const char* stack_val = find_json_value(obj_json, "max_stack");
@@ -499,19 +486,19 @@ static int parse_items_json(const char* json_content) {
         if (item->id < MAX_ITEMS) {
             item_table[item->id] = item;
             items_loaded++;
-            printf("  Loaded: [%u] %s (%s)\n", item->id, item->name, 
+            printf("  Loaded: [%u] %s (%s)\n", item->id, item->name,
                    rarity_get_name(item->rarity));
         } else {
             free(item);
         }
-        
+
         free(obj_json);
-        
+
         // Move to next item
         pos = obj_end + 1;
         while (*pos && *pos != ',' && *pos != ']') pos++;
         if (*pos == ',') pos++;
     }
-    
+
     return 1;
 }

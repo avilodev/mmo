@@ -15,6 +15,7 @@
 #include "ability_def.h"
 #include "ability_handler.h"
 #include "class_stats.h"
+#include "data_paths.h"
 #include "connection_io.h"
 #include "config.h"
 #include "combat.h"
@@ -130,7 +131,7 @@ static volatile int g_combat_running = 0;
 static volatile int g_broadcast_running = 0;
 
 // Global for tracking world server uptime
-time_t g_server_start_time = 0; 
+time_t g_server_start_time = 0;
 
 NPCWorld g_npc_world;
 
@@ -144,62 +145,62 @@ NPCWorld g_npc_world;
 void* realm_handler_thread(void* arg) {
     int realm_fd = *(int*)arg;
     free(arg);
-    
+
     printf("Realm server connection handler started: fd %d\n", realm_fd);
-    
+
     // First packet should be REALM_AUTH
     RealmAuthPacket auth;
     struct pollfd pfd = {.fd = realm_fd, .events = POLLIN};
-    
+
     // Wait for auth packet with timeout
     if (poll(&pfd, 1, 10000) <= 0) {
         printf("Realm auth timeout\n");
         close(realm_fd);
         return NULL;
     }
-    
+
     if (recv_exact_timeout(realm_fd, &auth, sizeof(auth), 10000) != (ssize_t)sizeof(auth)) {
         printf("Failed to receive realm auth\n");
         close(realm_fd);
         return NULL;
     }
-    
+
     if (auth.header.type != PACKET_REALM_AUTH) {
         printf("Invalid packet type, expected REALM_AUTH\n");
         close(realm_fd);
-        return NULL; 
+        return NULL;
     }
-    
+
     const char* world_name = g_server.server_name;
-    
+
     // Fetch current key from Redis
     char* current_key = get_server_auth_key_from_redis(world_name);
     if (!current_key) {
         printf("Failed to fetch current auth key from Redis\n");
-        
+
         RealmAuthAckPacket ack = {0};
         ack.header.type = PACKET_REALM_AUTH_ACK;
         ack.header.player_id = 0;
         ack.header.payload_size = 0;
         ack.success = 0;
         strncpy(ack.message, "Server key unavailable", 63);
-        
+
         server_send_direct(realm_fd, &ack, sizeof(ack));
         close(realm_fd);
-        return NULL; 
+        return NULL;
     }
 
     // Validate against current key
     if (strcmp(auth.server_key, current_key) != 0) {
         printf("Invalid realm server key from '%s' (key validation failed)\n", auth.realm_name);
-        
+
         RealmAuthAckPacket ack = {0};
         ack.header.type = PACKET_REALM_AUTH_ACK;
         ack.header.player_id = 0;
         ack.header.payload_size = 0;
         ack.success = 0;
         strncpy(ack.message, "Invalid server key", 63);
-        
+
         server_send_direct(realm_fd, &ack, sizeof(ack));
         free(current_key);
         close(realm_fd);
@@ -207,7 +208,7 @@ void* realm_handler_thread(void* arg) {
     }
 
     free(current_key);
-        
+
     // Send success response
     RealmAuthAckPacket ack = {0};
     ack.header.type = PACKET_REALM_AUTH_ACK;
@@ -215,59 +216,59 @@ void* realm_handler_thread(void* arg) {
     ack.header.payload_size = 0;
     ack.success = 1;
     strncpy(ack.message, "Authenticated successfully", 63);
-    
+
     if (server_send_direct(realm_fd, &ack, sizeof(ack)) <= 0) {
         printf("Failed to send auth ack\n");
         close(realm_fd);
         return NULL;
     }
-    
+
     printf("Realm server '%s' authenticated successfully\n", auth.realm_name);
-    
+
     // Handle heartbeats
     pfd.fd = realm_fd;
     pfd.events = POLLIN;
-    
+
     while (g_server.running) {
         // Wait for heartbeat (15 second timeout)
         int ret = poll(&pfd, 1, 15000);
-        
+
         if (ret < 0) {
             if (errno == EINTR) continue;
             printf("Poll error on realm connection\n");
             break;
         }
-        
+
         if (ret == 0) {
             printf("Realm server heartbeat timeout\n");
             break;
         }
-        
+
         if (pfd.revents & POLLIN) {
             WorldHeartbeatPacket hb;
             ssize_t bytes = recv_exact_timeout(realm_fd, &hb, sizeof(hb), 15000);
-            
+
             if (bytes <= 0) {
                 printf("Realm server disconnected\n");
                 break;
             }
-            
+
             if (hb.header.type == PACKET_WORLD_HEARTBEAT) {
 
                 WorldStatusPacket status = {0};
                 status.header.type = PACKET_WORLD_STATUS;
                 status.header.player_id = 0;
                 status.header.payload_size = 0;
-                
+
                 status.player_count = htonl(g_state.current_players);
                 status.max_players = htonl(g_server.max_players);
                 status.status = 1; // 1 = online
                 status.cpu_usage = 0.0f;
                 status.uptime = time(NULL) - g_server_start_time;
-                
+
                 // Use server name from config
                 strncpy(status.server_name, g_server.server_name, 63);
-                
+
                 if (server_send_direct(realm_fd, &status, sizeof(status)) <= 0) {
                     printf("Failed to send status to realm server\n");
                     break;
@@ -276,13 +277,13 @@ void* realm_handler_thread(void* arg) {
                 printf("Unexpected packet type %d from realm server\n", hb.header.type);
             }
         }
-        
+
         if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
             printf("Realm connection error\n");
             break;
         }
     }
-    
+
     close(realm_fd);
     printf("Realm server handler exiting\n");
     return NULL;
@@ -295,23 +296,23 @@ void* realm_handler_thread(void* arg) {
  */
 void* accept_thread_func(void* arg) {
     (void)arg;
-    
+
     struct pollfd pfd = {.fd = g_server.tcp_sockfd, .events = POLLIN};
-    
+
     while (g_server.running) {
         int ret = poll(&pfd, 1, 1000);
         if (ret <= 0) continue;
-        
+
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
-        
-        int client_fd = accept(g_server.tcp_sockfd, 
+
+        int client_fd = accept(g_server.tcp_sockfd,
                               (struct sockaddr*)&client_addr, &addr_len);
-        
+
         if (client_fd < 0) continue;
 
-        printf("New connection from %s:%d\n", 
-               inet_ntoa(client_addr.sin_addr), 
+        printf("New connection from %s:%d\n",
+               inet_ntoa(client_addr.sin_addr),
                ntohs(client_addr.sin_port));
 
         // Peek at the first packet to determine connection type.
@@ -329,15 +330,15 @@ void* accept_thread_func(void* arg) {
 
         if (peek > 0) {
             PacketType type = peek_buffer[0];
-            
+
             // Check if this is a realm server connecting
             if (type == PACKET_REALM_AUTH) {
                 printf("Detected realm server connection\n");
-                
+
                 pthread_t thread;
                 int* fd_ptr = malloc(sizeof(int));
                 *fd_ptr = client_fd;
-                
+
                 if (pthread_create(&thread, NULL, realm_handler_thread, fd_ptr) != 0) {
                     printf("Failed to create realm handler thread\n");
                     close(client_fd);
@@ -352,7 +353,7 @@ void* accept_thread_func(void* arg) {
         // its whole life, so exactly one thread ever services it.
         net_loop_submit(client_fd);
     }
-    
+
     return NULL;
 }
 
@@ -517,8 +518,7 @@ static void broadcast_prepare(void* ctx) {
         snap->pos_y = active_players[i].pos_y;
         snap->health = active_players[i].health;
         snap->max_health = active_players[i].max_health;
-        snap->player_class = active_players[i].player_class;
-        snap->player_race = (uint8_t)active_players[i].player_race;
+        snap->race_id = (uint8_t)active_players[i].race_id;
         snap->level = (uint8_t)active_players[i].level;
         snap->is_dead = active_players[i].is_dead;
         snap->ping_ms = active_players[i].ping_ms;
@@ -573,8 +573,8 @@ static void task_broadcast_players(void* ctx) {
             np->pos_y = snap->players[j].pos_y;
             np->health = htonl(snap->players[j].health);
             np->max_health = htonl(snap->players[j].max_health);
-            np->player_class = snap->players[j].player_class;
-            np->player_race = snap->players[j].player_race;
+            np->player_class = snap->players[j].race_id;
+            np->player_race  = snap->players[j].race_id;
             np->level = snap->players[j].level;
             np->is_dead = snap->players[j].is_dead;
             np->ping_ms = htons(snap->players[j].ping_ms);
@@ -779,10 +779,10 @@ int main(int argc, char** argv) {
 
     memset(&g_server, 0, sizeof(g_server));
     memset(&g_state, 0, sizeof(g_state));
-    
+
     // Initialize g_server.running BEFORE setting up signals
     g_server.running = 1;
-    
+
     // Ignore SIGPIPE — prevents crash when broadcast threads write to a client
     // socket that has been closed or reset.
     signal(SIGPIPE, SIG_IGN);
@@ -798,7 +798,7 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, NULL);  // kill command
 
     printf("[SIGNAL] Signal handlers installed\n");
-    
+
     // Parse config file
     if(argv && argv[1]) {
         if(!set_config(argv[1])) {
@@ -824,10 +824,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* The race registry must exist before abilities load: an ability names the race
+     * that owns it by key, and one loaded first would resolve to no race at all. The
+     * attack profiles name races the same way. */
+    char races_path[512], progression_path[512];
+    data_path_resolve(races_path, sizeof(races_path), "/data/races.json");
+    data_path_resolve(progression_path, sizeof(progression_path), "/data/progression.json");
+    if (!class_stats_init(races_path, progression_path)) {
+        fprintf(stderr, "FATAL: no races loaded from %s — no character can be run\n", races_path);
+        return 1;
+    }
+
     if (!abilities_init(ABILITIES_PATH)) {
         fprintf(stderr, "FAILED - Ability system initialization\n");
         return 1;
     }
+
+    combat_profiles_load(ATTACK_PROFILES_PATH);
 
     ability_handler_init();
     projectile_init();
@@ -890,24 +903,21 @@ int main(int argc, char** argv) {
 
     // Connect to database
     printf("Connecting to database for world '%s'\n", g_server.server_name);
-    
+
     const char* pg_conn_str = get_database_for_world(g_server.server_name);
     if (!pg_conn_str) {
-        fprintf(stderr, "FAILED - No database configured for world '%s'\n", 
+        fprintf(stderr, "FAILED - No database configured for world '%s'\n",
                 g_server.server_name);
         return 1;
     }
-    
+
     printf("Database connection string: %s\n", pg_conn_str);
 
-    class_stats_init();
-    combat_profiles_load(ATTACK_PROFILES_PATH);
-    
     if (!playerdata_init(pg_conn_str)) {
         printf("FAILED - PostgreSQL initialization\n");
         return 1;
     }
-    
+
     printf("✓ Connected to world database\n");
 
     combat_npc_init(&g_npc_world);
@@ -922,7 +932,7 @@ int main(int argc, char** argv) {
         }
         printf("Loaded %d NPC spawns\n", spawn_count);
     }
-    
+
     if (!playerdata_start_save_thread()) {
         fprintf(stderr, "FAILED - Periodic save thread\n");
         playerdata_close();
@@ -934,7 +944,7 @@ int main(int argc, char** argv) {
         playerdata_close();
         return 1;
     }
-    
+
     // INIT EVENT LOOPS — connection count is no longer bounded by thread count.
     if (net_loop_start() != 0) {
         fprintf(stderr, "FAILED - could not start event loops\n");
@@ -950,7 +960,7 @@ int main(int argc, char** argv) {
         playerdata_close();
         return 1;
     }
-    
+
     // START COMBAT THREAD (20Hz)
     if (pthread_create(&g_combat_thread, NULL, combat_update_thread, NULL) != 0) {
         fprintf(stderr, "FAILED - Combat update thread\n");
@@ -960,7 +970,7 @@ int main(int argc, char** argv) {
         playerdata_close();
         return 1;
     }
-    
+
     // START WORLD BROADCAST THREAD (projectiles 30Hz, players 20Hz, npcs 10Hz)
     g_broadcast_running = 1;
     if (pthread_create(&g_broadcast_thread, NULL, world_broadcast_thread, NULL) != 0) {
@@ -974,36 +984,36 @@ int main(int argc, char** argv) {
         playerdata_close();
         return 1;
     }
-    
+
     printf("✓ All systems online - server ready\n");
     printf("  - Accept thread: Running\n");
     printf("  - Event loops: epoll (see [NET] line above for counts)\n");
     printf("  - Combat thread: 20Hz\n");
     printf("  - World broadcast thread: projectiles 30Hz, players 20Hz, npcs 10Hz\n");
-    
+
     // MAIN THREAD: Wait for shutdown signal
     while (g_server.running) {
         sleep(1);
-        
+
         // Print server stats every 10 seconds
         static time_t last_stats = 0;
         time_t now = time(NULL);
         if (now - last_stats >= 10) {
-            printf("[STATS] Players: %d, Uptime: %lds\n", 
+            printf("[STATS] Players: %d, Uptime: %lds\n",
                    g_state.current_players, now - g_server_start_time);
             last_stats = now;
         }
     }
-    
+
     printf("\nShutting down...\n");
-    
+
     // Stop the broadcast and combat threads
     g_broadcast_running = 0;
     g_combat_running = 0;
-    
+
     pthread_join(g_broadcast_thread, NULL);
     pthread_join(g_combat_thread, NULL);
-    
+
     // Stop accept thread
     close(g_server.tcp_sockfd);
     pthread_join(g_server.accept_thread, NULL);

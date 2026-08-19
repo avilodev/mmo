@@ -14,6 +14,8 @@
 #include "player_data.h"
 #include "players_database.h"
 #include "class_stats.h"
+#include "player_effects.h"
+#include "ability_handler.h"
 #include "move_validator.h"
 #include "player_level.h"
 #include "quest_system.h"
@@ -28,7 +30,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#define SAVE_INTERVAL_SECONDS 120 
+#define SAVE_INTERVAL_SECONDS 120
 
 ActivePlayer active_players[MAX_PLAYERS];
 
@@ -290,8 +292,8 @@ void player_snapshot_for_save(const ActivePlayer* player, PlayerSaveData* out) {
     d->pos_y        = player->pos_y;
     d->health       = player->health;
     d->max_health   = player->max_health;
-    d->mana         = player->mana;
-    d->max_mana     = player->max_mana;
+    d->resource     = player->resource;
+    d->max_resource = player->max_resource;
     d->experience   = player->experience;
     d->gold         = player->gold;
 
@@ -348,13 +350,13 @@ int playerdata_init(const char* conn_str) {
 
     registry_lock_prefer_writers();
     LOG_DEBUG("PostgreSQL connection: %s", conn_str);
-    
+
     // Initialize the character database
     if (!character_database_init(conn_str)) {
         LOG_ERROR("Failed to initialize character database");
         return 0;
     }
-    
+
     // Initialize active players array
     memset(active_players, 0, sizeof(active_players));
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -363,7 +365,7 @@ int playerdata_init(const char* conn_str) {
     }
     g_active_count = 0;
     index_reset();
-    
+
     LOG_INFO("Player data system initialized successfully");
     return 1;
 }
@@ -400,7 +402,7 @@ void playerdata_close(void) {
     }
 
     character_database_close();
-    
+
     LOG_DEBUG("Player data system closed");
 }
 
@@ -412,29 +414,29 @@ void playerdata_close(void) {
  */
 int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     if (!player) {
-        LOG_ERROR("playerdata_load: NULL player pointer"); 
+        LOG_ERROR("playerdata_load: NULL player pointer");
         return 0;
     }
-    
+
     // Get full character data from database
     CharacterInfo char_info;
     memset(&char_info, 0, sizeof(char_info));
-    
+
     if (!character_get_full_data(character_id, &char_info)) {
-        LOG_ERROR("Failed to load character %u from database", character_id); 
+        LOG_ERROR("Failed to load character %u from database", character_id);
         return 0;
     }
 
     LOG_DEBUG("[LOAD DEBUG] char_id=%u from DB: pos_x=%f, pos_y=%f", character_id, char_info.pos_x, char_info.pos_y);
-    
+
     // Copy data into ActivePlayer structure
     player->character_id = char_info.character_id;
     strncpy(player->username, char_info.name, sizeof(player->username) - 1);
     player->username[sizeof(player->username) - 1] = '\0';
-    
+
     player->pos_x = char_info.pos_x;
     player->pos_y = char_info.pos_y;
-    
+
     // assign the default spawn to unplaced characters
     if (player->pos_x == 0.0f && player->pos_y == 0.0f) {
         // Ennara Courtyard centre (tile 13900, 5580 at 16 px tiles).
@@ -446,56 +448,40 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
 
     player->vel_x = 0.0f;
     player->vel_y = 0.0f;
-    
+
     player->level = char_info.level;
     player->health = char_info.health;
     player->max_health = char_info.max_health;
-
-    player->health = char_info.health;
-    player->max_health = char_info.max_health;
-    player->mana = char_info.mana;
-    player->max_mana = char_info.max_mana;
+    player->resource = char_info.resource;
+    player->max_resource = char_info.max_resource;
     player->experience = char_info.experience;
     player->gold = char_info.gold;
-    
-    player->player_class = char_info.player_class;
 
-    // compute derived class statistics
-    player_apply_class_stats(player);
+    player->race_id = char_info.race_id;
 
-    // For first login (DB has default health=100), use the class max
+    /* Characters enter the world in Animal Form: it is the form that carries the
+     * race's kit, its passive, and its resource pool. */
+    player->form = FORM_ANIMAL;
+    player->form_swap_ready_at = 0.0;
+    memset(player->ability_ready_at, 0, sizeof(player->ability_ready_at));
+
+    player_recompute_stats(player);
+
+    /* A first login has the schema's default health rather than a real value. */
     if (player->health <= 0 || player->health > player->max_health) {
         player->health = player->max_health;
     }
-    // Start at full mana (or restore from DB)
-    if (player->mana <= 0 || player->mana > player->max_mana) {
-        player->mana = player->max_mana;
-    }
-    // Start at full mana
-    player->mana = player->max_mana;
 
-    // assign unlocked class abilities
-    {
-        uint16_t class_abilities[10];
-        int total = ability_get_class_abilities(player->player_class, class_abilities, 10);
+    /* Rage builds through combat rather than being granted, so a tank logs in with an
+     * empty bar; mana and stamina start full. */
+    player->resource = (player->resource_type == RESOURCE_RAGE) ? 0 : player->max_resource;
 
-        player->ability_count = 0;
-        memset(player->ability_cooldowns, 0, sizeof(player->ability_cooldowns));
+    ability_refresh_hotbars(player);
+    LOG_DEBUG("[ABILITIES] Player %u (race %u, level %d): %d human / %d animal abilities",
+              player->character_id, player->race_id, player->level,
+              player->ability_count[FORM_HUMAN], player->ability_count[FORM_ANIMAL]);
 
-        for (int a = 0; a < total && player->ability_count < 5; a++) {
-            const AbilityDef* ab = ability_get(class_abilities[a]);
-            if (ab && player->level >= ab->unlock_level) {
-                player->ability_slots[player->ability_count] = ab->id;
-                player->ability_cooldowns[player->ability_count] = 0.0f;
-                player->ability_count++;
-            }
-        }
 
-        LOG_DEBUG("[ABILITIES] Player %u (class %u, level %d): %d abilities assigned", player->character_id, player->player_class, player->level, player->ability_count);
-    }
-
-    player->player_race = char_info.player_race;
-    
     // clear both item arrays after any item-load failure
     if (!character_items_load(character_id,
                               player->inventory, INVENTORY_SLOTS,
@@ -519,9 +505,9 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     struct timespec load_tv;
     clock_gettime(CLOCK_MONOTONIC, &load_tv);
     move_budget_reset(&player->move_budget, &load_tv);
-    
+
     LOG_INFO("Loaded character %u: %s (level %d) at pos=(%.2f, %.2f)", character_id, player->username, player->level, player->pos_x, player->pos_y);
-    
+
     return 1;
 }
 
@@ -877,29 +863,30 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
         player_release(player);
         return;
     }
-    
+
     memset(response, 0, sizeof(CharacterInfo));
-    
+
     response->header.type = PACKET_PLAYER_DATA_RESPONSE;
     response->header.player_id = htonl(character_id);
     response->header.payload_size = htons(sizeof(CharacterInfo) - sizeof(PacketHeader));
-    
+
     // Basic stats
     response->level = htonl(player->level);
     response->health = htonl(player->health);
     response->max_health = htonl(player->max_health);
-    response->mana = htonl((uint32_t)player->mana);
-    response->max_mana = htonl((uint32_t)player->max_mana);
+    response->resource = (int32_t)htonl((uint32_t)player->resource);
+    response->max_resource = (int32_t)htonl((uint32_t)player->max_resource);
     response->experience = mmo_htonll(player->experience);
     response->gold = htonl(player->gold);
-    
+
     response->pos_x = player->pos_x;
     response->pos_y = player->pos_y;
 
     snprintf(response->name, sizeof(response->name), "%s", player->username);
-    response->player_class = htonl(player->player_class);
-    response->player_race  = htonl(player->player_race);
-    
+    response->race_id       = htonl(player->race_id);
+    response->resource_type = player->resource_type;
+    response->form          = player->form;
+
     // encode complete inventory and equipment slots
     for (int i = 0; i < INVENTORY_SLOTS; i++)
         pack_slot(&response->inventory[i], &player->inventory[i]);

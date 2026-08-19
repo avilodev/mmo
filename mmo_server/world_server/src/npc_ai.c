@@ -5,6 +5,7 @@
  */
 
 #include "npc_ai.h"
+#include "player_effects.h"
 #include "log.h"
 #include "projectile.h"
 #include "player_data.h"
@@ -556,12 +557,17 @@ static void dq_flush(DeferredQueue* q) {
                     int damage = d->tresolve.damage;
                     int variance = (rand() % 21) - 10;
                     damage += (damage * variance) / 100;
-                    damage = combat_apply_defense(damage, active_players[p].defense);
-                    if (damage < 1) damage = 1;
+
+                    /* Collect the player's own mitigation: armor, the race passive if
+                     * they are in Animal Form, and any active percentage reducers. */
+                    DamageModifiers target_mods;
+                    player_collect_modifiers(&active_players[p], 0, &target_mods);
+                    damage = damage_resolve(damage, NULL, &target_mods);
 
                     active_players[p].health -= damage;
                     if (active_players[p].health < 0) active_players[p].health = 0;
                     active_players[p].last_combat_time = get_time();
+                    player_add_rage(&active_players[p], 0, damage);
 
                     int new_hp = active_players[p].health;
                     uint8_t is_kill = (new_hp == 0) ? 1 : 0;
@@ -735,8 +741,30 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
         // retain aggro beyond the initial acquisition range
 #define NPC_HOLD_AGGRO_RANGE 250.0f
 
+        /* A live taunt overrides target selection outright. It is checked before
+         * anything else so that a tank pulling a pack off a healer works even when
+         * the healer is nearer, which is the entire point of the ability. */
+        if (npc->taunt_expires_at > 0.0) {
+            if (get_time() >= npc->taunt_expires_at) {
+                npc->taunt_expires_at = 0.0;
+                npc->taunt_source_id  = 0;
+            } else {
+                int t = tick_snapshot_find(snap, npc->taunt_source_id);
+                if (t >= 0 && !snap->is_dead[t]) {
+                    npc->ai_target_id = npc->taunt_source_id;
+                    best_target = t;
+                    best_dist = dist2d(npc->pos_x, npc->pos_y,
+                                       snap->pos_x[t], snap->pos_y[t]);
+                } else {
+                    /* The taunter left or died; the taunt dies with them. */
+                    npc->taunt_expires_at = 0.0;
+                    npc->taunt_source_id  = 0;
+                }
+            }
+        }
+
         // resolve held targets through the snapshot index
-        if (npc->ai_target_id > 0) {
+        if (best_target == -1 && npc->ai_target_id > 0) {
             int t = tick_snapshot_find(snap, npc->ai_target_id);
             if (t >= 0 && !snap->is_dead[t]) {
                 float d = dist2d(npc->pos_x, npc->pos_y,

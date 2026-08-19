@@ -7,6 +7,7 @@
 #include "combat_config.h"
 #include "tick_snapshot.h"
 #include "ability_def.h"
+#include "damage_model.h"
 #include "types.h"
 
 #include <stdint.h>
@@ -52,12 +53,15 @@ typedef struct {
     AbilityDamageType damage_type;
     AbilityBonusDamageDef bonus_damage;
 
-    /** Snapshot player stats used when damage resolves at impact. */
-    int         caster_strength;
-    int         caster_agility;
-    int         caster_intelligence;
-    int         caster_wisdom;
+    /** Snapshot the caster's attributes, indexed by StatId, as they were at launch.
+     *
+     * Damage resolves at impact, which may be well after the cast, so the snapshot is
+     * what makes a projectile's damage independent of anything that happens to the
+     * caster while it is in flight. */
+    int         caster_stats[STAT_COUNT];
     int         damage_stat;        // StatType int — which stat scales this projectile's damage
+    /** Snapshot the caster's outgoing damage modifiers at launch, for the same reason. */
+    DamageModifiers caster_mods;
 
     /** Retain status effects applied on impact. */
     AbilityEffectDef effects[MAX_ABILITY_EFFECTS];
@@ -82,11 +86,9 @@ typedef struct {
     AbilityDamageType damage_type;
     AbilityBonusDamageDef bonus_damage;
 
-    int         caster_strength;
-    int         caster_agility;
-    int         caster_intelligence;
-    int         caster_wisdom;
+    int         caster_stats[STAT_COUNT];
     int         damage_stat;        // StatType int — which stat scales this projectile's damage
+    DamageModifiers caster_mods;
 
     AbilityEffectDef effects[MAX_ABILITY_EFFECTS];
     uint8_t     effect_count;

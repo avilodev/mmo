@@ -3,6 +3,8 @@
 #ifndef ABILITY_DEF_H
 #define ABILITY_DEF_H
 
+#include "protocol.h"
+
 #include <stdint.h>
 
 /** Bound loaded abilities and their fixed-width text and effect fields. */
@@ -34,7 +36,12 @@ typedef enum {
     ABILITY_DMG_SPIRIT     = 2
 } AbilityDamageType;
 
-/** Identify status effects applied by abilities. */
+/** Identify status effects applied by abilities.
+ *
+ * Everything from EFFECT_TAUNT down is a primitive the Blessed kits introduced. They
+ * are the only engine work the three designed kits actually needed: once a verb
+ * exists here, every further ability using it is a JSON entry and an icon.
+ */
 typedef enum {
     EFFECT_NONE            = 0,
     EFFECT_DOT             = 1,     // Damage over time
@@ -45,8 +52,34 @@ typedef enum {
     EFFECT_STEALTH         = 6,
     EFFECT_KNOCKUP         = 7,
     EFFECT_LINK            = 8,     // Spirit link (share damage)
-    EFFECT_CLEANSE         = 9      // Remove debuffs
+    EFFECT_CLEANSE         = 9,     // Remove debuffs
+
+    EFFECT_TAUNT           = 10,    // Force hostile NPCs to target the caster
+    EFFECT_RESOURCE        = 11,    // Restore a percentage of max resource
+    EFFECT_DAMAGE_TAKEN    = 12,    // Percentage damage-taken modifier
+    EFFECT_DAMAGE_DEALT    = 13,    // Percentage damage-dealt modifier
+    EFFECT_ROOT            = 14,    // Movement locked; actions still allowed
+    EFFECT_CHANNEL         = 15,    // Actions locked for the duration
+    EFFECT_HOT_PERCENT     = 16,    // Heal over time as a percentage of max health per tick
+
+    EFFECT_COUNT
 } StatusEffectType;
+
+/** Report whether an effect's `value` is expressed in tenths of a percent.
+ *
+ * Percentages travel as integers so an ability stays one JSON object of plain
+ * numbers: 100 means 10.0%. This predicate is the single place that knows which
+ * effects read their value that way.
+ */
+static inline int effect_value_is_permille(StatusEffectType type) {
+    return type == EFFECT_RESOURCE     || type == EFFECT_DAMAGE_TAKEN ||
+           type == EFFECT_DAMAGE_DEALT || type == EFFECT_HOT_PERCENT;
+}
+
+/** Convert an effect value in tenths of a percent to a fraction: 100 becomes 0.10. */
+static inline double effect_permille_to_fraction(int value) {
+    return (double)value / 1000.0;
+}
 
 /** Identify optional entities spawned by an ability. */
 typedef enum {
@@ -69,18 +102,25 @@ typedef enum {
     PROJECTILE_LINEAR      = 1      // Straight line skillshot
 } AbilityProjectileType;
 
-/** Identify character attributes referenced by ability scaling and buffs. */
+/** Identify what an ability scales with or buffs.
+ *
+ * Values from 0 to STAT_COUNT-1 are StatId indices, so an ability naming "strength"
+ * or "ferocity" means the same attribute the race registry and the wire do. The two
+ * entries above STAT_COUNT are derived quantities that are not attributes but can
+ * still be buffed; adding another is one enum entry and one JSON key.
+ */
 typedef enum {
-    STAT_NONE              = 0,
-    STAT_DAMAGE            = 1,     // Legacy — flat damage bonus
-    STAT_DEFENSE           = 2,     // Flat defense bonus
-    STAT_SPEED             = 3,     // Flat move_speed bonus
-    STAT_STRENGTH          = 4,     // Gladiator primary — melee damage
-    STAT_AGILITY           = 5,     // Ninja primary — move speed + damage
-    STAT_INTELLIGENCE      = 6,     // Landweaver primary — CDR + damage
-    STAT_WISDOM            = 7,     // Spirit — mana regen
-    STAT_REG               = 8      // Spirit — healing rate
+    /** 0 .. STAT_COUNT-1 are StatId values and need no entries of their own. */
+    STAT_TARGET_MOVE_SPEED   = STAT_COUNT,      // Flat move_speed bonus
+    STAT_TARGET_WEAPON_DAMAGE,                  // Flat weapon damage bonus
+    STAT_TARGET_COUNT,
+    STAT_TARGET_NONE         = -1               // No scaling and no buff target
 } StatType;
+
+/** Report whether a buff target names one of the eleven character attributes. */
+static inline int stat_target_is_attribute(StatType target) {
+    return (int)target >= 0 && (int)target < (int)STAT_COUNT;
+}
 
 /** Define the dimensions of an ability's optional area. */
 typedef struct {
@@ -91,7 +131,12 @@ typedef struct {
     float           height;         /**< Rectangle height in world units. */
 } AbilityAoeDef;
 
-/** Define one timed or immediate status effect. */
+/** Define one timed or immediate status effect.
+ *
+ * `value` carries whatever the effect's type means by it: damage or healing per
+ * tick, a slow percentage, a stat bonus, or — for the effects
+ * effect_value_is_permille() names — tenths of a percent.
+ */
 typedef struct {
     StatusEffectType type;
     float           duration;       /**< Duration in seconds. */
@@ -99,6 +144,12 @@ typedef struct {
     int             value;          // Damage/heal per tick, slow %, stat bonus, etc.
     StatType        stat;           // Which stat to buff (if type == EFFECT_BUFF)
     uint8_t         reapply;        /**< Reapply the effect when a target re-enters its zone. */
+    uint8_t         self;           /**< Apply to the caster rather than to the target. */
+    /** Apply only when the ability's bonus-damage condition held.
+     *
+     * This is what makes Rend one ability rather than two: its self damage and
+     * resistance buff fire on the execute branch and nowhere else. */
+    uint8_t         on_condition;
 } AbilityEffectDef;
 
 /** Define an entity spawned for an ability's duration. */
@@ -135,10 +186,17 @@ typedef struct {
     uint16_t            id;             // Numeric ID (assigned at load time, 1-based)
     char                key[MAX_ABILITY_KEY];   // String key from JSON (e.g. "cleave")
     char                name[MAX_ABILITY_NAME]; // Display name
-    uint8_t             class_id;       // Which class owns this (1-4)
+    /** Which race owns this ability, or 0 for a universal Human Form ability.
+     *
+     * Human Form's kit is identical for every race, so it is the one case where an
+     * ability belongs to no race at all. */
+    uint8_t             race_id;
+    uint8_t             form;           // PlayerForm this ability is usable in
     uint8_t             unlock_level;   // Level required to use
 
-    int                 mana_cost;      // 0 = no mana cost (e.g. gladiator abilities)
+    /** Cost in whichever pool the caster's role selects. Always 0 in Human Form,
+     * which is cooldown-only and has no pool. */
+    int                 resource_cost;
 
     float               cooldown;       // Seconds
     float               cast_time;      // Seconds (0 = instant)
@@ -148,8 +206,15 @@ typedef struct {
 
     int                 damage;         // Base damage (0 if healing/utility)
     AbilityDamageType   damage_type;
-    StatType            damage_stat;    // Which caster stat scales damage (STAT_NONE = no scaling)
+    StatType            damage_stat;    // Which caster stat scales damage (STAT_TARGET_NONE = none)
     int                 healing;        // Base healing (0 if damage/utility)
+    /** Immediate healing in tenths of a percent of max health: 50 means 5.0%.
+     *
+     * Percent-of-max healing is what Bite, Hibernate and Second Wind all express and
+     * the one shape a flat integer cannot. */
+    int                 heal_percent;
+    /** Direct the healing at the caster rather than the target, as Bite's self-heal does. */
+    uint8_t             heal_self;
 
     /** Treat optional components with a NONE type as absent. */
     AbilityAoeDef       aoe;
@@ -175,8 +240,26 @@ const AbilityDef* ability_get(uint16_t ability_id);
 // return a registry-owned definition or NULL for an unknown key
 const AbilityDef* ability_get_by_key(const char* key);
 
-// fill at most max_out identifiers and return the number written
-int ability_get_class_abilities(uint8_t class_id, uint16_t* out_ids, int max_out);
+/** Fill the hotbar for one race and form.
+ *
+ * Human Form's five abilities are universal, so FORM_HUMAN ignores `race_id` and
+ * returns the same kit for every race — which is what makes Human Form provably
+ * identical across races rather than merely intended to be.
+ *
+ * @param out_ids  Receives at most max_out ability identifiers.
+ * @return         The number written.
+ */
+int ability_get_form_abilities(uint8_t race_id, uint8_t form, uint16_t* out_ids, int max_out);
+
+/** Resolve a spec's ability keys to identifiers, in the order the spec lists them.
+ *
+ * @param keys       Ability keys, one per hotbar slot.
+ * @param key_count  How many keys are present.
+ * @param out_ids    Receives at most max_out identifiers.
+ * @return           The number written; unresolved keys are reported and skipped.
+ */
+int ability_resolve_keys(const char keys[][MAX_ABILITY_KEY], int key_count,
+                         uint16_t* out_ids, int max_out);
 
 int abilities_get_count(void);
 

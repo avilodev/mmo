@@ -49,12 +49,16 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
     out->character_id = character_id;
     snprintf(out->name, sizeof(out->name), "char%u", character_id);
     out->level = 1; out->health = 100; out->max_health = 100;
-    out->mana = 50; out->max_mana = 50;
+    out->resource = 50; out->max_resource = 50;
     return 1;
 }
 
 /** Stub class-stat application. */
 void player_apply_class_stats(ActivePlayer* p) { (void)p; }
+/** Stub the stat recompute. */
+void player_recompute_stats(ActivePlayer* p) { (void)p; }
+/** Stub the hotbar rebuild. */
+void ability_refresh_hotbars(ActivePlayer* p) { (void)p; }
 /** Stub equipment-stat application. */
 void player_apply_equipment_bonuses(ActivePlayer* p) { (void)p; }
 /** Stub an empty class ability list. */

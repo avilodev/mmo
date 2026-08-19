@@ -5,6 +5,7 @@
  */
 
 #include "projectile.h"
+#include "player_effects.h"
 #include "log.h"
 #include "combat_stats.h"
 #include "player_data.h"
@@ -222,18 +223,18 @@ static void queue_destroy_broadcast(DeferredQueue* q, float px, float py,
 }
 
 /**
- * Calculate projectile damage after scaling, bonuses, variance, and defense.
+ * Calculate projectile damage after scaling, bonuses, variance, and mitigation.
  *
- * @return Final damage clamped to at least one.
+ * The caster's contribution was snapshotted at launch; only the target's mitigation
+ * is read now, at impact.
+ *
+ * @param target_mods  The target's collected modifiers, or NULL for an unmodified target.
+ * @return             Final damage, never below one.
  */
 static int calc_projectile_damage(const Projectile* proj,
                                    int target_health, int target_max_health,
-                                   int target_defense) {
-    float mult = combat_ability_damage_mult(proj->damage_stat,
-                                             proj->caster_strength,
-                                             proj->caster_agility,
-                                             proj->caster_intelligence,
-                                             proj->caster_wisdom);
+                                   const DamageModifiers* target_mods) {
+    float mult = combat_ability_damage_mult(proj->damage_stat, proj->caster_stats);
     int damage = (int)((float)proj->damage * mult);
 
     // Bonus damage condition (e.g. execute)
@@ -244,20 +245,32 @@ static int calc_projectile_damage(const Projectile* proj,
         }
     }
 
+    if (combat_check_crit(proj->caster_stats[STAT_PRECISION])) {
+        damage = (int)((float)damage * combat_crit_multiplier(proj->caster_stats[STAT_FEROCITY]));
+    }
+
     // Random variance (+-10%)
     int variance = (rand() % 21) - 10;
     damage += (damage * variance) / 100;
 
-    // Defense reduction
-    damage = combat_apply_defense(damage, target_defense);
-
-    if (damage < 1) damage = 1;
-    return damage;
+    return damage_resolve(damage, &proj->caster_mods, target_mods);
 }
 
+/**
+ * Apply one projectile-borne effect to an NPC.
+ *
+ * The caller must hold the NPC world's lock.
+ */
 static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
                                 uint32_t source_id) {
-    (void)source_id;
+    if (effect->type == EFFECT_TAUNT) {
+        npc->taunt_source_id  = source_id;
+        npc->taunt_expires_at = get_monotonic_time() + effect->duration;
+        npc->ai_target_id     = source_id;
+        LOG_DEBUG("[PROJ] NPC %u taunted by %u for %.1fs", npc->id, source_id, effect->duration);
+        return;
+    }
+
     LOG_DEBUG("[PROJ] Applied effect %d to NPC %u (val=%d, dur=%.1fs)", effect->type, npc->id, effect->value, effect->duration);
 }
 
@@ -334,11 +347,9 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     proj->damage_type     = info->damage_type;
     proj->bonus_damage    = info->bonus_damage;
 
-    proj->caster_strength     = info->caster_strength;
-    proj->caster_agility      = info->caster_agility;
-    proj->caster_intelligence = info->caster_intelligence;
-    proj->caster_wisdom       = info->caster_wisdom;
-    proj->damage_stat         = info->damage_stat;
+    memcpy(proj->caster_stats, info->caster_stats, sizeof(proj->caster_stats));
+    proj->damage_stat = info->damage_stat;
+    proj->caster_mods = info->caster_mods;
 
     proj->effect_count = info->effect_count;
     for (int i = 0; i < info->effect_count && i < MAX_ABILITY_EFFECTS; i++) {
@@ -469,32 +480,15 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 if (d <= hit_range) {
                     int owner_fd = proj->owner_fd;
 
-                    // Evasion check
-                    if (combat_check_evasion(npc->evasion)) {
-                        if (owner_fd >= 0) {
-                            DeferredSend ds = {0};
-                            ds.type = DSEND_ABILITY_EFFECT;
-                            ds.client_fd = owner_fd;
-                            ds.effect.caster_id = proj->owner_id;
-                            ds.effect.target_id = npc->id;
-                            ds.effect.ability_id = proj->ability_id;
-                            ds.effect.damage = 0;
-                            ds.effect.target_new_hp = npc->health;
-                            ds.effect.is_kill = 0;
-                            dq_push(&q, &ds);
-                        }
-                        proj->is_active = 0;
-                        // Queue destroy broadcast
-                        player_registry_rdlock();
-                        queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
-                                                 PROJECTILE_DESTROY_HIT);
-                        player_registry_unlock();
-                        break;
-                    }
+                    /* There is no dodge roll: a projectile that reaches its target
+                     * connects, and mitigation is armor and percentage reducers only. */
+                    DamageModifiers target_mods;
+                    damage_mods_reset(&target_mods);
+                    damage_mods_add_armor(&target_mods, npc->armor);
 
                     int damage = calc_projectile_damage(proj,
                                                          npc->health, npc->max_health,
-                                                         npc->defense);
+                                                         &target_mods);
                     npc->health -= damage;
                     if (npc->health < 0) npc->health = 0;
 
@@ -581,38 +575,21 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                     int hit_fd = active_players[i].client_fd;
                     uint32_t hit_char_id = active_players[i].character_id;
 
-                    // Evasion check
-                    if (combat_check_evasion(active_players[i].evasion)) {
-                        int hp = active_players[i].health;
-                        pthread_mutex_unlock(&active_players[i].lock);
-
-                        DeferredSend ds = {0};
-                        ds.type = DSEND_ABILITY_EFFECT;
-                        ds.client_fd = hit_fd;
-                        ds.effect.caster_id = proj->owner_id;
-                        ds.effect.target_id = hit_char_id;
-                        ds.effect.ability_id = proj->ability_id;
-                        ds.effect.damage = 0;
-                        ds.effect.target_new_hp = hp;
-                        ds.effect.is_kill = 0;
-                        dq_push(&q, &ds);
-
-                        queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
-                                                 PROJECTILE_DESTROY_HIT);
-                        proj->is_active = 0;
-                        break;
-                    }
-
-                    // NPC projectile damage (flat, no stat scaling)
+                    /* NPC projectile damage is flat, with no stat scaling. The
+                     * player's own mitigation — armor, the race passive if in Animal
+                     * Form, and any active reducers — is collected here. */
                     int damage = proj->damage;
                     int variance = (rand() % 21) - 10;
                     damage += (damage * variance) / 100;
-                    damage = combat_apply_defense(damage, active_players[i].defense);
-                    if (damage < 1) damage = 1;
+
+                    DamageModifiers target_mods;
+                    player_collect_modifiers(&active_players[i], 0, &target_mods);
+                    damage = damage_resolve(damage, NULL, &target_mods);
 
                     active_players[i].health -= damage;
                     if (active_players[i].health < 0) active_players[i].health = 0;
                     active_players[i].last_combat_time = get_monotonic_time();
+                    player_add_rage(&active_players[i], 0, damage);
 
                     int new_hp = active_players[i].health;
                     uint8_t is_kill = (new_hp == 0) ? 1 : 0;

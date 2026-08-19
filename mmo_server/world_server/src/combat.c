@@ -20,157 +20,133 @@
 #include <sys/socket.h>
 #include <time.h>
 #include "utils.h"
+#include "json_util.h"
+#include "race_registry.h"
+#include "player_effects.h"
 
-ClassAttackProfile g_class_profiles[5] = {
-    // [0] — unused (classes are 1-indexed)
-    { .cast_time = 0.0f, .cooldown = 0.0f, .range = 0.0f,
-      .base_damage = 0, .damage_variance = 0, .attack_type = 0,
-      .cone_half_angle = 0.0f, .line_width = 0.0f },
+/** Hold one profile per race, filled from attack_profiles.json at startup.
+ *
+ * There is no compiled table of profiles any more. A race with no entry in the file
+ * gets the fallback below, which is deliberately unremarkable rather than absent — a
+ * race without a basic attack could not fight at all.
+ */
+RaceAttackProfile g_race_profiles[MAX_RACES + 1];
 
-    // [1] Gladiator — single target, heavy melee
-    { .cast_time     = 1.2f,
-      .cooldown      = 0.8f,
-      .range         = 50.0f,
-      .base_damage   = 50,
-      .damage_variance = 20,
-      .attack_type   = 0,
-      .cone_half_angle = 0.0f,
-      .line_width    = 0.0f },
-
-    // [2] Ninja — cone cleave, fast melee
-    { .cast_time     = 0.3f,
-      .cooldown      = 0.2f,
-      .range         = 50.0f,
-      .base_damage   = 15,
-      .damage_variance = 15,
-      .attack_type   = 2,
-      .cone_half_angle = 30.0f,
-      .line_width    = 0.0f },
-
-    // [3] Landweaver — targeted ranged bolt (earth)
-    { .cast_time     = 0.4f,
-      .cooldown      = 1.0f,
-      .range         = 400.0f,
-      .base_damage   = 35,
-      .damage_variance = 25,
-      .attack_type   = 0,      // SINGLE — target must be within range at intent
-      .cone_half_angle = 0.0f,
-      .line_width    = 0.0f,
-      .is_ranged               = 1,
-      .projectile_speed        = 350.0f,
-      .projectile_width        = 14.0f,
-      .projectile_damage_stat  = 6,   // STAT_INTELLIGENCE
-      .projectile_damage_type  = 1 }, // ABILITY_DMG_EARTH
-
-    // [4] Spirit — targeted ranged bolt (spirit)
-    { .cast_time     = 0.3f,
-      .cooldown      = 0.8f,
-      .range         = 500.0f,
-      .base_damage   = 20,
-      .damage_variance = 20,
-      .attack_type   = 0,      // SINGLE
-      .cone_half_angle = 0.0f,
-      .line_width    = 0.0f,
-      .is_ranged               = 1,
-      .projectile_speed        = 450.0f,
-      .projectile_width        = 10.0f,
-      .projectile_damage_stat  = 7,   // STAT_WISDOM
-      .projectile_damage_type  = 2 }  // ABILITY_DMG_SPIRIT
+/** Supply a plain melee attack for any race the data file does not describe. */
+static const RaceAttackProfile k_fallback_profile = {
+    .cast_time       = 0.6f,
+    .cooldown        = 0.8f,
+    .range           = 55.0f,
+    .base_damage     = 12,
+    .damage_variance = 15,
+    .attack_type     = 0,          /* SINGLE */
+    .cone_half_angle = 0.0f,
+    .line_width      = 0.0f,
+    .is_ranged       = 0,
+    .damage_stat     = STAT_STRENGTH,
 };
 
-static const char* ap_find_value(const char* json, const char* key) {
-    char search[64];
-    snprintf(search, sizeof(search), "\"%s\"", key);
-    const char* pos = strstr(json, search);
-    if (!pos) return NULL;
-    pos = strchr(pos, ':');
-    if (!pos) return NULL;
-    pos++;
-    while (*pos == ' ' || *pos == '\t') pos++;
-    return pos;
+/**
+ * Return the attack profile for a race, falling back for an unknown one.
+ *
+ * @return A profile that is always safe to read.
+ */
+const RaceAttackProfile* combat_profile_for_race(uint32_t race_id) {
+    if (race_id >= 1 && race_id <= MAX_RACES && g_race_profiles[race_id].is_loaded) {
+        return &g_race_profiles[race_id];
+    }
+    return &k_fallback_profile;
 }
 
 /**
- * Override compiled class attack profiles from a JSON file.
+ * Resolve an attack type name to its wire value.
  *
- * Existing defaults remain for missing fields and when loading fails.
+ * @return The AttackType, or 0 (single target) when the name is unrecognised.
+ */
+static uint8_t parse_attack_type(const char* name) {
+    if (!name) return 0;
+    if (strcmp(name, "single") == 0) return 0;
+    if (strcmp(name, "aoe") == 0)    return 1;
+    if (strcmp(name, "cone") == 0)   return 2;
+    if (strcmp(name, "line") == 0)   return 3;
+    return 0;
+}
+
+/**
+ * Resolve a damage school name to its wire value.
+ */
+static uint8_t parse_projectile_damage_type(const char* name) {
+    if (!name) return 0;
+    if (strcmp(name, "earth") == 0)  return 1;
+    if (strcmp(name, "spirit") == 0) return 2;
+    return 0;
+}
+
+/**
+ * Load one basic-attack profile per race from JSON.
  *
- * @return The number of class profiles encountered, or 0 on open or allocation failure.
+ * Profiles name their race by key, so adding a race's basic attack is one more entry
+ * in the file. Races the file does not mention keep the fallback profile.
+ *
+ * @return The number of profiles loaded, or 0 on failure.
  */
 int combat_profiles_load(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        LOG_ERROR("[COMBAT] Could not open %s — using compiled defaults", path);
+    memset(g_race_profiles, 0, sizeof(g_race_profiles));
+
+    const char* err = NULL;
+    JsonValue* root = json_parse_file(path, &err);
+    if (!root) {
+        LOG_ERROR("[COMBAT] %s: %s — every race falls back to a plain melee attack",
+                  path ? path : "(no path)", err ? err : "unreadable");
         return 0;
     }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    rewind(f);
-    char* buf = malloc((size_t)size + 1);
-    if (!buf) { fclose(f); return 0; }
-    fread(buf, 1, (size_t)size, f);
-    buf[size] = '\0';
-    fclose(f);
 
+    const JsonValue* profiles = json_get(root, "profiles");
+    int listed = json_count(profiles);
     int loaded = 0;
-    const char* cur = buf;
-    while ((cur = strstr(cur, "\"class_id\"")) != NULL) {
-        const char* obj_start = cur;
 
-        // Find class_id
-        const char* v = ap_find_value(obj_start, "class_id");
-        if (!v) { cur++; continue; }
-        int class_id = atoi(v);
-        if (class_id < 1 || class_id > 4) { cur++; continue; }
+    for (int i = 0; i < listed; i++) {
+        const JsonValue* obj = json_at(profiles, i);
 
-        ClassAttackProfile* p = &g_class_profiles[class_id];
+        const char* race_key = json_get_string(obj, "race", NULL);
+        const RaceDef* race = race_get_by_key(race_key);
+        if (!race) {
+            LOG_ERROR("[COMBAT] attack profile names unknown race \"%s\"; ignored",
+                      race_key ? race_key : "(missing)");
+            continue;
+        }
 
-        v = ap_find_value(obj_start, "base_damage");
-        if (v) p->base_damage = atoi(v);
+        RaceAttackProfile* profile = &g_race_profiles[race->id];
+        *profile = k_fallback_profile;
 
-        v = ap_find_value(obj_start, "damage_variance");
-        if (v) p->damage_variance = atoi(v);
+        profile->base_damage     = json_get_int(obj, "base_damage", profile->base_damage);
+        profile->damage_variance = json_get_int(obj, "damage_variance", profile->damage_variance);
+        profile->cast_time       = (float)json_get_number(obj, "cast_time", profile->cast_time);
+        profile->cooldown        = (float)json_get_number(obj, "cooldown", profile->cooldown);
+        profile->range           = (float)json_get_number(obj, "range", profile->range);
+        profile->attack_type     = parse_attack_type(json_get_string(obj, "attack_type", "single"));
+        profile->cone_half_angle = (float)json_get_number(obj, "cone_half_angle", 0.0);
+        profile->line_width      = (float)json_get_number(obj, "line_width", 0.0);
+        profile->is_ranged       = (uint8_t)json_get_bool(obj, "is_ranged", 0);
+        profile->projectile_speed = (float)json_get_number(obj, "projectile_speed", 0.0);
+        profile->projectile_width = (float)json_get_number(obj, "projectile_width", 0.0);
+        profile->projectile_damage_type =
+            parse_projectile_damage_type(json_get_string(obj, "projectile_damage_type", NULL));
 
-        v = ap_find_value(obj_start, "cast_time");
-        if (v) p->cast_time = (float)atof(v);
+        int stat = stat_from_key(json_get_string(obj, "damage_stat", "strength"));
+        profile->damage_stat = (uint8_t)(stat >= 0 ? stat : STAT_STRENGTH);
+        profile->projectile_damage_stat = profile->damage_stat;
 
-        v = ap_find_value(obj_start, "cooldown");
-        if (v) p->cooldown = (float)atof(v);
-
-        v = ap_find_value(obj_start, "range");
-        if (v) p->range = (float)atof(v);
-
-        v = ap_find_value(obj_start, "attack_type");
-        if (v) p->attack_type = (uint8_t)atoi(v);
-
-        v = ap_find_value(obj_start, "cone_half_angle");
-        if (v) p->cone_half_angle = (float)atof(v);
-
-        v = ap_find_value(obj_start, "line_width");
-        if (v) p->line_width = (float)atof(v);
-
-        v = ap_find_value(obj_start, "is_ranged");
-        if (v) p->is_ranged = (uint8_t)atoi(v);
-
-        v = ap_find_value(obj_start, "projectile_speed");
-        if (v) p->projectile_speed = (float)atof(v);
-
-        v = ap_find_value(obj_start, "projectile_width");
-        if (v) p->projectile_width = (float)atof(v);
-
-        v = ap_find_value(obj_start, "projectile_damage_stat");
-        if (v) p->projectile_damage_stat = (uint8_t)atoi(v);
-
-        v = ap_find_value(obj_start, "projectile_damage_type");
-        if (v) p->projectile_damage_type = (uint8_t)atoi(v);
-
-        LOG_INFO("[COMBAT] Loaded attack profile for class %d: "
-               "dmg=%d ±%d%% cast=%.2fs cd=%.2fs range=%.0f%s", class_id, p->base_damage, p->damage_variance, p->cast_time, p->cooldown, p->range, p->is_ranged ? " [RANGED]" : "");
+        profile->is_loaded = 1;
         loaded++;
-        cur++;
+
+        LOG_INFO("[COMBAT] %s basic attack: dmg=%d +-%d%% cast=%.2fs cd=%.2fs range=%.0f%s",
+                 race->key, profile->base_damage, profile->damage_variance,
+                 profile->cast_time, profile->cooldown, profile->range,
+                 profile->is_ranged ? " [RANGED]" : "");
     }
 
-    free(buf);
+    json_free(root);
     LOG_INFO("[COMBAT] %d attack profile(s) loaded from %s", loaded, path);
     return loaded;
 }
@@ -313,8 +289,7 @@ uint32_t combat_npc_spawn(NPCWorld* world,
     npc->is_alive       = 1;
     npc->category       = category;
     npc->xp_reward      = (category == NPC_CATEGORY_HOSTILE) ? 50 : 0;
-    npc->defense        = 0;
-    npc->evasion        = 0;
+    npc->armor          = 0;
     npc->dialogue_id    = dialogue_id;
     npc->is_interactable = is_interactable;
     npc->spawn_x        = x;
@@ -372,32 +347,41 @@ static int combat_find_player_slot(uint32_t character_id) {
 }
 
 /**
- * Calculate basic-attack damage after strength scaling, variance, and defense.
+ * Calculate basic-attack damage after scaling, form power, crit, variance, and armor.
  *
- * @return Final damage clamped to at least one.
+ * @param attacker_stats  The attacker's attributes, indexed by StatId.
+ * @param damage_stat     Which attribute the race's profile scales the attack with.
+ * @param form_power      The Animal Form multiplier, or 1.0 in Human Form.
+ * @param attacker_mods   The attacker's outgoing modifiers.
+ * @param target_armor    The target's flat mitigation.
+ * @param out_is_crit     Receives 1 when the attack critically struck; may be NULL.
+ * @return                Final damage, never below one.
  */
 static int compute_final_damage(int base_damage, int damage_variance,
-                                int attacker_str, int attacker_agi,
-                                int attacker_int, int attacker_wis,
-                                uint8_t attacker_class,
-                                int target_defense) {
-    (void)attacker_agi; (void)attacker_int; (void)attacker_wis; (void)attacker_class;
-    // 1. STR scales basic attack damage for all classes equally.
-    //    Ability damage uses per-class primary stat (in ability_handler.c).
-    float mult = 1.0f + ((float)attacker_str / STAT_DAMAGE_DIVISOR);
-    int damage = (int)((float)base_damage * mult);
+                                const int* attacker_stats, uint8_t damage_stat,
+                                float form_power,
+                                const DamageModifiers* attacker_mods,
+                                int target_armor,
+                                uint8_t* out_is_crit) {
+    float mult = combat_ability_damage_mult(damage_stat, attacker_stats);
+    int damage = (int)((float)base_damage * mult * form_power);
 
-    // 2. Random variance
+    uint8_t is_crit = (uint8_t)combat_check_crit(attacker_stats[STAT_PRECISION]);
+    if (is_crit) {
+        damage = (int)((float)damage * combat_crit_multiplier(attacker_stats[STAT_FEROCITY]));
+    }
+    if (out_is_crit) *out_is_crit = is_crit;
+
     if (damage_variance > 0) {
         int variance = (rand() % (damage_variance * 2 + 1)) - damage_variance;
         damage += (damage * variance) / 100;
     }
 
-    // 3. Apply target defense
-    damage = combat_apply_defense(damage, target_defense);
+    DamageModifiers target_mods;
+    damage_mods_reset(&target_mods);
+    damage_mods_add_armor(&target_mods, target_armor);
 
-    if (damage < 1) damage = 1;
-    return damage;
+    return damage_resolve(damage, attacker_mods, &target_mods);
 }
 
 /**
@@ -449,9 +433,9 @@ void combat_handle_attack_intent(NPCWorld* world,
         return;
     }
 
-    uint8_t class_id = attacker->player_class;
-    if (class_id < 1 || class_id > 4) class_id = 1;
-    const ClassAttackProfile* profile = &g_class_profiles[class_id];
+    /* Nothing clamps to a fixed race count: an unknown race resolves to the fallback
+     * profile rather than being silently rewritten as race 1. */
+    const RaceAttackProfile* profile = combat_profile_for_race(attacker->race_id);
 
     float origin_x = attacker->pos_x;
     float origin_y = attacker->pos_y;
@@ -584,6 +568,7 @@ void combat_handle_attack_intent(NPCWorld* world,
     cast->projectile_speed       = profile->projectile_speed;
     cast->projectile_width       = profile->projectile_width;
     cast->projectile_damage_stat = profile->projectile_damage_stat;
+    cast->damage_stat            = profile->damage_stat;
     cast->projectile_damage_type = profile->projectile_damage_type;
 
     pthread_mutex_unlock(&g_pending_casts_lock);
@@ -662,14 +647,16 @@ void combat_tick(NPCWorld* world) {
         active_players[i].attack_cooldown  = cast->cooldown;
         active_players[i].last_combat_time = now;
 
-        int a_str   = active_players[i].strength;
-        int a_agi   = active_players[i].agility;
-        int a_int   = active_players[i].intelligence;
-        int a_wis   = active_players[i].wisdom;
-        int a_wpn   = active_players[i].weapon_damage;
-        int a_luck  = active_players[i].luck;
-        uint8_t a_class = active_players[i].player_class;
+        int a_stats[STAT_COUNT];
+        memcpy(a_stats, active_players[i].stats, sizeof(a_stats));
+        int a_wpn = active_players[i].weapon_damage;
+
+        DamageModifiers a_mods;
+        player_collect_modifiers(&active_players[i], 0, &a_mods);
+        float a_form_power = player_form_power(&active_players[i]);
+        uint32_t a_race = active_players[i].race_id;
         pthread_mutex_unlock(&active_players[i].lock);
+        (void)a_race;
 
         float origin_x      = cast->origin_x;
         float origin_y      = cast->origin_y;
@@ -703,11 +690,9 @@ void combat_tick(NPCWorld* world) {
             info.max_range             = range;
             info.damage                = cast->base_damage + a_wpn;
             info.damage_type           = (AbilityDamageType)cast->projectile_damage_type;
-            info.caster_strength       = a_str;
-            info.caster_agility        = a_agi;
-            info.caster_intelligence   = a_int;
-            info.caster_wisdom         = a_wis;
+            memcpy(info.caster_stats, a_stats, sizeof(info.caster_stats));
             info.damage_stat           = (int)cast->projectile_damage_stat;
+            info.caster_mods           = a_mods;
             info.effect_count          = 0;
             projectile_spawn(&info);
             continue;
@@ -748,21 +733,14 @@ void combat_tick(NPCWorld* world) {
             }
 
             if (best) {
-                if (combat_check_evasion(best->evasion)) {
-                    // MISS
-                    hits[hit_count].target_id   = best->id;
-                    hits[hit_count].damage      = 0;
-                    hits[hit_count].new_health  = (uint32_t)best->health;
-                    hits[hit_count].is_kill     = 0;
-                    hits[hit_count].xp_reward   = 0;
-                    hit_count++;
-                    LOG_DEBUG("[COMBAT] %u MISSED NPC %u (evasion)", attacker_id, best->id);
-                } else {
-                    int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
-                                                       a_str, a_agi, a_int, a_wis, a_class,
-                                                       best->defense);
-                    uint8_t is_crit = (uint8_t)combat_check_crit(a_luck);
-                    if (is_crit) damage = (int)((float)damage * CRIT_DAMAGE_MULTIPLIER);
+                /* An attack that reaches its target connects. There is no dodge roll. */
+                {
+                    uint8_t is_crit = 0;
+                    int damage = compute_final_damage(cast->base_damage + a_wpn,
+                                                       cast->damage_variance,
+                                                       a_stats, cast->damage_stat,
+                                                       a_form_power, &a_mods,
+                                                       best->armor, &is_crit);
 
                     best->health -= damage;
                     if (best->health < 0) best->health = 0;
@@ -881,23 +859,11 @@ void combat_tick(NPCWorld* world) {
             if (!hit) continue;
             if (hit_count >= MAX_HIT_RESULTS) break;
 
-            // Evasion check per target
-            if (combat_check_evasion(npc->evasion)) {
-                hits[hit_count].target_id   = npc->id;
-                hits[hit_count].damage      = 0;
-                hits[hit_count].new_health  = (uint32_t)npc->health;
-                hits[hit_count].is_kill     = 0;
-                hits[hit_count].xp_reward   = 0;
-                hit_count++;
-                LOG_DEBUG("[COMBAT] %u MISSED NPC %u (evasion)", attacker_id, npc->id);
-                continue;
-            }
-
+            uint8_t is_crit = 0;
             int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
-                                               a_str, a_agi, a_int, a_wis, a_class,
-                                               npc->defense);
-            uint8_t is_crit = (uint8_t)combat_check_crit(a_luck);
-            if (is_crit) damage = (int)((float)damage * CRIT_DAMAGE_MULTIPLIER);
+                                               a_stats, cast->damage_stat,
+                                               a_form_power, &a_mods,
+                                               npc->armor, &is_crit);
 
             npc->health -= damage;
             if (npc->health < 0) npc->health = 0;
@@ -979,7 +945,7 @@ void combat_tick(NPCWorld* world) {
                 active_players[i].health > 0 &&
                 active_players[i].health < active_players[i].max_health) {
 
-                float regen = combat_hp_regen_rate(active_players[i].max_health) * combat_reg_heal_mult(active_players[i].reg) * dt;
+                float regen = combat_hp_regen_rate(active_players[i].max_health) * dt;
                 hp_accum[i] += regen;
 
                 if (hp_accum[i] >= 1.0f) {
@@ -1083,7 +1049,11 @@ void combat_tick(NPCWorld* world) {
 
                 active_players[i].is_dead = 0;
                 active_players[i].health = active_players[i].max_health;
-                active_players[i].mana = active_players[i].max_mana;
+                /* Rage builds through combat rather than being granted, so a respawn
+                 * fills a mana or stamina pool but leaves a rage bar empty. */
+                active_players[i].resource =
+                    (active_players[i].resource_type == RESOURCE_RAGE)
+                        ? 0 : active_players[i].max_resource;
                 active_players[i].pos_x = RESPAWN_X;
                 active_players[i].pos_y = RESPAWN_Y;
                 active_players[i].is_dirty = 1;
@@ -1093,8 +1063,8 @@ void combat_tick(NPCWorld* world) {
                     respawns[respawn_count].client_fd   = active_players[i].client_fd;
                     respawns[respawn_count].health      = active_players[i].health;
                     respawns[respawn_count].max_health   = active_players[i].max_health;
-                    respawns[respawn_count].mana        = active_players[i].mana;
-                    respawns[respawn_count].max_mana     = active_players[i].max_mana;
+                    respawns[respawn_count].mana        = active_players[i].resource;
+                    respawns[respawn_count].max_mana     = active_players[i].max_resource;
                     respawn_count++;
                 }
 

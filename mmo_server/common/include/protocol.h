@@ -25,7 +25,7 @@ typedef enum {
     // PATCH NOTES
     PATCH_NOTES_REQUEST = 10,
     PATCH_NOTES_RESPONSE = 11,
-    
+
     // REALM SERVER PACKETS (Character Selection)
     PACKET_REALM_CONNECT = 20,
     PACKET_REALM_CONNECT_ACK = 21,
@@ -39,7 +39,9 @@ typedef enum {
     PACKET_WORLD_LIST_RESPONSE = 29,
     PACKET_ENTER_WORLD = 30,
     PACKET_ENTER_WORLD_RESPONSE = 31,
-    
+    PACKET_RACE_LIST_REQUEST = 32,      // Client -> Server: what races exist?
+    PACKET_RACE_LIST_RESPONSE = 33,     // Server -> Client: the loaded race registry
+
     // WORLD SERVER PACKETS (Gameplay)
     PACKET_WORLD_CONNECT = 50,
     PACKET_WORLD_CONNECT_ACK = 51,
@@ -71,6 +73,9 @@ typedef enum {
 
     PACKET_PLAYER_STATS         = 91,
     PACKET_REQUEST_PLAYER_STATS = 92,
+
+    PACKET_FORM_SWAP            = 93,   // Client -> Server: request a Human/Animal form swap
+    PACKET_FORM_SWAP_ACK        = 94,   // Server -> Client: authoritative form and hotbar
 
     PACKET_PLAYER_POSITIONS = 96,
     PACKET_NPC_POSITIONS = 97,
@@ -157,20 +162,59 @@ typedef enum {
     PACKET_ZONE_CHANGE = 220,           // Server -> Client: player crossed a zone boundary
 } PacketType;
 
-/** Identify playable character classes on the wire. */
-typedef enum {
-    GLADIATOR = 1,
-    NINJA = 2,
-    LANDWEAVER = 3,
-    SPIRIT = 4
-} Class;
+/** Bound race identifiers on the wire.
+ *
+ * Race and class fuse into one identifier under the Blessed model: a character's
+ * class_id and race_id always hold the same value. Names, passives, specs and stat
+ * growth live in world_server/data/races.json, so adding a race is a data change.
+ * This constant exists only to size arrays and validate untrusted wire values.
+ */
+#define MAX_RACES 32
 
-/** Identify playable character races on the wire. */
+/** Identify the combat role a spec fills, which in turn selects its resource. */
 typedef enum {
-    HUMAN = 1,
-    PYSECK = 2,
-    INFOR = 3
-} Race;
+    ROLE_TANK   = 0,
+    ROLE_DPS    = 1,
+    ROLE_HEALER = 2,
+    ROLE_COUNT
+} CombatRole;
+
+/** Identify which of a character's two forms is active. */
+typedef enum {
+    FORM_HUMAN  = 0,
+    FORM_ANIMAL = 1,
+    FORM_COUNT
+} PlayerForm;
+
+/** Identify the resource pool a character spends, derived from its role. */
+typedef enum {
+    RESOURCE_NONE    = 0,   // Human Form: cooldown-only, no pool
+    RESOURCE_MANA    = 1,   // ROLE_HEALER, driven by Focus
+    RESOURCE_STAMINA = 2,   // ROLE_DPS, driven by Stamina Capacity
+    RESOURCE_RAGE    = 3,   // ROLE_TANK, driven by Endurance; builds instead of draining
+    RESOURCE_COUNT
+} ResourceType;
+
+/** Index a character attribute.
+ *
+ * Stats travel the wire as a dense array indexed by this enum rather than as named
+ * fields, so adding a stat is one entry here plus one key in races.json. Keep the
+ * order stable: it is the wire order.
+ */
+typedef enum {
+    STAT_STRENGTH         = 0,  // Physical ability damage
+    STAT_DEXTERITY        = 1,  // Attack and cast speed
+    STAT_VITALITY         = 2,  // Max health
+    STAT_INTELLIGENCE     = 3,  // Magical ability damage
+    STAT_FOCUS            = 4,  // Max mana and regen — the healer resource stat
+    STAT_ENDURANCE        = 5,  // Rage generation and retention — the tank resource stat
+    STAT_FEROCITY         = 6,  // Critical damage multiplier
+    STAT_STAMINA_CAPACITY = 7,  // Max stamina and regen — the DPS resource stat
+    STAT_PRECISION        = 8,  // Critical strike chance
+    STAT_FERALITY         = 9,  // Animal Form power scalar
+    STAT_ARMOR            = 10, // Flat damage reduction
+    STAT_COUNT
+} StatId;
 
 /** Prefix every ordinary packet with its opcode, player identifier, and payload length. */
 typedef struct {
@@ -178,6 +222,48 @@ typedef struct {
     uint32_t player_id;     // 4 bytes
     uint16_t payload_size;  // 2 bytes
 } PacketHeader;             // Total: 7 bytes (no padding)
+
+/** Describe one race to the character-creation screen.
+ *
+ * The client holds no table of races. It asks the server, which answers from the
+ * registry it loaded from races.json — so adding a race really does require editing
+ * races.json and abilities.json and nothing else, the client included.
+ */
+typedef struct {
+    uint32_t race_id;           // Fused race/class identifier
+    char     key[32];           // Stable machine name, e.g. "wolf"
+    char     name[32];          // Display name
+    char     latin[32];         // Latin name, shown beneath the display name
+    char     passive_name[32];
+    char     passive_desc[192];
+    uint8_t  playable;          // 0 greys the entry out at character creation
+    uint8_t  default_role;      // CombatRole of the starting spec
+    uint8_t  spec_count;
+    uint8_t  _reserved;         // must be 0
+    uint8_t  spec_roles[4];     // CombatRole per spec, in declaration order
+    uint8_t  spec_unlock[4];    // Level gate per spec
+} RaceInfo;
+
+/** Bound the race list carried by one packet. Mirrors MAX_RACES. */
+#define MAX_RACE_LIST 32
+
+/** Ask the realm server for the race registry. */
+typedef struct {
+    PacketHeader header;
+} RaceListRequestPacket;
+
+/** Return every loaded race, playable or not.
+ *
+ * Non-playable races are included deliberately: the creation screen shows them greyed
+ * out, so a player can see what is coming without the client needing to know which
+ * races exist ahead of time.
+ */
+typedef struct {
+    PacketHeader header;
+    uint8_t      count;
+    uint8_t      _reserved[3];  // must be 0
+    RaceInfo     races[MAX_RACE_LIST];
+} RaceListResponsePacket;
 
 /** Identify reasons supplied before a server closes a client connection. */
 typedef enum {
@@ -304,7 +390,7 @@ typedef struct {
 typedef struct {
     PacketHeader header;
 } WorldListRequestPacket;
- 
+
 /** Describe one world endpoint with explicit cross-platform padding. */
 typedef struct {
     char name[64];
@@ -368,7 +454,7 @@ typedef struct {
 
 /** Request deletion of a character from one world. */
 typedef struct {
-    PacketHeader header; 
+    PacketHeader header;
     uint32_t character_id;
     uint32_t world_id;
 } CharacterDeleteRequestPacket;
@@ -489,13 +575,15 @@ typedef struct {
     float pos_y;
     uint32_t health;
     uint32_t max_health;
-    int32_t mana;
-    int32_t max_mana;
+    int32_t resource;
+    int32_t max_resource;
     uint64_t experience;
     uint32_t gold;
 
-    Class player_class;
-    Race player_race;
+    uint32_t race_id;       // Fused race/class identifier; 1..loaded race count
+    uint8_t  resource_type; // ResourceType, derived from the active spec's role
+    uint8_t  form;          // PlayerForm currently active
+    uint8_t  _reserved[2];  // keeps the struct naturally aligned; must be 0
 
     /** Empty slots use an instance identifier of zero. */
     InventorySlotData equipment[EQUIP_SLOTS];
@@ -701,60 +789,80 @@ typedef struct {
     int32_t      max_mana;
 } ManaUpdatePacket;
 
-/** Describe one ability-bar slot sent on world entry or level-up. */
+/** Describe one ability-bar slot sent on world entry, level-up, or form swap. */
 typedef struct {
     uint16_t id;
     char     name[24];
     float    cooldown;
     float    cast_time;
-    int16_t  mana_cost;
+    int16_t  resource_cost;  /**< Always 0 in Human Form, which has no pool. */
     char     image[32];  // Icon filename, e.g. "cleave.png" — looked up in Game/Sprites/Abilities/
 } AbilitySlotInfo;
 
-/** Synchronize the player's current ability-bar loadout. */
+/** Synchronize the ability bar for one form.
+ *
+ * Both forms share the five hotbar slots; `form` says which kit these five are, so
+ * the client can keep a bar per form and swap between them without a round trip.
+ */
 typedef struct {
     PacketHeader header;
     uint8_t  count;
-    AbilitySlotInfo slots[5];
+    uint8_t  form;          /**< PlayerForm these slots belong to. */
+    uint8_t  _reserved[2];  /**< Must be 0. */
+    AbilitySlotInfo slots[MAX_ABILITY_SLOTS];
 } AbilityDataPacket;
+
+/** Request a swap to the other form. */
+typedef struct {
+    PacketHeader header;
+    uint8_t      requested_form;  /**< PlayerForm the client wants to enter. */
+} FormSwapPacket;
+
+/** Confirm or refuse a form swap and restate the authoritative form state.
+ *
+ * Cooldowns are not carried here. They are stored as absolute expiry instants per
+ * form and keep ticking while a form is inactive, so the client recomputes remaining
+ * time from `ability_ready_in` without ever needing the swap to reset anything.
+ */
+typedef struct {
+    PacketHeader header;
+    uint8_t      accepted;        /**< 0 when refused, e.g. the swap cooldown is up. */
+    uint8_t      form;            /**< Authoritative PlayerForm after the request. */
+    uint8_t      resource_type;   /**< ResourceType for the new form. */
+    uint8_t      _reserved;       /**< Must be 0. */
+    int32_t      resource;
+    int32_t      max_resource;
+    float        swap_ready_in;   /**< Seconds until another swap is allowed. */
+    /** Seconds remaining on each slot of the form now active; 0 when ready. */
+    float        ability_ready_in[MAX_ABILITY_SLOTS];
+} FormSwapAckPacket;
 
 /** Synchronize level, attributes, resources, and the next experience threshold. */
 typedef struct {
     PacketHeader header;
     uint32_t     new_level;
     uint32_t     new_max_health;
-    uint32_t     new_max_mana;
+    uint32_t     new_max_resource;
     uint32_t     new_health;
-    uint32_t     new_mana;
-    int32_t      strength;
-    int32_t      agility;
-    int32_t      intelligence;
-    int32_t      wisdom;
-    int32_t      defense;
-    int32_t      evasion;
-    int32_t      vitality;
-    int32_t      luck;
+    uint32_t     new_resource;
+    int32_t      stats[STAT_COUNT];  /**< Indexed by StatId. */
     uint64_t     xp_for_next_level;
 } LevelUpPacket;
 
 /** Return a full authoritative player-stat snapshot. */
 typedef struct {
     PacketHeader header;
-    int32_t      strength;
-    int32_t      agility;
-    int32_t      intelligence;
-    int32_t      wisdom;
-    int32_t      defense;
-    int32_t      evasion;
-    int32_t      vitality;
-    int32_t      luck;
+    int32_t      stats[STAT_COUNT];  /**< Indexed by StatId. */
     int32_t      max_health;
-    int32_t      max_mana;
+    int32_t      max_resource;
     int32_t      current_health;
-    int32_t      current_mana;
+    int32_t      current_resource;
     float        move_speed;
     int32_t      weapon_damage;
     uint64_t     xp_for_next_level;
+    uint8_t      resource_type;      /**< ResourceType. */
+    uint8_t      form;               /**< PlayerForm. */
+    uint8_t      _reserved[2];       /**< Must be 0. */
 } PlayerStatsPacket;
 
 /** Request a fresh authoritative player-stat snapshot. */

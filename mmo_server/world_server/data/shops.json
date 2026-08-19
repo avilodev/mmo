@@ -1,27 +1,4 @@
 {
   "_comment": "buy_price omitted falls back to item value * 2 in shop.c. Keep every buy_price strictly above the item's sell value, or players can buy and resell for profit and mint gold.",
-  "shops": [
-    {
-      "shop_id": 1,
-      "name": "General Goods",
-      "items": [
-        { "item_id": 4000, "buy_price": 40  },
-        { "item_id": 4010, "buy_price": 40  },
-        { "item_id": 4001, "buy_price": 90  },
-        { "item_id": 4011, "buy_price": 90  },
-        { "item_id": 4020, "buy_price": 150 }
-      ]
-    },
-    {
-      "shop_id": 2,
-      "name": "Armory",
-      "items": [
-        { "item_id": 1000, "buy_price": 120 },
-        { "item_id": 1003, "buy_price": 120 },
-        { "item_id": 2000, "buy_price": 80  },
-        { "item_id": 2003, "buy_price": 80  },
-        { "item_id": 1001, "buy_price": 100 }
-      ]
-    }
-  ]
+  "shops": []
 }

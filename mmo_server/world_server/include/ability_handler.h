@@ -67,8 +67,41 @@ void ability_handle_cast_cancel(int client_fd, uint32_t caster_id);
 // update casts, effects, zones, projectiles, and mana at 20 Hz
 void ability_tick(NPCWorld* world, double delta_time);
 
-// send after player stats on world entry and level-up
+/** Rebuild both forms' hotbars from the race registry and the player's level.
+ *
+ * Both hotbars are derived, never stored: with exactly five abilities available for
+ * five slots there is no loadout to build, so there is no table to migrate and no
+ * ability-book UI to write. Growing the Human Form pool later becomes a data change
+ * plus a UI, not a re-architecture.
+ *
+ * Cooldowns are deliberately left alone. They are absolute expiry instants, so a
+ * hotbar rebuild — from a level-up or a form swap — cannot clear one.
+ *
+ * The caller must hold the player's lock.
+ */
+void ability_refresh_hotbars(ActivePlayer* player);
+
+/** Send the ability bar for one form.
+ *
+ * @param form  The PlayerForm whose five slots to send.
+ */
+void ability_send_form_data(int client_fd, ActivePlayer* player, uint8_t form);
+
+/** Send the ability bar for the player's active form. */
 void ability_send_data(int client_fd, ActivePlayer* player);
+
+/** Handle a client's request to swap forms.
+ *
+ * Validates the requested form and the shared swap cooldown, then replies with the
+ * authoritative form, resource pool, and per-slot cooldowns either way.
+ */
+void ability_handle_form_swap(int client_fd, uint32_t caster_id, uint8_t requested_form);
+
+/** Return the seconds remaining on one hotbar slot's cooldown.
+ *
+ * @return Zero when the slot is ready, out of range, or empty.
+ */
+float ability_slot_cooldown_remaining(const ActivePlayer* player, uint8_t form, int slot);
 
 void ability_handler_cleanup(void);
 

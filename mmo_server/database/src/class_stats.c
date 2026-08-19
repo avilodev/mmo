@@ -1,168 +1,133 @@
 /**
  * @file
- * Define class growth profiles and derive level-dependent character statistics and XP thresholds.
+ * Turn a race's data-defined stat curve into the derived numbers combat reads.
+ *
+ * The four compiled class profiles this file used to hold are gone; races.json owns
+ * that data now, and progression.json owns the experience table. Everything that
+ * remains is arithmetic, which is why adding a race touches no code here.
  */
 
 #include "class_stats.h"
+#include "progression.h"
+
 #include <stdio.h>
 #include <string.h>
 
-static ClassStatProfile g_class_stats[NUM_CLASSES + 1];
-static int g_initialized = 0;
-static uint64_t g_xp_table[MAX_LEVEL + 1];
-
 /**
- * Initialize class profiles and the cumulative XP threshold table once.
+ * Load the race registry and the progression tunables.
+ *
+ * @return 1 when at least one race loaded, or 0 otherwise.
  */
-void class_stats_init(void) {
-    if (g_initialized) return;
-    memset(g_class_stats, 0, sizeof(g_class_stats));
+int class_stats_init(const char* races_path, const char* progression_path) {
+    progression_init(progression_path);
 
-    g_class_stats[0].class_name = "None";
-
-    // [1] Gladiator — frontline tank/bruiser
-    g_class_stats[1] = (ClassStatProfile){
-        .class_name = "Gladiator",
-        .base_health = 150, .base_mana = 10,
-        .base_strength = 12, .base_agility = 5,
-        .base_intelligence = 2, .base_wisdom = 2,
-        .base_defense = 10, .base_evasion = 2,
-        .base_move_speed = 200.0f,
-        .health_per_level = 25, .mana_per_level = 2,
-        .strength_per_level = 30, .agility_per_level = 10,
-        .intelligence_per_level = 5, .wisdom_per_level = 5,
-        .defense_per_level = 25, .evasion_per_level = 5,
-        .base_vitality = 8, .base_luck = 2,
-        .vitality_per_level = 20, .luck_per_level = 5,
-    };
-
-    // [2] Ninja — agile burst / evasion
-    g_class_stats[2] = (ClassStatProfile){
-        .class_name = "Ninja",
-        .base_health = 100, .base_mana = 300,
-        .base_strength = 6, .base_agility = 14,
-        .base_intelligence = 4, .base_wisdom = 3,
-        .base_defense = 4, .base_evasion = 12,
-        .base_move_speed = 230.0f,
-        .health_per_level = 15, .mana_per_level = 5,
-        .strength_per_level = 10, .agility_per_level = 30,
-        .intelligence_per_level = 10, .wisdom_per_level = 5,
-        .defense_per_level = 10, .evasion_per_level = 30,
-        .base_vitality = 4, .base_luck = 8,
-        .vitality_per_level = 10, .luck_per_level = 20,
-    };
-
-    // [3] Landweaver — earth mage, control/AoE
-    g_class_stats[3] = (ClassStatProfile){
-        .class_name = "Landweaver",
-        .base_health = 80, .base_mana = 600,
-        .base_strength = 3, .base_agility = 3,
-        .base_intelligence = 14, .base_wisdom = 8,
-        .base_defense = 6, .base_evasion = 2,
-        .base_move_speed = 185.0f,
-        .health_per_level = 10, .mana_per_level = 12,
-        .strength_per_level = 5, .agility_per_level = 5,
-        .intelligence_per_level = 30, .wisdom_per_level = 20,
-        .defense_per_level = 15, .evasion_per_level = 5,
-        .base_vitality = 5, .base_luck = 5,
-        .vitality_per_level = 12, .luck_per_level = 12,
-    };
-
-    // [4] Spirit — mystic support/hybrid
-    g_class_stats[4] = (ClassStatProfile){
-        .class_name = "Spirit",
-        .base_health = 80, .base_mana = 800,
-        .base_strength = 3, .base_agility = 5,
-        .base_intelligence = 8, .base_wisdom = 14,
-        .base_defense = 3, .base_evasion = 8,
-        .base_move_speed = 200.0f,
-        .health_per_level = 10, .mana_per_level = 10,
-        .strength_per_level = 5, .agility_per_level = 10,
-        .intelligence_per_level = 20, .wisdom_per_level = 30,
-        .defense_per_level = 5, .evasion_per_level = 20,
-        .base_vitality = 4, .base_luck = 6,
-        .vitality_per_level = 10, .luck_per_level = 15,
-    };
-
-    // XP table: xp_for_level(n) = 50 * n * (n-1)
-    g_xp_table[0] = 0;
-    g_xp_table[1] = 0;
-    for (int i = 2; i <= MAX_LEVEL; i++) {
-        g_xp_table[i] = (uint64_t)(50 * i * (i - 1));
+    int races = races_path ? race_registry_init(races_path) : 0;
+    if (races == 0) {
+        fprintf(stderr, "[CLASS_STATS] No races loaded — character creation will be refused\n");
+        return 0;
     }
 
-    g_initialized = 1;
-    printf("[CLASS_STATS] Initialized %d class profiles, max level %d\n",
-           NUM_CLASSES, MAX_LEVEL);
-    printf("[CLASS_STATS] XP curve: L2=%lu, L10=%lu, L25=%lu, L50=%lu\n",
-           g_xp_table[2], g_xp_table[10], g_xp_table[25], g_xp_table[50]);
+    printf("[CLASS_STATS] %d races, max level %d\n", races, progression_max_level());
+    return 1;
+}
+
+/** Release the loaded registry. */
+void class_stats_cleanup(void) {
+    race_registry_cleanup();
 }
 
 /**
- * Retrieve a class growth profile.
- *
- * The returned pointer remains owned by the class-stat registry.
- *
- * @return The profile for identifiers 1 through NUM_CLASSES, or NULL otherwise.
+ * Return the maximum health implied by a Vitality score.
  */
-const ClassStatProfile* class_stats_get_profile(uint8_t class_id) {
-    if (class_id < 1 || class_id > NUM_CLASSES) return NULL;
-    return &g_class_stats[class_id];
+int class_stats_health_for_vitality(int vitality) {
+    const ProgressionConfig* c = progression_config();
+    if (vitality < 0) vitality = 0;
+
+    int health = c->base_health + (int)(vitality * c->health_per_vitality);
+    return health > 1 ? health : 1;
 }
 
 /**
- * Compute base derived statistics for a class and clamped level.
+ * Return the pool size implied by a resource type and its governing stat's score.
  *
- * @param class_id  Class identifier from 1 through NUM_CLASSES.
- * @param level     Requested level, clamped to 1 through MAX_LEVEL.
- * @param out       Receives the derived statistics; may not be NULL.
- * @return          1 on success, or 0 for an invalid class or NULL output.
+ * Human Form has no pool at all, so RESOURCE_NONE sizes to zero rather than to the
+ * base value — the HUD hides the bar on exactly that condition.
  */
-int class_stats_compute(uint8_t class_id, int level, DerivedStats* out) {
+int class_stats_resource_for_stat(ResourceType type, int stat_value) {
+    const ProgressionConfig* c = progression_config();
+    if (stat_value < 0) stat_value = 0;
+
+    double per_point;
+    switch (type) {
+        case RESOURCE_MANA:    per_point = c->mana_per_focus;                 break;
+        case RESOURCE_STAMINA: per_point = c->stamina_per_stamina_capacity;   break;
+        case RESOURCE_RAGE:    per_point = c->rage_per_endurance;             break;
+        default:               return 0;
+    }
+
+    int pool = c->base_resource + (int)(stat_value * per_point);
+    return pool > 0 ? pool : 0;
+}
+
+/**
+ * Compute the derived statistics for a race at a level.
+ *
+ * Resource follows the default spec's role, never the race, which is why nothing
+ * in races.json configures a pool.
+ *
+ * @return 1 on success, or 0 for an unknown race or NULL output.
+ */
+int class_stats_compute(uint32_t race_id, int level, DerivedStats* out) {
     if (!out) return 0;
-    if (class_id < 1 || class_id > NUM_CLASSES) return 0;
-    if (level < 1) level = 1;
-    if (level > MAX_LEVEL) level = MAX_LEVEL;
 
-    const ClassStatProfile* p = &g_class_stats[class_id];
-    int lvl_bonus = level - 1;
+    const RaceDef* race = race_get(race_id);
+    if (!race) return 0;
 
-    out->max_health     = p->base_health    + (p->health_per_level * lvl_bonus);
-    out->max_mana       = p->base_mana      + (p->mana_per_level   * lvl_bonus);
-    out->strength       = p->base_strength  + (p->strength_per_level * lvl_bonus) / 10;
-    out->agility        = p->base_agility   + (p->agility_per_level * lvl_bonus) / 10;
-    out->intelligence   = p->base_intelligence + (p->intelligence_per_level * lvl_bonus) / 10;
-    out->wisdom         = p->base_wisdom    + (p->wisdom_per_level * lvl_bonus) / 10;
-    out->defense        = p->base_defense   + (p->defense_per_level * lvl_bonus) / 10;
-    out->evasion        = p->base_evasion   + (p->evasion_per_level * lvl_bonus) / 10;
-    out->vitality       = p->base_vitality + (p->vitality_per_level * lvl_bonus) / 10;
-    out->luck           = p->base_luck     + (p->luck_per_level * lvl_bonus) / 10;
-    out->move_speed     = p->base_move_speed;
+    int cap = progression_max_level();
+    if (level < 1)   level = 1;
+    if (level > cap) level = cap;
+
+    memset(out, 0, sizeof(*out));
+
+    for (int stat = 0; stat < STAT_COUNT; stat++) {
+        out->stats[stat] = race_stat_at_level(race, (StatId)stat, level);
+    }
+
+    const RaceSpec* spec = race_default_spec(race);
+    out->resource_type = (uint8_t)(spec ? role_resource(spec->role) : RESOURCE_NONE);
+
+    out->max_health = class_stats_health_for_vitality(out->stats[STAT_VITALITY]);
+    out->max_resource = class_stats_resource_for_stat(
+        (ResourceType)out->resource_type,
+        spec ? out->stats[role_resource_stat(spec->role)] : 0);
+
+    const ProgressionConfig* c = progression_config();
+    out->move_speed = race->base_move_speed +
+                      (float)(out->stats[STAT_DEXTERITY] * c->move_speed_per_dexterity);
 
     return 1;
 }
 
-/**
- * Retrieve the cumulative XP threshold for a level.
- *
- * @return Zero below level one, the maximum-level threshold above MAX_LEVEL, or the indexed threshold.
- */
+/** Return the cumulative experience required to have reached a level. */
 uint64_t class_stats_xp_for_level(int level) {
-    if (level < 1) return 0;
-    if (level > MAX_LEVEL) return g_xp_table[MAX_LEVEL];
-    return g_xp_table[level];
+    return progression_xp_for_level(level);
+}
+
+/** Return the experience earned within the previous level to reach this one. */
+uint64_t class_stats_xp_step(int level) {
+    return progression_xp_step(level);
 }
 
 /**
- * Advance a current level through every XP threshold already reached.
+ * Advance a level through every experience threshold already reached.
  *
- * @return The resulting level capped at MAX_LEVEL.
+ * @return The resulting level, capped at the configured maximum.
  */
 int class_stats_check_level(int current_level, uint64_t current_xp) {
-    if (current_level >= MAX_LEVEL) return MAX_LEVEL;
-    int new_level = current_level;
-    while (new_level < MAX_LEVEL && current_xp >= g_xp_table[new_level + 1]) {
-        new_level++;
-    }
-    return new_level;
+    return progression_check_level(current_level, current_xp);
+}
+
+/** Return the level cap in force. */
+int class_stats_max_level(void) {
+    return progression_max_level();
 }

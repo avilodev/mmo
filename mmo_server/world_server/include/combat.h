@@ -4,14 +4,21 @@
 #define COMBAT_H
 
 #include "combat_config.h"
-#include "types.h"         
-#include "player_data.h"   
+#include "types.h"
+#include "player_data.h"
 
 #include <stdio.h>
 #include <stdint.h>
 
 // return zero and retain compiled defaults when loading fails
 int combat_profiles_load(const char* path);
+
+/** Return the basic-attack profile for a race.
+ *
+ * @return A profile that is always safe to read; races without an entry in
+ *         attack_profiles.json get a plain melee fallback.
+ */
+const RaceAttackProfile* combat_profile_for_race(uint32_t race_id);
 
 void combat_npc_init(NPCWorld* world);
 

@@ -56,7 +56,7 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
     out->character_id = character_id;
     snprintf(out->name, sizeof(out->name), "char%u", character_id);
     out->level = 1; out->health = 100; out->max_health = 100;
-    out->mana = 50; out->max_mana = 50; out->pos_x = 100.0f; out->pos_y = 100.0f;
+    out->resource = 50; out->max_resource = 50; out->pos_x = 100.0f; out->pos_y = 100.0f;
     return 1;
 }
 
@@ -64,8 +64,14 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
 void player_apply_class_stats(ActivePlayer* p) { (void)p; }
 /** Stub equipment-stat application. */
 void player_apply_equipment_bonuses(ActivePlayer* p) { (void)p; }
-/** Stub an empty class ability list. */
-int  ability_get_class_abilities(uint8_t c, uint16_t* out, int max) { (void)c; (void)out; (void)max; return 0; }
+/** Stub an empty hotbar for both forms. */
+int  ability_get_form_abilities(uint8_t race, uint8_t form, uint16_t* out, int max) {
+    (void)race; (void)form; (void)out; (void)max; return 0;
+}
+/** Stub the hotbar rebuild. */
+void ability_refresh_hotbars(ActivePlayer* p) { (void)p; }
+/** Stub the stat recompute. */
+void player_recompute_stats(ActivePlayer* p) { (void)p; }
 /** Stub an absent ability definition. */
 const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 /** Stub an empty persisted quest list. */

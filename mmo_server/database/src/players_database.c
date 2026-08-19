@@ -49,23 +49,23 @@ int character_database_init(const char* connection_string) {
         fprintf(stderr, "Database already initialized\n");
         return 1;
     }
-    
+
     pthread_mutex_init(&g_pool.pool_lock, NULL);
     pthread_cond_init(&g_pool.conn_available, NULL);
-    
+
     strncpy(g_pool.connection_string, connection_string, sizeof(g_pool.connection_string) - 1);
     g_pool.connection_string[sizeof(g_pool.connection_string) - 1] = '\0';
-    
+
     // Initialize connection pool
     for (int i = 0; i < CONN_POOL_SIZE; i++) {
         pthread_mutex_init(&g_pool.connections[i].lock, NULL);
         g_pool.connections[i].in_use = 0;
         g_pool.connections[i].conn = PQconnectdb(connection_string);
-        
+
         if (PQstatus(g_pool.connections[i].conn) != CONNECTION_OK) {
-            fprintf(stderr, "PostgreSQL connection %d failed: %s\n", 
+            fprintf(stderr, "PostgreSQL connection %d failed: %s\n",
                     i, PQerrorMessage(g_pool.connections[i].conn));
-            
+
             // Clean up the failed connection and all previously created ones.
             PQfinish(g_pool.connections[i].conn);
             g_pool.connections[i].conn = NULL;
@@ -80,13 +80,13 @@ int character_database_init(const char* connection_string) {
             pthread_cond_destroy(&g_pool.conn_available);
             return 0;
         }
-        
+
         // Set connection to non-blocking mode for better timeout handling
         PQsetnonblocking(g_pool.connections[i].conn, 0);
     }
-    
+
     g_pool.initialized = 1;
-    
+
     // Create tables and indexes using one connection
     PGconn* setup_conn = acquire_connection();
     if (!setup_conn) {
@@ -94,9 +94,9 @@ int character_database_init(const char* connection_string) {
         character_database_close();
         return 0;
     }
-    
+
     // Create characters table if it doesn't exist (WITH EQUIPMENT FIELDS)
-    const char* create_table = 
+    const char* create_table =
         "CREATE TABLE IF NOT EXISTS characters ("
         "    character_id SERIAL PRIMARY KEY,"
         "    account_id INTEGER NOT NULL,"
@@ -115,10 +115,10 @@ int character_database_init(const char* connection_string) {
         "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
         "    UNIQUE(name, world_id)"
         ");";
-    
+
     PGresult* res = PQexec(setup_conn, create_table);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Failed to create characters table: %s\n", 
+        fprintf(stderr, "Failed to create characters table: %s\n",
                 PQerrorMessage(setup_conn));
         PQclear(res);
         release_connection(setup_conn);
@@ -126,7 +126,7 @@ int character_database_init(const char* connection_string) {
         return 0;
     }
     PQclear(res);
-    
+
     // drop legacy item columns superseded by character_items
     const char* drop_item_columns =
         "ALTER TABLE characters "
@@ -148,19 +148,19 @@ int character_database_init(const char* connection_string) {
     PQclear(res);
 
     // Add mana columns (migration)
-    const char* add_mana_columns = 
+    const char* add_mana_columns =
         "DO $$ BEGIN "
         "ALTER TABLE characters ADD COLUMN IF NOT EXISTS mana INTEGER DEFAULT 100; "
         "ALTER TABLE characters ADD COLUMN IF NOT EXISTS max_mana INTEGER DEFAULT 100; "
         "END $$;";
-    
+
     res = PQexec(setup_conn, add_mana_columns);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Warning: Failed to add mana columns: %s\n", 
+        fprintf(stderr, "Warning: Failed to add mana columns: %s\n",
                 PQerrorMessage(setup_conn));
     }
     PQclear(res);
-    
+
     // reserve nullable durability and rolled-stat columns for item instances
     const char* create_items_table =
         "CREATE TABLE IF NOT EXISTS character_items ("
@@ -203,17 +203,17 @@ int character_database_init(const char* connection_string) {
     const char* create_index =
         "CREATE INDEX IF NOT EXISTS idx_characters_account_world "
         "ON characters(account_id, world_id);";
-    
+
     res = PQexec(setup_conn, create_index);
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Warning: Failed to create index: %s\n", 
+        fprintf(stderr, "Warning: Failed to create index: %s\n",
                 PQerrorMessage(setup_conn));
     }
     PQclear(res);
-    
+
     release_connection(setup_conn);
-    
-    printf("PostgreSQL character database initialized successfully with %d connections\n", 
+
+    printf("PostgreSQL character database initialized successfully with %d connections\n",
            CONN_POOL_SIZE);
     return 1;
 }
@@ -225,9 +225,9 @@ void character_database_close(void) {
     if (!g_pool.initialized) {
         return;
     }
-    
+
     pthread_mutex_lock(&g_pool.pool_lock);
-    
+
     for (int i = 0; i < CONN_POOL_SIZE; i++) {
         pthread_mutex_lock(&g_pool.connections[i].lock);
         if (g_pool.connections[i].conn) {
@@ -237,13 +237,13 @@ void character_database_close(void) {
         pthread_mutex_unlock(&g_pool.connections[i].lock);
         pthread_mutex_destroy(&g_pool.connections[i].lock);
     }
-    
+
     g_pool.initialized = 0;
     pthread_mutex_unlock(&g_pool.pool_lock);
-    
+
     pthread_mutex_destroy(&g_pool.pool_lock);
     pthread_cond_destroy(&g_pool.conn_available);
-    
+
     printf("PostgreSQL connection pool closed\n");
 }
 
@@ -256,15 +256,15 @@ static int reconnect_if_needed(PooledConnection* pc) {
     if (PQstatus(pc->conn) == CONNECTION_OK) {
         return 1;
     }
-    
+
     fprintf(stderr, "Connection lost, attempting to reconnect...\n");
     PQreset(pc->conn);
-    
+
     if (PQstatus(pc->conn) == CONNECTION_OK) {
         printf("Successfully reconnected\n");
         return 1;
     }
-    
+
     fprintf(stderr, "Reconnection failed: %s\n", PQerrorMessage(pc->conn));
     return 0;
 }
@@ -285,24 +285,24 @@ static PGconn* acquire_connection(void) {
         timeout.tv_sec++;
         timeout.tv_nsec -= 1000000000;
     }
-    
+
     pthread_mutex_lock(&g_pool.pool_lock);
-    
+
     if (!g_pool.initialized) {
         pthread_mutex_unlock(&g_pool.pool_lock);
         return NULL;
     }
-    
+
     while (1) {
         // Try to find an available connection
         for (int i = 0; i < CONN_POOL_SIZE; i++) {
             if (!g_pool.connections[i].in_use) {
                 pthread_mutex_lock(&g_pool.connections[i].lock);
-                
+
                 // Double-check after acquiring lock
                 if (!g_pool.connections[i].in_use) {
                     g_pool.connections[i].in_use = 1;
-                    
+
                     // Verify connection is good
                     if (!reconnect_if_needed(&g_pool.connections[i])) {
                         g_pool.connections[i].in_use = 0;
@@ -310,20 +310,20 @@ static PGconn* acquire_connection(void) {
                         pthread_mutex_unlock(&g_pool.pool_lock);
                         return NULL;
                     }
-                    
+
                     pthread_mutex_unlock(&g_pool.connections[i].lock);
                     pthread_mutex_unlock(&g_pool.pool_lock);
                     return g_pool.connections[i].conn;
                 }
-                
+
                 pthread_mutex_unlock(&g_pool.connections[i].lock);
             }
         }
-        
+
         // No connections available, wait with timeout
-        int wait_result = pthread_cond_timedwait(&g_pool.conn_available, 
+        int wait_result = pthread_cond_timedwait(&g_pool.conn_available,
                                                   &g_pool.pool_lock, &timeout);
-        
+
         if (wait_result == ETIMEDOUT) {
             pthread_mutex_unlock(&g_pool.pool_lock);
             fprintf(stderr, "Timeout waiting for database connection\n");
@@ -337,21 +337,21 @@ static PGconn* acquire_connection(void) {
  */
 static void release_connection(PGconn* conn) {
     if (!conn) return;
-    
+
     pthread_mutex_lock(&g_pool.pool_lock);
-    
+
     for (int i = 0; i < CONN_POOL_SIZE; i++) {
         if (g_pool.connections[i].conn == conn) {
             pthread_mutex_lock(&g_pool.connections[i].lock);
             g_pool.connections[i].in_use = 0;
             pthread_mutex_unlock(&g_pool.connections[i].lock);
-            
+
             // Signal that a connection is available
             pthread_cond_signal(&g_pool.conn_available);
             break;
         }
     }
-    
+
     pthread_mutex_unlock(&g_pool.pool_lock);
 }
 
@@ -362,25 +362,25 @@ static void release_connection(PGconn* conn) {
  * @param max_count   Output capacity; must be positive.
  * @return            The number loaded, or 0 on invalid input or query failure.
  */
-int character_get_list_for_world(uint32_t account_id, uint32_t world_id, 
+int character_get_list_for_world(uint32_t account_id, uint32_t world_id,
                                   CharacterInfo* characters, int max_count) {
     if (!characters || max_count <= 0) {
         return 0;
     }
-    
+
     PGconn* conn = acquire_connection();
     if (!conn) {
         fprintf(stderr, "Failed to acquire connection for character list\n");
         return 0;
     }
-    
+
     char account_id_str[32];
     char world_id_str[32];
     snprintf(account_id_str, sizeof(account_id_str), "%u", account_id);
     snprintf(world_id_str, sizeof(world_id_str), "%u", world_id);
-    
+
     const char* param_values[2] = {account_id_str, world_id_str};
-    
+
     PGresult* res = PQexecParams(conn,
             "SELECT character_id, name, level, class_id, race_id, "
             "       pos_x, pos_y, health, max_health "
@@ -393,32 +393,32 @@ int character_get_list_for_world(uint32_t account_id, uint32_t world_id,
             param_values,
             NULL, NULL, 0
         );
-    
+
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Failed to get character list: %s\n", PQerrorMessage(conn));
         PQclear(res);
         release_connection(conn);
         return 0;
     }
-    
+
     int count = PQntuples(res);
     if (count > max_count) {
         count = max_count;
     }
-    
+
     for (int i = 0; i < count; i++) {
         characters[i].character_id = (uint32_t)strtoul(PQgetvalue(res, i, 0), NULL, 10);
         strncpy(characters[i].name, PQgetvalue(res, i, 1), 31);
         characters[i].name[31] = '\0';
         characters[i].level = (uint32_t)strtoul(PQgetvalue(res, i, 2), NULL, 10);
-        characters[i].player_class = (uint32_t)strtoul(PQgetvalue(res, i, 3), NULL, 10);
-        characters[i].player_race = (uint32_t)strtoul(PQgetvalue(res, i, 4), NULL, 10);
+        /* class_id and race_id hold the same fused identifier; class_id is authoritative. */
+        characters[i].race_id = (uint32_t)strtoul(PQgetvalue(res, i, 3), NULL, 10);
         characters[i].pos_x     = (float)strtod(PQgetvalue(res, i, 5), NULL);
         characters[i].pos_y     = (float)strtod(PQgetvalue(res, i, 6), NULL);
         characters[i].health    = (uint32_t)strtoul(PQgetvalue(res, i, 7), NULL, 10);
         characters[i].max_health = (uint32_t)strtoul(PQgetvalue(res, i, 8), NULL, 10);
     }
-    
+
     PQclear(res);
     release_connection(conn);
     return count;
@@ -435,14 +435,14 @@ int character_count_in_world(uint32_t account_id, uint32_t world_id) {
         fprintf(stderr, "Failed to acquire connection for character count\n");
         return 0;
     }
-    
+
     char account_id_str[32];
     char world_id_str[32];
     snprintf(account_id_str, sizeof(account_id_str), "%u", account_id);
     snprintf(world_id_str, sizeof(world_id_str), "%u", world_id);
-    
+
     const char* param_values[2] = {account_id_str, world_id_str};
-    
+
     PGresult* res = PQexecParams(conn,
         "SELECT COUNT(*) FROM characters WHERE account_id = $1 AND world_id = $2",
         2,
@@ -450,17 +450,17 @@ int character_count_in_world(uint32_t account_id, uint32_t world_id) {
         param_values,
         NULL, NULL, 0
     );
-    
+
     if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
         PQclear(res);
         release_connection(conn);
         return 0;
     }
-    
+
     int count = atoi(PQgetvalue(res, 0, 0));
     PQclear(res);
     release_connection(conn);
-    
+
     return count;
 }
 
@@ -473,19 +473,19 @@ int character_count_in_world(uint32_t account_id, uint32_t world_id) {
  * @param out_character_id  Receives the generated identifier; may not be NULL.
  * @return                  1 after a committed insert, or 0 on validation or database failure.
  */
-int character_create_in_world(uint32_t account_id, uint32_t world_id, 
-                              const char* name, int class_id, int race_id, 
+int character_create_in_world(uint32_t account_id, uint32_t world_id,
+                              const char* name, int class_id, int race_id,
                               uint32_t* out_character_id) {
     if (!name || !out_character_id) {
         return 0;
     }
-    
+
     PGconn* conn = acquire_connection();
     if (!conn) {
         fprintf(stderr, "Failed to acquire connection for character creation\n");
         return 0;
     }
-    
+
     // Begin transaction for atomicity
     PGresult* res = PQexec(conn, "BEGIN");
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -495,28 +495,37 @@ int character_create_in_world(uint32_t account_id, uint32_t world_id,
         return 0;
     }
     PQclear(res);
-    
+
     char account_id_str[32];
     char world_id_str[32];
     char class_id_str[32];
     char race_id_str[32];
-    
+
     snprintf(account_id_str, sizeof(account_id_str), "%u", account_id);
     snprintf(world_id_str, sizeof(world_id_str), "%u", world_id);
     snprintf(class_id_str, sizeof(class_id_str), "%d", class_id);
     snprintf(race_id_str, sizeof(race_id_str), "%d", race_id);
-    
-    // Compute initial stats for this class at level 1
+
+    /* Compute the level-1 starting values from the race registry. A race that is not
+     * loaded cannot produce them, and a character created anyway would start with zero
+     * health, so refuse the create instead of writing a broken row. */
     DerivedStats initial_stats;
-    class_stats_compute((uint8_t)class_id, 1, &initial_stats);
+    if (!class_stats_compute((uint32_t)class_id, 1, &initial_stats)) {
+        fprintf(stderr, "Refusing to create '%s': race %d is not in the registry\n",
+                name, class_id);
+        release_connection(conn);
+        return 0;
+    }
 
     char health_str[32], max_health_str[32];
     char mana_str[32], max_mana_str[32];
-    
+
     snprintf(health_str, sizeof(health_str), "%d", initial_stats.max_health);
     snprintf(max_health_str, sizeof(max_health_str), "%d", initial_stats.max_health);
-    snprintf(mana_str, sizeof(mana_str), "%d", initial_stats.max_mana);
-    snprintf(max_mana_str, sizeof(max_mana_str), "%d", initial_stats.max_mana);
+    /* The mana columns hold whichever resource the character's role selects. The
+     * schema keeps its original column names; only their meaning generalised. */
+    snprintf(mana_str, sizeof(mana_str), "%d", initial_stats.max_resource);
+    snprintf(max_mana_str, sizeof(max_mana_str), "%d", initial_stats.max_resource);
 
     const char* param_values[9] = {
         account_id_str,     // $1
@@ -536,7 +545,7 @@ int character_create_in_world(uint32_t account_id, uint32_t world_id,
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
         "RETURNING character_id",
         9, NULL, param_values, NULL, NULL, 0);
-    
+
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         fprintf(stderr, "Failed to create character: %s\n", PQerrorMessage(conn));
         PQclear(res);
@@ -544,7 +553,7 @@ int character_create_in_world(uint32_t account_id, uint32_t world_id,
         release_connection(conn);
         return 0;
     }
-    
+
     if (PQntuples(res) == 0) {
         fprintf(stderr, "Character creation returned no ID\n");
         PQclear(res);
@@ -552,10 +561,10 @@ int character_create_in_world(uint32_t account_id, uint32_t world_id,
         release_connection(conn);
         return 0;
     }
-    
+
     *out_character_id = (uint32_t)strtoul(PQgetvalue(res, 0, 0), NULL, 10);
     PQclear(res);
-    
+
     // Commit transaction
     res = PQexec(conn, "COMMIT");
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -566,11 +575,11 @@ int character_create_in_world(uint32_t account_id, uint32_t world_id,
         return 0;
     }
     PQclear(res);
-    
-    printf("Successfully created character '%s' (class %d) with ID %u for account %u in world %u (hp=%d, mana=%d)\n",
-           name, class_id, *out_character_id, account_id, world_id, 
-           initial_stats.max_health, initial_stats.max_mana);
-    
+
+    printf("Successfully created character '%s' (race %d) with ID %u for account %u in world %u (hp=%d, resource=%d)\n",
+           name, class_id, *out_character_id, account_id, world_id,
+           initial_stats.max_health, initial_stats.max_resource);
+
     release_connection(conn);
     return 1;
 }
@@ -586,14 +595,14 @@ int character_belongs_to_account(uint32_t character_id, uint32_t account_id) {
         fprintf(stderr, "Failed to acquire connection for ownership check\n");
         return 0;
     }
-    
+
     char character_id_str[32];
     char account_id_str[32];
     snprintf(character_id_str, sizeof(character_id_str), "%u", character_id);
     snprintf(account_id_str, sizeof(account_id_str), "%u", account_id);
-    
+
     const char* param_values[2] = {character_id_str, account_id_str};
-    
+
     PGresult* res = PQexecParams(conn,
         "SELECT 1 FROM characters WHERE character_id = $1 AND account_id = $2",
         2,
@@ -601,17 +610,17 @@ int character_belongs_to_account(uint32_t character_id, uint32_t account_id) {
         param_values,
         NULL, NULL, 0
     );
-    
+
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
         PQclear(res);
         release_connection(conn);
         return 0;
     }
-    
+
     int belongs = (PQntuples(res) > 0);
     PQclear(res);
     release_connection(conn);
-    
+
     return belongs;
 }
 
@@ -626,18 +635,18 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* char_info) {
         fprintf(stderr, "character_get_full_data: NULL char_info pointer\n");
         return 0;
     }
-    
+
     PGconn* conn = acquire_connection();
     if (!conn) {
         fprintf(stderr, "Failed to acquire connection for full character data\n");
         return 0;
     }
-    
+
     char character_id_str[32];
     snprintf(character_id_str, sizeof(character_id_str), "%u", character_id);
-    
+
     const char* param_values[1] = {character_id_str};
-    
+
     PGresult* res = PQexecParams(conn,
         "SELECT character_id, name, level, class_id, race_id, "
         "       pos_x, pos_y, health, max_health, mana, max_mana, experience, gold "
@@ -648,37 +657,36 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* char_info) {
         param_values,
         NULL, NULL, 0
     );
-    
+
     if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
         fprintf(stderr, "Failed to get full character data: %s\n", PQerrorMessage(conn));
         PQclear(res);
         release_connection(conn);
         return 0;
     }
-    
+
     // Parse all fields
     char_info->character_id = (uint32_t)strtoul(PQgetvalue(res, 0, 0), NULL, 10);
     strncpy(char_info->name, PQgetvalue(res, 0, 1), 31);
     char_info->name[31] = '\0';
     char_info->level = (uint32_t)strtoul(PQgetvalue(res, 0, 2), NULL, 10);
-    char_info->player_class = (uint32_t)strtoul(PQgetvalue(res, 0, 3), NULL, 10);
-    char_info->player_race = (uint32_t)strtoul(PQgetvalue(res, 0, 4), NULL, 10);
+    char_info->race_id = (uint32_t)strtoul(PQgetvalue(res, 0, 3), NULL, 10);
     char_info->pos_x = (float)strtod(PQgetvalue(res, 0, 5), NULL);
     char_info->pos_y = (float)strtod(PQgetvalue(res, 0, 6), NULL);
     char_info->health = (uint32_t)strtoul(PQgetvalue(res, 0, 7), NULL, 10);
     char_info->max_health = (uint32_t)strtoul(PQgetvalue(res, 0, 8), NULL, 10);
-    char_info->mana = (int32_t)strtol(PQgetvalue(res, 0, 9), NULL, 10);
-    char_info->max_mana = (int32_t)strtol(PQgetvalue(res, 0, 10), NULL, 10);
+    char_info->resource = (int32_t)strtol(PQgetvalue(res, 0, 9), NULL, 10);
+    char_info->max_resource = (int32_t)strtol(PQgetvalue(res, 0, 10), NULL, 10);
     char_info->experience = (uint64_t)strtoull(PQgetvalue(res, 0, 11), NULL, 10);
     char_info->gold = (uint32_t)strtoul(PQgetvalue(res, 0, 12), NULL, 10);
-    
+
     // item arrays load separately from character_items
     memset(char_info->inventory, 0, sizeof(char_info->inventory));
     memset(char_info->equipment, 0, sizeof(char_info->equipment));
 
     PQclear(res);
     release_connection(conn);
-    
+
     return 1;
 }
 
@@ -692,13 +700,13 @@ int character_update_full_data(const CharacterInfo* char_info) {
         fprintf(stderr, "character_update_full_data: NULL char_info pointer\n");
         return 0;
     }
-    
+
     PGconn* conn = acquire_connection();
     if (!conn) {
         fprintf(stderr, "Failed to acquire connection for character update\n");
         return 0;
     }
-    
+
     // Begin transaction
     PGresult* res = PQexec(conn, "BEGIN");
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -708,7 +716,7 @@ int character_update_full_data(const CharacterInfo* char_info) {
         return 0;
     }
     PQclear(res);
-    
+
     // item instances persist through character_items_save
     char character_id_str[32], level_str[32], pos_x_str[32], pos_y_str[32];
     char health_str[32], max_health_str[32], mana_str[32], max_mana_str[32];
@@ -720,8 +728,8 @@ int character_update_full_data(const CharacterInfo* char_info) {
     snprintf(pos_y_str, sizeof(pos_y_str), "%f", char_info->pos_y);
     snprintf(health_str, sizeof(health_str), "%u", char_info->health);
     snprintf(max_health_str, sizeof(max_health_str), "%u", char_info->max_health);
-    snprintf(mana_str, sizeof(mana_str), "%d", char_info->mana);
-    snprintf(max_mana_str, sizeof(max_mana_str), "%d", char_info->max_mana);
+    snprintf(mana_str, sizeof(mana_str), "%d", char_info->resource);
+    snprintf(max_mana_str, sizeof(max_mana_str), "%d", char_info->max_resource);
     snprintf(experience_str, sizeof(experience_str), "%lu", char_info->experience);
     snprintf(gold_str, sizeof(gold_str), "%u", char_info->gold);
 
@@ -749,7 +757,7 @@ int character_update_full_data(const CharacterInfo* char_info) {
         param_values,
         NULL, NULL, 0
     );
-    
+
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
         fprintf(stderr, "Failed to update character: %s\n", PQerrorMessage(conn));
         PQclear(res);
@@ -758,7 +766,7 @@ int character_update_full_data(const CharacterInfo* char_info) {
         return 0;
     }
     PQclear(res);
-    
+
     // Commit transaction
     res = PQexec(conn, "COMMIT");
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
@@ -768,7 +776,7 @@ int character_update_full_data(const CharacterInfo* char_info) {
         return 0;
     }
     PQclear(res);
-    
+
     release_connection(conn);
     return 1;
 }
@@ -1002,12 +1010,12 @@ uint32_t character_get_owner(uint32_t character_id) {
         fprintf(stderr, "Failed to acquire connection for owner check\n");
         return 0;
     }
-    
+
     char character_id_str[32];
     snprintf(character_id_str, sizeof(character_id_str), "%u", character_id);
-    
+
     const char* param_values[1] = {character_id_str};
-    
+
     PGresult* res = PQexecParams(conn,
         "SELECT account_id FROM characters WHERE character_id = $1",
         1,
@@ -1015,23 +1023,23 @@ uint32_t character_get_owner(uint32_t character_id) {
         param_values,
         NULL, NULL, 0
     );
-    
+
     if (PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) == 0) {
         if (PQresultStatus(res) == PGRES_TUPLES_OK) {
             fprintf(stderr, "Character %u not found in database\n", character_id);
         } else {
-            fprintf(stderr, "Database error getting character owner: %s\n", 
+            fprintf(stderr, "Database error getting character owner: %s\n",
                     PQerrorMessage(conn));
         }
         PQclear(res);
         release_connection(conn);
         return 0;
     }
-    
+
     uint32_t account_id = (uint32_t)strtoul(PQgetvalue(res, 0, 0), NULL, 10);
-    
+
     PQclear(res);
     release_connection(conn);
-    
+
     return account_id;
 }

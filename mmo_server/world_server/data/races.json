@@ -1,0 +1,606 @@
+{
+  "_comment": "The single source of race truth. Race and class fuse into one identifier: a character's class_id and race_id both hold the id below. Adding a race is one more block in this array plus its abilities in abilities.json - no code change, no recompile, no protocol bump, no migration.",
+  "_playable_comment": "Only races with a designed kit set playable. The other seven load, hold their identity and stat curve, and are simply not offered at character creation - which keeps them out of the client without special-casing anything in C.",
+  "_stats_comment": "base is whole points at level 1. per_level is tenths of a point per level, so growth can be fractional without floats: strength 30 means +3.0 per level. Every race must list all eleven stats in both blocks.",
+  "_passive_comment": "A passive's modifiers are its mechanics, and they resolve in Animal Form only - Human Form applies no passive for any race, which is what makes Human Form identical across all ten. value applies unconditionally; per_ally adds once per nearby ally up to max_allies. Passives whose effect is not a damage modifier, such as Herd Instinct's regeneration aura, carry no entries here.",
+  "_ferality_comment": "Ferality is identical across every race on purpose. It is the Animal Form power scalar - one value tuning the whole Human/Animal gap - not a way to make one race stronger. Tune the gap in progression.json via animal_power_per_ferality.",
+  "_spec_b_comment": "Spec B is out of scope for this milestone everywhere, including Wolf Tank. Each one is declared with its role and level gate so the registry shape is final, and carries no abilities until its kit is designed.",
+  "races": [
+    {
+      "id": 1,
+      "key": "wolf",
+      "name": "Wolf",
+      "latin": "Lupine",
+      "playable": true,
+      "passive": {
+        "key": "pack_sense",
+        "name": "Pack Sense",
+        "description": "Damage and speed scale with the number of nearby allies.",
+        "modifiers": [
+          {
+            "kind": "damage_dealt",
+            "value": 0.0,
+            "per_ally": 0.03,
+            "max_allies": 5
+          },
+          {
+            "kind": "move_speed",
+            "value": 0.0,
+            "per_ally": 4.0,
+            "max_allies": 5
+          }
+        ]
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "dps",
+          "default": true,
+          "abilities": [
+            "wolf_bite",
+            "wolf_claws",
+            "wolf_dash",
+            "wolf_growl",
+            "wolf_rend"
+          ]
+        },
+        {
+          "id": "b",
+          "role": "tank",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 225.0,
+      "stats": {
+        "base": {
+          "strength": 12,
+          "dexterity": 10,
+          "vitality": 7,
+          "intelligence": 2,
+          "focus": 3,
+          "endurance": 4,
+          "ferocity": 8,
+          "stamina_capacity": 12,
+          "precision": 8,
+          "ferality": 10,
+          "armor": 4
+        },
+        "per_level": {
+          "strength": 30,
+          "dexterity": 25,
+          "vitality": 18,
+          "intelligence": 5,
+          "focus": 8,
+          "endurance": 10,
+          "ferocity": 20,
+          "stamina_capacity": 28,
+          "precision": 20,
+          "ferality": 15,
+          "armor": 12
+        }
+      }
+    },
+    {
+      "id": 2,
+      "key": "bear",
+      "name": "Bear",
+      "latin": "Ursine",
+      "playable": true,
+      "passive": {
+        "key": "thick_hide",
+        "name": "Thick Hide",
+        "description": "Always on: 10% less damage taken while in Animal Form.",
+        "modifiers": [
+          {
+            "kind": "damage_taken",
+            "value": 0.1
+          }
+        ]
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "tank",
+          "default": true,
+          "abilities": [
+            "bear_tough_hide",
+            "bear_bite",
+            "bear_hibernate",
+            "bear_roar",
+            "bear_pounce"
+          ]
+        },
+        {
+          "id": "b",
+          "role": "tank",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 195.0,
+      "stats": {
+        "base": {
+          "strength": 11,
+          "dexterity": 4,
+          "vitality": 14,
+          "intelligence": 2,
+          "focus": 3,
+          "endurance": 12,
+          "ferocity": 5,
+          "stamina_capacity": 5,
+          "precision": 4,
+          "ferality": 10,
+          "armor": 10
+        },
+        "per_level": {
+          "strength": 25,
+          "dexterity": 10,
+          "vitality": 35,
+          "intelligence": 5,
+          "focus": 8,
+          "endurance": 30,
+          "ferocity": 12,
+          "stamina_capacity": 10,
+          "precision": 10,
+          "ferality": 15,
+          "armor": 30
+        }
+      }
+    },
+    {
+      "id": 3,
+      "key": "fox",
+      "name": "Fox",
+      "latin": "Vulpine",
+      "playable": false,
+      "passive": {
+        "key": "keen_senses",
+        "name": "Keen Senses",
+        "description": "Detects stealthed enemies and hidden traps at range.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "dps",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "dps",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 235.0,
+      "stats": {
+        "base": {
+          "strength": 7,
+          "dexterity": 13,
+          "vitality": 6,
+          "intelligence": 6,
+          "focus": 5,
+          "endurance": 4,
+          "ferocity": 7,
+          "stamina_capacity": 11,
+          "precision": 11,
+          "ferality": 10,
+          "armor": 4
+        },
+        "per_level": {
+          "strength": 15,
+          "dexterity": 32,
+          "vitality": 15,
+          "intelligence": 15,
+          "focus": 12,
+          "endurance": 8,
+          "ferocity": 18,
+          "stamina_capacity": 26,
+          "precision": 28,
+          "ferality": 15,
+          "armor": 10
+        }
+      }
+    },
+    {
+      "id": 4,
+      "key": "crow",
+      "name": "Crow",
+      "latin": "Corvine",
+      "playable": false,
+      "passive": {
+        "key": "windborne",
+        "name": "Windborne",
+        "description": "Flies over enemies and terrain. Travel only; confers no combat advantage.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "dps",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "healer",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 245.0,
+      "stats": {
+        "base": {
+          "strength": 5,
+          "dexterity": 12,
+          "vitality": 5,
+          "intelligence": 10,
+          "focus": 9,
+          "endurance": 3,
+          "ferocity": 6,
+          "stamina_capacity": 9,
+          "precision": 10,
+          "ferality": 10,
+          "armor": 3
+        },
+        "per_level": {
+          "strength": 10,
+          "dexterity": 30,
+          "vitality": 13,
+          "intelligence": 25,
+          "focus": 22,
+          "endurance": 6,
+          "ferocity": 15,
+          "stamina_capacity": 22,
+          "precision": 25,
+          "ferality": 15,
+          "armor": 8
+        }
+      }
+    },
+    {
+      "id": 5,
+      "key": "hawk",
+      "name": "Hawk",
+      "latin": "Accipitrine",
+      "playable": false,
+      "passive": {
+        "key": "marked_prey",
+        "name": "Marked Prey",
+        "description": "Marks a target so the whole party can see and focus it.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "dps",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "dps",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 240.0,
+      "stats": {
+        "base": {
+          "strength": 9,
+          "dexterity": 12,
+          "vitality": 6,
+          "intelligence": 4,
+          "focus": 4,
+          "endurance": 3,
+          "ferocity": 9,
+          "stamina_capacity": 11,
+          "precision": 13,
+          "ferality": 10,
+          "armor": 4
+        },
+        "per_level": {
+          "strength": 22,
+          "dexterity": 28,
+          "vitality": 15,
+          "intelligence": 8,
+          "focus": 10,
+          "endurance": 6,
+          "ferocity": 24,
+          "stamina_capacity": 26,
+          "precision": 32,
+          "ferality": 15,
+          "armor": 10
+        }
+      }
+    },
+    {
+      "id": 6,
+      "key": "deer",
+      "name": "Deer",
+      "latin": "Cervine",
+      "playable": true,
+      "passive": {
+        "key": "herd_instinct",
+        "name": "Herd Instinct",
+        "description": "Radiates a slow health regeneration aura to nearby allies.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "healer",
+          "default": true,
+          "abilities": [
+            "deer_ranged_shot",
+            "deer_mend",
+            "deer_renewal",
+            "deer_clear_mind",
+            "deer_bounty"
+          ]
+        },
+        {
+          "id": "b",
+          "role": "healer",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 215.0,
+      "stats": {
+        "base": {
+          "strength": 4,
+          "dexterity": 8,
+          "vitality": 8,
+          "intelligence": 11,
+          "focus": 13,
+          "endurance": 4,
+          "ferocity": 3,
+          "stamina_capacity": 5,
+          "precision": 6,
+          "ferality": 10,
+          "armor": 5
+        },
+        "per_level": {
+          "strength": 8,
+          "dexterity": 20,
+          "vitality": 20,
+          "intelligence": 28,
+          "focus": 32,
+          "endurance": 8,
+          "ferocity": 8,
+          "stamina_capacity": 10,
+          "precision": 15,
+          "ferality": 15,
+          "armor": 15
+        }
+      }
+    },
+    {
+      "id": 7,
+      "key": "snake",
+      "name": "Snake",
+      "latin": "Ophidian",
+      "playable": false,
+      "passive": {
+        "key": "",
+        "name": "",
+        "description": "Undesigned. The world bible flags this passive as unfixed; nothing is assumed here.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "dps",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "dps",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 205.0,
+      "stats": {
+        "base": {
+          "strength": 8,
+          "dexterity": 10,
+          "vitality": 6,
+          "intelligence": 8,
+          "focus": 6,
+          "endurance": 4,
+          "ferocity": 10,
+          "stamina_capacity": 10,
+          "precision": 9,
+          "ferality": 10,
+          "armor": 5
+        },
+        "per_level": {
+          "strength": 20,
+          "dexterity": 24,
+          "vitality": 15,
+          "intelligence": 20,
+          "focus": 14,
+          "endurance": 8,
+          "ferocity": 26,
+          "stamina_capacity": 24,
+          "precision": 22,
+          "ferality": 15,
+          "armor": 12
+        }
+      }
+    },
+    {
+      "id": 8,
+      "key": "rabbit",
+      "name": "Rabbit",
+      "latin": "Leporine",
+      "playable": false,
+      "passive": {
+        "key": "startle_reflex",
+        "name": "Startle Reflex",
+        "description": "Bursts of movement speed when struck, on a cooldown. Read as speed only: the Blessed model has no evasion stat and no miss chance.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "healer",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "healer",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 250.0,
+      "stats": {
+        "base": {
+          "strength": 3,
+          "dexterity": 13,
+          "vitality": 6,
+          "intelligence": 9,
+          "focus": 12,
+          "endurance": 3,
+          "ferocity": 3,
+          "stamina_capacity": 6,
+          "precision": 7,
+          "ferality": 10,
+          "armor": 3
+        },
+        "per_level": {
+          "strength": 6,
+          "dexterity": 32,
+          "vitality": 15,
+          "intelligence": 22,
+          "focus": 30,
+          "endurance": 6,
+          "ferocity": 8,
+          "stamina_capacity": 12,
+          "precision": 18,
+          "ferality": 15,
+          "armor": 8
+        }
+      }
+    },
+    {
+      "id": 9,
+      "key": "hyena",
+      "name": "Hyena",
+      "latin": "Hyaenine",
+      "playable": false,
+      "passive": {
+        "key": "bloodlust",
+        "name": "Bloodlust",
+        "description": "Heals for a share of the damage dealt to finish off a low-health enemy.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "tank",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "dps",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 210.0,
+      "stats": {
+        "base": {
+          "strength": 10,
+          "dexterity": 8,
+          "vitality": 11,
+          "intelligence": 3,
+          "focus": 3,
+          "endurance": 10,
+          "ferocity": 8,
+          "stamina_capacity": 7,
+          "precision": 6,
+          "ferality": 10,
+          "armor": 8
+        },
+        "per_level": {
+          "strength": 24,
+          "dexterity": 18,
+          "vitality": 28,
+          "intelligence": 6,
+          "focus": 8,
+          "endurance": 26,
+          "ferocity": 20,
+          "stamina_capacity": 14,
+          "precision": 16,
+          "ferality": 15,
+          "armor": 24
+        }
+      }
+    },
+    {
+      "id": 10,
+      "key": "cat",
+      "name": "Cat",
+      "latin": "Feline",
+      "playable": false,
+      "passive": {
+        "key": "predators_pounce",
+        "name": "Predator's Pounce",
+        "description": "Takes no fall damage, and lands from a fall with a temporary critical strike bonus.",
+        "modifiers": []
+      },
+      "specs": [
+        {
+          "id": "a",
+          "role": "dps",
+          "default": true,
+          "abilities": []
+        },
+        {
+          "id": "b",
+          "role": "dps",
+          "unlock_level": 20,
+          "abilities": []
+        }
+      ],
+      "base_move_speed": 240.0,
+      "stats": {
+        "base": {
+          "strength": 8,
+          "dexterity": 13,
+          "vitality": 6,
+          "intelligence": 4,
+          "focus": 4,
+          "endurance": 4,
+          "ferocity": 11,
+          "stamina_capacity": 11,
+          "precision": 12,
+          "ferality": 10,
+          "armor": 4
+        },
+        "per_level": {
+          "strength": 20,
+          "dexterity": 30,
+          "vitality": 15,
+          "intelligence": 8,
+          "focus": 10,
+          "endurance": 8,
+          "ferocity": 28,
+          "stamina_capacity": 26,
+          "precision": 30,
+          "ferality": 15,
+          "armor": 10
+        }
+      }
+    }
+  ]
+}

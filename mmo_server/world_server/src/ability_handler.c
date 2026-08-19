@@ -4,6 +4,8 @@
  */
 
 #include "ability_handler.h"
+#include "player_effects.h"
+#include "progression.h"
 #include "ability_def.h"
 #include "combat.h"
 #include "combat_stats.h"
@@ -33,7 +35,14 @@ static pthread_mutex_t    g_zones_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t           g_next_zone_id = 1;
 
 // Per-player mana regen accumulator (fractional mana between ticks)
+/** Carry the fractional part of resource regeneration between ticks.
+ *
+ * Mana and stamina accumulate upward; rage decay accumulates downward. A form swap
+ * changes which of the two a slot is doing, so the accumulator is cleared on the
+ * swap — otherwise a fraction banked as regeneration would be spent as decay. */
 static float g_mana_accum[MAX_PLAYERS];
+
+
 
 static double get_time(void) {
     struct timespec ts;
@@ -73,11 +82,23 @@ static int find_player_slot(uint32_t character_id) {
     return player_slot_of(character_id);
 }
 
+/**
+ * Find an ability on the hotbar of the form the player is currently in.
+ *
+ * Only the active form's row is searched: an ability the player owns but which
+ * belongs to the other form is not castable right now.
+ *
+ * @param out_slot  Receives the slot index; may be NULL.
+ * @return          1 when the ability is on the active bar, or 0 otherwise.
+ */
 static int player_has_ability(ActivePlayer* player, uint16_t ability_id, int* out_slot) {
-    int count = player->ability_count;
+    uint8_t form = player->form < FORM_COUNT ? player->form : FORM_HUMAN;
+
+    int count = player->ability_count[form];
     if (count > MAX_ABILITY_SLOTS) count = MAX_ABILITY_SLOTS;
+
     for (int i = 0; i < count; i++) {
-        if (player->ability_slots[i] == ability_id) {
+        if (player->ability_slots[form][i] == ability_id) {
             if (out_slot) *out_slot = i;
             return 1;
         }
@@ -213,43 +234,25 @@ static void send_remove_zone(int client_fd, uint32_t zone_id) {
  */
 static void apply_effect_to_player(ActivePlayer* player, const AbilityEffectDef* effect,
                                    uint32_t source_id) {
-    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
-        if (!player->active_effects[i].active) {
-            player->active_effects[i].active             = 1;
-            player->active_effects[i].effect_type        = (uint8_t)effect->type;
-            player->active_effects[i].buff_stat          = (uint8_t)effect->stat;
-            player->active_effects[i].value              = effect->value;
-            player->active_effects[i].duration_remaining = effect->duration;
-            player->active_effects[i].tick_rate          = effect->tick_rate;
-            player->active_effects[i].tick_remaining     = effect->tick_rate;
-            player->active_effects[i].source_id          = source_id;
-
-            // Immediately apply stat buff to player fields
-            if (effect->type == EFFECT_BUFF) {
-                int val = effect->value;
-                switch (effect->stat) {
-                    case STAT_STRENGTH:     player->strength     += val; break;
-                    case STAT_AGILITY:
-                        player->agility    += val;
-                        player->move_speed += (float)val * AGI_SPEED_FACTOR;
-                        break;
-                    case STAT_INTELLIGENCE: player->intelligence += val; break;
-                    case STAT_WISDOM:       player->wisdom       += val; break;
-                    case STAT_REG:          player->reg          += val; break;
-                    case STAT_DEFENSE:      player->defense      += val; break;
-                    case STAT_SPEED:        player->move_speed   += (float)val; break;
-                    default: break;
-                }
-            }
-            return;
-        }
-    }
-    printf("[EFFECT] No free effect slot on player %u\n", player->character_id);
+    player_effect_apply(player, effect, source_id);
 }
 
+/**
+ * Apply one ability effect to an NPC.
+ *
+ * The caller must hold the NPC world's lock.
+ */
 static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
                                 uint32_t source_id) {
-    (void)source_id;
+    if (effect->type == EFFECT_TAUNT) {
+        npc->taunt_source_id  = source_id;
+        npc->taunt_expires_at = get_time() + effect->duration;
+        npc->ai_target_id     = source_id;
+        printf("[EFFECT] NPC %u taunted by %u for %.1fs\n",
+               npc->id, source_id, effect->duration);
+        return;
+    }
+
     printf("[EFFECT] Applied %d to NPC %u (val=%d, dur=%.1fs)\n",
            effect->type, npc->id, effect->value, effect->duration);
 }
@@ -337,11 +340,14 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
     // Snapshot caster stats
     ActivePlayer* caster = player_acquire(caster_id);
     if (caster) {
-        info.caster_strength     = caster->strength;
-        info.caster_agility      = caster->agility;
-        info.caster_intelligence = caster->intelligence;
-        info.caster_wisdom       = caster->wisdom;
-        info.damage             += caster->weapon_damage;
+        memcpy(info.caster_stats, caster->stats, sizeof(info.caster_stats));
+        info.damage += caster->weapon_damage;
+
+        /* Snapshot the caster's outgoing modifiers and form power at launch: the
+         * projectile may land long after the cast, and its damage should reflect the
+         * moment it was fired. */
+        player_collect_modifiers(caster, 0, &info.caster_mods);
+        info.damage = (int)((float)info.damage * player_form_power(caster));
         player_release(caster);
     }
     info.damage_stat = (int)ability->damage_stat;
@@ -355,40 +361,51 @@ static void spawn_ability_projectile(const AbilityDef* ability, uint32_t caster_
 }
 
 /**
- * Calculate ability damage after scaling, conditional bonuses, variance, and defense.
+ * Calculate ability damage after scaling, conditional bonuses, crit, variance, and armor.
  *
- * @return Final damage clamped to at least one.
+ * @param out_condition_held  Receives 1 when the execute branch fired; may be NULL.
+ * @param out_is_crit         Receives 1 on a critical strike; may be NULL.
+ * @return                    Final damage, never below one.
  */
 static int calc_ability_damage(int base_damage, const AbilityBonusDamageDef* bonus,
                                int target_health, int target_max_health,
-                               int target_defense,
-                               int caster_str, int caster_agi,
-                               int caster_int, int caster_wis,
-                               int damage_stat) {
-    // 1. Scale base damage by the stat named in the ability definition.
-    //    damage_stat is a StatType int; STAT_NONE (0) means no scaling.
-    float mult = combat_ability_damage_mult(damage_stat,
-                                            caster_str, caster_agi,
-                                            caster_int, caster_wis);
+                               int target_armor,
+                               const int* caster_stats,
+                               const DamageModifiers* caster_mods,
+                               int damage_stat,
+                               uint8_t* out_condition_held,
+                               uint8_t* out_is_crit) {
+    /* 1. Scale base damage by the attribute named in the ability definition.
+     *    damage_stat is a StatType int; anything outside 0..STAT_COUNT means no scaling. */
+    float mult = combat_ability_damage_mult(damage_stat, caster_stats);
     int damage = (int)((float)base_damage * mult);
 
-    // 2. Bonus damage condition (e.g. execute)
+    /* 2. The execute branch. Whether it fired is reported back, because effects
+     *    marked onCondition fire on exactly the same condition. */
+    if (out_condition_held) *out_condition_held = 0;
     if (bonus && bonus->condition == 1 && target_max_health > 0) {
         float hp_pct = (float)target_health / (float)target_max_health * 100.0f;
         if (hp_pct <= bonus->threshold) {
             damage = (int)((float)damage * bonus->multiplier);
+            if (out_condition_held) *out_condition_held = 1;
         }
     }
+
+    uint8_t is_crit = (uint8_t)combat_check_crit(caster_stats[STAT_PRECISION]);
+    if (is_crit) {
+        damage = (int)((float)damage * combat_crit_multiplier(caster_stats[STAT_FEROCITY]));
+    }
+    if (out_is_crit) *out_is_crit = is_crit;
 
     // 3. Random variance (±10%)
     int variance = (rand() % 21) - 10;
     damage += (damage * variance) / 100;
 
-    // 4. Defense reduction
-    damage = combat_apply_defense(damage, target_defense);
+    DamageModifiers target_mods;
+    damage_mods_reset(&target_mods);
+    damage_mods_add_armor(&target_mods, target_armor);
 
-    if (damage < 1) damage = 1;
-    return damage;
+    return damage_resolve(damage, caster_mods, &target_mods);
 }
 
 /**
@@ -410,34 +427,169 @@ void ability_handler_cleanup(void) {
 }
 
 /**
- * Send a player's first five slotted ability definitions to its client.
+ * Rebuild both forms' hotbars from the race registry and the player's level.
+ *
+ * The caller must hold the player's lock.
  */
-void ability_send_data(int client_fd, ActivePlayer* player) {
+void ability_refresh_hotbars(ActivePlayer* player) {
+    if (!player) return;
+
+    for (uint8_t form = 0; form < FORM_COUNT; form++) {
+        uint16_t candidates[MAX_ABILITY_SLOTS * 2];
+        int found = ability_get_form_abilities(
+            (uint8_t)player->race_id, form, candidates,
+            (int)(sizeof(candidates) / sizeof(candidates[0])));
+
+        uint8_t filled = 0;
+        for (int i = 0; i < found && filled < MAX_ABILITY_SLOTS; i++) {
+            const AbilityDef* ability = ability_get(candidates[i]);
+            if (!ability || player->level < ability->unlock_level) continue;
+            player->ability_slots[form][filled++] = ability->id;
+        }
+        for (uint8_t i = filled; i < MAX_ABILITY_SLOTS; i++) {
+            player->ability_slots[form][i] = 0;
+        }
+        player->ability_count[form] = filled;
+    }
+}
+
+/**
+ * Return the seconds remaining on one hotbar slot's cooldown.
+ *
+ * @return Zero when the slot is ready, out of range, or empty.
+ */
+float ability_slot_cooldown_remaining(const ActivePlayer* player, uint8_t form, int slot) {
+    return (float)player_cooldown_remaining(player, form, slot, get_time());
+}
+
+/**
+ * Send the ability bar for one form.
+ */
+void ability_send_form_data(int client_fd, ActivePlayer* player, uint8_t form) {
+    if (!player || form >= FORM_COUNT) return;
+
     AbilityDataPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type         = PACKET_ABILITY_DATA;
     pkt.header.player_id    = htonl(player->character_id);
     pkt.header.payload_size = htons((uint16_t)(sizeof(AbilityDataPacket) - sizeof(PacketHeader)));
+    pkt.form                = form;
 
-    uint8_t count = (player->ability_count < 5) ? player->ability_count : 5;
+    uint8_t count = player->ability_count[form];
+    if (count > MAX_ABILITY_SLOTS) count = MAX_ABILITY_SLOTS;
     pkt.count = count;
 
     for (int i = 0; i < count; i++) {
-        const AbilityDef* ab = ability_get(player->ability_slots[i]);
-        if (!ab) continue;
-        pkt.slots[i].id        = htons(ab->id);
-        strncpy(pkt.slots[i].name, ab->name, 23);
+        const AbilityDef* ability = ability_get(player->ability_slots[form][i]);
+        if (!ability) continue;
+
+        pkt.slots[i].id        = htons(ability->id);
+        strncpy(pkt.slots[i].name, ability->name, 23);
         pkt.slots[i].name[23]  = '\0';
-        pkt.slots[i].cooldown  = ab->cooldown;
-        pkt.slots[i].cast_time = ab->cast_time;
-        pkt.slots[i].mana_cost = (int16_t)ab->mana_cost;
-        strncpy(pkt.slots[i].image, ab->image, 31);
+        pkt.slots[i].cooldown  = ability->cooldown;
+        pkt.slots[i].cast_time = ability->cast_time;
+        pkt.slots[i].resource_cost = (int16_t)ability->resource_cost;
+        strncpy(pkt.slots[i].image, ability->image, 31);
         pkt.slots[i].image[31] = '\0';
     }
 
     server_send(client_fd, &pkt, sizeof(pkt));
-    printf("[ABILITY] Sent ability data: %d slots to player %u\n",
-           count, player->character_id);
+}
+
+/**
+ * Send the ability bars for both forms.
+ *
+ * Both are sent, not just the active one, so the client can render the other bar
+ * the instant a swap is acknowledged rather than waiting for a round trip.
+ */
+void ability_send_data(int client_fd, ActivePlayer* player) {
+    if (!player) return;
+
+    for (uint8_t form = 0; form < FORM_COUNT; form++) {
+        ability_send_form_data(client_fd, player, form);
+    }
+    printf("[ABILITY] Sent %d/%d slots (human/animal) to player %u\n",
+           player->ability_count[FORM_HUMAN], player->ability_count[FORM_ANIMAL],
+           player->character_id);
+}
+
+/**
+ * Reply to a form-swap request with the authoritative state either way.
+ *
+ * The caller must hold the player's lock.
+ */
+static void send_form_swap_ack(int client_fd, const ActivePlayer* player, uint8_t accepted) {
+    FormSwapAckPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type         = PACKET_FORM_SWAP_ACK;
+    pkt.header.player_id    = htonl(player->character_id);
+    pkt.header.payload_size = htons((uint16_t)(sizeof(FormSwapAckPacket) - sizeof(PacketHeader)));
+
+    pkt.accepted      = accepted;
+    pkt.form          = player->form;
+    pkt.resource_type = player->resource_type;
+    pkt.resource      = htonl(player->resource);
+    pkt.max_resource  = htonl(player->max_resource);
+
+    double swap_wait = player->form_swap_ready_at - get_time();
+    pkt.swap_ready_in = swap_wait > 0.0 ? (float)swap_wait : 0.0f;
+
+    for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
+        pkt.ability_ready_in[i] = ability_slot_cooldown_remaining(player, player->form, i);
+    }
+
+    server_send(client_fd, &pkt, sizeof(pkt));
+}
+
+/**
+ * Handle a client's request to swap forms.
+ *
+ * Nothing here touches a cooldown. They are absolute expiry instants that kept
+ * running while the player was in the other form, so swapping out and back cannot
+ * produce a shorter wait than never swapping at all.
+ */
+void ability_handle_form_swap(int client_fd, uint32_t caster_id, uint8_t requested_form) {
+    ActivePlayer* player = player_acquire(caster_id);
+    if (!player) return;
+
+    if (requested_form >= FORM_COUNT || requested_form == player->form) {
+        send_form_swap_ack(client_fd, player, 0);
+        player_release(player);
+        return;
+    }
+
+    /* A swap while stunned or channelling would be a free escape from both. */
+    if (player_is_action_locked(player)) {
+        send_form_swap_ack(client_fd, player, 0);
+        player_release(player);
+        return;
+    }
+
+    double now = get_time();
+    if (now < player->form_swap_ready_at) {
+        send_form_swap_ack(client_fd, player, 0);
+        player_release(player);
+        return;
+    }
+
+    player->form = requested_form;
+    player->form_swap_ready_at = now + progression_config()->form_swap_cooldown;
+    /* Discard any banked regeneration fraction: the accumulator counts upward for
+     * mana and stamina and downward for rage, and the swap may change which. */
+    int accum_slot = find_player_slot(caster_id);
+    if (accum_slot >= 0 && accum_slot < MAX_PLAYERS) g_mana_accum[accum_slot] = 0.0f;
+
+    /* The resource pool follows the form: Human Form has none at all. Recomputing
+     * also re-resolves the race passive, which applies in Animal Form only. */
+    player_recompute_stats(player);
+
+    int fd = player->client_fd;
+    send_form_swap_ack(client_fd, player, 1);
+    ability_send_form_data(fd, player, player->form);
+
+    printf("[FORM] Player %u swapped to %s form\n", caster_id,
+           requested_form == FORM_ANIMAL ? "animal" : "human");
+    player_release(player);
 }
 
 /**
@@ -519,7 +671,22 @@ void ability_handle_cast_intent(NPCWorld* world,
         return;
     }
 
-    if (ability->class_id != caster->player_class) {
+    /* An ability belongs to a race, except the universal Human Form kit, which
+     * belongs to none. Both cases are covered by one check. */
+    if (ability->race_id != 0 && ability->race_id != caster->race_id) {
+        player_release(caster);
+        send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
+        return;
+    }
+
+    if (ability->form != caster->form) {
+        player_release(caster);
+        send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
+        return;
+    }
+
+    /* Hibernate locks the bear out of acting for its duration; so does a stun. */
+    if (player_is_action_locked(caster)) {
         player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
@@ -538,7 +705,10 @@ void ability_handle_cast_intent(NPCWorld* world,
         return;
     }
 
-    if (caster->ability_cooldowns[ability_slot] > 0.0f) {
+    /* Cooldowns are absolute instants, so this comparison is the whole of "always
+     * ticking": nothing decremented them while the player was in the other form, and
+     * nothing needs to. */
+    if (!player_slot_is_ready(caster, caster->form, ability_slot, get_time())) {
         player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
@@ -563,16 +733,16 @@ void ability_handle_cast_intent(NPCWorld* world,
         return;
     }
 
-    if (ability->mana_cost > 0 && caster->mana < ability->mana_cost) {
+    if (ability->resource_cost > 0 && caster->resource < ability->resource_cost) {
         pthread_mutex_unlock(&g_ability_casts_lock);
         player_release(caster);
         send_ability_cast_cancel(client_fd, caster_id, ability_id, 3);
         return;
     }
 
-    if (ability->mana_cost > 0) {
-        caster->mana -= ability->mana_cost;
-        send_mana_update(client_fd, caster_id, caster->mana, caster->max_mana);
+    if (ability->resource_cost > 0) {
+        caster->resource -= ability->resource_cost;
+        send_mana_update(client_fd, caster_id, caster->resource, caster->max_resource);
     }
 
     float origin_x = caster->pos_x;
@@ -607,7 +777,7 @@ void ability_handle_cast_intent(NPCWorld* world,
 }
 
 /**
- * Cancel a pending cast and refund its mana cost.
+ * Cancel a pending cast and refund its resource cost.
  */
 void ability_handle_cast_cancel(int client_fd, uint32_t caster_id) {
     int slot = find_player_slot(caster_id);
@@ -620,12 +790,14 @@ void ability_handle_cast_cancel(int client_fd, uint32_t caster_id) {
         g_ability_casts[slot].is_active = 0;
 
         const AbilityDef* ability = ability_get(ability_id);
-        if (ability && ability->mana_cost > 0) {
+        if (ability && ability->resource_cost > 0) {
             ActivePlayer* caster = player_acquire(caster_id);
             if (caster) {
-                caster->mana += ability->mana_cost;
-                if (caster->mana > caster->max_mana) caster->mana = caster->max_mana;
-                send_mana_update(client_fd, caster_id, caster->mana, caster->max_mana);
+                caster->resource += ability->resource_cost;
+                if (caster->resource > caster->max_resource) {
+                    caster->resource = caster->max_resource;
+                }
+                send_mana_update(client_fd, caster_id, caster->resource, caster->max_resource);
                 player_release(caster);
             }
         }
@@ -655,9 +827,20 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
     float aim_x        = cast->aim_x;
     float aim_y        = cast->aim_y;
 
-    // Snapshot caster stats
-    int c_str = 0, c_agi = 0, c_int = 0, c_wis = 0, c_wpn = 0, c_luck = 0, c_reg = 0;
+    /* Snapshot the caster's attributes and modifiers once, then resolve against
+     * them. Anything that happens to the caster mid-resolution — a buff expiring, a
+     * form swap — must not change the outcome of a cast already committed. */
+    int c_stats[STAT_COUNT] = {0};
+    int c_wpn = 0;
+    float c_form_power = 1.0f;
+    DamageModifiers c_mods;
+    damage_mods_reset(&c_mods);
     int caster_found = 0;
+
+    /* Track whether any target met the ability's bonus-damage condition, so the
+     * caster's own onCondition effects fire once for the cast rather than once per
+     * target — Rend costs the wolf one bite of self damage, not one per enemy. */
+    uint8_t any_condition_held = 0;
 
     // --- Movement abilities ---
     float dash_start_x = origin_x;
@@ -670,17 +853,16 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             caster_found = 1;
             int ability_slot = -1;
             if (player_has_ability(caster, cast->ability_id, &ability_slot)) {
+                /* Store when the slot becomes ready, not how long is left. Dexterity
+                 * is attack and cast speed, so it shortens the wait. */
                 float cd = ability->cooldown *
-                           combat_int_cooldown_mult(caster->intelligence);
-                caster->ability_cooldowns[ability_slot] = cd;
+                           combat_haste_multiplier(caster->stats[STAT_DEXTERITY]);
+                player_start_cooldown(caster, caster->form, ability_slot, get_time(), cd);
             }
-            c_str  = caster->strength;
-            c_agi  = caster->agility;
-            c_int  = caster->intelligence;
-            c_wis  = caster->wisdom;
-            c_wpn  = caster->weapon_damage;
-            c_luck = caster->luck;
-            c_reg  = caster->reg;
+            memcpy(c_stats, caster->stats, sizeof(c_stats));
+            c_wpn = caster->weapon_damage;
+            c_form_power = player_form_power(caster);
+            player_collect_modifiers(caster, 0, &c_mods);
             caster->last_combat_time = get_time();
 
             if (ability->movement.type != MOVEMENT_NONE) {
@@ -740,22 +922,37 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
         return;
     }
 
-    // --- Ally healing (unchanged) ---
-    if (ability->target_type == ABILITY_TARGET_ALLY && ability->healing > 0) {
+    /* --- Abilities aimed at allies ---
+     *
+     * Gated on having something to deliver, not on healing specifically. A support
+     * ability whose whole payload is an effect — Clear Mind's cleanse, Bounty's
+     * resource restore — carries no healing at all, and gating on healing alone made
+     * both of them do nothing.
+     */
+    if (ability->target_type == ABILITY_TARGET_ALLY &&
+        (ability->healing > 0 || ability->heal_percent > 0 || ability->effect_count > 0)) {
         if (cast->target_id != 0) {
             ActivePlayer* target = player_acquire(cast->target_id);
             if (target) {
                 float d = dist2d(origin_x, origin_y, target->pos_x, target->pos_y);
                 if (d <= ability->range || ability->range == 0.0f) {
-                    // Healing scales with REG stat, crits with luck
-                    float reg_mult = combat_reg_heal_mult(c_reg);
-                    int total_heal = (int)((float)ability->healing * reg_mult);
-                    uint8_t heal_crit = (uint8_t)combat_check_crit(c_luck);
-                    if (heal_crit) total_heal = (int)((float)total_heal * CRIT_DAMAGE_MULTIPLIER);
+                    /* Healing scales with Focus and crits on Precision. */
+                    int total_heal = (int)((float)ability->healing *
+                                           combat_healing_multiplier(c_stats[STAT_FOCUS]) *
+                                           c_form_power);
+                    total_heal += percent_of_max(target->max_health,
+                                                 effect_permille_to_fraction(ability->heal_percent));
+                    uint8_t heal_crit = (uint8_t)combat_check_crit(c_stats[STAT_PRECISION]);
+                    if (heal_crit) {
+                        total_heal = (int)((float)total_heal *
+                                           combat_crit_multiplier(c_stats[STAT_FEROCITY]));
+                    }
 
-                    target->health += total_heal;
-                    if (target->health > target->max_health)
-                        target->health = target->max_health;
+                    if (total_heal > 0) {
+                        target->health += total_heal;
+                        if (target->health > target->max_health)
+                            target->health = target->max_health;
+                    }
 
                     send_ability_effect(client_fd, caster_id, cast->target_id,
                                         cast->ability_id, 0, total_heal,
@@ -773,13 +970,15 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
                 player_release(target);
             }
         } else if (ability->aoe.shape != ABILITY_AOE_NONE) {
-            // Healing scales with REG stat, crits with luck
-            float reg_mult = combat_reg_heal_mult(c_reg);
-            int base_heal  = (int)((float)ability->healing * reg_mult);
+            /* Healing scales with Focus and crits on Precision. */
+            int base_heal = (int)((float)ability->healing *
+                                  combat_healing_multiplier(c_stats[STAT_FOCUS]) *
+                                  c_form_power);
             // Roll crit once for the whole AoE pulse — same result for all targets
-            uint8_t heal_crit = (uint8_t)combat_check_crit(c_luck);
-            int total_heal = heal_crit ? (int)((float)base_heal * CRIT_DAMAGE_MULTIPLIER)
-                                       : base_heal;
+            uint8_t heal_crit = (uint8_t)combat_check_crit(c_stats[STAT_PRECISION]);
+            int total_heal = heal_crit
+                ? (int)((float)base_heal * combat_crit_multiplier(c_stats[STAT_FEROCITY]))
+                : base_heal;
 
             player_registry_rdlock();
             int online_count = 0;
@@ -819,8 +1018,14 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
         return;
     }
 
-    // --- Damage to NPCs — snapshot under lock, send after unlock ---
-    if (ability->damage > 0) {
+    /* --- Enemy-targeted resolution — snapshot under lock, send after unlock ---
+     *
+     * Gated on reaching enemies at all, not on damage. A pure debuff like Growl deals
+     * nothing and exists entirely to put an effect on what it hits; gating on damage
+     * meant it never touched an enemy.
+     */
+    if (ability->damage > 0 ||
+        (ability->effect_count > 0 && ability->target_type == ABILITY_TARGET_ENEMY)) {
         float aim_dx = aim_x - origin_x;
         float aim_dy = aim_y - origin_y;
 
@@ -831,7 +1036,6 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             int      new_health;
             uint8_t  is_kill;
             uint8_t  is_crit;
-            uint8_t  evaded;
             uint64_t xp_reward;
             uint32_t gold_reward;
             uint16_t npc_type_id;
@@ -891,29 +1095,25 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             if (!hit) continue;
             if (hit_count >= MAX_ABILITY_HITS) break;
 
-            // Evasion check
-            if (combat_check_evasion(npc->evasion)) {
-                hits[hit_count].npc_id     = npc->id;
-                hits[hit_count].damage     = 0;
-                hits[hit_count].new_health = npc->health;
-                hits[hit_count].is_kill    = 0;
-                hits[hit_count].evaded     = 1;
-                hits[hit_count].xp_reward  = 0;
-                hit_count++;
-                if (ability->aoe.shape == ABILITY_AOE_NONE && !had_movement) break;
-                continue;
+            /* There is no dodge roll: an ability that reaches an NPC connects. */
+            uint8_t condition_held = 0;
+            uint8_t is_crit = 0;
+            int damage = 0;
+
+            /* An ability with no damage of its own deals none: weapon damage rides
+             * along with a strike, not with a shout. */
+            if (ability->damage > 0) {
+                damage = calc_ability_damage(
+                    (int)((float)(ability->damage + c_wpn) * c_form_power),
+                    &ability->bonus_damage,
+                    npc->health, npc->max_health,
+                    npc->armor, c_stats, &c_mods,
+                    (int)ability->damage_stat, &condition_held, &is_crit);
+                if (condition_held) any_condition_held = 1;
+
+                npc->health -= damage;
+                if (npc->health < 0) npc->health = 0;
             }
-
-            int damage = calc_ability_damage(ability->damage + c_wpn, &ability->bonus_damage,
-                                              npc->health, npc->max_health,
-                                              npc->defense,
-                                              c_str, c_agi, c_int, c_wis,
-                                              (int)ability->damage_stat);
-            uint8_t is_crit = (uint8_t)combat_check_crit(c_luck);
-            if (is_crit) damage = (int)((float)damage * CRIT_DAMAGE_MULTIPLIER);
-
-            npc->health -= damage;
-            if (npc->health < 0) npc->health = 0;
 
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
             if (is_kill) {
@@ -924,6 +1124,10 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             }
 
             for (int e = 0; e < ability->effect_count; e++) {
+                /* Effects gated on the execute branch fire only when it did, and
+                 * self-directed effects belong to the caster, not the target. */
+                if (ability->effects[e].on_condition && !condition_held) continue;
+                if (ability->effects[e].self) continue;
                 apply_effect_to_npc(npc, &ability->effects[e], caster_id);
             }
 
@@ -932,7 +1136,6 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
             hits[hit_count].new_health = npc->health;
             hits[hit_count].is_kill    = is_kill;
             hits[hit_count].is_crit    = is_crit;
-            hits[hit_count].evaded     = 0;
             hits[hit_count].xp_reward   = is_kill ? npc->xp_reward : 0;
             hits[hit_count].gold_reward = is_kill ? npc->gold_reward : 0;
             hits[hit_count].npc_type_id = npc->npc_type_id;
@@ -947,20 +1150,14 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
 
         // Send results outside world lock
         for (int h = 0; h < hit_count; h++) {
-            if (hits[h].evaded) {
-                send_ability_effect(client_fd, caster_id, hits[h].npc_id,
-                                    cast->ability_id, 0, 0, hits[h].new_health, 0, 0);
-                printf("[ABILITY] '%s' MISSED NPC %u (evasion)\n",
-                       ability->name, hits[h].npc_id);
-            } else {
-                send_ability_effect(client_fd, caster_id, hits[h].npc_id,
-                                    cast->ability_id, hits[h].damage, 0,
-                                    hits[h].new_health, hits[h].is_kill, hits[h].is_crit);
-                printf("[ABILITY] '%s' hit NPC %u for %d dmg%s (hp=%d)%s\n",
-                       ability->name, hits[h].npc_id, hits[h].damage,
-                       hits[h].is_crit ? " (CRIT)" : "",
-                       hits[h].new_health, hits[h].is_kill ? " — KILLED" : "");
-            }
+            /* Every hit connects: there is no dodge roll left to report. */
+            send_ability_effect(client_fd, caster_id, hits[h].npc_id,
+                                cast->ability_id, hits[h].damage, 0,
+                                hits[h].new_health, hits[h].is_kill, hits[h].is_crit);
+            printf("[ABILITY] '%s' hit NPC %u for %d dmg%s (hp=%d)%s\n",
+                   ability->name, hits[h].npc_id, hits[h].damage,
+                   hits[h].is_crit ? " (CRIT)" : "",
+                   hits[h].new_health, hits[h].is_kill ? " — KILLED" : "");
 
             if (hits[h].is_kill) {
                 if (hits[h].xp_reward > 0) {
@@ -981,22 +1178,43 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world) {
         }
     }
 
-    // --- Self-buff on damage abilities ---
-    if (ability->aoe.shape != ABILITY_AOE_NONE && ability->effect_count > 0 &&
-        ability->target_type == ABILITY_TARGET_ENEMY) {
-        ActivePlayer* p = player_acquire(caster_id);
-        if (p) {
-            for (int e = 0; e < ability->effect_count; e++) {
-                if (ability->effects[e].type == EFFECT_BUFF) {
-                    apply_effect_to_player(p, &ability->effects[e], caster_id);
-                    send_status_effect_apply(client_fd, caster_id,
-                                             (uint8_t)ability->effects[e].type,
-                                             ability->effects[e].value,
-                                             ability->effects[e].duration,
-                                             caster_id);
-                }
+    /* --- Effects the caster applies to itself ---
+     *
+     * This covers Guard and Tough Hide, whose whole payload is a self modifier; the
+     * self-heal on Bite; and Rend's execute branch, whose self damage and resistance
+     * window fire once for the cast rather than once per enemy struck.
+     */
+    {
+        ActivePlayer* self = player_acquire(caster_id);
+        if (self) {
+            if (ability->heal_self && ability->heal_percent > 0) {
+                int healed = percent_of_max(self->max_health,
+                                            effect_permille_to_fraction(ability->heal_percent));
+                self->health += healed;
+                if (self->health > self->max_health) self->health = self->max_health;
+
+                send_ability_effect(client_fd, caster_id, caster_id, cast->ability_id,
+                                    0, healed, self->health, 0, 0);
             }
-            player_release(p);
+
+            for (int e = 0; e < ability->effect_count; e++) {
+                const AbilityEffectDef* effect = &ability->effects[e];
+
+                /* An effect goes where the ability points unless it says otherwise.
+                 * There used to be a heuristic here sending any buff on an enemy AoE
+                 * to the caster, which predates the `self` flag and sent Growl's
+                 * armour shred to the wolf instead of to what it growled at. */
+                int is_self_directed = effect->self ||
+                                       ability->target_type == ABILITY_TARGET_SELF;
+
+                if (!is_self_directed) continue;
+                if (effect->on_condition && !any_condition_held) continue;
+
+                apply_effect_to_player(self, effect, caster_id);
+                send_status_effect_apply(client_fd, caster_id, (uint8_t)effect->type,
+                                         effect->value, effect->duration, caster_id);
+            }
+            player_release(self);
         }
     }
 
@@ -1024,31 +1242,14 @@ void ability_tick(NPCWorld* world, double delta_time) {
     }
     pthread_mutex_unlock(&g_ability_casts_lock);
 
-    // tick cooldowns
-    player_registry_rdlock();
-    int online_count = 0;
-    const int* online = player_active_list_locked(&online_count);
-    for (int n = 0; n < online_count; n++) {
-        int i = online[n];
-        if (!active_players[i].is_loaded) continue;
-        pthread_mutex_lock(&active_players[i].lock);
-        int acount = active_players[i].ability_count;
-        if (acount > MAX_ABILITY_SLOTS) acount = MAX_ABILITY_SLOTS;
-        for (int s = 0; s < acount; s++) {
-            if (active_players[i].ability_cooldowns[s] > 0.0f) {
-                active_players[i].ability_cooldowns[s] -= dt;
-                if (active_players[i].ability_cooldowns[s] < 0.0f)
-                    active_players[i].ability_cooldowns[s] = 0.0f;
-            }
-        }
-        pthread_mutex_unlock(&active_players[i].lock);
-    }
-    player_registry_unlock();
+    /* Cooldowns are not ticked. They are absolute expiry instants on the monotonic
+     * clock, so both forms' bars advance on their own with no work per player per
+     * frame — which is also exactly why a form swap cannot skip one. */
 
     // tick status effects
     player_registry_rdlock();
-    // refresh the list for this registry lock lifetime
-    online = player_active_list_locked(&online_count);
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
     for (int n = 0; n < online_count; n++) {
         int i = online[n];
         if (!active_players[i].is_loaded) continue;
@@ -1069,34 +1270,43 @@ void ability_tick(NPCWorld* world, double delta_time) {
                 pkt.target_id        = htonl(active_players[i].character_id);
                 pkt.effect_type      = active_players[i].active_effects[e].effect_type;
                 server_send(active_players[i].client_fd, &pkt, sizeof(pkt));
-                // Recalculate stats after buff expires; re-add any remaining buffs
+                /* Rebuild from the race curve so the expired buff's contribution is
+                 * gone and every surviving one is still counted. */
                 if (was_buff) {
-                    player_reapply_stat_buffs(&active_players[i]);
+                    player_recompute_stats(&active_players[i]);
                 }
                 continue;
             }
 
             uint8_t etype = active_players[i].active_effects[e].effect_type;
-            if ((etype == EFFECT_DOT || etype == EFFECT_HOT) &&
-                active_players[i].active_effects[e].tick_rate > 0.0f) {
+            int ticks = (etype == EFFECT_DOT || etype == EFFECT_HOT ||
+                         etype == EFFECT_HOT_PERCENT);
 
+            if (ticks && active_players[i].active_effects[e].tick_rate > 0.0f) {
                 active_players[i].active_effects[e].tick_remaining -= dt;
                 if (active_players[i].active_effects[e].tick_remaining <= 0.0f) {
                     active_players[i].active_effects[e].tick_remaining =
                         active_players[i].active_effects[e].tick_rate;
 
-                    int value = active_players[i].active_effects[e].value;
+                    ActivePlayer* player = &active_players[i];
+                    int value = player->active_effects[e].value;
+
                     if (etype == EFFECT_HOT) {
-                        active_players[i].health += value;
-                        if (active_players[i].health > active_players[i].max_health)
-                            active_players[i].health = active_players[i].max_health;
-                    } else if (etype == EFFECT_DOT) {
-                        active_players[i].health -= value;
-                        if (active_players[i].health < 0)
-                            active_players[i].health = 0;
+                        player->health += value;
+                    } else if (etype == EFFECT_HOT_PERCENT) {
+                        /* Percent-of-max healing: the shape Second Wind and Hibernate
+                         * both need, and the one a flat integer cannot express. */
+                        player->health += percent_of_max(player->max_health,
+                                                         effect_permille_to_fraction(value));
+                    } else {
+                        player->health -= value;
                         // DOTs count as combat for HP regen suppression
-                        active_players[i].last_combat_time = now;
+                        player->last_combat_time = now;
+                        player_add_rage(player, 0, value);
                     }
+
+                    if (player->health > player->max_health) player->health = player->max_health;
+                    if (player->health < 0) player->health = 0;
                 }
             }
         }
@@ -1169,34 +1379,56 @@ void ability_tick(NPCWorld* world, double delta_time) {
     }
     pthread_mutex_unlock(&g_zones_lock);
 
-    // regenerate mana
+    /* Regenerate the resource pool. Mana and stamina refill toward their maximum;
+     * rage runs the other way, building through combat and decaying out of it, so it
+     * is handled by the same loop with the sign reversed rather than by a second one. */
     player_registry_rdlock();
     online = player_active_list_locked(&online_count);
     for (int n = 0; n < online_count; n++) {
         int i = online[n];
         if (!active_players[i].is_loaded) continue;
-        if (active_players[i].max_mana == 0) continue;
 
         pthread_mutex_lock(&active_players[i].lock);
 
-        if (active_players[i].mana < active_players[i].max_mana) {
-            float regen_rate = combat_mana_regen_rate(active_players[i].wisdom);
-            float regen = regen_rate * dt;
-            g_mana_accum[i] += regen;
+        ActivePlayer* player = &active_players[i];
+        int changed = 0;
 
-            if (g_mana_accum[i] >= 1.0f) {
-                int regen_int = (int)g_mana_accum[i];
-                g_mana_accum[i] -= (float)regen_int;
+        if (player->resource_type == RESOURCE_RAGE) {
+            const ProgressionConfig* cfg = progression_config();
+            double idle = get_time() - player->last_combat_time;
 
-                active_players[i].mana += regen_int;
-                if (active_players[i].mana > active_players[i].max_mana)
-                    active_players[i].mana = active_players[i].max_mana;
+            if (idle >= cfg->rage_decay_delay && player->resource > 0) {
+                g_mana_accum[i] -= (float)(cfg->rage_decay_per_second * dt);
+                if (g_mana_accum[i] <= -1.0f) {
+                    int decay = (int)(-g_mana_accum[i]);
+                    g_mana_accum[i] += (float)decay;
 
-                send_mana_update(active_players[i].client_fd,
-                                 active_players[i].character_id,
-                                 active_players[i].mana,
-                                 active_players[i].max_mana);
+                    player->resource -= decay;
+                    if (player->resource < 0) player->resource = 0;
+                    changed = 1;
+                }
             }
+        } else if (player->max_resource > 0 && player->resource < player->max_resource) {
+            StatId governing = (player->resource_type == RESOURCE_STAMINA)
+                ? STAT_STAMINA_CAPACITY : STAT_FOCUS;
+
+            g_mana_accum[i] += combat_resource_regen_rate(player->resource_type,
+                                                          player->stats[governing]) * dt;
+            if (g_mana_accum[i] >= 1.0f) {
+                int regen = (int)g_mana_accum[i];
+                g_mana_accum[i] -= (float)regen;
+
+                player->resource += regen;
+                if (player->resource > player->max_resource) {
+                    player->resource = player->max_resource;
+                }
+                changed = 1;
+            }
+        }
+
+        if (changed) {
+            send_mana_update(player->client_fd, player->character_id,
+                             player->resource, player->max_resource);
         }
 
         pthread_mutex_unlock(&active_players[i].lock);
