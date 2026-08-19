@@ -316,4 +316,29 @@ $(TEST_BIN)/%: $(TEST_DIR)/%.c $(WORLDGEN_SRC) | $(TEST_BIN)
 test: $(TESTS)
 	@for t in $(TESTS); do echo "=== $$t ==="; ./$$t || exit 1; done
 
-.PHONY: all launcher game dirs clean clean-launcher clean-game run run-launcher run-game list-sources list-objects test
+# ---------------------------------------------------------------------------
+# World generation
+#
+# Produces the ~1 GB world.dat consumed by BOTH the client and the world
+# server. The two copies must stay byte-identical.
+#
+# This block must stay AFTER the WORLDGEN_SRC assignment above: make expands a
+# rule's prerequisites as it reads the rule, so placing it earlier would build
+# worldgen from world_generator.c alone and fail to link every worldgen_ symbol.
+# ---------------------------------------------------------------------------
+WORLDGEN_BIN     = Game/data/bin
+SERVER_DATA_DIR ?= ../mmo_server/world_server/data
+
+$(WORLDGEN_BIN):
+	mkdir -p $(WORLDGEN_BIN)
+
+$(WORLDGEN_BIN)/worldgen: Game/data/src/world_generator.c $(WORLDGEN_SRC) | $(WORLDGEN_BIN)
+	$(CC) $(CFLAGS) -I$(GAME_INCLUDE_DIR) -o $@ $^ -lm
+
+world: $(WORLDGEN_BIN)/worldgen
+	./$(WORLDGEN_BIN)/worldgen $(GAME_BIN_DIR)/world.dat
+	@echo "Copying world.dat to the world server..."
+	cp $(GAME_BIN_DIR)/world.dat $(SERVER_DATA_DIR)/world.dat
+	@echo "world.dat installed to $(GAME_BIN_DIR) and $(SERVER_DATA_DIR)"
+
+.PHONY: all launcher game dirs clean clean-launcher clean-game run run-launcher run-game list-sources list-objects test world
