@@ -174,17 +174,27 @@ int world_character_get_list(uint32_t account_id, uint32_t world_id,
     
     const char* param_values[2] = {account_id_str, world_id_str};
     
+    // Ordering is by character_id, not created_at DESC.
+    //
+    // created_at DESC put each newly created character FIRST, renumbering every
+    // existing row, so a client index captured before a create pointed at a
+    // different character afterwards. character_id is the serial primary key:
+    // unique, monotonic with creation, and already indexed, so ordering by it
+    // is stable and append-only -- existing positions never move.
+    //
+    // world_id is now actually applied. It was accepted as a parameter, built
+    // into param_values, and then never used: the query passed a parameter
+    // count of 1 and filtered on account_id alone. That is currently masked
+    // because each world has its own database, but it made the world_id
+    // argument a lie and would silently mix worlds the moment two share one.
     PGresult* res = PQexecParams(conn,
         "SELECT character_id, name, level, class_id, race_id, "
         "       pos_x, pos_y, pos_z, health, max_health "
         "FROM characters "
-        "WHERE account_id = $1 "
-        "ORDER BY created_at DESC "
+        "WHERE account_id = $1 AND world_id = $2 "
+        "ORDER BY character_id ASC "
         "LIMIT 10",
-        1,  // Only 1 parameter now
-        NULL,
-        &param_values[0],  // Just account_id
-        NULL, NULL, 0
+        2, NULL, param_values, NULL, NULL, 0
     );
     
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
@@ -232,12 +242,16 @@ int world_character_count(uint32_t account_id, uint32_t world_id) {
     if (!conn) return -1;
 
     char account_id_str[32];
+    char world_id_str[32];
     snprintf(account_id_str, sizeof(account_id_str), "%u", account_id);
-    const char* params[1] = {account_id_str};
+    snprintf(world_id_str, sizeof(world_id_str), "%u", world_id);
+    const char* params[2] = {account_id_str, world_id_str};
 
+    // Scoped to the world whose per-world limit this count enforces; it
+    // previously counted on account_id alone.
     PGresult* res = PQexecParams(conn,
-        "SELECT COUNT(*) FROM characters WHERE account_id = $1",
-        1, NULL, params, NULL, NULL, 0);
+        "SELECT COUNT(*) FROM characters WHERE account_id = $1 AND world_id = $2",
+        2, NULL, params, NULL, NULL, 0);
 
     int count = -1;
     if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1) {
@@ -310,8 +324,18 @@ int world_character_create(uint32_t account_id, uint32_t world_id,
     *out_character_id = (uint32_t)strtoul(PQgetvalue(res, 0, 0), NULL, 10);
     PQclear(res);
     
-    // Commit
+    // Commit. An unchecked COMMIT meant a failed transaction still returned
+    // success: the client was told the character existed, then the very next
+    // list query correctly showed it missing.
     res = PQexec(conn, "COMMIT");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Failed to commit character '%s' in world %u: %s\n",
+                name, world_id, PQerrorMessage(conn));
+        PQclear(res);
+        PQexec(conn, "ROLLBACK");
+        release_world_connection(world_id, conn);
+        return 0;
+    }
     PQclear(res);
      
     release_world_connection(world_id, conn);
