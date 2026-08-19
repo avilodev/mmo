@@ -1,0 +1,20 @@
+# Line-ending policy
+#
+# The repository stores every text file with LF. Windows editors that rewrite a
+# file with CRLF used to show up as a whole-file diff (a 37-line Makefile edit
+# appeared as 608 changed lines), which buried real changes during review.
+# `text=auto` lets git detect text vs binary; `eol=lf` pins the stored form.
+
+* text=auto eol=lf
+
+# Windows batch scripts are launched by cmd.exe and keep CRLF.
+*.bat text eol=crlf
+
+# Binary assets: never diffed, never normalized.
+*.png   binary
+*.webp  binary
+*.ttf   binary
+*.TTF   binary
+*.a     binary
+*.piskel binary
+*.dat   binary
