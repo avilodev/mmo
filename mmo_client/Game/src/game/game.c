@@ -227,6 +227,7 @@ void game_render(GameState* game) {
  * Release game-owned resources and persist current settings.
  */
 void game_cleanup(GameState* game) {
+    printf("[SHUTDOWN]   state exit...\n"); fflush(stdout);
     // Exit current state
     const StateHandler* handler = state_handler_get(game->mode);
     if (handler && handler->exit) {
@@ -248,6 +249,7 @@ void game_cleanup(GameState* game) {
     // Free NPC type table
     npc_types_cleanup();
 
+    printf("[SHUTDOWN]   world...\n"); fflush(stdout);
     // Free world (closes file, frees chunks)
     world_cleanup(&game->world);
     
@@ -255,11 +257,13 @@ void game_cleanup(GameState* game) {
     // (gameplay textures are already unloaded by playing_exit)
     if (game->textures.background) texture_unload(game->textures.background);
     
+    printf("[SHUTDOWN]   settings + audio...\n"); fflush(stdout);
     // Save settings and shut down audio
     game_settings_save(&game->settings, SETTINGS_PATH);
     audio_cleanup();
 
     printf("[GAME] Cleaned up\n");
+    fflush(stdout);
 }
 
 /**

@@ -49,8 +49,20 @@ void audio_init(void) {
  * Stop playback and release audio state.
  */
 void audio_cleanup(void) {
+    // Halt any asynchronous sound effect first. PlaySoundA was started with
+    // SND_ASYNC, so a sound may still be playing on its own thread; stopping it
+    // before touching MCI keeps the two subsystems from tearing down at once.
+    PlaySoundA(NULL, NULL, 0);
+
     audio_stop_music();
+
+    // Belt and braces: close every MCI device this process still owns, even one
+    // opened under a different alias or left behind by a failed open. Shutdown
+    // must not depend on g_music_open being an accurate record.
+    mciSendStringA("close all", NULL, 0, NULL);
+
     printf("[AUDIO] Cleaned up\n");
+    fflush(stdout);
 }
 
 /**
@@ -128,9 +140,11 @@ void audio_play_music(const char* path, int loop) {
  */
 void audio_stop_music(void) {
     if (!g_music_open) return;
+    // Clear the flag before the calls, not after: if a close ever wedges, a
+    // later audio_cleanup must not queue the same command again behind it.
+    g_music_open = 0;
     mciSendStringA("stop bgm",  NULL, 0, NULL);
     mciSendStringA("close bgm", NULL, 0, NULL);
-    g_music_open = 0;
 }
 
 /**

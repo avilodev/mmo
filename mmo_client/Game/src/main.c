@@ -323,18 +323,36 @@ int main(int argc, char* argv[]) {
     }
     
     printf("\n=== Shutting Down ===\n");
-    
+    fflush(stdout);
+
+    // Drain pending window messages before teardown.
+    //
+    // Nothing pumps the message queue once the loop exits, and the window stops
+    // responding the moment that happens -- so any teardown step that waits on a
+    // message shows up as a frozen window rather than a slow exit. Draining here
+    // lets queued close/focus messages settle first.
+    for (int i = 0; i < 3; i++) glfwPollEvents();
+
+    // Each step announces itself and flushes, so a hang names the step it is in
+    // instead of leaving a silent frozen window.
+    printf("[SHUTDOWN] network...\n"); fflush(stdout);
     if (game.network_connected) {
         network_disconnect();
     }
     network_cleanup();
-    
+
+    printf("[SHUTDOWN] game...\n"); fflush(stdout);
     game_cleanup(&game);
+
+    printf("[SHUTDOWN] renderer...\n"); fflush(stdout);
     renderer_cleanup();
+
+    printf("[SHUTDOWN] glfw...\n"); fflush(stdout);
     glfwTerminate();
-    
+
     g_current_game = NULL;
     printf("Goodbye!\n");
+    fflush(stdout);
     
     return 0;
 }
