@@ -54,6 +54,8 @@ typedef struct {
 
     struct { BOOL ready; WorldListResponsePacket       data; } world_list;
     struct { BOOL ready; CharacterListResponsePacket   data; } char_list;
+    struct { BOOL ready; RaceListResponsePacket         data; } race_list;
+    struct { BOOL ready; FormSwapAckPacket              data; } form_swap;
     struct { BOOL ready; CharacterCreateResponsePacket data; } char_create;
     struct { BOOL ready; CharacterDeleteResponsePacket data; } char_delete;
     struct { BOOL ready; EnterWorldResponsePacket      data; } enter_world;
@@ -97,6 +99,32 @@ static double get_time(void) {
     return glfwGetTime();
 }
 
+/** Name each attribute for logging, in StatId order. */
+static const char* const k_stat_labels[STAT_COUNT] = {
+    "STR", "DEX", "VIT", "INT", "FOC", "END", "FER", "STA", "PRE", "FRL", "ARM"
+};
+
+/**
+ * Print the local player's attributes on one line.
+ *
+ * Driven by the stat array rather than named fields, so a new stat appears in the log
+ * as soon as it exists on the wire.
+ */
+static void log_player_stats(const char* prefix) {
+    if (!g_current_game || !g_current_game->playing) return;
+
+    char line[256];
+    size_t used = 0;
+    for (int s = 0; s < STAT_COUNT && used < sizeof(line) - 1; s++) {
+        int written = snprintf(line + used, sizeof(line) - used, "%s%s=%d",
+                               s ? " " : "", k_stat_labels[s],
+                               g_current_game->playing->player_stats[s]);
+        if (written < 0) break;
+        used += (size_t)written;
+    }
+    printf("%s: %s\n", prefix, line);
+}
+
 /**
  * Validate and dispatch one complete protocol packet.
  *
@@ -107,13 +135,13 @@ static double get_time(void) {
  */
 static void process_packet(const char* data, int length) {
     if (length < (int)sizeof(PacketHeader)) {
-        printf("[NET] ⚠️ Packet too small: %d bytes (need at least %zu)\n", 
+        printf("[NET] ⚠️ Packet too small: %d bytes (need at least %zu)\n",
                length, sizeof(PacketHeader));
         return;
     }
-    
+
     PacketHeader* header = (PacketHeader*)data;
-    
+
     switch (header->type) {
         case PACKET_PING:
             // Server echoed our ping back — measure RTT
@@ -124,18 +152,18 @@ static void process_packet(const char* data, int length) {
                     g_net.ping_ms = (int)rtt;
             }
             break;
-            
+
         case PACKET_WORLD_LIST_RESPONSE: {
             size_t base_size = offsetof(WorldListResponsePacket, worlds);
-            
+
             if (length < (int)base_size) {
                 printf("[NET] ❌ WORLD_LIST packet too small: %d < %zu\n", length, base_size);
                 return;
             }
-            
+
             WorldListResponsePacket* pkt = (WorldListResponsePacket*)data;
             uint8_t claimed_count = pkt->count;
-            
+
             size_t wire_size = base_size +
                                (size_t)claimed_count * sizeof(WorldInfo);
             if (length < (int)wire_size) {
@@ -178,15 +206,15 @@ static void process_packet(const char* data, int length) {
             printf("[NET] ✓ World list received: %d worlds validated\n", claimed_count);
             break;
         }
-            
+
         case PACKET_CHARACTER_LIST_RESPONSE: {
             size_t base_size = offsetof(CharacterListResponsePacket, characters);
-            
+
             if (length < (int)base_size) {
                 printf("[NET] ❌ CHAR_LIST packet too small: %d < %zu\n", length, base_size);
                 return;
             }
-            
+
             CharacterListResponsePacket* pkt = (CharacterListResponsePacket*)data;
             uint8_t claimed_count = pkt->count;
 
@@ -217,7 +245,58 @@ static void process_packet(const char* data, int length) {
             printf("[NET] ✓ Character list received: %d chars validated\n", claimed_count);
             break;
         }
-            
+
+        case PACKET_RACE_LIST_RESPONSE: {
+            size_t base_size = offsetof(RaceListResponsePacket, races);
+            if (length < (int)base_size) {
+                printf("[NET] RACE_LIST packet too small: %d < %zu\n", length, base_size);
+                return;
+            }
+
+            RaceListResponsePacket* pkt = (RaceListResponsePacket*)data;
+            uint8_t claimed_count = pkt->count;
+            if (claimed_count > MAX_RACE_LIST) {
+                printf("[NET] Server claims %d races, clamping to %d\n",
+                       claimed_count, MAX_RACE_LIST);
+                claimed_count = MAX_RACE_LIST;
+            }
+
+            size_t needed = base_size + (size_t)claimed_count * sizeof(pkt->races[0]);
+            if (length < (int)needed) {
+                printf("[NET] RACE_LIST incomplete: have %d bytes, need %zu\n", length, needed);
+                return;
+            }
+
+            EnterCriticalSection(&g_net.response_lock);
+            memset(&g_net.race_list.data, 0, sizeof(g_net.race_list.data));
+            memcpy(&g_net.race_list.data, data, needed);
+            g_net.race_list.data.count = claimed_count;
+
+            /* Terminate every string field: these are rendered directly. */
+            for (int i = 0; i < claimed_count; i++) {
+                RaceInfo* race = &g_net.race_list.data.races[i];
+                race->key[sizeof(race->key) - 1] = '\0';
+                race->name[sizeof(race->name) - 1] = '\0';
+                race->latin[sizeof(race->latin) - 1] = '\0';
+                race->passive_name[sizeof(race->passive_name) - 1] = '\0';
+                race->passive_desc[sizeof(race->passive_desc) - 1] = '\0';
+            }
+
+            g_net.race_list.ready = TRUE;
+            LeaveCriticalSection(&g_net.response_lock);
+            printf("[NET] Race list received: %d races\n", claimed_count);
+            break;
+        }
+
+        case PACKET_FORM_SWAP_ACK:
+            if (length >= (int)sizeof(FormSwapAckPacket)) {
+                EnterCriticalSection(&g_net.response_lock);
+                memcpy(&g_net.form_swap.data, data, sizeof(FormSwapAckPacket));
+                g_net.form_swap.ready = TRUE;
+                LeaveCriticalSection(&g_net.response_lock);
+            }
+            break;
+
         case PACKET_CHARACTER_CREATE_RESPONSE:
             if (length >= (int)sizeof(CharacterCreateResponsePacket)) {
                 EnterCriticalSection(&g_net.response_lock);
@@ -261,7 +340,7 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Realm connect ACK received: success=%d\n", g_net.realm_connect_ack.data.success);
             }
             break;
-            
+
         case PACKET_WORLD_CONNECT_ACK:
             if (length >= (int)sizeof(WorldConnectAckPacket)) {
                 EnterCriticalSection(&g_net.response_lock);
@@ -272,7 +351,7 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] World connect ACK received\n");
             }
             break;
-            
+
         case PACKET_PLAYER_DATA_RESPONSE:
             if (length >= (int)sizeof(CharacterInfo)) {
                 EnterCriticalSection(&g_net.response_lock);
@@ -290,7 +369,7 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Character data received\n");
             }
             break;
-            
+
         case PACKET_INVENTORY_UPDATE:
             if (length >= (int)(sizeof(PacketHeader) + 4)) {
                 InventoryUpdatePacket* pkt = (InventoryUpdatePacket*)data;
@@ -342,7 +421,7 @@ static void process_packet(const char* data, int length) {
                 LeaveCriticalSection(&g_net.response_lock);
             }
             break;
-            
+
         case PACKET_ATTACK_RESULT:
             if (length >= (int)sizeof(AttackResultPacket)) {
                 AttackResultPacket* pkt = (AttackResultPacket*)data;
@@ -351,16 +430,16 @@ static void process_packet(const char* data, int length) {
                 }
             }
             break;
-            
+
         case PACKET_CAST_START_V2:
             if (length >= (int)sizeof(CastStartV2Packet)) {
                 CastStartV2Packet* pkt = (CastStartV2Packet*)data;
-                
+
                 uint32_t targets[MAX_COMBAT_TARGETS];
                 for (int i = 0; i < pkt->target_count && i < MAX_COMBAT_TARGETS; i++) {
                     targets[i] = ntohl(pkt->target_ids[i]);
                 }
-                
+
                 if (g_current_game && g_current_game->playing) {
                     combat_on_cast_start(&g_current_game->playing->combat,
                                         pkt->attack_type,
@@ -371,7 +450,7 @@ static void process_packet(const char* data, int length) {
                 }
             }
             break;
-            
+
         case PACKET_DAMAGE_V2:
             if (length >= (int)sizeof(DamageV2Packet)) {
                 DamageV2Packet* pkt = (DamageV2Packet*)data;
@@ -516,9 +595,12 @@ static void process_packet(const char* data, int length) {
             if (length >= (int)sizeof(ManaUpdatePacket)) {
                 ManaUpdatePacket* pkt = (ManaUpdatePacket*)data;
                 if (g_current_game && g_current_game->playing) {
-                    int32_t mana = (int32_t)ntohl(pkt->mana);
-                    int32_t max_mana = (int32_t)ntohl(pkt->max_mana);
-                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar, mana, max_mana);
+                    /* The pair generalised rather than multiplied: whichever pool the
+                     * character's role selects travels on this update. */
+                    int32_t resource = (int32_t)ntohl(pkt->mana);
+                    int32_t max_resource = (int32_t)ntohl(pkt->max_mana);
+                    ability_bar_on_resource_update(&g_current_game->playing->ability_bar,
+                                                   resource, max_resource);
                 }
             }
             break;
@@ -545,15 +627,20 @@ static void process_packet(const char* data, int length) {
                     names[i]      = name_bufs[i];
                     cooldowns[i]  = pkt->slots[i].cooldown;
                     cast_times[i] = pkt->slots[i].cast_time;
-                    costs[i]      = (int)pkt->slots[i].mana_cost;
+                    costs[i]      = (int)pkt->slots[i].resource_cost;
                     memcpy(image_bufs[i], pkt->slots[i].image, 31);
                     image_bufs[i][31] = '\0';
                     images[i]     = image_bufs[i];
                 }
 
-                ability_bar_set_abilities(&g_current_game->playing->ability_bar,
-                                          ids, names, cooldowns, cast_times, costs, images, count);
-                printf("[NET] Ability data received: %d slots\n", count);
+                /* Each packet carries one form's bar. The server sends both on entry,
+                 * so the client can render either without a round trip. */
+                uint8_t form = pkt->form < FORM_COUNT ? pkt->form : FORM_HUMAN;
+                ability_bar_set_form_abilities(&g_current_game->playing->ability_bar, form,
+                                               ids, names, cooldowns, cast_times, costs,
+                                               images, count);
+                printf("[NET] Ability data received: %d slots for %s form\n",
+                       count, form == FORM_ANIMAL ? "animal" : "human");
             }
             break;
 
@@ -619,34 +706,34 @@ static void process_packet(const char* data, int length) {
                 }
             }
             break;
-            
+
         case PACKET_NPC_POSITIONS: {
             size_t base_size = offsetof(NPCPositionPacket, npcs);
-            
+
             if (length < (int)base_size) {
                 printf("[NET] ❌ NPC_POSITIONS packet too small: %d < %zu\n", length, base_size);
                 return;
             }
-            
+
             NPCPositionPacket* pkt = (NPCPositionPacket*)data;
             uint8_t claimed_count = pkt->npc_count;
-            
+
             size_t expected_size = base_size + (claimed_count * sizeof(NPCPositionData));
-            
+
             if (length < (int)expected_size) {
                 printf("[NET] ❌ NPC_POSITIONS incomplete: have %d bytes, need %zu for %d NPCs\n",
                        length, expected_size, claimed_count);
                 return;
             }
-            
+
             if (claimed_count > MAX_NPCS_PER_PACKET) {
                 printf("[NET] ⚠️ Server claims %d NPCs, clamping to %d\n",
                        claimed_count, MAX_NPCS_PER_PACKET);
                 claimed_count = MAX_NPCS_PER_PACKET;
             }
-            
+
             printf("[NET] NPC positions received: %d NPCs\n", claimed_count);
-            
+
             if (g_current_game && g_current_game->playing) {
                 int old_count = g_current_game->playing->visible_npc_count;
                 g_current_game->playing->visible_npc_count = claimed_count;
@@ -711,25 +798,20 @@ static void process_packet(const char* data, int length) {
                     uint32_t new_level    = ntohl(pkt->new_level);
                     uint32_t new_hp       = ntohl(pkt->new_health);
                     uint32_t new_max_hp   = ntohl(pkt->new_max_health);
-                    uint32_t new_mana     = ntohl(pkt->new_mana);
-                    uint32_t new_max_mana = ntohl(pkt->new_max_mana);
+                    uint32_t new_mana     = ntohl(pkt->new_resource);
+                    uint32_t new_max_mana = ntohl(pkt->new_max_resource);
 
                     g_current_game->player.info.level      = new_level;
                     g_current_game->player.info.health     = new_hp;
                     g_current_game->player.info.max_health = new_max_hp;
 
-                    g_current_game->playing->player_strength      = (int32_t)ntohl(pkt->strength);
-                    g_current_game->playing->player_agility       = (int32_t)ntohl(pkt->agility);
-                    g_current_game->playing->player_intelligence   = (int32_t)ntohl(pkt->intelligence);
-                    g_current_game->playing->player_wisdom         = (int32_t)ntohl(pkt->wisdom);
-                    g_current_game->playing->player_defense        = (int32_t)ntohl(pkt->defense);
-                    g_current_game->playing->player_evasion        = (int32_t)ntohl(pkt->evasion);
-                    g_current_game->playing->player_vitality       = (int32_t)ntohl(pkt->vitality);
-                    g_current_game->playing->player_luck           = (int32_t)ntohl(pkt->luck);
-                    g_current_game->playing->player_xp_for_next    = mmo_ntohll(pkt->xp_for_next_level);
+                    for (int s = 0; s < STAT_COUNT; s++) {
+                        g_current_game->playing->player_stats[s] = (int32_t)ntohl(pkt->stats[s]);
+                    }
+                    g_current_game->playing->player_xp_for_next = mmo_ntohll(pkt->xp_for_next_level);
 
-                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
-                                               (int32_t)new_mana, (int32_t)new_max_mana);
+                    ability_bar_on_resource_update(&g_current_game->playing->ability_bar,
+                                                   (int32_t)new_mana, (int32_t)new_max_mana);
 
                     g_current_game->playing->show_level_up      = 1;
                     g_current_game->playing->level_up_timer      = 3.0f;
@@ -738,15 +820,7 @@ static void process_packet(const char* data, int length) {
 
                     printf("[NET] LEVEL UP! Now level %u (HP=%u/%u, Mana=%u/%u)\n",
                            new_level, new_hp, new_max_hp, new_mana, new_max_mana);
-                    printf("[NET] Stats: STR=%d AGI=%d INT=%d WIS=%d DEF=%d EVA=%d VIT=%d LCK=%d\n",
-                           g_current_game->playing->player_strength,
-                           g_current_game->playing->player_agility,
-                           g_current_game->playing->player_intelligence,
-                           g_current_game->playing->player_wisdom,
-                           g_current_game->playing->player_defense,
-                           g_current_game->playing->player_evasion,
-                           g_current_game->playing->player_vitality,
-                           g_current_game->playing->player_luck);
+                    log_player_stats("[NET] Level-up stats");
                 }
             }
             break;
@@ -755,48 +829,42 @@ static void process_packet(const char* data, int length) {
             if (length >= (int)sizeof(PlayerStatsPacket)) {
                 PlayerStatsPacket* pkt = (PlayerStatsPacket*)data;
                 if (g_current_game && g_current_game->playing) {
-                    g_current_game->playing->player_strength      = (int32_t)ntohl(pkt->strength);
-                    g_current_game->playing->player_agility       = (int32_t)ntohl(pkt->agility);
-                    g_current_game->playing->player_intelligence   = (int32_t)ntohl(pkt->intelligence);
-                    g_current_game->playing->player_wisdom         = (int32_t)ntohl(pkt->wisdom);
-                    g_current_game->playing->player_defense        = (int32_t)ntohl(pkt->defense);
-                    g_current_game->playing->player_evasion        = (int32_t)ntohl(pkt->evasion);
-                    g_current_game->playing->player_vitality       = (int32_t)ntohl(pkt->vitality);
-                    g_current_game->playing->player_luck           = (int32_t)ntohl(pkt->luck);
+                    for (int s = 0; s < STAT_COUNT; s++) {
+                        g_current_game->playing->player_stats[s] = (int32_t)ntohl(pkt->stats[s]);
+                    }
                     g_current_game->playing->player_move_speed     = pkt->move_speed;
+                    g_current_game->playing->player_form           = pkt->form;
+                    g_current_game->playing->player_resource_type  = pkt->resource_type;
                     g_current_game->playing->player_weapon_damage   = (int32_t)ntohl(pkt->weapon_damage);
                     g_current_game->playing->player_xp_for_next    = mmo_ntohll(pkt->xp_for_next_level);
 
                     int32_t max_hp       = (int32_t)ntohl(pkt->max_health);
-                    int32_t max_mana     = (int32_t)ntohl(pkt->max_mana);
+                    int32_t max_mana     = (int32_t)ntohl(pkt->max_resource);
                     int32_t current_hp   = (int32_t)ntohl(pkt->current_health);
-                    int32_t current_mana = (int32_t)ntohl(pkt->current_mana);
+                    int32_t current_mana = (int32_t)ntohl(pkt->current_resource);
 
                     g_current_game->player.info.max_health = (uint32_t)max_hp;
                     if (current_hp > 0) {
                         g_current_game->player.info.health = (uint32_t)current_hp;
                     }
 
-                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
-                                               current_mana, max_mana);
+                    /* The bar's form and pool are authoritative from this packet, so a
+                     * reconnect or a stat refresh restores the right one. */
+                    AbilityBarState* bar = &g_current_game->playing->ability_bar;
+                    bar->active_form   = pkt->form < FORM_COUNT ? pkt->form : FORM_HUMAN;
+                    bar->resource_type = pkt->resource_type;
+                    ability_bar_on_resource_update(bar, current_mana, max_mana);
 
                     if (g_current_game->playing->player_move_speed > 0.0f) {
                         g_current_game->player.speed = g_current_game->playing->player_move_speed;
                     }
 
-                    printf("[NET] Stats received: STR=%d AGI=%d INT=%d WIS=%d DEF=%d EVA=%d VIT=%d LCK=%d speed=%.0f wdmg=%d HP=%d/%d Mana=%d/%d\n",
-                           g_current_game->playing->player_strength,
-                           g_current_game->playing->player_agility,
-                           g_current_game->playing->player_intelligence,
-                           g_current_game->playing->player_wisdom,
-                           g_current_game->playing->player_defense,
-                           g_current_game->playing->player_evasion,
-                           g_current_game->playing->player_vitality,
-                           g_current_game->playing->player_luck,
+                    log_player_stats("[NET] Stats received");
+                    printf("[NET]   speed=%.0f wdmg=%d HP=%d/%d resource=%d/%d form=%s\n",
                            g_current_game->playing->player_move_speed,
                            g_current_game->playing->player_weapon_damage,
-                           current_hp, max_hp,
-                           current_mana, max_mana);
+                           current_hp, max_hp, current_mana, max_mana,
+                           pkt->form == FORM_ANIMAL ? "animal" : "human");
                 }
             }
             break;
@@ -914,9 +982,9 @@ static void process_packet(const char* data, int length) {
                         g_current_game->player.info.health = (uint32_t)new_hp;
                     }
                     if (new_mana >= 0) {
-                        ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
-                                                    new_mana,
-                                                    g_current_game->playing->ability_bar.max_mana);
+                        ability_bar_on_resource_update(&g_current_game->playing->ability_bar,
+                                                       new_mana,
+                                                       g_current_game->playing->ability_bar.max_resource);
                     }
                     // Remove consumed item from inventory
                     if (g_current_game->inventory) {
@@ -942,29 +1010,29 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_PLAYER_POSITIONS: {
             size_t base_size = offsetof(PlayerPositionBroadcastPacket, players);
-            
+
             if (length < (int)base_size) {
                 printf("[NET] ❌ PLAYER_POSITIONS packet too small: %d < %zu\n", length, base_size);
                 return;
             }
-            
+
             PlayerPositionBroadcastPacket* pkt = (PlayerPositionBroadcastPacket*)data;
             uint8_t claimed_count = pkt->count;
-            
+
             size_t expected_size = base_size + (claimed_count * sizeof(NearbyPlayerData));
-            
+
             if (length < (int)expected_size) {
                 printf("[NET] ❌ PLAYER_POSITIONS incomplete: have %d bytes, need %zu for %d players\n",
                        length, expected_size, claimed_count);
                 return;
             }
-            
+
             if (claimed_count > MAX_NEARBY_PLAYERS) {
                 printf("[NET] ⚠️ Server claims %d players, clamping to %d\n",
                        claimed_count, MAX_NEARBY_PLAYERS);
                 claimed_count = MAX_NEARBY_PLAYERS;
             }
-            
+
             if (g_current_game && g_current_game->playing) {
                 g_current_game->playing->nearby_player_count = claimed_count;
                 for (int i = 0; i < claimed_count; i++) {
@@ -1008,24 +1076,24 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_PROJECTILE_UPDATE: {
             size_t base_size = offsetof(ProjectileUpdatePacket, projectiles);
-            
+
             if (length < (int)base_size) {
                 return;
             }
-            
+
             ProjectileUpdatePacket* pkt = (ProjectileUpdatePacket*)data;
             uint8_t claimed_count = pkt->count;
-            
+
             size_t expected_size = base_size + (claimed_count * sizeof(ProjectilePositionData));
-            
+
             if (length < (int)expected_size) {
                 return;
             }
-            
+
             if (claimed_count > MAX_PROJECTILES_PER_PACKET) {
                 claimed_count = MAX_PROJECTILES_PER_PACKET;
             }
-            
+
             if (g_current_game && g_current_game->playing) {
                 for (int p = 0; p < claimed_count; p++) {
                     uint32_t pid = ntohl(pkt->projectiles[p].projectile_id);
@@ -1087,9 +1155,9 @@ static void process_packet(const char* data, int length) {
                     g_current_game->player.info.health = (uint32_t)ntohl(pkt->health);
                     g_current_game->player.info.max_health = (uint32_t)ntohl(pkt->max_health);
                     g_current_game->player.needs_position_reset = 1;
-                    ability_bar_on_mana_update(&g_current_game->playing->ability_bar,
-                                               (int32_t)ntohl(pkt->mana),
-                                               (int32_t)ntohl(pkt->max_mana));
+                    ability_bar_on_resource_update(&g_current_game->playing->ability_bar,
+                                                   (int32_t)ntohl(pkt->mana),
+                                                   (int32_t)ntohl(pkt->max_mana));
                 }
             }
             break;
@@ -1259,25 +1327,25 @@ static void process_packet(const char* data, int length) {
 
         case PACKET_PARTY_UPDATE: {
             size_t base_size = offsetof(PartyUpdatePacket, members);
-            
+
             if (length < (int)base_size) {
                 return;
             }
-            
+
             PartyUpdatePacket* pkt = (PartyUpdatePacket*)data;
             uint8_t claimed_count = pkt->member_count;
-            
+
             size_t member_size = sizeof(pkt->members[0]);
             size_t expected_size = base_size + (claimed_count * member_size);
-            
+
             if (length < (int)expected_size) {
                 return;
             }
-            
+
             if (claimed_count > MAX_PARTY_SIZE) {
                 claimed_count = MAX_PARTY_SIZE;
             }
-            
+
             printf("[NET] Party update: %u members\n", claimed_count);
             if (g_current_game && g_current_game->playing) {
                 PartyState* ps = &g_current_game->playing->party;
@@ -1698,18 +1766,18 @@ static int get_packet_size(uint8_t type) {
         case PACKET_PING:                       return (int)sizeof(PacketHeader);
         case PACKET_DISCONNECT:                 return (int)sizeof(DisconnectPacket);
         case PACKET_RATE_LIMITED:               return (int)sizeof(RateLimitedPacket);
-        
+
         // Auth packets
         case PACKET_AUTH_LOGIN:                 return (int)sizeof(AuthLoginPacket);
         case PACKET_AUTH_REGISTER:              return (int)sizeof(AuthRegisterPacket);
         case PACKET_AUTH_RESPONSE:              return (int)sizeof(AuthLoginResponsePacket);
         case PACKET_START_GAME_REQUEST:         return (int)sizeof(StartGameRequestPacket);
         case PACKET_START_GAME_RESPONSE:        return (int)sizeof(StartGameResponsePacket);
-        
+
         // Patch notes
         case PATCH_NOTES_REQUEST:               return (int)sizeof(PatchNotesRequest);
         case PATCH_NOTES_RESPONSE:              return (int)sizeof(PatchNotesResponse);
-        
+
         // Realm server packets
         case PACKET_REALM_CONNECT:              return (int)sizeof(RealmConnectPacket);
         case PACKET_REALM_CONNECT_ACK:          return (int)sizeof(RealmConnectAckPacket);
@@ -1723,7 +1791,7 @@ static int get_packet_size(uint8_t type) {
         case PACKET_CHARACTER_DELETE_RESPONSE:  return (int)sizeof(CharacterDeleteResponsePacket);
         case PACKET_ENTER_WORLD:                return (int)sizeof(EnterWorldPacket);
         case PACKET_ENTER_WORLD_RESPONSE:       return (int)sizeof(EnterWorldResponsePacket);
-        
+
         // World server packets
         case PACKET_WORLD_CONNECT:              return (int)sizeof(WorldConnectPacket);
         case PACKET_WORLD_CONNECT_ACK:          return (int)sizeof(WorldConnectAckPacket);
@@ -2138,6 +2206,85 @@ int network_request_character_list(uint32_t world_id) {
 }
 
 /**
+ * Ask the realm server which races exist.
+ *
+ * The client keeps no race table, so the creation screen cannot be drawn until this
+ * answers — which is what lets a new race reach the player with no client change.
+ *
+ * @return Nonzero when the request is sent; otherwise zero.
+ */
+int network_request_race_list(void) {
+    if (!g_net.connected) return 0;
+
+    EnterCriticalSection(&g_net.response_lock);
+    g_net.race_list.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+
+    RaceListRequestPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_RACE_LIST_REQUEST;
+    pkt.header.player_id = htonl(g_net.account_id);
+    pkt.header.payload_size = htons(sizeof(RaceListRequestPacket) - sizeof(PacketHeader));
+
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+}
+
+/**
+ * Consume the pending race-list response.
+ *
+ * @return Nonzero when a response is copied; otherwise zero.
+ */
+int network_get_race_list(RaceListResponsePacket* out) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.race_list.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.race_list.data, sizeof(RaceListResponsePacket));
+    g_net.race_list.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+    return 1;
+}
+
+/**
+ * Ask the world server to swap forms.
+ *
+ * @return Nonzero when the request is sent; otherwise zero.
+ */
+int network_request_form_swap(uint8_t requested_form) {
+    if (!g_net.connected) return 0;
+
+    FormSwapPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type = PACKET_FORM_SWAP;
+    pkt.header.player_id = htonl(g_net.character_id);
+    pkt.header.payload_size = htons(sizeof(FormSwapPacket) - sizeof(PacketHeader));
+    pkt.requested_form = requested_form;
+
+    return send(g_net.socket, (char*)&pkt, sizeof(pkt), 0) == sizeof(pkt);
+}
+
+/**
+ * Consume the pending form-swap acknowledgement.
+ *
+ * The server replies whether or not the swap was allowed, so a refusal arrives here
+ * too and carries the form the character is authoritatively still in.
+ *
+ * @return Nonzero when an acknowledgement is copied; otherwise zero.
+ */
+int network_get_form_swap_ack(FormSwapAckPacket* out) {
+    EnterCriticalSection(&g_net.response_lock);
+    if (!g_net.form_swap.ready) {
+        LeaveCriticalSection(&g_net.response_lock);
+        return 0;
+    }
+    memcpy(out, &g_net.form_swap.data, sizeof(FormSwapAckPacket));
+    g_net.form_swap.ready = FALSE;
+    LeaveCriticalSection(&g_net.response_lock);
+    return 1;
+}
+
+/**
  * Consume the pending character-list response.
  *
  * @return      Nonzero when a response is copied; otherwise zero.
@@ -2430,12 +2577,13 @@ int network_get_character_data(CharacterInfo* out) {
     out->level = ntohl(out->level);
     out->health = ntohl(out->health);
     out->max_health = ntohl(out->max_health);
-    out->mana = (int32_t)ntohl((uint32_t)out->mana);
-    out->max_mana = (int32_t)ntohl((uint32_t)out->max_mana);
+    out->resource = (int32_t)ntohl((uint32_t)out->resource);
+    out->max_resource = (int32_t)ntohl((uint32_t)out->max_resource);
     out->experience = mmo_ntohll(out->experience);
 
-    out->player_class = ntohl(out->player_class);
-    out->player_race  = ntohl(out->player_race);
+    /* Race and class fuse into one identifier; resource_type and form are single
+     * bytes and need no conversion. */
+    out->race_id = ntohl(out->race_id);
 
     out->gold = ntohl(out->gold);
 

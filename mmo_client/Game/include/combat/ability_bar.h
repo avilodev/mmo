@@ -6,23 +6,34 @@
 #ifndef ABILITY_BAR_H
 #define ABILITY_BAR_H
 
+#include "protocol.h"
+
 #include <stdint.h>
 
-#define MAX_ABILITY_SLOTS 5
+/* MAX_ABILITY_SLOTS comes from protocol.h so the two repos cannot disagree on the
+ * hotbar's size. Both forms share those five slots; swapping forms swaps what fills
+ * them, and each form keeps its own cooldowns. */
 #define MAX_ABILITY_NAME  32
 
 /** Mirror the server StatusEffectType wire values. */
 typedef enum {
-    CLIENT_EFFECT_NONE    = 0,
-    CLIENT_EFFECT_DOT     = 1,
-    CLIENT_EFFECT_HOT     = 2,
-    CLIENT_EFFECT_STUN    = 3,
-    CLIENT_EFFECT_SLOW    = 4,
-    CLIENT_EFFECT_BUFF    = 5,
-    CLIENT_EFFECT_STEALTH = 6,
-    CLIENT_EFFECT_KNOCKUP = 7,
-    CLIENT_EFFECT_LINK    = 8,
-    CLIENT_EFFECT_CLEANSE = 9
+    CLIENT_EFFECT_NONE         = 0,
+    CLIENT_EFFECT_DOT          = 1,
+    CLIENT_EFFECT_HOT          = 2,
+    CLIENT_EFFECT_STUN         = 3,
+    CLIENT_EFFECT_SLOW         = 4,
+    CLIENT_EFFECT_BUFF         = 5,
+    CLIENT_EFFECT_STEALTH      = 6,
+    CLIENT_EFFECT_KNOCKUP      = 7,
+    CLIENT_EFFECT_LINK         = 8,
+    CLIENT_EFFECT_CLEANSE      = 9,
+    CLIENT_EFFECT_TAUNT        = 10,
+    CLIENT_EFFECT_RESOURCE     = 11,
+    CLIENT_EFFECT_DAMAGE_TAKEN = 12,
+    CLIENT_EFFECT_DAMAGE_DEALT = 13,
+    CLIENT_EFFECT_ROOT         = 14,
+    CLIENT_EFFECT_CHANNEL      = 15,
+    CLIENT_EFFECT_HOT_PERCENT  = 16
 } ClientEffectType;
 
 /** Describe one server-defined ability slot and its client presentation state. */
@@ -32,7 +43,7 @@ typedef struct {
     float       cooldown_total;         /**< Server-defined cooldown duration in seconds. */
     float       cooldown_remaining;     /**< Locally tracked remaining cooldown in seconds. */
     float       cast_time;               /**< Cast duration in seconds. */
-    int         mana_cost;
+    int         resource_cost;           /**< Always 0 in Human Form, which has no pool. */
     int         is_heal;
 
     char        image[32];
@@ -53,13 +64,24 @@ typedef struct {
     uint32_t    source_id;
 } ClientStatusEffect;
 
-/** Aggregate ability, mana, cast, effect, layout, and input presentation state. */
+/** Hold the five slots and their cooldowns for one form. */
 typedef struct {
     AbilitySlot slots[MAX_ABILITY_SLOTS];
     int         slot_count;
+} AbilityFormBar;
 
-    int32_t     mana;
-    int32_t     max_mana;
+/** Aggregate ability, resource, cast, effect, layout, and input presentation state. */
+typedef struct {
+    /** One bar per form. The server sends both on entry, so a swap needs no round trip. */
+    AbilityFormBar forms[FORM_COUNT];
+    uint8_t     active_form;
+
+    /** Whichever pool the active form carries; both are zero in Human Form. */
+    int32_t     resource;
+    int32_t     max_resource;
+    uint8_t     resource_type;      /**< ResourceType; RESOURCE_NONE hides the bar. */
+
+    float       swap_ready_in;      /**< Seconds until another form swap is allowed. */
 
     /** Ability-specific cast state mirrored from server events. */
     int         is_casting;
@@ -87,19 +109,44 @@ typedef struct {
 void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_height);
 void ability_bar_cleanup(AbilityBarState* bar);
 
-/** Set parallel server ability arrays containing count entries. */
-void ability_bar_set_abilities(AbilityBarState* bar,
-                               uint16_t* ability_ids,
-                               const char** ability_names,
-                               float* cooldowns,
-                               float* cast_times,
-                               int* mana_costs,
-                               const char** images,
-                               int count);
+/** Return the bar for the form currently in use. */
+AbilityFormBar* ability_bar_active(AbilityBarState* bar);
+
+/** Return the bar for the form currently in use, for read-only callers. */
+const AbilityFormBar* ability_bar_active_const(const AbilityBarState* bar);
+
+/** Set one form's slots from parallel server arrays containing count entries.
+ *
+ * Cooldowns already running in that form are preserved: the server treats them as
+ * absolute expiry instants that keep ticking regardless of form, so a bar refresh
+ * must not present them as reset.
+ */
+void ability_bar_set_form_abilities(AbilityBarState* bar,
+                                    uint8_t form,
+                                    uint16_t* ability_ids,
+                                    const char** ability_names,
+                                    float* cooldowns,
+                                    float* cast_times,
+                                    int* resource_costs,
+                                    const char** images,
+                                    int count);
+
+/** Switch which form's bar is displayed and drives input.
+ *
+ * @param resource_type  ResourceType for the new form; RESOURCE_NONE hides the bar.
+ * @param ready_in       Per-slot cooldown remaining, as the server reports it; may be NULL.
+ */
+void ability_bar_set_form(AbilityBarState* bar, uint8_t form,
+                          int32_t resource, int32_t max_resource,
+                          uint8_t resource_type, float swap_ready_in,
+                          const float* ready_in);
+
+/** Report whether the active form has a resource pool to draw. */
+int ability_bar_has_resource(const AbilityBarState* bar);
 
 /** Return an ability identifier requested this frame, or 0. */
 uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
-                            const int* keys_just_pressed, uint32_t player_class);
+                            const int* keys_just_pressed, uint32_t race_id);
 
 void ability_bar_on_cast_start(AbilityBarState* bar, uint16_t ability_id, float cast_time);
 
@@ -109,7 +156,8 @@ void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id);
 
 void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown);
 
-void ability_bar_on_mana_update(AbilityBarState* bar, int32_t mana, int32_t max_mana);
+/** Update the active form's resource pool from a server update. */
+void ability_bar_on_resource_update(AbilityBarState* bar, int32_t resource, int32_t max_resource);
 
 void ability_bar_on_effect_apply(AbilityBarState* bar, uint8_t effect_type,
                                   int value, float duration, uint32_t source_id);
@@ -117,9 +165,6 @@ void ability_bar_on_effect_apply(AbilityBarState* bar, uint8_t effect_type,
 void ability_bar_on_effect_remove(AbilityBarState* bar, uint8_t effect_type);
 
 void ability_bar_render(const AbilityBarState* bar);
-
-void ability_bar_render_mana(const AbilityBarState* bar, float x, float y,
-                              float width, float height);
 
 void ability_bar_render_effects(const AbilityBarState* bar, float x, float y);
 

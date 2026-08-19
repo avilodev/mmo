@@ -84,6 +84,7 @@ void keybinds_defaults(void) {
     g_keybinds.toggle_quest_log = GLFW_KEY_J;
     g_keybinds.party_leave      = GLFW_KEY_P;
     g_keybinds.basic_attack     = GLFW_KEY_SPACE;
+    g_keybinds.swap_form        = GLFW_KEY_F;
     g_keybinds.ability[0]       = GLFW_KEY_1;
     g_keybinds.ability[1]       = GLFW_KEY_2;
     g_keybinds.ability[2]       = GLFW_KEY_3;
@@ -137,6 +138,7 @@ void keybinds_load(const char* path) {
         else if (strcmp(key_str, "toggle_quest_log") == 0) g_keybinds.toggle_quest_log = key;
         else if (strcmp(key_str, "party_leave")      == 0) g_keybinds.party_leave      = key;
         else if (strcmp(key_str, "basic_attack")     == 0) g_keybinds.basic_attack     = key;
+        else if (strcmp(key_str, "swap_form")        == 0) g_keybinds.swap_form        = key;
         else if (strcmp(key_str, "ability_1")        == 0) g_keybinds.ability[0]       = key;
         else if (strcmp(key_str, "ability_2")        == 0) g_keybinds.ability[1]       = key;
         else if (strcmp(key_str, "ability_3")        == 0) g_keybinds.ability[2]       = key;
@@ -172,6 +174,7 @@ void keybinds_save(const char* path) {
     fprintf(f, "toggle_quest_log=%s\n", name_from_key(g_keybinds.toggle_quest_log));
     fprintf(f, "party_leave=%s\n",      name_from_key(g_keybinds.party_leave));
     fprintf(f, "basic_attack=%s\n",     name_from_key(g_keybinds.basic_attack));
+    fprintf(f, "swap_form=%s\n",        name_from_key(g_keybinds.swap_form));
     fprintf(f, "ability_1=%s\n",        name_from_key(g_keybinds.ability[0]));
     fprintf(f, "ability_2=%s\n",        name_from_key(g_keybinds.ability[1]));
     fprintf(f, "ability_3=%s\n",        name_from_key(g_keybinds.ability[2]));

@@ -17,8 +17,12 @@ static void char_select_enter(GameState* game) {
     game->char_select.loaded = 0;
     game->char_select.selected_index = -1;
     game->char_select.show_creation = 0;
-    game->char_select.selected_class = 1;
-    game->char_select.selected_race = 1;
+    /* Race and class fuse into one identifier, so there is one choice to make. It
+     * stays 0 until the race list arrives, because the client does not know which
+     * races exist until the server says. */
+    game->char_select.selected_race = 0;
+    game->char_select.races_loaded = 0;
+    game->char_select.races_requested = 0;
     game->char_select.pending_delete = 0;
     game->char_select.pending_delete_index = -1;
     memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
@@ -71,18 +75,23 @@ static void char_select_update(GameState* game, float delta_time) {
     resolve_stalled_request(game, delta_time,
                             game->char_select.error_message,
                             sizeof(game->char_select.error_message));
-    
+
     // Handle deferred character creation
     if (game->char_select.pending_create) {
         game->char_select.pending_create = 0;
 
         if (strlen(game->char_select.new_name) < 3) {
             snprintf(game->char_select.error_message, sizeof(game->char_select.error_message), "Name must be at least 3 characters");
+        } else if (game->char_select.selected_race == 0) {
+            snprintf(game->char_select.error_message, sizeof(game->char_select.error_message),
+                     "Choose a race");
         } else if (game->net_state == NET_STATE_IDLE) {
             uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
 
+            /* Both wire fields carry the same fused identifier; the realm server
+             * rejects a mismatch, and rejects a race that is not playable. */
             if (network_create_character(world_id, game->char_select.new_name,
-                                         game->char_select.selected_class,
+                                         game->char_select.selected_race,
                                          game->char_select.selected_race)) {
                 game->net_state = NET_STATE_CREATING_CHARACTER;
                 game->net_wait_seconds = 0.0f;
@@ -106,7 +115,25 @@ static void char_select_update(GameState* game, float delta_time) {
         }
         game->char_select.pending_delete_index = -1;
     }
-    
+
+    /* The race list is fetched once and outside the state machine: it is small,
+     * needed only by the creation panel, and must not block the character list. */
+    if (!game->char_select.races_loaded) {
+        if (!game->char_select.races_requested) {
+            game->char_select.races_requested = network_request_race_list();
+        } else if (network_get_race_list(&game->char_select.races)) {
+            game->char_select.races_loaded = 1;
+            printf("[CHAR_SELECT] Received %d races\n", game->char_select.races.count);
+
+            /* Preselect the first playable race so the panel opens on a valid choice. */
+            for (int i = 0; i < game->char_select.races.count; i++) {
+                if (!game->char_select.races.races[i].playable) continue;
+                game->char_select.selected_race = ntohl(game->char_select.races.races[i].race_id);
+                break;
+            }
+        }
+    }
+
     // State machine
     switch (game->net_state) {
         case NET_STATE_IDLE:
@@ -118,7 +145,7 @@ static void char_select_update(GameState* game, float delta_time) {
                 }
             }
             break;
-            
+
         case NET_STATE_WAITING_FOR_CHARACTERS:
             if (network_get_character_list(&game->char_select.list)) {
                 game->char_select.loaded = 1;
@@ -126,7 +153,7 @@ static void char_select_update(GameState* game, float delta_time) {
                 printf("[CHAR_SELECT] Received %d characters\n", game->char_select.list.count);
             }
             break;
-            
+
         case NET_STATE_CREATING_CHARACTER:
             {
                 CharacterCreateResponsePacket response;
@@ -181,23 +208,23 @@ static void char_select_update(GameState* game, float delta_time) {
                 }
             }
             break;
-            
+
         case NET_STATE_WAITING_FOR_ENTER_WORLD:
             {
                 EnterWorldResponsePacket response;
                 if (network_get_enter_world_response(&response)) {
                     game->net_state = NET_STATE_IDLE;
-                    
+
                     if (response.success) {
                         char world_ip[16];
                         strncpy(world_ip, response.world_ip, 15);
                         world_ip[15] = '\0';
                         uint16_t world_port = ntohs(response.world_port);
-                        
+
                         uint32_t char_id = ntohl(
                             game->char_select.list.characters[game->char_select.selected_index].character_id
                         );
-                        
+
                         if (network_connect_to_world(world_ip, world_port,
                                                     response.game_ticket, char_id)) {
                             game->network_connected = 1;
@@ -214,7 +241,7 @@ static void char_select_update(GameState* game, float delta_time) {
                 }
             }
             break;
-            
+
         default:
             break;
     }
@@ -223,88 +250,133 @@ static void char_select_update(GameState* game, float delta_time) {
 /**
  * Render and operate the character-creation overlay.
  */
+/** Look up a race's display name in the registry the server sent.
+ *
+ * Falls back rather than guessing: an existing character of a race the current
+ * registry no longer lists should still be legible in the list.
+ *
+ * @return A name owned by the loaded race list, or "Unknown".
+ */
+static const char* char_select_race_name(const GameState* game, uint32_t race_id) {
+    if (!game->char_select.races_loaded) return "...";
+
+    const RaceListResponsePacket* races = &game->char_select.races;
+    for (int i = 0; i < races->count; i++) {
+        if (ntohl(races->races[i].race_id) == race_id) return races->races[i].name;
+    }
+    return "Unknown";
+}
+
+/** Height of one race row, and how many rows the creation panel shows. */
+#define RACE_ROW_H        44.0f
+#define RACE_ROWS_VISIBLE 10
+
+/** Map a CombatRole to its display name. */
+static const char* role_display_name(uint8_t role) {
+    switch (role) {
+        case ROLE_TANK:   return "Tank";
+        case ROLE_DPS:    return "DPS";
+        case ROLE_HEALER: return "Healer";
+        default:          return "Unknown";
+    }
+}
+
 static void char_select_render_creation(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
-    
-    float panel_w = 500;
-    float panel_h = 500;
+
+    float panel_w = 560;
+    float panel_h = 660;
     float panel_x = (vw - panel_w) / 2;
     float panel_y = (vh - panel_h) / 2;
-    
+
     renderer_draw_rect(panel_x, panel_y, panel_w, panel_h, 0.15f, 0.15f, 0.2f, 0.95f);
     renderer_draw_rect(panel_x, panel_y, panel_w, 60, 0.2f, 0.3f, 0.4f, 1.0f);
     renderer_draw_text(panel_x + 20, panel_y + 40, "CREATE CHARACTER");
-    
+
     // Name input
     renderer_draw_rect(panel_x + 50, panel_y + 80, panel_w - 100, 40, 0.1f, 0.1f, 0.15f, 1.0f);
     renderer_draw_text(panel_x + 60, panel_y + 105, "Name:");
     renderer_draw_text(panel_x + 130, panel_y + 105, game->char_select.new_name);
-    
-    // Class selection
-    renderer_draw_text(panel_x + 50, panel_y + 140, "Class:");
-    const char* classes[] = {"Gladiator", "Ninja", "Landweaver", "Spirit"};
-    
-    for (int i = 0; i < 4; i++) {
-        float y = panel_y + 160 + i * 45;
-        int selected = (game->char_select.selected_class == i + 1);
-        int hovered = input_mouse_in_rect(&game->input, panel_x + 50, y, 200, 35);
-        
-        float c = selected ? 0.4f : (hovered ? 0.3f : 0.2f);
-        renderer_draw_rect(panel_x + 50, y, 200, 35, c, c, c + 0.1f, 1.0f);
-        renderer_draw_text(panel_x + 60, y + 25, classes[i]);
-        
-        if (hovered && game->input.mouse_left_clicked) {
-            game->char_select.selected_class = i + 1;
+
+    /* One list, not two: race and class are the same choice under the Blessed model.
+     * Everything drawn here comes from the server's race registry, so a new race
+     * reaches the player without this file changing at all. */
+    renderer_draw_text(panel_x + 50, panel_y + 140, "Race:");
+
+    if (!game->char_select.races_loaded) {
+        renderer_draw_text(panel_x + 50, panel_y + 170, "Loading races...");
+    } else {
+        const RaceListResponsePacket* races = &game->char_select.races;
+
+        for (int i = 0; i < races->count && i < RACE_ROWS_VISIBLE; i++) {
+            const RaceInfo* race = &races->races[i];
+            uint32_t race_id = ntohl(race->race_id);
+
+            float y = panel_y + 160 + i * RACE_ROW_H;
+            int selected = (game->char_select.selected_race == race_id);
+
+            /* A race with no designed kit is shown but cannot be picked. Greying it
+             * out is the whole of that rule: nothing here special-cases a name. */
+            int selectable = race->playable;
+            int hovered = selectable &&
+                          input_mouse_in_rect(&game->input, panel_x + 50, y, 460, RACE_ROW_H - 4);
+
+            float c = selected ? 0.40f : (hovered ? 0.30f : 0.20f);
+            if (!selectable) c = 0.13f;
+            renderer_draw_rect(panel_x + 50, y, 460, RACE_ROW_H - 4, c, c, c + 0.08f, 1.0f);
+
+            char label[160];
+            if (selectable) {
+                snprintf(label, sizeof(label), "%s (%s) - %s",
+                         race->name, race->latin, role_display_name(race->default_role));
+            } else {
+                snprintf(label, sizeof(label), "%s (%s) - coming soon",
+                         race->name, race->latin);
+            }
+            renderer_draw_text(panel_x + 60, y + 17, label);
+
+            if (race->passive_name[0]) {
+                char passive[200];
+                snprintf(passive, sizeof(passive), "  %s: %s",
+                         race->passive_name, race->passive_desc);
+                renderer_draw_text(panel_x + 60, y + 33, passive);
+            }
+
+            if (hovered && game->input.mouse_left_clicked) {
+                game->char_select.selected_race = race_id;
+            }
         }
     }
-    
-    // Race selection
-    renderer_draw_text(panel_x + 270, panel_y + 140, "Race:");
-    const char* races[] = {"Human", "Pyseck", "Infor"};
-    
-    for (int i = 0; i < 3; i++) {
-        float y = panel_y + 160 + i * 45;
-        int selected = (game->char_select.selected_race == i + 1);
-        int hovered = input_mouse_in_rect(&game->input, panel_x + 270, y, 180, 35);
-        
-        float c = selected ? 0.4f : (hovered ? 0.3f : 0.2f);
-        renderer_draw_rect(panel_x + 270, y, 180, 35, c, c, c + 0.1f, 1.0f);
-        renderer_draw_text(panel_x + 280, y + 25, races[i]);
-        
-        if (hovered && game->input.mouse_left_clicked) {
-            game->char_select.selected_race = i + 1;
-        }
-    }
-    
+
     // Create button
     float btn_y = panel_y + panel_h - 100;
     int create_hovered = input_mouse_in_rect(&game->input, panel_x + 150, btn_y, 200, 45);
     int creating = (game->net_state == NET_STATE_CREATING_CHARACTER);
-    
+
     renderer_draw_rect(panel_x + 150, btn_y, 200, 45,
                       creating ? 0.15f : (create_hovered ? 0.3f : 0.2f),
                       creating ? 0.4f : (create_hovered ? 0.7f : 0.5f),
                       0.2f, 1.0f);
     renderer_draw_text(panel_x + 220, btn_y + 30, "CREATE");
-    
+
     if (create_hovered && game->input.mouse_left_clicked && !creating) {
         game->char_select.pending_create = 1;
     }
-    
+
     // Error message
     if (game->char_select.error_message[0] != '\0') {
         renderer_draw_rect(panel_x + 50, panel_y + panel_h - 50, panel_w - 100, 30,
                           0.8f, 0.2f, 0.2f, 1.0f);
         renderer_draw_text(panel_x + 60, panel_y + panel_h - 30, game->char_select.error_message);
     }
-    
+
     // Cancel button
     int cancel_hovered = input_mouse_in_rect(&game->input, panel_x + 50, btn_y, 80, 45);
     renderer_draw_rect(panel_x + 50, btn_y, 80, 45,
                       cancel_hovered ? 0.7f : 0.5f, 0.2f, 0.2f, 1.0f);
     renderer_draw_text(panel_x + 55, btn_y + 30, "CANCEL");
-    
+
     if (cancel_hovered && game->input.mouse_left_clicked) {
         game->char_select.show_creation = 0;
         memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
@@ -318,51 +390,48 @@ static void char_select_render_creation(GameState* game) {
 static void char_select_render(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
-    
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrtho(0, vw, vh, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    
+
     // Background
     if (game->textures.background != 0) {
         renderer_draw_sprite(0, 0, vw, vh, game->textures.background);
     } else {
         renderer_draw_rect(0, 0, vw, vh, 0.1f, 0.1f, 0.2f, 1.0f);
     }
-    
+
     // Character creation overlay
     if (game->char_select.show_creation) {
         char_select_render_creation(game);
         return;
     }
-    
+
     // Character list panel
     float panel_w = 600;
     float panel_h = 500;
     float panel_x = (vw - panel_w) / 2;
     float panel_y = (vh - panel_h) / 2;
-    
+
     renderer_draw_rect(panel_x, panel_y, panel_w, panel_h, 0.15f, 0.15f, 0.2f, 0.95f);
     renderer_draw_rect(panel_x, panel_y, panel_w, 4, 0.4f, 0.6f, 0.8f, 1.0f);
     renderer_draw_rect(panel_x, panel_y + panel_h - 4, panel_w, 4, 0.4f, 0.6f, 0.8f, 1.0f);
     renderer_draw_rect(panel_x, panel_y, 4, panel_h, 0.4f, 0.6f, 0.8f, 1.0f);
     renderer_draw_rect(panel_x + panel_w - 4, panel_y, 4, panel_h, 0.4f, 0.6f, 0.8f, 1.0f);
-    
+
     renderer_draw_rect(panel_x, panel_y, panel_w, 60, 0.2f, 0.3f, 0.4f, 1.0f);
     renderer_draw_text(panel_x + 20, panel_y + 40, "SELECT CHARACTER");
-    
+
     if (!game->char_select.loaded) {
         renderer_draw_text(panel_x + 250, panel_y + 200, "Loading...");
     } else {
         float item_y = panel_y + 80;
         float item_h = 60;
         float item_spacing = 10;
-        
-        const char* class_names[] = {"", "Gladiator", "Ninja", "Landweaver", "Spirit"};
-        const char* race_names[] = {"", "Human", "Pyseck", "Infor"};
-        
+
         int is_busy = (game->net_state != NET_STATE_IDLE);
 
         for (int i = 0; i < game->char_select.list.count && i < 10; i++) {
@@ -375,14 +444,12 @@ static void char_select_render(GameState* game) {
             renderer_draw_rect(panel_x + 20, y, row_w, item_h, c, c, c + 0.1f, 1.0f);
 
             char info[128];
-            uint32_t class_id = ntohl(game->char_select.list.characters[i].class_id);
-            uint32_t race_id  = ntohl(game->char_select.list.characters[i].race_id);
+            uint32_t race_id = ntohl(game->char_select.list.characters[i].class_id);
 
-            snprintf(info, sizeof(info), "%s - Lv.%lu %s %s",
+            snprintf(info, sizeof(info), "%s - Lv.%lu %s",
                     game->char_select.list.characters[i].name,
                     (unsigned long)ntohl(game->char_select.list.characters[i].level),
-                    class_id <= 4 ? class_names[class_id] : "Unknown",
-                    race_id  <= 3 ? race_names[race_id]  : "Unknown");
+                    char_select_race_name(game, race_id));
 
             renderer_draw_text(panel_x + 40, y + 40, info);
 
@@ -413,20 +480,20 @@ static void char_select_render(GameState* game) {
                 is_busy = 1;
             }
         }
-        
+
         // New character button
         float btn_y = panel_y + panel_h - 70;
         int btn_hovered = input_mouse_in_rect(&game->input, panel_x + 200, btn_y, 200, 45);
-        
+
         renderer_draw_rect(panel_x + 200, btn_y, 200, 45,
                           btn_hovered ? 0.3f : 0.2f, btn_hovered ? 0.7f : 0.5f, 0.2f, 1.0f);
         renderer_draw_text(panel_x + 215, btn_y + 30, "NEW CHARACTER");
-        
+
         if (btn_hovered && game->input.mouse_left_clicked) {
             game->char_select.show_creation = 1;
         }
     }
-    
+
     // Loading indicator
     if (game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD) {
         renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.2f, 0.6f, 0.8f, 0.9f);
@@ -435,16 +502,16 @@ static void char_select_render(GameState* game) {
         renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.7f, 0.2f, 0.2f, 0.9f);
         renderer_draw_text(panel_x + 215, panel_y + 230, "Deleting...");
     }
-    
+
     // Back button
     float back_x = panel_x - 120;
     float back_y = panel_y + panel_h / 2 - 25;
     int back_hovered = input_mouse_in_rect(&game->input, back_x, back_y, 100, 50);
-    
+
     renderer_draw_rect(back_x, back_y, 100, 50,
                       back_hovered ? 0.8f : 0.6f, 0.3f, 0.3f, 1.0f);
     renderer_draw_text(back_x + 25, back_y + 35, "Back");
-    
+
     if (back_hovered && game->input.mouse_left_clicked) {
         game_change_state(game, GAME_MODE_SERVER_LIST);
     }
@@ -455,7 +522,7 @@ static void char_select_render(GameState* game) {
  */
 static void char_select_input(GameState* game, GLFWwindow* window, float delta_time) {
     (void)delta_time;
-    
+
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
         if (game->char_select.show_creation) {
             game->char_select.show_creation = 0;
@@ -463,7 +530,7 @@ static void char_select_input(GameState* game, GLFWwindow* window, float delta_t
             game_change_state(game, GAME_MODE_SERVER_LIST);
         }
     }
-    
+
     // Handle text input for character creation
     if (game->char_select.show_creation) {
         int shift_held = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
@@ -478,7 +545,7 @@ static void char_select_input(GameState* game, GLFWwindow* window, float delta_t
                 }
             }
         }
-        
+
         if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
             size_t len = strlen(game->char_select.new_name);
             if (len > 0) {

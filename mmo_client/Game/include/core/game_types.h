@@ -142,13 +142,13 @@ typedef struct {
     float slot_size;
     float slot_padding;
 
-    float screen_width; 
+    float screen_width;
     float screen_height;
 
-    int is_dragging_window;   
-    float drag_offset_x;     
+    int is_dragging_window;
+    float drag_offset_x;
     float drag_offset_y;
-    
+
     float close_button_x;
     float close_button_y;
     float close_button_size;
@@ -220,8 +220,22 @@ typedef struct {
     int hovered_index;
     int show_creation;
     char new_name[32];
-    int selected_class;
-    int selected_race;
+
+    /** Which race the creation screen has selected.
+     *
+     * Race and class fuse into one identifier, so this is the only choice a player
+     * makes and it fills both wire fields. */
+    uint32_t selected_race;
+
+    /** The race registry as the server reported it.
+     *
+     * The client carries no race table of its own. Everything the creation screen
+     * shows — names, Latin names, passives, roles, which entries are greyed out —
+     * comes from here, so adding a race needs no client change at all. */
+    RaceListResponsePacket races;
+    int races_loaded;
+    int races_requested;
+
     char error_message[128];
     int pending_create;
     int pending_delete;
@@ -464,18 +478,22 @@ typedef struct {
     float             level_up_timer;
     int               level_up_new_level;
 
-    /** Server-authoritative derived player stats. */
-    int32_t           player_strength;
-    int32_t           player_agility;
-    int32_t           player_intelligence;
-    int32_t           player_wisdom;
-    int32_t           player_defense;
-    int32_t           player_evasion;
-    int32_t           player_vitality;
-    int32_t           player_luck;
+    /** Server-authoritative attributes, indexed by StatId.
+     *
+     * An array rather than named fields, matching the wire: a new stat is one enum
+     * entry on both sides and needs no edit here or in the character screen. */
+    int32_t           player_stats[STAT_COUNT];
     float             player_move_speed;
     int32_t           player_weapon_damage;
     uint64_t          player_xp_for_next;
+
+    /** Which of the two forms the character is in, and the pool that form carries.
+     *
+     * Human Form has no pool at all, so the HUD hides the resource bar when
+     * player_resource_type is RESOURCE_NONE rather than drawing an empty one. */
+    uint8_t           player_form;
+    uint8_t           player_resource_type;
+    float             form_swap_ready_in;   /**< Seconds until another swap is allowed. */
 
     EnterWorldResponsePacket enter_world_response;
 

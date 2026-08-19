@@ -129,16 +129,20 @@ static void playing_exit(GameState* game) {
  */
 static void playing_update(GameState* game, float delta_time) {
     double now = glfwGetTime();
-     
+
     // Check for character data
     if (!game->player.info_loaded) {
         CharacterInfo info;
         if (network_get_character_data(&info)) {
             player_load_info(&game->player, &info);
 
-            // Sync initial mana to ability bar
-            ability_bar_on_mana_update(&game->playing->ability_bar,
-                                       (int32_t)info.mana, (int32_t)info.max_mana);
+            /* Seed the bar with the form and pool the character entered in. The
+             * full stat packet below confirms both; this just avoids a frame of
+             * showing the wrong bar. */
+            game->playing->ability_bar.active_form   = info.form;
+            game->playing->ability_bar.resource_type = info.resource_type;
+            ability_bar_on_resource_update(&game->playing->ability_bar,
+                                           (int32_t)info.resource, (int32_t)info.max_resource);
 
             // Request full stats from server (includes move speed, xp_for_next, etc.)
             network_request_player_stats();
@@ -149,7 +153,7 @@ static void playing_update(GameState* game, float delta_time) {
             }
         }
     }
-    
+
     // Reset movement sync state when player data arrives
     if (game->player.needs_position_reset) {
         s_last_sent_x = game->player.x;
@@ -159,7 +163,7 @@ static void playing_update(GameState* game, float delta_time) {
         s_move_state_init = 1;
         game->player.needs_position_reset = 0;
     }
-    
+
     // Check for server corrections
     float correction_x, correction_y;
     if (network_get_server_correction(&correction_x, &correction_y)) {
@@ -168,7 +172,7 @@ static void playing_update(GameState* game, float delta_time) {
         s_last_sent_y = correction_y;
         s_last_move_send = now;
     }
-    
+
     // Initialize movement state if needed
     if (!s_move_state_init) {
         s_last_sent_x = game->player.x;
@@ -177,10 +181,10 @@ static void playing_update(GameState* game, float delta_time) {
         s_last_any_send = now;
         s_move_state_init = 1;
     }
-    
+
     camera_update(&game->camera, game->player.x, game->player.y, delta_time);
     combat_update(&game->playing->combat, delta_time);
-    
+
     // Update inventory
     if (game->inventory) {
         inventory_update(game->inventory,
@@ -190,7 +194,7 @@ static void playing_update(GameState* game, float delta_time) {
                         game->input.mouse_left_down,
                         game->input.mouse_right_clicked);
     }
-    
+
     // Update character screen
     if (game->character_screen) {
         character_screen_update(game->character_screen,
@@ -351,14 +355,14 @@ static void playing_update(GameState* game, float delta_time) {
     float dx = game->player.x - s_last_sent_x;
     float dy = game->player.y - s_last_sent_y;
     float dist = sqrtf(dx * dx + dy * dy);
-    
+
     if (dist > MOVE_THRESHOLD && (now - s_last_move_send) >= MOVE_INTERVAL) {
         network_send_player_move(
             game->player.x, game->player.y,
             game->player.speed,
             game->player.vel_x, game->player.vel_y
         );
-        
+
         s_last_sent_x = game->player.x;
         s_last_sent_y = game->player.y;
         s_last_move_send = now;
@@ -1168,10 +1172,18 @@ static void playing_render(GameState* game) {
     // In-game settings overlay (on top of pause if both somehow active)
     render_settings_overlay(game);
 
-    char debug[128];
-    snprintf(debug, sizeof(debug), "Pos: %.0f, %.0f  Mana: %d/%d",
-             game->player.x, game->player.y,
-             game->playing->ability_bar.mana, game->playing->ability_bar.max_mana);
+    const AbilityBarState* bar = &game->playing->ability_bar;
+    char debug[160];
+    if (ability_bar_has_resource(bar)) {
+        snprintf(debug, sizeof(debug), "Pos: %.0f, %.0f  %s  Resource: %d/%d",
+                 game->player.x, game->player.y,
+                 bar->active_form == FORM_ANIMAL ? "Animal" : "Human",
+                 bar->resource, bar->max_resource);
+    } else {
+        /* Human Form is cooldown-only, so there is no pool to report. */
+        snprintf(debug, sizeof(debug), "Pos: %.0f, %.0f  Human (no resource)",
+                 game->player.x, game->player.y);
+    }
     renderer_draw_text(10, 20, debug);
 }
 
@@ -1291,7 +1303,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             inventory_toggle(game->inventory);
         }
     }
-    
+
     // Toggle character screen
     if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_character)) {
         if (game->character_screen) {
@@ -1321,7 +1333,7 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
             network_send_session_list_request(next);
         }
     }
-    
+
     // Handle dialogue option clicks (highest priority)
     if (dialogue_is_active() && game->input.mouse_left_clicked) {
         int selected_option = dialogue_handle_click(game->input.mouse_x, game->input.mouse_y);
@@ -1339,14 +1351,14 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
     if (game->input.mouse_left_clicked) {
         // Check inventory close button
         if (game->inventory && game->inventory->is_open) {
-            if (inventory_check_close_button(game->inventory, 
-                                            game->input.mouse_x, 
+            if (inventory_check_close_button(game->inventory,
+                                            game->input.mouse_x,
                                             game->input.mouse_y)) {
                 inventory_toggle(game->inventory);
                 return;  // Don't process other clicks
             }
         }
-        
+
         // Check character screen close button
         if (game->character_screen && game->character_screen->is_open) {
             if (character_screen_check_close_button(game->character_screen,
@@ -1356,16 +1368,16 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                 return;  // Don't process other clicks
             }
         }
-        
+
         // Check inventory button
         if (game->inventory) {
-            if (hud_check_inventory_button_clicked(&game->playing->hud, 
-                                                   game->input.mouse_x, 
+            if (hud_check_inventory_button_clicked(&game->playing->hud,
+                                                   game->input.mouse_x,
                                                    game->input.mouse_y)) {
                 inventory_toggle(game->inventory);
             }
         }
-        
+
         // Check character button
         if (game->character_screen) {
             if (hud_check_character_button_clicked(&game->playing->hud,
@@ -1652,10 +1664,37 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
 
     player_update_movement(&game->player, &game->input, &game->world, delta_time);
 
-    // Ability input (keys 1-5)
-    uint16_t ability_to_cast = ability_bar_update(&game->playing->ability_bar, delta_time, 
-                                           game->input.keys_just_pressed, 
-                                           game->player.info.player_class);
+    /* Form swap. The request is fire-and-forget: the server answers with the
+     * authoritative form either way, and refuses while the shared swap cooldown is
+     * up or while an action lock is in force. */
+    if (input_key_just_pressed(&game->input, g_keybinds.swap_form)) {
+        uint8_t current = game->playing->ability_bar.active_form;
+        network_request_form_swap(current == FORM_ANIMAL ? FORM_HUMAN : FORM_ANIMAL);
+    }
+
+    FormSwapAckPacket swap_ack;
+    if (network_get_form_swap_ack(&swap_ack)) {
+        if (swap_ack.accepted) {
+            ability_bar_set_form(&game->playing->ability_bar, swap_ack.form,
+                                 (int32_t)ntohl(swap_ack.resource),
+                                 (int32_t)ntohl(swap_ack.max_resource),
+                                 swap_ack.resource_type, swap_ack.swap_ready_in,
+                                 swap_ack.ability_ready_in);
+            game->playing->player_form          = swap_ack.form;
+            game->playing->player_resource_type = swap_ack.resource_type;
+            printf("[FORM] Now in %s form\n",
+                   swap_ack.form == FORM_ANIMAL ? "animal" : "human");
+        } else {
+            /* A refusal still carries the truth: keep the client in step with it. */
+            game->playing->ability_bar.active_form = swap_ack.form;
+            game->playing->form_swap_ready_in = swap_ack.swap_ready_in;
+        }
+    }
+
+    // Ability input (keys 1-5), against whichever form's bar is live
+    uint16_t ability_to_cast = ability_bar_update(&game->playing->ability_bar, delta_time,
+                                           game->input.keys_just_pressed,
+                                           game->player.info.race_id);
 
     if (ability_to_cast > 0) {
         float aim_x = (game->input.mouse_x - game->camera.viewport_width / 2.0f) / game->camera.zoom + game->camera.x;
@@ -1683,13 +1722,13 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
         }
         network_send_attack_intent(aim_x, aim_y);
     }
-    
+
     // Cancel ability cast with right-click
     if (game->input.mouse_right_clicked && game->playing->ability_bar.is_casting) {
         network_send_ability_cancel();
         ability_bar_on_cast_cancel(&game->playing->ability_bar, game->playing->ability_bar.casting_ability_id);
     }
-    
+
     map_input_only:;
     // M — toggle full map
     if (input_key_just_pressed(&game->input, GLFW_KEY_M)) {

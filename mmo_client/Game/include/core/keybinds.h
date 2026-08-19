@@ -19,7 +19,8 @@ typedef struct {
     int party_leave;
 
     int basic_attack;
-    int ability[5];         /**< Ability slots 1 through 5. */
+    int swap_form;          /**< Toggle between Human and Animal Form. */
+    int ability[5];         /**< The five hotbar slots, whichever form fills them. */
 } KeyBinds;
 
 extern KeyBinds g_keybinds;

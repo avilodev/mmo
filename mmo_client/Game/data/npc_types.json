@@ -1,10 +1,4 @@
 {
-  "npc_types": [
-    { "id": 0, "name": "Friendly Guard" },
-    { "id": 1, "name": "Training Dummy" },
-    { "id": 2, "name": "Goblin Archer" },
-    { "id": 3, "name": "Skeleton Warrior" },
-    { "id": 4, "name": "Dark Mage" },
-    { "id": 5, "name": "Kingdom Slime" }
-  ]
+  "_comment": "The only data file the client actually loads. Everything else the client needs — races, abilities, items, zones, dialogue — is served by the server, so there is one source of truth for each and no copy here to drift.",
+  "npc_types": []
 }

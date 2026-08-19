@@ -43,6 +43,32 @@ static void get_class_color_for_slot(int slot_index, int slot_count,
 }
 
 /**
+ * Return the bar for the form currently in use.
+ */
+AbilityFormBar* ability_bar_active(AbilityBarState* bar) {
+    uint8_t form = bar->active_form < FORM_COUNT ? bar->active_form : FORM_HUMAN;
+    return &bar->forms[form];
+}
+
+/**
+ * Return the bar for the form currently in use, for read-only callers.
+ */
+const AbilityFormBar* ability_bar_active_const(const AbilityBarState* bar) {
+    uint8_t form = bar->active_form < FORM_COUNT ? bar->active_form : FORM_HUMAN;
+    return &bar->forms[form];
+}
+
+/**
+ * Report whether the active form has a resource pool to draw.
+ *
+ * Human Form is cooldown-only and carries no pool, so the HUD hides the bar rather
+ * than drawing an empty one.
+ */
+int ability_bar_has_resource(const AbilityBarState* bar) {
+    return bar->resource_type != RESOURCE_NONE && bar->max_resource > 0;
+}
+
+/**
  * Initialize ability-bar state and bottom-center layout.
  */
 void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_height) {
@@ -65,72 +91,119 @@ void ability_bar_init(AbilityBarState* bar, float screen_width, float screen_hei
  * Release all loaded ability icon textures and clear the slot count.
  */
 void ability_bar_cleanup(AbilityBarState* bar) {
-    for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
-        if (bar->slots[i].texture_id) {
-            texture_unload(bar->slots[i].texture_id);
-            bar->slots[i].texture_id = 0;
+    for (int form = 0; form < FORM_COUNT; form++) {
+        for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
+            if (bar->forms[form].slots[i].texture_id) {
+                texture_unload(bar->forms[form].slots[i].texture_id);
+                bar->forms[form].slots[i].texture_id = 0;
+            }
         }
+        bar->forms[form].slot_count = 0;
     }
-    bar->slot_count = 0;
 }
 
 /**
- * Replace ability slots with parallel arrays received from the server.
+ * Replace one form's ability slots with parallel arrays received from the server.
  *
- * Existing icon textures are released before replacement.
+ * Existing icon textures are released before replacement. A slot that still holds the
+ * same ability keeps its running cooldown: the server treats cooldowns as absolute
+ * expiry instants that tick in both forms, so a bar refresh from a level-up or a form
+ * swap must not present a cooldown as reset.
  *
  * @param count  Number of array entries, clamped to MAX_ABILITY_SLOTS.
  */
-void ability_bar_set_abilities(AbilityBarState* bar,
-                               uint16_t* ability_ids,
-                               const char** ability_names,
-                               float* cooldowns,
-                               float* cast_times,
-                               int* mana_costs,
-                               const char** images,
-                               int count) {
-    bar->slot_count = count;
-    if (bar->slot_count > MAX_ABILITY_SLOTS)
-        bar->slot_count = MAX_ABILITY_SLOTS;
+void ability_bar_set_form_abilities(AbilityBarState* bar,
+                                    uint8_t form,
+                                    uint16_t* ability_ids,
+                                    const char** ability_names,
+                                    float* cooldowns,
+                                    float* cast_times,
+                                    int* resource_costs,
+                                    const char** images,
+                                    int count) {
+    if (form >= FORM_COUNT) return;
 
-    for (int i = 0; i < bar->slot_count; i++) {
-        // Unload old texture if slot is being replaced
-        if (bar->slots[i].texture_id) {
-            texture_unload(bar->slots[i].texture_id);
-            bar->slots[i].texture_id = 0;
+    AbilityFormBar* target = &bar->forms[form];
+
+    target->slot_count = count;
+    if (target->slot_count > MAX_ABILITY_SLOTS)
+        target->slot_count = MAX_ABILITY_SLOTS;
+
+    for (int i = 0; i < target->slot_count; i++) {
+        AbilitySlot* slot = &target->slots[i];
+
+        /* Preserve a cooldown only when the slot is genuinely unchanged. */
+        float retained = (slot->id == ability_ids[i]) ? slot->cooldown_remaining : 0.0f;
+
+        if (slot->texture_id) {
+            texture_unload(slot->texture_id);
+            slot->texture_id = 0;
         }
 
-        bar->slots[i].id = ability_ids[i];
-        strncpy(bar->slots[i].name, ability_names[i], MAX_ABILITY_NAME - 1);
-        bar->slots[i].cooldown_total     = cooldowns[i];
-        bar->slots[i].cooldown_remaining = 0.0f;
-        bar->slots[i].cast_time          = cast_times[i];
-        bar->slots[i].mana_cost          = mana_costs[i];
-        bar->slots[i].is_heal            = ability_name_is_heal(ability_names[i]);
+        slot->id = ability_ids[i];
+        strncpy(slot->name, ability_names[i], MAX_ABILITY_NAME - 1);
+        slot->name[MAX_ABILITY_NAME - 1] = '\0';
+        slot->cooldown_total     = cooldowns[i];
+        slot->cooldown_remaining = retained;
+        slot->cast_time          = cast_times[i];
+        slot->resource_cost      = resource_costs[i];
+        slot->is_heal            = ability_name_is_heal(ability_names[i]);
 
         // Store icon path and load texture
-        bar->slots[i].image[0] = '\0';
+        slot->image[0] = '\0';
         if (images && images[i] && images[i][0]) {
-            strncpy(bar->slots[i].image, images[i], 31);
-            bar->slots[i].image[31] = '\0';
+            strncpy(slot->image, images[i], 31);
+            slot->image[31] = '\0';
 
             char path[128];
-            snprintf(path, sizeof(path), "Game/Sprites/Abilities/%s", bar->slots[i].image);
-            bar->slots[i].texture_id = texture_load(path);
+            snprintf(path, sizeof(path), "Game/Sprites/Abilities/%s", slot->image);
+            slot->texture_id = texture_load(path);
         }
 
         // Fallback color (shown when no icon)
         get_class_color_for_slot(i, count,
-            &bar->slots[i].color_r, &bar->slots[i].color_g,
-            &bar->slots[i].color_b, &bar->slots[i].color_a);
+            &slot->color_r, &slot->color_g, &slot->color_b, &slot->color_a);
     }
 
     // Clear unused slots
-    for (int i = bar->slot_count; i < MAX_ABILITY_SLOTS; i++) {
-        memset(&bar->slots[i], 0, sizeof(AbilitySlot));
+    for (int i = target->slot_count; i < MAX_ABILITY_SLOTS; i++) {
+        if (target->slots[i].texture_id) {
+            texture_unload(target->slots[i].texture_id);
+        }
+        memset(&target->slots[i], 0, sizeof(AbilitySlot));
     }
 
-    printf("[ABILITY_BAR] Set %d abilities\n", bar->slot_count);
+    printf("[ABILITY_BAR] Set %d abilities for %s form\n",
+           target->slot_count, form == FORM_ANIMAL ? "animal" : "human");
+}
+
+/**
+ * Switch which form's bar is displayed and drives input.
+ *
+ * The server's per-slot remaining times are authoritative and overwrite whatever the
+ * client had been counting down locally, which is what keeps a cooldown that ran
+ * while the player was in the other form displaying correctly on return.
+ */
+void ability_bar_set_form(AbilityBarState* bar, uint8_t form,
+                          int32_t resource, int32_t max_resource,
+                          uint8_t resource_type, float swap_ready_in,
+                          const float* ready_in) {
+    if (form >= FORM_COUNT) return;
+
+    bar->active_form   = form;
+    bar->resource      = resource;
+    bar->max_resource  = max_resource;
+    bar->resource_type = resource_type;
+    bar->swap_ready_in = swap_ready_in;
+
+    /* A swap interrupts nothing, but the cast bar belonged to the old form. */
+    bar->is_casting = 0;
+    bar->cast_elapsed = 0.0f;
+
+    if (!ready_in) return;
+    for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
+        bar->forms[form].slots[i].cooldown_remaining = ready_in[i];
+    }
 }
 
 /**
@@ -141,16 +214,29 @@ void ability_bar_set_abilities(AbilityBarState* bar,
  * @return      Requested ability identifier, or zero when no cast is requested.
  */
 uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
-                            const int* keys_just_pressed, uint32_t player_class) {
-    (void)player_class;
-    // Tick cooldowns
-    for (int i = 0; i < bar->slot_count; i++) {
-        if (bar->slots[i].cooldown_remaining > 0.0f) {
-            bar->slots[i].cooldown_remaining -= delta_time;
-            if (bar->slots[i].cooldown_remaining < 0.0f)
-                bar->slots[i].cooldown_remaining = 0.0f;
+                            const int* keys_just_pressed, uint32_t race_id) {
+    (void)race_id;
+
+    /* Tick both forms' cooldowns, not just the visible one. The server runs them off
+     * absolute expiry instants that keep advancing regardless of form, so a client
+     * that only ticked the active bar would show the other form's cooldowns frozen
+     * at whatever they read when the player swapped away. */
+    for (int form = 0; form < FORM_COUNT; form++) {
+        for (int i = 0; i < bar->forms[form].slot_count; i++) {
+            AbilitySlot* slot = &bar->forms[form].slots[i];
+            if (slot->cooldown_remaining <= 0.0f) continue;
+
+            slot->cooldown_remaining -= delta_time;
+            if (slot->cooldown_remaining < 0.0f) slot->cooldown_remaining = 0.0f;
         }
     }
+
+    if (bar->swap_ready_in > 0.0f) {
+        bar->swap_ready_in -= delta_time;
+        if (bar->swap_ready_in < 0.0f) bar->swap_ready_in = 0.0f;
+    }
+
+    AbilityFormBar* active = ability_bar_active(bar);
 
     // Tick reject flash
     for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
@@ -179,40 +265,42 @@ uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
     }
 
     // Check input: ability keys from keybinds (default 1-5)
-    if (!bar->is_casting && bar->slot_count > 0) {
-        int key_map[5] = {
+    if (!bar->is_casting && active->slot_count > 0) {
+        int key_map[MAX_ABILITY_SLOTS] = {
             g_keybinds.ability[0], g_keybinds.ability[1], g_keybinds.ability[2],
             g_keybinds.ability[3], g_keybinds.ability[4]
         };
 
-        for (int i = 0; i < bar->slot_count; i++) {
+        for (int i = 0; i < active->slot_count; i++) {
             if (!keys_just_pressed[key_map[i]]) continue;
 
-            printf("[ABILITY_BAR] Key %d pressed -> slot %d (id=%u, cd=%.1f, mana_cost=%d, mana=%d)\n",
-                   i + 1, i, bar->slots[i].id,
-                   bar->slots[i].cooldown_remaining,
-                   bar->slots[i].mana_cost, bar->mana);
+            AbilitySlot* slot = &active->slots[i];
+            printf("[ABILITY_BAR] Key %d pressed -> slot %d (id=%u, cd=%.1f, cost=%d, resource=%d)\n",
+                   i + 1, i, slot->id, slot->cooldown_remaining,
+                   slot->resource_cost, bar->resource);
 
-            if (bar->slots[i].id == 0) {
+            if (slot->id == 0) {
                 printf("[ABILITY_BAR] Slot %d has no ability assigned!\n", i);
                 continue;
             }
 
-            if (bar->slots[i].cooldown_remaining > 0.0f) {
+            if (slot->cooldown_remaining > 0.0f) {
                 printf("[ABILITY_BAR] Slot %d on cooldown (%.1fs)\n",
-                       i, bar->slots[i].cooldown_remaining);
+                       i, slot->cooldown_remaining);
                 continue;
             }
 
-            if (bar->slots[i].mana_cost > 0 && bar->slots[i].mana_cost > bar->mana) {
-                printf("[ABILITY_BAR] Not enough mana for '%s' (%d/%d)\n",
-                       bar->slots[i].name, bar->mana, bar->slots[i].mana_cost);
+            /* Human Form abilities cost nothing, so this check is naturally inert
+             * there rather than needing to be skipped. */
+            if (slot->resource_cost > 0 && slot->resource_cost > bar->resource) {
+                printf("[ABILITY_BAR] Not enough resource for '%s' (%d/%d)\n",
+                       slot->name, bar->resource, slot->resource_cost);
+                bar->reject_flash[i] = 0.3f;
                 continue;
             }
 
-            printf("[ABILITY_BAR] Casting ability '%s' (id=%u)!\n",
-                   bar->slots[i].name, bar->slots[i].id);
-            return bar->slots[i].id;
+            printf("[ABILITY_BAR] Casting ability '%s' (id=%u)!\n", slot->name, slot->id);
+            return slot->id;
         }
     }
 
@@ -232,10 +320,12 @@ void ability_bar_on_cast_start(AbilityBarState* bar, uint16_t ability_id, float 
     bar->cast_is_heal = 0;
 
     // Find ability name and heal flag
-    for (int i = 0; i < bar->slot_count; i++) {
-        if (bar->slots[i].id == ability_id) {
-            strncpy(bar->casting_ability_name, bar->slots[i].name, MAX_ABILITY_NAME - 1);
-            bar->cast_is_heal = bar->slots[i].is_heal;
+    AbilityFormBar* active = ability_bar_active(bar);
+    for (int i = 0; i < active->slot_count; i++) {
+        if (active->slots[i].id == ability_id) {
+            strncpy(bar->casting_ability_name, active->slots[i].name, MAX_ABILITY_NAME - 1);
+            bar->casting_ability_name[MAX_ABILITY_NAME - 1] = '\0';
+            bar->cast_is_heal = active->slots[i].is_heal;
             break;
         }
     }
@@ -248,9 +338,10 @@ void ability_bar_on_cast_resolve(AbilityBarState* bar, uint16_t ability_id) {
     bar->is_casting = 0;
 
     // Start cooldown on the resolved ability
-    for (int i = 0; i < bar->slot_count; i++) {
-        if (bar->slots[i].id == ability_id) {
-            bar->slots[i].cooldown_remaining = bar->slots[i].cooldown_total;
+    AbilityFormBar* active = ability_bar_active(bar);
+    for (int i = 0; i < active->slot_count; i++) {
+        if (active->slots[i].id == ability_id) {
+            active->slots[i].cooldown_remaining = active->slots[i].cooldown_total;
             break;
         }
     }
@@ -265,8 +356,9 @@ void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id) {
 
     // Flash the rejected slot red so the player knows why the cast failed
     if (ability_id > 0) {
-        for (int i = 0; i < bar->slot_count; i++) {
-            if (bar->slots[i].id == ability_id) {
+        AbilityFormBar* active = ability_bar_active(bar);
+        for (int i = 0; i < active->slot_count; i++) {
+            if (active->slots[i].id == ability_id) {
                 bar->reject_flash[i] = 0.3f;
                 break;
             }
@@ -280,21 +372,28 @@ void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id) {
  * @param cooldown  Cooldown duration in seconds.
  */
 void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown) {
-    for (int i = 0; i < bar->slot_count; i++) {
-        if (bar->slots[i].id == ability_id) {
-            bar->slots[i].cooldown_remaining = cooldown;
-            bar->slots[i].cooldown_total = cooldown;
-            break;
+    /* Search both forms: an ability that started a cooldown may belong to the bar the
+     * player has since swapped away from, and that cooldown still has to be recorded. */
+    for (int form = 0; form < FORM_COUNT; form++) {
+        for (int i = 0; i < bar->forms[form].slot_count; i++) {
+            if (bar->forms[form].slots[i].id != ability_id) continue;
+
+            bar->forms[form].slots[i].cooldown_remaining = cooldown;
+            bar->forms[form].slots[i].cooldown_total = cooldown;
+            return;
         }
     }
 }
 
 /**
- * Replace displayed current and maximum mana values.
+ * Replace the displayed resource pool.
+ *
+ * Whichever pool the active form carries — mana, stamina, or rage — travels on the
+ * same update, because the wire pair generalised rather than multiplied.
  */
-void ability_bar_on_mana_update(AbilityBarState* bar, int32_t mana, int32_t max_mana) {
-    bar->mana = mana;
-    bar->max_mana = max_mana;
+void ability_bar_on_resource_update(AbilityBarState* bar, int32_t resource, int32_t max_resource) {
+    bar->resource = resource;
+    bar->max_resource = max_resource;
 }
 
 /**
@@ -359,26 +458,29 @@ void ability_bar_render(const AbilityBarState* bar) {
     renderer_draw_rect(x - 8, y - 8, total_w, 2, 0.3f, 0.3f, 0.4f, 1.0f);
     renderer_draw_rect(x - 8, y + size + 6, total_w, 2, 0.3f, 0.3f, 0.4f, 1.0f);
 
+    const AbilityFormBar* active = ability_bar_active_const(bar);
+
     for (int i = 0; i < MAX_ABILITY_SLOTS; i++) {
         float sx = x + i * (size + pad);
         float sy = y;
 
-        int has_ability = (i < bar->slot_count && bar->slots[i].id > 0);
+        const AbilitySlot* slot = &active->slots[i];
+        int has_ability = (i < active->slot_count && slot->id > 0);
 
         // Slot background
         if (has_ability) {
             renderer_draw_rect(sx, sy, size, size, 0.15f, 0.15f, 0.25f, 1.0f);
 
-            if (bar->slots[i].texture_id) {
+            if (slot->texture_id) {
                 // Draw icon
                 renderer_draw_sprite(sx + 2, sy + 2, size - 4, size - 4,
-                                     bar->slots[i].texture_id);
+                                     slot->texture_id);
             } else {
                 // Fallback: colored fill
                 renderer_draw_rect(sx + 2, sy + 2, size - 4, size - 4,
-                                   bar->slots[i].color_r,
-                                   bar->slots[i].color_g,
-                                   bar->slots[i].color_b,
+                                   slot->color_r,
+                                   slot->color_g,
+                                   slot->color_b,
                                    0.4f);
             }
         } else {
@@ -387,7 +489,7 @@ void ability_bar_render(const AbilityBarState* bar) {
 
         // Slot border
         float border_r = 0.4f, border_g = 0.4f, border_b = 0.5f;
-        if (has_ability && bar->slots[i].cooldown_remaining <= 0.0f) {
+        if (has_ability && slot->cooldown_remaining <= 0.0f) {
             border_r = 0.6f; border_g = 0.6f; border_b = 0.7f;
         }
         renderer_draw_rect(sx, sy, size, 2, border_r, border_g, border_b, 1.0f);
@@ -396,8 +498,8 @@ void ability_bar_render(const AbilityBarState* bar) {
         renderer_draw_rect(sx + size - 2, sy, 2, size, border_r, border_g, border_b, 1.0f);
 
         // Cooldown overlay
-        if (has_ability && bar->slots[i].cooldown_remaining > 0.0f) {
-            float cd_pct = bar->slots[i].cooldown_remaining / bar->slots[i].cooldown_total;
+        if (has_ability && slot->cooldown_remaining > 0.0f) {
+            float cd_pct = slot->cooldown_remaining / slot->cooldown_total;
             if (cd_pct > 1.0f) cd_pct = 1.0f;
 
             // Dark overlay sweeping down
@@ -406,13 +508,14 @@ void ability_bar_render(const AbilityBarState* bar) {
 
             // Cooldown timer text
             char cd_buf[8];
-            snprintf(cd_buf, sizeof(cd_buf), "%.0f", bar->slots[i].cooldown_remaining);
+            snprintf(cd_buf, sizeof(cd_buf), "%.0f", slot->cooldown_remaining);
             renderer_draw_text(sx + size / 2 - 5, sy + size / 2 + 5, cd_buf);
         }
 
         // Not enough mana indicator
-        if (has_ability && bar->slots[i].mana_cost > bar->mana &&
-            bar->slots[i].mana_cost > 0) {
+        /* Dim a slot the player cannot currently afford. Human Form abilities cost
+         * nothing, so nothing is ever dimmed there. */
+        if (has_ability && slot->resource_cost > 0 && slot->resource_cost > bar->resource) {
             renderer_draw_rect(sx, sy, size, size, 0.0f, 0.0f, 0.3f, 0.4f);
         }
 
@@ -431,7 +534,7 @@ void ability_bar_render(const AbilityBarState* bar) {
         if (has_ability) {
             // Show first 4 chars of name
             char short_name[6] = {0};
-            strncpy(short_name, bar->slots[i].name, 5);
+            strncpy(short_name, slot->name, 5);
             renderer_draw_text(sx + 2, sy + size - 4, short_name);
         }
     }

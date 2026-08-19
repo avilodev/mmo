@@ -29,7 +29,7 @@ void network_clear_disconnect_reason(void);
 void network_update(void);
 void network_update_with_ping(int game_mode);
 
-int network_connect_to_realm(const char* ip, uint16_t port, 
+int network_connect_to_realm(const char* ip, uint16_t port,
                              const char* session_key, uint32_t account_id);
 
 int network_request_world_list(void);
@@ -37,6 +37,14 @@ int network_get_world_list(WorldListResponsePacket* out);
 
 int network_request_character_list(uint32_t world_id);
 int network_get_character_list(CharacterListResponsePacket* out);
+
+/** Ask the realm server which races exist. The client keeps no race table. */
+int network_request_race_list(void);
+int network_get_race_list(RaceListResponsePacket* out);
+
+/** Ask the world server to swap forms, and read its authoritative reply. */
+int network_request_form_swap(uint8_t requested_form);
+int network_get_form_swap_ack(FormSwapAckPacket* out);
 
 int network_create_character(uint32_t world_id, const char* name,
                             uint32_t class_id, uint32_t race_id);

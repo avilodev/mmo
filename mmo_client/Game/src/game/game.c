@@ -35,7 +35,7 @@
  */
 void game_init(GameState* game, int viewport_width, int viewport_height) {
     memset(game, 0, sizeof(GameState));
-    
+
     game->is_running = 1;
     game->mode = GAME_MODE_MAIN_MENU;
     game->net_state = NET_STATE_IDLE;
@@ -47,16 +47,16 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     game->settings.show_fps      = 0;
     game->settings.fullscreen    = 0;
     game->settings.ui_scale      = 1.0f;
-    
+
     // Initialize subsystems
     input_init(&game->input);
     player_init(&game->player);
     camera_init(&game->camera, viewport_width, viewport_height);
     game->playing = NULL;
-    
+
     // Initialize item database (once at startup)
     item_db_init();
-    
+
     // Allocate and initialize inventory
     game->inventory = malloc(sizeof(InventoryState));
     if (game->inventory) {
@@ -64,7 +64,7 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     } else {
         fprintf(stderr, "[GAME] Failed to allocate inventory!\n");
     }
-    
+
     // Allocate and initialize character screen
     game->character_screen = malloc(sizeof(CharacterScreenState));
     if (game->character_screen) {
@@ -72,7 +72,7 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     } else {
         fprintf(stderr, "[GAME] Failed to allocate character screen!\n");
     }
-    
+
     // Ensure data directory exists before any file reads/writes
     _mkdir("Game/data");
 
@@ -97,37 +97,40 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
         game->is_running = 0;
         return;
     }
-    
+
     // Ennara Courtyard centre — matches worldgen_spawn_point() and the
     // server-side default in player_data.c.
     game->player.x = 222400.0f;
     game->player.y = 89280.0f;
-    
+
     camera_set_position(&game->camera, game->player.x, game->player.y);
-    
+
     // Load only menu/shared assets at startup.
     // Gameplay textures (player, tiles, decorations) are loaded in playing_enter
     // and unloaded in playing_exit.
     game->textures.background = texture_load("Game/Sprites/Background/background.png");
-    
+
     game->background_width = 860;
     game->background_height = 458;
-    
+
     // Initialize menu states
     game->main_menu.selected_button = -1;
     game->server_list.selected_index = -1;
     game->char_select.selected_index = -1;
-    game->char_select.selected_class = 1;
-    game->char_select.selected_race = 1;
-    
+    /* Race and class fuse into one identifier, so there is one choice. It stays 0
+     * until the server's race list arrives; the client knows no races on its own. */
+    game->char_select.selected_race = 0;
+    game->char_select.races_loaded = 0;
+    game->char_select.races_requested = 0;
+
     // Enter initial state
     const StateHandler* handler = state_handler_get(game->mode);
     if (handler && handler->enter) {
         handler->enter(game);
     }
-    
+
     printf("[GAME] Initialized\n");
-    printf("[GAME] World: %dx%d tiles (chunked loading)\n", 
+    printf("[GAME] World: %dx%d tiles (chunked loading)\n",
            game->world.world_width, game->world.world_height);
     printf("[GAME] Viewport: %dx%d\n", viewport_width, viewport_height);
 }
@@ -142,16 +145,16 @@ void game_change_state(GameState* game, GameMode new_mode) {
         printf("[GAME] Already in mode %d, skipping\n", new_mode);
         return;
     }
-    
+
     printf("[GAME] Changing state: %d -> %d\n", game->mode, new_mode);
-    
+
     // Exit current state
     const StateHandler* old_handler = state_handler_get(game->mode);
     if (old_handler && old_handler->exit) {
         printf("[GAME] Calling exit for mode %d\n", game->mode);
         old_handler->exit(game);
     }
-    
+
     game->mode = new_mode;
 
     // Consume the click that triggered this transition so the new state's
@@ -177,13 +180,13 @@ void game_handle_input(GameState* game, GLFWwindow* window, float delta_time) {
     // Get window size for mouse scaling
     int win_w, win_h;
     glfwGetWindowSize(window, &win_w, &win_h);
-    
+
     // Update input state
-    input_update(&game->input, window, 
-                game->camera.viewport_width, 
+    input_update(&game->input, window,
+                game->camera.viewport_width,
                 game->camera.viewport_height,
                 win_w, win_h);
-    
+
     // Delegate to current state handler
     const StateHandler* handler = state_handler_get(game->mode);
     if (handler && handler->handle_input) {
@@ -199,10 +202,10 @@ void game_handle_input(GameState* game, GLFWwindow* window, float delta_time) {
 void game_update(GameState* game, float delta_time) {
     // Update world chunks based on player position (critical for chunked loading!)
     world_update_chunks(&game->world, game->player.x, game->player.y);
-    
+
     // Update temporary tile modifications (ability walls, etc.)
     world_update_modifications(&game->world, delta_time);
-    
+
     // Delegate to current state handler
     const StateHandler* handler = state_handler_get(game->mode);
     if (handler && handler->update) {
@@ -215,7 +218,7 @@ void game_update(GameState* game, float delta_time) {
  */
 void game_render(GameState* game) {
     renderer_clear(0.1f, 0.1f, 0.2f);
-    
+
     // Delegate to current state handler
     const StateHandler* handler = state_handler_get(game->mode);
     if (handler && handler->render) {
@@ -233,30 +236,30 @@ void game_cleanup(GameState* game) {
     if (handler && handler->exit) {
         handler->exit(game);
     }
-    
+
     // Free character screen
     if (game->character_screen) {
         free(game->character_screen);
         game->character_screen = NULL;
     }
-    
+
     // Free inventory
     if (game->inventory) {
         free(game->inventory);
         game->inventory = NULL;
     }
-    
+
     // Free NPC type table
     npc_types_cleanup();
 
     printf("[SHUTDOWN]   world...\n"); fflush(stdout);
     // Free world (closes file, frees chunks)
     world_cleanup(&game->world);
-    
+
     // Unload menu/shared textures
     // (gameplay textures are already unloaded by playing_exit)
     if (game->textures.background) texture_unload(game->textures.background);
-    
+
     printf("[SHUTDOWN]   settings + audio...\n"); fflush(stdout);
     // Save settings and shut down audio
     game_settings_save(&game->settings, SETTINGS_PATH);

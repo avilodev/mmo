@@ -18,44 +18,44 @@ void hud_init(HUDLayout* hud, int screen_width, int screen_height) {
     printf("[HUD] Initializing %dx%d\n", screen_width, screen_height);
     hud->screen_width = screen_width;
     hud->screen_height = screen_height;
-    
+
     // Minimap (upper right corner)
     hud->minimap_size = 200.0f;
     hud->minimap_x = screen_width - hud->minimap_size - 20.0f;
     hud->minimap_y = 20.0f;
-    
+
     // Health bar (bottom left)
     hud->health_bar_width = 300.0f;
     hud->health_bar_height = 25.0f;
     hud->health_bar_x = 120.0f;
-    hud->health_bar_y = screen_height - 105.0f; 
-    
+    hud->health_bar_y = screen_height - 105.0f;
+
     // Mana bar (below health bar)
     hud->mana_bar_width = 300.0f;
     hud->mana_bar_height = 20.0f;
     hud->mana_bar_x = 120.0f;
     hud->mana_bar_y = screen_height - 75.0f;
-    
+
     // Experience bar (bottom, below mana)
     hud->exp_bar_width = 500.0f;
     hud->exp_bar_height = 20.0f;
     hud->exp_bar_x = 120.0f;
     hud->exp_bar_y = screen_height - 50.0f;
-    
+
     // Level display (left of exp bar)
     hud->level_x = 20.0f;
     hud->level_y = screen_height - 45.0f;
-    
+
     // Inventory button (bottom right corner)
     hud->inv_button_size = 50.0f;
     hud->inv_button_x = screen_width - hud->inv_button_size - 20.0f;
     hud->inv_button_y = screen_height - hud->inv_button_size - 20.0f;
-    
+
     // Character button (to the left of inventory button)
     hud->char_button_size = 50.0f;
     hud->char_button_x = hud->inv_button_x - hud->char_button_size - 10.0f;
     hud->char_button_y = screen_height - hud->char_button_size - 20.0f;
-    
+
     // Currency displays (right side, below minimap)
     hud->currency_x = screen_width - 200.0f;
     hud->currency_y = hud->minimap_y + hud->minimap_size + 30.0f;
@@ -71,7 +71,7 @@ int hud_check_inventory_button_clicked(const HUDLayout* hud, float mouse_x, floa
     float x = hud->inv_button_x;
     float y = hud->inv_button_y;
     float size = hud->inv_button_size;
-    
+
     return (mouse_x >= x && mouse_x <= x + size &&
             mouse_y >= y && mouse_y <= y + size);
 }
@@ -85,7 +85,7 @@ int hud_check_character_button_clicked(const HUDLayout* hud, float mouse_x, floa
     float x = hud->char_button_x;
     float y = hud->char_button_y;
     float size = hud->char_button_size;
-    
+
     return (mouse_x >= x && mouse_x <= x + size &&
             mouse_y >= y && mouse_y <= y + size);
 }
@@ -247,49 +247,62 @@ void hud_render_health_bar(const HUDLayout* hud, const GameState* game) {
 }
 
 /**
- * Render the local player's class resource bar.
+ * Render the local player's resource bar.
+ *
+ * Which pool this is follows the character's role, not its race, and Human Form
+ * carries none at all — so the bar is hidden rather than drawn empty when the
+ * character is out of Animal Form.
  */
 void hud_render_mana_bar(const HUDLayout* hud, const GameState* game) {
     float x = hud->mana_bar_x;
     float y = hud->mana_bar_y;
     float width = hud->mana_bar_width;
     float height = hud->mana_bar_height;
-    
-    // Read from ability bar state instead of player info
-    int32_t current_mana = game->playing->ability_bar.mana;
-    int32_t max_mana = game->playing->ability_bar.max_mana;
-    
-    if (max_mana <= 0) return; // Don't draw if no max mana
-    
+
+    const AbilityBarState* bar = &game->playing->ability_bar;
+    if (!ability_bar_has_resource(bar)) return;
+
+    int32_t current_mana = bar->resource;
+    int32_t max_mana = bar->max_resource;
+
     float mana_percent = (float)current_mana / (float)max_mana;
     if (mana_percent > 1.0f) mana_percent = 1.0f;
     if (mana_percent < 0.0f) mana_percent = 0.0f;
-    
+
     // Background (dark)
     renderer_draw_rect(x - 2, y - 2, width + 4, height + 4, 0.0f, 0.0f, 0.0f, 0.8f);
     renderer_draw_rect(x, y, width, height, 0.1f, 0.1f, 0.2f, 1.0f);
-    
-    // Determine color based on class (Ninja = yellow/energy, others = blue/mana)
+
+    /* Colour and name follow the pool, so a rage tank and a mana healer read
+     * differently at a glance without the HUD knowing anything about races. */
     float bar_r, bar_g, bar_b;
     const char* resource_name;
-    
-    if (game->player.info.player_class == 2) { // NINJA class
-        bar_r = 1.0f; bar_g = 0.9f; bar_b = 0.2f; // Yellow
-        resource_name = "Energy";
-    } else {
-        bar_r = 0.2f; bar_g = 0.3f; bar_b = 0.9f; // Blue
-        resource_name = "Mana";
+
+    switch (bar->resource_type) {
+        case RESOURCE_RAGE:
+            bar_r = 0.85f; bar_g = 0.18f; bar_b = 0.15f;
+            resource_name = "Rage";
+            break;
+        case RESOURCE_STAMINA:
+            bar_r = 0.95f; bar_g = 0.75f; bar_b = 0.15f;
+            resource_name = "Stamina";
+            break;
+        case RESOURCE_MANA:
+        default:
+            bar_r = 0.2f; bar_g = 0.3f; bar_b = 0.9f;
+            resource_name = "Mana";
+            break;
     }
-    
+
     // Mana/Energy fill
     renderer_draw_rect(x, y, width * mana_percent, height, bar_r, bar_g, bar_b, 0.9f);
-    
+
     // Border
     renderer_draw_rect(x, y, width, 2, 0.6f, 0.6f, 0.6f, 1.0f);
     renderer_draw_rect(x, y + height - 2, width, 2, 0.6f, 0.6f, 0.6f, 1.0f);
     renderer_draw_rect(x, y, 2, height, 0.6f, 0.6f, 0.6f, 1.0f);
     renderer_draw_rect(x + width - 2, y, 2, height, 0.6f, 0.6f, 0.6f, 1.0f);
-    
+
     // Resource Text
     char mana_text[32];
     snprintf(mana_text, sizeof(mana_text), "%s: %d / %d", resource_name, current_mana, max_mana);
@@ -304,7 +317,7 @@ void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     float y = hud->exp_bar_y;
     float width = hud->exp_bar_width;
     float height = hud->exp_bar_height;
-    
+
     uint64_t current_exp = game->player.info.experience;
     uint64_t exp_for_next = game->playing->player_xp_for_next;
 
@@ -314,20 +327,20 @@ void hud_render_exp_bar(const HUDLayout* hud, const GameState* game) {
     float exp_percent = (float)((double)current_exp / (double)exp_for_next);
     if (exp_percent > 1.0f) exp_percent = 1.0f;
     if (exp_percent < 0.0f) exp_percent = 0.0f;
-    
+
     // Background
     renderer_draw_rect(x - 2, y - 2, width + 4, height + 4, 0.0f, 0.0f, 0.0f, 0.8f);
     renderer_draw_rect(x, y, width, height, 0.1f, 0.1f, 0.2f, 1.0f);
-    
+
     // Exp fill (blue/purple gradient)
     renderer_draw_rect(x, y, width * exp_percent, height, 0.4f, 0.6f, 1.0f, 0.9f);
-    
+
     // Border
     renderer_draw_rect(x, y, width, 2, 0.6f, 0.6f, 0.6f, 1.0f);
     renderer_draw_rect(x, y + height - 2, width, 2, 0.6f, 0.6f, 0.6f, 1.0f);
     renderer_draw_rect(x, y, 2, height, 0.6f, 0.6f, 0.6f, 1.0f);
     renderer_draw_rect(x + width - 2, y, 2, height, 0.6f, 0.6f, 0.6f, 1.0f);
-    
+
     // XP Text
     char exp_text[64];
     snprintf(exp_text, sizeof(exp_text), "XP: %llu / %llu",
@@ -342,21 +355,21 @@ void hud_render_level(const HUDLayout* hud, const GameState* game) {
     float x = hud->level_x;
     float y = hud->level_y;
     float size = 70.0f;
-    
+
     // Background circle/square for level
     renderer_draw_rect(x, y, size, size, 0.15f, 0.1f, 0.2f, 0.9f);
-    
+
     // Border
     renderer_draw_rect(x, y, size, 2, 0.8f, 0.7f, 0.3f, 1.0f);
     renderer_draw_rect(x, y + size - 2, size, 2, 0.8f, 0.7f, 0.3f, 1.0f);
     renderer_draw_rect(x, y, 2, size, 0.8f, 0.7f, 0.3f, 1.0f);
     renderer_draw_rect(x + size - 2, y, 2, size, 0.8f, 0.7f, 0.3f, 1.0f);
-    
+
     // Level text
     char level_text[16];
     snprintf(level_text, sizeof(level_text), "LVL");
     renderer_draw_text(x + 15, y + 20, level_text);
-    
+
     char level_num[16];
     snprintf(level_num, sizeof(level_num), "%u", game->player.info.level);
     renderer_draw_text(x + 20, y + 45, level_num);
@@ -367,26 +380,26 @@ void hud_render_level(const HUDLayout* hud, const GameState* game) {
  */
 void hud_render_inventory_button(const HUDLayout* hud, const GameState* game) {
     (void)game;
-    
+
     float x = hud->inv_button_x;
     float y = hud->inv_button_y;
     float size = hud->inv_button_size;
-    
+
     // Button background
     renderer_draw_rect(x, y, size, size, 0.2f, 0.15f, 0.1f, 0.9f);
-    
+
     // Border (gold color)
     renderer_draw_rect(x, y, size, 2, 0.8f, 0.7f, 0.3f, 1.0f);
     renderer_draw_rect(x, y + size - 2, size, 2, 0.8f, 0.7f, 0.3f, 1.0f);
     renderer_draw_rect(x, y, 2, size, 0.8f, 0.7f, 0.3f, 1.0f);
     renderer_draw_rect(x + size - 2, y, 2, size, 0.8f, 0.7f, 0.3f, 1.0f);
-    
+
     // Simple bag icon (grid pattern)
     float icon_padding = 12.0f;
     float icon_x = x + icon_padding;
     float icon_y = y + icon_padding;
     float icon_size = size - icon_padding * 2;
-    
+
     // Draw simple grid for bag
     renderer_draw_rect(icon_x, icon_y + icon_size/3, icon_size, 2, 0.7f, 0.6f, 0.2f, 1.0f);
     renderer_draw_rect(icon_x, icon_y + 2*icon_size/3, icon_size, 2, 0.7f, 0.6f, 0.2f, 1.0f);
@@ -399,34 +412,34 @@ void hud_render_inventory_button(const HUDLayout* hud, const GameState* game) {
  */
 void hud_render_character_button(const HUDLayout* hud, const GameState* game) {
     (void)game;
-    
+
     float x = hud->char_button_x;
     float y = hud->char_button_y;
     float size = hud->char_button_size;
-    
+
     // Button background
     renderer_draw_rect(x, y, size, size, 0.15f, 0.2f, 0.15f, 0.9f);
-    
+
     // Border (green color)
     renderer_draw_rect(x, y, size, 2, 0.3f, 0.8f, 0.3f, 1.0f);
     renderer_draw_rect(x, y + size - 2, size, 2, 0.3f, 0.8f, 0.3f, 1.0f);
     renderer_draw_rect(x, y, 2, size, 0.3f, 0.8f, 0.3f, 1.0f);
     renderer_draw_rect(x + size - 2, y, 2, size, 0.3f, 0.8f, 0.3f, 1.0f);
-    
+
     // Simple character icon (stick figure)
     float icon_padding = 12.0f;
     float icon_x = x + size / 2;
     float icon_y = y + icon_padding + 8;
-    
+
     // Head (circle approximated as square)
     renderer_draw_rect(icon_x - 4, icon_y, 8, 8, 0.3f, 0.8f, 0.3f, 1.0f);
-    
+
     // Body (vertical line)
     renderer_draw_rect(icon_x - 1, icon_y + 8, 2, 12, 0.3f, 0.8f, 0.3f, 1.0f);
-    
+
     // Arms (horizontal line)
     renderer_draw_rect(icon_x - 8, icon_y + 12, 16, 2, 0.3f, 0.8f, 0.3f, 1.0f);
-    
+
     // Legs
     renderer_draw_rect(icon_x - 5, icon_y + 20, 2, 8, 0.3f, 0.8f, 0.3f, 1.0f);
     renderer_draw_rect(icon_x + 3, icon_y + 20, 2, 8, 0.3f, 0.8f, 0.3f, 1.0f);
