@@ -437,9 +437,9 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     
     // assign the default spawn to unplaced characters
     if (player->pos_x == 0.0f && player->pos_y == 0.0f) {
-        // Default spawn point (center of your walkable area)
-        player->pos_x = 1608.0f;  // Or wherever your spawn should be
-        player->pos_y = 1108.0f;
+        // Ennara Courtyard centre (tile 13900, 5580 at 16 px tiles).
+        player->pos_x = 222400.0f;
+        player->pos_y = 89280.0f;
         player->is_dirty = 1;  // Mark for save so this persists
         LOG_DEBUG("[SPAWN] New character %u spawned at default location (%.1f, %.1f)", character_id, player->pos_x, player->pos_y);
     }
