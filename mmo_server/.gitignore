@@ -57,3 +57,6 @@ desktop.ini
 
 # Test binaries
 tests/bin/
+
+# Generated world map (~1 GB) — rebuild with `make world` in mmo_client
+world_server/data/world.dat
