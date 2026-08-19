@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "world/tile_palette.h"
+
 /** Configure chunk dimensions and fixed world-cache capacities. */
 #define CHUNK_SIZE        32
 #define MAX_LOADED_CHUNKS 64
@@ -59,6 +61,7 @@ typedef struct WorldState {
     int   world_width_chunks;   /**< Width in chunks. */
     int   world_height_chunks;  /**< Height in chunks. */
     int   tile_size;            /**< Tile edge length in pixels. */
+    int   flat_color_mode;      /**< Nonzero when tiles are palette indices, not tileset coordinates. */
 
     int          tileset_count;
     TilesetInfo  tilesets[MAX_TILESETS];            /**< Index 0 is reserved for empty tiles. */

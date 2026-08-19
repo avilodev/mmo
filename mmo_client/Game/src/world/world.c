@@ -45,6 +45,10 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     fread(&ts_count, sizeof(uint8_t), 1, world->world_file);
     world->tileset_count = ts_count;
 
+    // A world that declares no tilesets stores palette indices directly and
+    // renders as flat colour instead of sampling a texture atlas.
+    world->flat_color_mode = (ts_count == 0);
+
     for (int i = 0; i < ts_count && i < MAX_TILESETS - 1; i++) {
         int slot = i + 1;  // slot 0 is reserved for "empty"
 
@@ -85,10 +89,11 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
         world->chunks[i].is_loaded = 0;
 
-    printf("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets\n",
+    printf("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets%s\n",
            world->world_width, world->world_height,
            world->world_width_chunks, world->world_height_chunks,
-           world->tileset_count);
+           world->tileset_count,
+           world->flat_color_mode ? " [flat colour]" : "");
     return 1;
 }
 
@@ -515,6 +520,25 @@ static void chunk_build_display_list(WorldState* world, Chunk* chunk, int layer)
 
             if (packed == TILE_EMPTY) continue;
 
+            float dx = (float)(wx * world->tile_size);
+            float dy = (float)(wy * world->tile_size);
+            float ds = (float)world->tile_size;
+
+            if (world->flat_color_mode) {
+                const float* rgb = tile_palette_rgb(packed);
+                if (!rgb) continue;
+
+                glDisable(GL_TEXTURE_2D);
+                glColor3f(rgb[0], rgb[1], rgb[2]);
+                glBegin(GL_QUADS);
+                    glVertex2f(dx,      dy);
+                    glVertex2f(dx + ds, dy);
+                    glVertex2f(dx + ds, dy + ds);
+                    glVertex2f(dx,      dy + ds);
+                glEnd();
+                continue;
+            }
+
             int ts_id  = (packed >> 12) & 0xF;
             int ts_idx =  packed        & 0xFFF;
 
@@ -533,15 +557,13 @@ static void chunk_build_display_list(WorldState* world, Chunk* chunk, int layer)
             float u1 = (float)(src_col + 1) / cols;
             float v1 = (float)(src_row + 1) / rows;
 
-            float dx = (float)(wx * world->tile_size);
-            float dy = (float)(wy * world->tile_size);
-            float ds = (float)world->tile_size;
-
             if (tex != bound_tex) {
                 glBindTexture(GL_TEXTURE_2D, tex);
                 bound_tex = tex;
             }
 
+            glEnable(GL_TEXTURE_2D);
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
             glBegin(GL_QUADS);
                 glTexCoord2f(u0, v0); glVertex2f(dx,      dy);
                 glTexCoord2f(u1, v0); glVertex2f(dx + ds, dy);
@@ -654,6 +676,27 @@ static void render_overlay_above_half(const WorldState* world, const Camera* cam
                     uint16_t packed = chunk->overlay_above_tiles[ly * CHUNK_SIZE + lx];
                     if (packed == TILE_EMPTY) continue;
 
+                    if (world->flat_color_mode) {
+                        const float* rgb = tile_palette_rgb(packed);
+                        if (!rgb) continue;
+
+                        if (in_begin) { glEnd(); in_begin = 0; }
+
+                        float fdx = (float)(wx * world->tile_size);
+                        float fdy = (float)(wy * world->tile_size);
+                        float fds = (float)world->tile_size;
+
+                        glDisable(GL_TEXTURE_2D);
+                        glColor3f(rgb[0], rgb[1], rgb[2]);
+                        glBegin(GL_QUADS);
+                            glVertex2f(fdx,       fdy);
+                            glVertex2f(fdx + fds, fdy);
+                            glVertex2f(fdx + fds, fdy + fds);
+                            glVertex2f(fdx,       fdy + fds);
+                        glEnd();
+                        continue;
+                    }
+
                     int ts_id  = (packed >> 12) & 0xF;
                     int ts_idx =  packed        & 0xFFF;
                     unsigned int tex = world->tileset_textures[ts_id];
@@ -692,6 +735,10 @@ static void render_overlay_above_half(const WorldState* world, const Camera* cam
         }
     }
     if (in_begin) glEnd();
+    // The flat-colour branch toggles texturing and colour per tile; restore the
+    // defaults so later passes are unaffected.
+    glEnable(GL_TEXTURE_2D);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 /**
