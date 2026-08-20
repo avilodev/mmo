@@ -1,3 +1,4 @@
 {
+  "_comment": "Quest rewards: 'xp' grants experience; 'currency_reward' grants coin, paid in the kingdom currency named by the optional 'currency' key (0 Ennara, 1 Kingdom 1, 2 Kingdom 2, 3 Kingdom 3 — CurrencyId in common/include/world_regions.h). A quest that omits 'currency' pays in Ennara's coin.",
   "quests": []
 }

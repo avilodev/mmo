@@ -112,6 +112,11 @@ int shop_init(const char* json_path) {
         const char* v;
         v = sh_find_value(obj, "shop_id"); if (v) s->shop_id = sh_parse_int(v);
         v = sh_find_value(obj, "name");    if (v) sh_parse_string(v, s->name, sizeof(s->name));
+        /* "currency" names the kingdom whose coin this shop deals in, by
+         * CurrencyId. A shop that omits it trades in Ennara's coin. */
+        v = sh_find_value(obj, "currency");
+        s->currency_id = (uint8_t)((v && world_currency_valid(sh_parse_int(v)))
+                                   ? sh_parse_int(v) : (int)CURRENCY_ENNARA);
 
         const char* items_arr = sh_find_array(obj, "items");
         if (items_arr) {
@@ -165,7 +170,7 @@ int shop_validate(void) {
             // reject entries permitting profitable immediate resale
             if (entry->buy_price <= def->value) {
                 LOG_ERROR("[SHOP] shop %u sells '%s' for %u but it resells for %u "
-                          "— buying and reselling would mint gold",
+                          "— buying and reselling would mint coin",
                           shop->shop_id, def->name, entry->buy_price, def->value);
                 problems++;
             }
@@ -209,7 +214,7 @@ void shop_open(uint32_t character_id, int client_fd, uint32_t shop_id) {
 }
 
 /**
- * Validate a shop purchase packet and update inventory and gold.
+ * Validate a shop purchase packet and update inventory and the shop's currency.
  *
  * @param buffer  Packet buffer containing ShopBuyPacket.
  * @param bytes   Available packet bytes.
@@ -257,18 +262,22 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
         return;
     }
 
+    const uint8_t currency = s->currency_id;
+    const char*   coin_name = world_currency_name(currency);
+    resp.currency_id = currency;
+
     ActivePlayer* p = player_acquire(character_id);
     if (!p) return;
 
-    if (p->gold < price) {
+    if (p->currency[currency] < price) {
         player_release(p);
         resp.success = 0;
-        strncpy(resp.message, "Not enough gold", sizeof(resp.message) - 1);
+        snprintf(resp.message, sizeof(resp.message), "Not enough %s", coin_name);
         server_send(client_fd, &resp, sizeof(resp));
         return;
     }
 
-    // spend gold only after inventory placement succeeds
+    // spend coin only after inventory placement succeeds
     const ItemDefinition* buy_def = item_get(item_id);
     int slot_before = inventory_first_free(p->inventory);
     uint16_t unplaced = inventory_add(p->inventory, item_id, 1,
@@ -292,15 +301,24 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
     }
     if (slot < 0) slot = slot_before;
 
-    p->gold -= price;
+    /* The balance was checked under this same lock, so the debit cannot fail;
+     * routing it through the guarded helper keeps that guarantee in one place. */
+    if (!world_currency_debit(p->currency, currency, price)) {
+        player_release(p);
+        resp.success = 0;
+        snprintf(resp.message, sizeof(resp.message), "Not enough %s", coin_name);
+        server_send(client_fd, &resp, sizeof(resp));
+        return;
+    }
     p->is_dirty = 1;
-    uint32_t new_gold = p->gold;
+    uint32_t new_balance = p->currency[currency];
     player_release(p);
 
     resp.success        = 1;
-    resp.new_gold       = htonl(new_gold);
+    resp.new_balance    = htonl(new_balance);
     resp.inventory_slot = (uint8_t)slot;
-    snprintf(resp.message, sizeof(resp.message), "Purchased for %u gold", price);
+    snprintf(resp.message, sizeof(resp.message), "Purchased for %u %s",
+             price, coin_name);
     server_send(client_fd, &resp, sizeof(resp));
 
     // send the resulting slot quantity after stack merging
@@ -309,11 +327,12 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
         player_send_slot_updates(client_fd, character_id, changed, 1);
     }
 
-    LOG_DEBUG("[SHOP] Player %u bought item %u for %u gold (slot %d)", character_id, item_id, price, slot);
+    LOG_DEBUG("[SHOP] Player %u bought item %u for %u %s (slot %d)",
+              character_id, item_id, price, coin_name, slot);
 }
 
 /**
- * Validate a shop sale packet and update inventory and gold.
+ * Validate a shop sale packet and pay the seller in the shop's currency.
  *
  * @param buffer  Packet buffer containing ShopSellPacket.
  * @param bytes   Available packet bytes.
@@ -331,12 +350,17 @@ void shop_handle_sell(uint32_t character_id, int client_fd, uint8_t* buffer, int
     resp.header.payload_size = htons(sizeof(resp) - sizeof(PacketHeader));
     resp.inventory_slot = slot;
 
-    if (!shop_find(shop_id)) {
+    const ShopDef* s = shop_find(shop_id);
+    if (!s) {
         resp.success = 0;
         strncpy(resp.message, "Shop not found", sizeof(resp.message) - 1);
         server_send(client_fd, &resp, sizeof(resp));
         return;
     }
+
+    const uint8_t currency  = s->currency_id;
+    const char*   coin_name = world_currency_name(currency);
+    resp.currency_id = currency;
 
     if (slot >= 150) {
         resp.success = 0;
@@ -362,16 +386,16 @@ void shop_handle_sell(uint32_t character_id, int client_fd, uint8_t* buffer, int
 
     // sell one unit from the selected stack
     inventory_remove_at(p->inventory, slot, 1);
-    p->gold += sell_price;
+    uint32_t new_balance = world_currency_credit(p->currency, currency, sell_price);
     p->is_dirty = 1;
-    uint32_t new_gold = p->gold;
     player_release(p);
 
     resp.success     = 1;
     resp.item_id     = htonl(item_id);
     resp.sell_price  = htonl(sell_price);
-    resp.new_gold    = htonl(new_gold);
-    snprintf(resp.message, sizeof(resp.message), "Sold for %u gold", sell_price);
+    resp.new_balance = htonl(new_balance);
+    snprintf(resp.message, sizeof(resp.message), "Sold for %u %s",
+             sell_price, coin_name);
     server_send(client_fd, &resp, sizeof(resp));
 
     {
@@ -379,5 +403,6 @@ void shop_handle_sell(uint32_t character_id, int client_fd, uint8_t* buffer, int
         player_send_slot_updates(client_fd, character_id, changed, 1);
     }
 
-    LOG_DEBUG("[SHOP] Player %u sold item %u for %u gold", character_id, item_id, sell_price);
+    LOG_DEBUG("[SHOP] Player %u sold item %u for %u %s",
+              character_id, item_id, sell_price, coin_name);
 }

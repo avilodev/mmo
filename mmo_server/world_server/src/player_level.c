@@ -106,32 +106,9 @@ void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
 }
 
 /**
- * Grant gold while locking the player.
- */
-void player_award_gold(ActivePlayer* player, uint32_t amount) {
-    if (!player || amount == 0) return;
-
-    pthread_mutex_lock(&player->lock);
-    player->gold += amount;
-    player->is_dirty = 1;
-    pthread_mutex_unlock(&player->lock);
-}
-
-/**
- * Grant gold to an already locked player.
- *
- * The caller must hold player->lock.
- */
-void player_award_gold_locked(ActivePlayer* player, uint32_t amount) {
-    if (!player || amount == 0) return;
-    player->gold += amount;
-    player->is_dirty = 1;
-}
-
-/**
  * Send a kill-reward packet after snapshotting totals under the player lock.
  */
-void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
+void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp) {
     if (!player) return;
 
     pthread_mutex_lock(&player->lock);
@@ -142,9 +119,7 @@ void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, u
     pkt.header.player_id    = htonl(player->character_id);
     pkt.header.payload_size = htons(sizeof(KillRewardPacket) - sizeof(PacketHeader));
     pkt.xp_gained           = htonl(xp);
-    pkt.gold_gained         = htonl(gold);
     pkt.total_xp            = mmo_htonll(player->experience);
-    pkt.total_gold          = htonl(player->gold);
 
     pthread_mutex_unlock(&player->lock);
     server_send(client_fd, &pkt, sizeof(pkt));
@@ -155,7 +130,7 @@ void player_send_kill_reward(int client_fd, ActivePlayer* player, uint32_t xp, u
  *
  * The caller must hold player->lock.
  */
-void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_t xp, uint32_t gold) {
+void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_t xp) {
     if (!player) return;
 
     KillRewardPacket pkt;
@@ -164,9 +139,7 @@ void player_send_kill_reward_locked(int client_fd, ActivePlayer* player, uint32_
     pkt.header.player_id    = htonl(player->character_id);
     pkt.header.payload_size = htons(sizeof(KillRewardPacket) - sizeof(PacketHeader));
     pkt.xp_gained           = htonl(xp);
-    pkt.gold_gained         = htonl(gold);
     pkt.total_xp            = mmo_htonll(player->experience);
-    pkt.total_gold          = htonl(player->gold);
 
     server_send(client_fd, &pkt, sizeof(pkt));
 }

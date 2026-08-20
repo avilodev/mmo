@@ -35,7 +35,9 @@ typedef struct {
     uint8_t           obj_count;
     QuestObjectiveDef objectives[MAX_QUEST_OBJECTIVES];
     uint32_t          xp_reward;
-    uint32_t          gold_reward;
+    /** Coin paid on completion, and which kingdom mints it. */
+    uint32_t          currency_reward;
+    uint8_t           currency_id;
     uint8_t           item_reward_count;
     QuestItemReward   item_rewards[MAX_QUEST_OBJECTIVES];
 } QuestDef;

@@ -130,7 +130,13 @@ int quest_system_init(const char* json_path) {
         v = qs_find_value(obj, "quest_id"); if (v) q->quest_id = qs_parse_int(v);
         v = qs_find_value(obj, "title");    if (v) qs_parse_string(v, q->title, sizeof(q->title));
         v = qs_find_value(obj, "xp");       if (v) q->xp_reward   = qs_parse_int(v);
-        v = qs_find_value(obj, "gold");     if (v) q->gold_reward  = qs_parse_int(v);
+        /* "currency" names the paying kingdom by CurrencyId; quests that omit
+         * it pay in Ennara's coin, the starting city's. */
+        v = qs_find_value(obj, "currency_reward");
+        if (v) q->currency_reward = qs_parse_int(v);
+        v = qs_find_value(obj, "currency");
+        q->currency_id = (uint8_t)((v && world_currency_valid(qs_parse_int(v)))
+                                   ? qs_parse_int(v) : (int)CURRENCY_ENNARA);
 
         // Objectives array
         const char* objs = qs_find_array(obj, "objectives");
@@ -373,9 +379,9 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
     if (q->xp_reward > 0) {
         p->experience += q->xp_reward;
     }
-    // Gold
-    if (q->gold_reward > 0) {
-        p->gold += q->gold_reward;
+    // Coin, in the kingdom currency the quest pays
+    if (q->currency_reward > 0) {
+        world_currency_credit(p->currency, q->currency_id, q->currency_reward);
     }
 
     // Item rewards — find empty inventory slots
@@ -385,8 +391,9 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
     cpkt.header.player_id = htonl(character_id);
     cpkt.header.payload_size = htons(sizeof(cpkt) - sizeof(PacketHeader));
     cpkt.quest_id    = htonl(quest_id);
-    cpkt.xp_reward   = htonl(q->xp_reward);
-    cpkt.gold_reward = htonl(q->gold_reward);
+    cpkt.xp_reward       = htonl(q->xp_reward);
+    cpkt.currency_reward = htonl(q->currency_reward);
+    cpkt.currency_id     = q->currency_id;
 
     for (int i = 0; i < q->item_reward_count && i < MAX_QUEST_OBJECTIVES; i++) {
         uint32_t reward_id = q->item_rewards[i].item_id;

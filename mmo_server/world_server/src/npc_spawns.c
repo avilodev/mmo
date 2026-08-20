@@ -5,6 +5,7 @@
 
 #include "npc_spawns.h"
 #include "combat.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,7 +151,11 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
         uint8_t interactable = (uint8_t)json_get_int(obj, "is_interactable", 0);
         float respawn = json_get_float(obj, "respawn_time", 0.0f);
         int xp = json_get_int(obj, "xp_reward", -1);
-        int gold = json_get_int(obj, "gold_reward", 0);
+        /* "gold_reward" in older spawn data is read and discarded: kills pay
+         * experience and loot only, never coin. */
+        if (json_get_int(obj, "gold_reward", 0) > 0)
+            LOG_DEBUG("[NPC] spawn '%s' still sets gold_reward — ignoring, "
+                      "enemies drop items instead", name);
         /* "defense" is still accepted as a spelling of armor so existing spawn data
          * keeps working; "armor" is the name that matches the player attribute. */
         int armor = json_get_int(obj, "armor", json_get_int(obj, "defense", 0));
@@ -165,7 +170,6 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
             NPCEntity* npc = combat_npc_find(world, npc_id);
             if (npc) {
                 if (xp >= 0) npc->xp_reward = (uint32_t)xp;
-                if (gold > 0) npc->gold_reward = (uint32_t)gold;
                 npc->armor = armor;
             }
             pthread_mutex_unlock(&world->lock);

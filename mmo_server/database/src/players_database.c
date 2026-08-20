@@ -5,6 +5,7 @@
 
 #include "players_database.h"
 #include "class_stats.h"
+#include "world_regions.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,6 +187,45 @@ int character_database_init(const char* connection_string) {
         release_connection(setup_conn);
         character_database_close();
         return 0;
+    }
+    PQclear(res);
+
+    /* One row per character per kingdom currency. A table rather than a column
+     * per currency so adding a kingdom needs no schema change — the row's
+     * currency_id is a CurrencyId from the shared city table. */
+    const char* create_currency_table =
+        "CREATE TABLE IF NOT EXISTS character_currencies ("
+        "    character_id INTEGER NOT NULL,"
+        "    currency_id  SMALLINT NOT NULL,"
+        "    amount       BIGINT NOT NULL DEFAULT 0 CHECK (amount >= 0),"
+        "    PRIMARY KEY (character_id, currency_id)"
+        ");";
+
+    res = PQexec(setup_conn, create_currency_table);
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Failed to create character_currencies table: %s\n",
+                PQerrorMessage(setup_conn));
+        PQclear(res);
+        release_connection(setup_conn);
+        character_database_close();
+        return 0;
+    }
+    PQclear(res);
+
+    /* Seed Ennara balances from the legacy single-gold column, once. Existing
+     * rows win, so this is safe to re-run and cannot overwrite live balances.
+     * The `gold` column is deliberately left in place, unread and unwritten,
+     * so a rollback to a pre-currency build still finds its data. */
+    char seed_sql[256];
+    snprintf(seed_sql, sizeof(seed_sql),
+             "INSERT INTO character_currencies (character_id, currency_id, amount) "
+             "SELECT character_id, %d, gold FROM characters WHERE gold > 0 "
+             "ON CONFLICT (character_id, currency_id) DO NOTHING;",
+             (int)CURRENCY_ENNARA);
+    res = PQexec(setup_conn, seed_sql);
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Warning: failed to seed currencies from legacy gold: %s\n",
+                PQerrorMessage(setup_conn));
     }
     PQclear(res);
 
@@ -649,7 +689,7 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* char_info) {
 
     PGresult* res = PQexecParams(conn,
         "SELECT character_id, name, level, class_id, race_id, "
-        "       pos_x, pos_y, health, max_health, mana, max_mana, experience, gold "
+        "       pos_x, pos_y, health, max_health, mana, max_mana, experience "
         "FROM characters "
         "WHERE character_id = $1",
         1,
@@ -678,11 +718,44 @@ int character_get_full_data(uint32_t character_id, CharacterInfo* char_info) {
     char_info->resource = (int32_t)strtol(PQgetvalue(res, 0, 9), NULL, 10);
     char_info->max_resource = (int32_t)strtol(PQgetvalue(res, 0, 10), NULL, 10);
     char_info->experience = (uint64_t)strtoull(PQgetvalue(res, 0, 11), NULL, 10);
-    char_info->gold = (uint32_t)strtoul(PQgetvalue(res, 0, 12), NULL, 10);
 
     // item arrays load separately from character_items
     memset(char_info->inventory, 0, sizeof(char_info->inventory));
     memset(char_info->equipment, 0, sizeof(char_info->equipment));
+
+    PQclear(res);
+
+    /* Balances live in character_currencies. A character with no rows yet is
+     * simply broke, which is not a load failure. */
+    memset(char_info->currency, 0, sizeof(char_info->currency));
+    res = PQexecParams(conn,
+        "SELECT currency_id, amount FROM character_currencies WHERE character_id = $1",
+        1, NULL, param_values, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Failed to load currencies for character %u: %s\n",
+                character_id, PQerrorMessage(conn));
+        PQclear(res);
+        release_connection(conn);
+        return 0;
+    }
+
+    int currency_rows = PQntuples(res);
+    for (int i = 0; i < currency_rows; i++) {
+        int      id     = atoi(PQgetvalue(res, i, 0));
+        uint64_t amount = strtoull(PQgetvalue(res, i, 1), NULL, 10);
+
+        /* A row for a currency this build does not know belongs to a newer
+         * build. Skip it rather than dropping it: the save path only writes
+         * the currencies it knows, so the unknown row survives untouched. */
+        if (!world_currency_valid(id)) {
+            fprintf(stderr, "character %u holds unknown currency %d — ignoring\n",
+                    character_id, id);
+            continue;
+        }
+        if (amount > UINT32_MAX) amount = UINT32_MAX;
+        char_info->currency[id] = (uint32_t)amount;
+    }
 
     PQclear(res);
     release_connection(conn);
@@ -720,7 +793,7 @@ int character_update_full_data(const CharacterInfo* char_info) {
     // item instances persist through character_items_save
     char character_id_str[32], level_str[32], pos_x_str[32], pos_y_str[32];
     char health_str[32], max_health_str[32], mana_str[32], max_mana_str[32];
-    char experience_str[32], gold_str[32];
+    char experience_str[32];
 
     snprintf(character_id_str, sizeof(character_id_str), "%u", char_info->character_id);
     snprintf(level_str, sizeof(level_str), "%u", char_info->level);
@@ -731,9 +804,8 @@ int character_update_full_data(const CharacterInfo* char_info) {
     snprintf(mana_str, sizeof(mana_str), "%d", char_info->resource);
     snprintf(max_mana_str, sizeof(max_mana_str), "%d", char_info->max_resource);
     snprintf(experience_str, sizeof(experience_str), "%lu", char_info->experience);
-    snprintf(gold_str, sizeof(gold_str), "%u", char_info->gold);
 
-    const char* param_values[10] = {
+    const char* param_values[9] = {
         level_str,          // $1
         pos_x_str,          // $2
         pos_y_str,          // $3
@@ -742,17 +814,16 @@ int character_update_full_data(const CharacterInfo* char_info) {
         mana_str,           // $6
         max_mana_str,       // $7
         experience_str,     // $8
-        gold_str,           // $9
-        character_id_str    // $10
+        character_id_str    // $9
     };
 
     res = PQexecParams(conn,
         "UPDATE characters SET "
         "level = $1, pos_x = $2, pos_y = $3, "
         "health = $4, max_health = $5, mana = $6, max_mana = $7, "
-        "experience = $8, gold = $9 "
-        "WHERE character_id = $10",
-        10,
+        "experience = $8 "
+        "WHERE character_id = $9",
+        9,
         NULL,
         param_values,
         NULL, NULL, 0
@@ -766,6 +837,36 @@ int character_update_full_data(const CharacterInfo* char_info) {
         return 0;
     }
     PQclear(res);
+
+    /* Balances commit in the same transaction as the scalars, so a crash
+     * between the two can never bank coin the player did not keep. */
+    for (int c = 0; c < CURRENCY_COUNT; c++) {
+        char currency_id_str[16], amount_str[32];
+        snprintf(currency_id_str, sizeof(currency_id_str), "%d", c);
+        snprintf(amount_str, sizeof(amount_str), "%u", char_info->currency[c]);
+
+        const char* currency_params[3] = {
+            character_id_str,   // $1
+            currency_id_str,    // $2
+            amount_str          // $3
+        };
+
+        res = PQexecParams(conn,
+            "INSERT INTO character_currencies (character_id, currency_id, amount) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (character_id, currency_id) DO UPDATE SET amount = EXCLUDED.amount",
+            3, NULL, currency_params, NULL, NULL, 0);
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+            fprintf(stderr, "Failed to update currency %d for character %u: %s\n",
+                    c, char_info->character_id, PQerrorMessage(conn));
+            PQclear(res);
+            PQexec(conn, "ROLLBACK");
+            release_connection(conn);
+            return 0;
+        }
+        PQclear(res);
+    }
 
     // Commit transaction
     res = PQexec(conn, "COMMIT");

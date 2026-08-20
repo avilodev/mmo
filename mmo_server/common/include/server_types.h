@@ -35,7 +35,15 @@ typedef struct {
     int32_t max_resource;
     uint8_t resource_type;  /**< ResourceType; RESOURCE_NONE while in Human Form. */
     uint64_t experience;
-    uint32_t gold;
+
+    /**
+     * Balance per kingdom, indexed by CurrencyId.
+     *
+     * There is no universal coin: each kingdom mints its own, and a player
+     * holds a separate balance in each. Sized from the shared city table, so
+     * adding a kingdom needs no change here.
+     */
+    uint32_t currency[CURRENCY_COUNT];
 
     /** Preserve item identity when moving stacks between bag and equipment. */
     ItemInstance inventory[INVENTORY_SLOTS];
