@@ -360,10 +360,12 @@ static void process_packet(const char* data, int length) {
                 g_net.char_data.ready = TRUE;
                 LeaveCriticalSection(&g_net.response_lock);
 
-                // If game is already running, update live XP and gold immediately
+                // If game is already running, update live XP and balances immediately
                 if (g_current_game && g_current_game->player.info_loaded) {
                     g_current_game->player.info.experience = mmo_ntohll(g_net.char_data.data.experience);
-                    g_current_game->player.info.gold = ntohl(g_net.char_data.data.gold);
+                    for (int c = 0; c < CURRENCY_COUNT; c++)
+                        g_current_game->player.info.currency[c] =
+                            ntohl(g_net.char_data.data.currency[c]);
                 }
 
                 printf("[NET] Character data received\n");
@@ -874,28 +876,25 @@ static void process_packet(const char* data, int length) {
                 KillRewardPacket* pkt = (KillRewardPacket*)data;
                 if (g_current_game && g_current_game->playing) {
                     uint32_t xp_gained    = ntohl(pkt->xp_gained);
-                    uint32_t gold_gained  = ntohl(pkt->gold_gained);
                     uint64_t total_xp     = mmo_ntohll(pkt->total_xp);
-                    uint32_t total_gold   = ntohl(pkt->total_gold);
 
-                    // Update player's gold and XP
-                    g_current_game->player.info.gold       = total_gold;
+                    /* Kills pay experience only. The enemy's coin value arrives
+                     * as loot the player sells to a kingdom's NPCs. */
                     g_current_game->player.info.experience = total_xp;
 
                     // Find an empty reward notification slot and spawn the notification
                     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
                         if (!g_current_game->playing->reward_notifications[i].active) {
-                            g_current_game->playing->reward_notifications[i].xp_gained   = xp_gained;
-                            g_current_game->playing->reward_notifications[i].gold_gained = gold_gained;
-                            g_current_game->playing->reward_notifications[i].age         = 0.0f;
-                            g_current_game->playing->reward_notifications[i].active      = 1;
+                            g_current_game->playing->reward_notifications[i].xp_gained       = xp_gained;
+                            g_current_game->playing->reward_notifications[i].currency_gained = 0;
+                            g_current_game->playing->reward_notifications[i].age             = 0.0f;
+                            g_current_game->playing->reward_notifications[i].active          = 1;
                             break;
                         }
                     }
 
-                    printf("[NET] Kill Reward: +%u XP, +%u Gold (Total: %llu XP, %u Gold)\n",
-                           xp_gained, gold_gained,
-                           (unsigned long long)total_xp, total_gold);
+                    printf("[NET] Kill Reward: +%u XP (Total: %llu XP)\n",
+                           xp_gained, (unsigned long long)total_xp);
                 }
             }
             break;
@@ -1445,8 +1444,10 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Shop buy: %s — %s\n",
                        pkt->success ? "OK" : "FAIL", pkt->message);
                 if (pkt->success) {
-                    // Update gold and inventory from server-authoritative values
-                    g_current_game->player.info.gold = ntohl(pkt->new_gold);
+                    // Update the charged balance and inventory from server-authoritative values
+                    if (world_currency_valid(pkt->currency_id))
+                        g_current_game->player.info.currency[pkt->currency_id] =
+                            ntohl(pkt->new_balance);
                     uint8_t slot = pkt->inventory_slot;
                     if (slot < INVENTORY_SIZE && g_current_game->inventory) {
                         uint32_t item_id = ntohl(pkt->item_id);
@@ -1464,7 +1465,9 @@ static void process_packet(const char* data, int length) {
                 printf("[NET] Shop sell: %s — %s\n",
                        pkt->success ? "OK" : "FAIL", pkt->message);
                 if (pkt->success) {
-                    g_current_game->player.info.gold = ntohl(pkt->new_gold);
+                    if (world_currency_valid(pkt->currency_id))
+                        g_current_game->player.info.currency[pkt->currency_id] =
+                            ntohl(pkt->new_balance);
                     uint8_t slot = pkt->inventory_slot;
                     if (slot < INVENTORY_SIZE && g_current_game->inventory) {
                         g_current_game->inventory->slots[slot].template_id = 0;
@@ -1557,27 +1560,30 @@ static void process_packet(const char* data, int length) {
             if (length >= (int)sizeof(QuestCompletePacket) && g_current_game && g_current_game->playing) {
                 QuestCompletePacket* pkt = (QuestCompletePacket*)data;
                 uint32_t quest_id  = ntohl(pkt->quest_id);
-                uint32_t xp_reward = ntohl(pkt->xp_reward);
-                uint32_t gold_reward = ntohl(pkt->gold_reward);
+                uint32_t xp_reward       = ntohl(pkt->xp_reward);
+                uint32_t currency_reward = ntohl(pkt->currency_reward);
+                uint8_t  currency_id     = pkt->currency_id;
 
                 quest_log_complete(&g_current_game->playing->quest_log, quest_id);
 
                 // Show reward notification (reuse existing kill-reward popup)
                 for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
                     if (!g_current_game->playing->reward_notifications[i].active) {
-                        g_current_game->playing->reward_notifications[i].xp_gained   = xp_reward;
-                        g_current_game->playing->reward_notifications[i].gold_gained = gold_reward;
-                        g_current_game->playing->reward_notifications[i].age         = 0.0f;
-                        g_current_game->playing->reward_notifications[i].active      = 1;
+                        g_current_game->playing->reward_notifications[i].xp_gained       = xp_reward;
+                        g_current_game->playing->reward_notifications[i].currency_gained = currency_reward;
+                        g_current_game->playing->reward_notifications[i].currency_id     = currency_id;
+                        g_current_game->playing->reward_notifications[i].age             = 0.0f;
+                        g_current_game->playing->reward_notifications[i].active          = 1;
                         break;
                     }
                 }
 
-                // Refresh gold/XP from server
+                // Refresh balances and XP from server
                 network_request_player_data_refresh();
 
-                printf("[NET] Quest complete: id=%u +%u XP +%u gold\n",
-                       quest_id, xp_reward, gold_reward);
+                printf("[NET] Quest complete: id=%u +%u XP +%u %s\n",
+                       quest_id, xp_reward, currency_reward,
+                       world_currency_name(currency_id));
             }
             break;
 
@@ -2585,7 +2591,8 @@ int network_get_character_data(CharacterInfo* out) {
      * bytes and need no conversion. */
     out->race_id = ntohl(out->race_id);
 
-    out->gold = ntohl(out->gold);
+    for (int c = 0; c < CURRENCY_COUNT; c++)
+        out->currency[c] = ntohl(out->currency[c]);
 
     // preserve 64-bit instance identifiers during conversion
     for (int i = 0; i < INVENTORY_SLOT_COUNT; i++) {
@@ -2774,7 +2781,7 @@ void network_request_player_data_refresh(void) {
     pkt.world_id = 0;
 
     send(g_net.socket, (char*)&pkt, sizeof(pkt), 0);
-    printf("[NET] Requested player data refresh (XP/gold)\n");
+    printf("[NET] Requested player data refresh (XP/balances)\n");
 }
 
 /**

@@ -9,6 +9,7 @@
 #include "camera.h"
 #include "combat_state.h"
 #include "ui/quest_log.h"
+#include "ui/currency_panel.h"
 typedef struct GameState GameState;
 typedef struct CharacterScreenState CharacterScreenState;
 typedef struct WorldState WorldState;
@@ -426,11 +427,12 @@ typedef struct {
     float ui_scale;        /**< Range 0.75 to 1.5. */
 } GameSettings;
 
-/** Track one timed XP and gold notification. */
+/** Track one timed experience and coin notification. */
 typedef struct {
     uint32_t xp_gained;
-    uint32_t gold_gained;
-    float age;              /**< Seconds since receipt. */
+    uint32_t currency_gained;   /**< Coin granted, in the currency below. */
+    uint8_t  currency_id;       /**< CurrencyId the coin was paid in. */
+    float age;                  /**< Seconds since receipt. */
     int active;
 } RewardNotification;
 
@@ -457,6 +459,7 @@ typedef struct {
     PartyState        party;
     ShopState         shop;
     QuestLogState     quest_log;
+    CurrencyPanelState currency_panel;
     HUDLayout         hud;
     CombatState       combat;
     AbilityBarState   ability_bar;

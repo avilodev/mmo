@@ -11,6 +11,10 @@
 int main(void) {
     WorldGenTile t;
 
+    // A wilderness sample clear of every capital footprint at any world scale.
+    const int wild_x = WORLDGEN_WIDTH / 4;
+    const int wild_y = WORLDGEN_HEIGHT / 2;
+
     // Ocean is solid and drawn on the base layer only.
     worldgen_tile_at(5, 5, &t);
     assert(t.collision == 1);
@@ -19,14 +23,14 @@ int main(void) {
     assert(t.overlay_above == PAL_EMPTY);
 
     // Open wilderness is always painted, and solid only where mountains rise.
-    worldgen_tile_at(2000, 3000, &t);
+    worldgen_tile_at(wild_x, wild_y, &t);
     assert(t.base != PAL_EMPTY);
     assert(t.collision == ((t.base == PAL_MOUNTAIN_ROCK) ? 1 : 0));
 
     // Walkable wilderness genuinely exists — the continent is not all mountain.
     int walkable_land = 0;
     for (int i = 0; i < 500; i++) {
-        worldgen_tile_at(2000 + i * 7, 3000 + i * 3, &t);
+        worldgen_tile_at(wild_x + i * WG_SCALE(7), wild_y + i * WG_SCALE(3), &t);
         if (t.collision == 0) walkable_land++;
     }
     assert(walkable_land > 400);
@@ -37,7 +41,7 @@ int main(void) {
     assert(t.base == PAL_CITY_WALL);
 
     // Roads are walkable road surface.
-    worldgen_tile_at(K1_X, K1_Y + 300, &t);
+    worldgen_tile_at(K1_X, K1_Y + CAPITAL_HALF / 2, &t);
     assert(t.collision == 0);
     assert(t.base == PAL_ROAD);
 
@@ -48,8 +52,8 @@ int main(void) {
 
     // Buildings are solid, and put floor, wall, and roof on separate layers.
     int found_edge = 0, found_interior = 0;
-    for (int y = ENNARA_Y - CAPITAL_HALF; y <= ENNARA_Y + CAPITAL_HALF && !(found_edge && found_interior); y += 3)
-        for (int x = ENNARA_X - CAPITAL_HALF; x <= ENNARA_X + CAPITAL_HALF; x += 3) {
+    for (int y = ENNARA_Y - CAPITAL_HALF; y <= ENNARA_Y + CAPITAL_HALF && !(found_edge && found_interior); y += WG_SCALE(3))
+        for (int x = ENNARA_X - CAPITAL_HALF; x <= ENNARA_X + CAPITAL_HALF; x += WG_SCALE(3)) {
             BuildingPart p = worldgen_building_at(x, y);
             if (p == BUILDING_NONE) continue;
             worldgen_tile_at(x, y, &t);

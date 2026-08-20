@@ -9,6 +9,7 @@
 #include "camera.h"
 #include "input.h"
 #include "world.h"
+#include "world_regions.h"
 #include "npc_types.h"
 #include "ability_bar.h"
 #include "player.h"
@@ -98,10 +99,10 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
         return;
     }
 
-    // Ennara Courtyard centre — matches worldgen_spawn_point() and the
-    // server-side default in player_data.c.
-    game->player.x = 222400.0f;
-    game->player.y = 89280.0f;
+    // Ennara Courtyard centre, from the shared city table that also drives
+    // worldgen_spawn_point() and the server-side default in player_data.c.
+    const WorldCity* start = world_city_find(CITY_ENNARA);
+    world_city_center_px(start, &game->player.x, &game->player.y);
 
     camera_set_position(&game->camera, game->player.x, game->player.y);
 

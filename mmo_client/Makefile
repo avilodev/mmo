@@ -295,7 +295,7 @@ list-objects:
 # ---------------------------------------------------------------------------
 TEST_DIR = Game/tests
 TEST_BIN = Game/tests/bin
-TEST_CFLAGS = -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR)
+TEST_CFLAGS = -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR) -I$(COMMON_DIR)
 
 WORLDGEN_SRC = Game/data/src/worldgen_noise.c Game/data/src/worldgen_biome.c \
                Game/data/src/worldgen_city.c Game/data/src/worldgen_tile.c \
@@ -320,7 +320,7 @@ test: $(TESTS)
 # ---------------------------------------------------------------------------
 # World generation
 #
-# Produces the ~1 GB world.dat consumed by BOTH the client and the world
+# Produces the world.dat consumed by BOTH the client and the world
 # server. The two copies must stay byte-identical.
 #
 # This block must stay AFTER the WORLDGEN_SRC assignment above: make expands a
@@ -334,7 +334,7 @@ $(WORLDGEN_BIN):
 	mkdir -p $(WORLDGEN_BIN)
 
 $(WORLDGEN_BIN)/worldgen: Game/data/src/world_generator.c $(WORLDGEN_SRC) | $(WORLDGEN_BIN)
-	$(CC) $(CFLAGS) -I$(GAME_INCLUDE_DIR) -o $@ $^ -lm
+	$(CC) $(CFLAGS) -I$(GAME_INCLUDE_DIR) -I$(COMMON_DIR) -o $@ $^ -lm
 
 world: $(WORLDGEN_BIN)/worldgen
 	./$(WORLDGEN_BIN)/worldgen $(GAME_BIN_DIR)/world.dat

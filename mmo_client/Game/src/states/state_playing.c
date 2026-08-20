@@ -22,6 +22,8 @@
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
 #include "ui/quest_log.h"
+#include "ui/currency_panel.h"
+#include "world_regions.h"
 #include "ui/shop_ui.h"
 #include "ui/settings_panel.h"
 #include "audio/audio.h"
@@ -87,6 +89,7 @@ static void playing_enter(GameState* game) {
 
     hud_init(&game->playing->hud, 1920, 1080);
     quest_log_init(&game->playing->quest_log);
+    currency_panel_init(&game->playing->currency_panel);
 
     // Initialize dialogue system with JSON data
     if (!dialogue_system_init("Game/Data/dialogues")) {
@@ -750,7 +753,7 @@ static void render_level_up(GameState* game) {
 }
 
 /**
- * Draw timed XP and gold reward notifications.
+ * Draw timed experience and coin reward notifications.
  */
 static void render_reward_notifications(GameState* game) {
     // Notifications stack upward from center-right
@@ -786,12 +789,14 @@ static void render_reward_notifications(GameState* game) {
             renderer_draw_text(x + 24, text_y, xp_text);
         }
 
-        // Gold pill
-        if (notif->gold_gained > 0) {
+        // Coin pill, labelled with the paying kingdom rather than a bare "g"
+        if (notif->currency_gained > 0) {
             renderer_draw_rect(x + 100, y + 8, 14, 14, 1.0f, 0.80f, 0.05f, alpha);
-            char gold_text[32];
-            snprintf(gold_text, sizeof(gold_text), "+%u g", notif->gold_gained);
-            renderer_draw_text(x + 118, text_y, gold_text);
+            char coin_text[48];
+            snprintf(coin_text, sizeof(coin_text), "+%u %s",
+                     notif->currency_gained,
+                     world_currency_name(notif->currency_id));
+            renderer_draw_text(x + 118, text_y, coin_text);
         }
     }
 }
@@ -1160,6 +1165,15 @@ static void playing_render(GameState* game) {
                      game->camera.viewport_width,
                      game->camera.viewport_height);
 
+    /* Currency panel. The highlighted row is the coin of whichever kingdom the
+     * player is standing closest to, which is what local trade pays in. */
+    currency_panel_render(&game->playing->currency_panel,
+                          game->player.info.currency,
+                          (int)world_local_currency_px(game->player.x,
+                                                       game->player.y),
+                          game->camera.viewport_width,
+                          game->camera.viewport_height);
+
     // Shop window (on top of game world, below pause)
     shop_ui_render(game);
 
@@ -1290,12 +1304,26 @@ static void playing_input(GameState* game, GLFWwindow* window, float delta_time)
                                  game->camera.viewport_height);
     if (game->playing->quest_log.is_open) return; // Block gameplay input while quest log open
 
+
     // Shop window input (blocks gameplay input while open)
     if (game->playing->shop.is_open) {
         shop_ui_handle_input(game, game->input.mouse_x, game->input.mouse_y,
                              game->input.mouse_left_clicked);
         return;
     }
+
+    // Currency panel — read-only, and blocks gameplay input while open
+    if (currency_panel_handle_input(&game->playing->currency_panel,
+                                    game->input.mouse_x, game->input.mouse_y,
+                                    game->input.mouse_left_clicked,
+                                    !game->playing->chat.is_typing &&
+                                        input_key_just_pressed(&game->input, g_keybinds.toggle_currency),
+                                    !game->playing->chat.is_typing &&
+                                        input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
+                                    game->camera.viewport_width,
+                                    game->camera.viewport_height))
+        return;
+    if (game->playing->currency_panel.is_open) return;
 
     // Toggle inventory
     if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {

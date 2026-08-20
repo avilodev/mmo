@@ -124,6 +124,5 @@ void worldgen_tile_at(int x, int y, WorldGenTile* out) {
  * Report the player spawn position in world pixels.
  */
 void worldgen_spawn_point(float* out_x, float* out_y) {
-    if (out_x) *out_x = (float)ENNARA_X * WORLDGEN_TILE_PX;
-    if (out_y) *out_y = (float)ENNARA_Y * WORLDGEN_TILE_PX;
+    world_city_center_px(world_city_find(CITY_ENNARA), out_x, out_y);
 }

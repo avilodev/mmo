@@ -12,10 +12,13 @@ int main(void) {
 
     // Interior sample rows land in the expected band. Rows are pulled well
     // inside each band so noise wobble on the boundary cannot flip them.
-    assert(worldgen_biome_at(mid_x,  800) == BIOME_SNOW);
-    assert(worldgen_biome_at(mid_x, 3200) == BIOME_TROPICAL);
-    assert(worldgen_biome_at(mid_x, 5500) == BIOME_DESERT);
-    assert(worldgen_biome_at(mid_x, 7200) == BIOME_COLD_SOUTH);
+    assert(worldgen_biome_at(mid_x, BAND_SNOW_END / 2) == BIOME_SNOW);
+    assert(worldgen_biome_at(mid_x, (BAND_SNOW_END + BAND_TROPICAL_END) / 2) ==
+           BIOME_TROPICAL);
+    assert(worldgen_biome_at(mid_x, (BAND_TROPICAL_END + BAND_DESERT_END) / 2) ==
+           BIOME_DESERT);
+    assert(worldgen_biome_at(mid_x, (BAND_DESERT_END + WORLDGEN_HEIGHT) / 2) ==
+           BIOME_COLD_SOUTH);
 
     // The map edges are ocean on all four sides.
     assert(worldgen_is_ocean(5, 5));
@@ -25,15 +28,15 @@ int main(void) {
     // The continental interior is never ocean.
     assert(!worldgen_is_ocean(mid_x, WORLDGEN_HEIGHT / 2));
 
-    // Ennara overhangs the desert band by ~117 rows, so without the local
-    // bulge its north edge would read tropical. The bulge must force desert
+    // Ennara overhangs the desert band by ~117 full-scale rows, so without the
+    // local bulge its north edge would read tropical. The bulge must force desert
     // across the whole footprint.
-    for (int y = ENNARA_Y - CAPITAL_HALF; y <= ENNARA_Y + CAPITAL_HALF; y += 100)
+    for (int y = ENNARA_Y - CAPITAL_HALF; y <= ENNARA_Y + CAPITAL_HALF; y += WG_SCALE(100))
         assert(worldgen_biome_at(ENNARA_X, y) == BIOME_DESERT);
 
     // The city footprint is never flooded by the bay.
-    for (int y = ENNARA_Y - CAPITAL_HALF; y <= ENNARA_Y + CAPITAL_HALF; y += 100)
-        for (int x = ENNARA_X - CAPITAL_HALF; x <= ENNARA_X + CAPITAL_HALF; x += 100)
+    for (int y = ENNARA_Y - CAPITAL_HALF; y <= ENNARA_Y + CAPITAL_HALF; y += WG_SCALE(100))
+        for (int x = ENNARA_X - CAPITAL_HALF; x <= ENNARA_X + CAPITAL_HALF; x += WG_SCALE(100))
             assert(!worldgen_is_ocean(x, y));
 
     // Noise is deterministic and bounded.
@@ -45,13 +48,14 @@ int main(void) {
 
     // Ocean and biome classification must never disagree: anything is_ocean()
     // calls water must classify as BIOME_OCEAN, or terrain paints land on sea.
-    for (int y = 0; y < WORLDGEN_HEIGHT; y += 37)
-        for (int x = 0; x < WORLDGEN_WIDTH; x += 41)
+    for (int y = 0; y < WORLDGEN_HEIGHT; y += WG_SCALE(37))
+        for (int x = 0; x < WORLDGEN_WIDTH; x += WG_SCALE(41))
             if (worldgen_is_ocean(x, y))
                 assert(worldgen_biome_at(x, y) == BIOME_OCEAN);
 
     // The bay east of Ennara is water on both accessors, right up to the wall.
-    for (int x = ENNARA_X + CAPITAL_HALF + 1; x <= ENNARA_X + CAPITAL_HALF + 200; x++) {
+    for (int x = ENNARA_X + CAPITAL_HALF + 1;
+         x <= ENNARA_X + CAPITAL_HALF + WG_SCALE(200); x++) {
         assert(worldgen_is_ocean(x, ENNARA_Y));
         assert(worldgen_biome_at(x, ENNARA_Y) == BIOME_OCEAN);
     }

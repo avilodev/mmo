@@ -4,7 +4,7 @@
 /**
  * Downscaled whole-world image used by the full map screen.
  *
- * The streamed world file is ~1 GB, so it cannot back a continent-scale view.
+ * The streamed world file is far too large to back a continent-scale view.
  * The generator writes a companion overview next to it (one palette index per
  * NxN tile block) which is small enough to load once and upload as a texture.
  */

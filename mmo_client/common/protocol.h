@@ -5,6 +5,9 @@
 
 #include <stdint.h>
 
+/* CURRENCY_COUNT sizes the player's balance array on the wire. */
+#include "world_regions.h"
+
 #define MAX_WORLDS 10
 #define MAX_CAST_TARGETS    16
 #define MAX_NPCS_PER_PACKET 32
@@ -578,7 +581,9 @@ typedef struct {
     int32_t resource;
     int32_t max_resource;
     uint64_t experience;
-    uint32_t gold;
+
+    /** Balance per kingdom, indexed by CurrencyId. There is no universal coin. */
+    uint32_t currency[CURRENCY_COUNT];
 
     uint32_t race_id;       // Fused race/class identifier; 1..loaded race count
     uint8_t  resource_type; // ResourceType, derived from the active spec's role
@@ -1299,13 +1304,16 @@ typedef struct {
     PacketHeader header;
 } PartyDisbandPacket;
 
-/** Report kill rewards and the player's resulting totals. */
+/**
+ * Report kill rewards and the player's resulting totals.
+ *
+ * Kills pay experience only. Enemies drop items, which the player sells to a
+ * kingdom's NPCs for that kingdom's coin, so no currency moves on a kill.
+ */
 typedef struct {
     PacketHeader header;
     uint32_t     xp_gained;
-    uint32_t     gold_gained;
     uint64_t     total_xp;       // Player's new total XP (for bar update)
-    uint32_t     total_gold;     // Player's new total gold
 } KillRewardPacket;
 
 /** Bound the items advertised by one shop-open packet. */
@@ -1339,9 +1347,10 @@ typedef struct {
     PacketHeader header;
     uint8_t  success;
     uint8_t  inventory_slot;
-    uint8_t  padding[2];
+    uint8_t  currency_id;      // CurrencyId the shop charged in
+    uint8_t  padding;
     uint32_t item_id;
-    uint32_t new_gold;
+    uint32_t new_balance;      // Player's balance in that currency after the buy
     char     message[64];
 } ShopBuyResponsePacket;
 
@@ -1358,10 +1367,11 @@ typedef struct {
     PacketHeader header;
     uint8_t  success;
     uint8_t  inventory_slot;
-    uint8_t  padding[2];
+    uint8_t  currency_id;      // CurrencyId the shop paid in
+    uint8_t  padding;
     uint32_t item_id;
     uint32_t sell_price;
-    uint32_t new_gold;
+    uint32_t new_balance;      // Player's balance in that currency after the sale
     char     message[64];
 } ShopSellResponsePacket;
 
@@ -1407,9 +1417,10 @@ typedef struct {
     PacketHeader    header;
     uint32_t        quest_id;
     uint32_t        xp_reward;
-    uint32_t        gold_reward;
+    uint32_t        currency_reward;   // Coin granted, in the currency below
+    uint8_t         currency_id;       // CurrencyId the reward is paid in
     uint8_t         item_count;
-    uint8_t         padding[3];
+    uint8_t         padding[2];
     QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
 

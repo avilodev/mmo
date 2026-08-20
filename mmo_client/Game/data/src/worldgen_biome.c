@@ -43,7 +43,8 @@ int worldgen_is_ocean(int x, int y) {
 
     if (in_ennara_bay(x, y)) return 1;
 
-    float wob = worldgen_noise_octaves(x / 32, y / 32, 8000, 2) * OCEAN_WOBBLE;
+    float wob = worldgen_noise_octaves(x / OCEAN_WOBBLE_CELL, y / OCEAN_WOBBLE_CELL,
+                                       8000, 2) * OCEAN_WOBBLE;
 
     if ((float)x < OCEAN_MARGIN + wob) return 1;
     if ((float)x > (float)(WORLDGEN_WIDTH  - OCEAN_MARGIN) + wob) return 1;
@@ -66,7 +67,8 @@ BiomeId worldgen_biome_at(int x, int y) {
                   CAPITAL_HALF + ENNARA_BIOME_MARGIN))
         return BIOME_DESERT;
 
-    float wob = worldgen_noise_octaves(x / 64, y / 64, 7000, 2) * BAND_WOBBLE;
+    float wob = worldgen_noise_octaves(x / BAND_WOBBLE_CELL, y / BAND_WOBBLE_CELL,
+                                       7000, 2) * BAND_WOBBLE;
     float fy  = (float)y + wob;
 
     if (fy < BAND_SNOW_END)     return BIOME_SNOW;

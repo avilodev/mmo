@@ -2,10 +2,11 @@
  * @file
  * Write a downscaled palette overview of the world for the in-game map.
  *
- * The full world file is ~1 GB and streamed a chunk at a time, so it cannot
- * back a whole-continent map view. This companion file samples one base-layer
- * palette index per NxN block, which at the default scale is under half a
- * megabyte and can be loaded once at startup and drawn directly.
+ * The full world file is far too large to hold in memory and is streamed a
+ * chunk at a time, so it cannot back a whole-continent map view. This
+ * companion file samples one base-layer palette index per NxN block, which at
+ * the default scale is well under a megabyte and can be loaded once at startup
+ * and drawn directly.
  */
 #include "world/worldgen.h"
 

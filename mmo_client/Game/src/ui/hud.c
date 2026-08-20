@@ -3,6 +3,7 @@
  * Render the in-game heads-up display and handle its panel controls.
  */
 #include "hud.h"
+#include "world_regions.h"
 #include "renderer.h"
 #include "core/game_types.h"
 #include "world/npc.h"
@@ -620,15 +621,22 @@ void hud_render_party_frames(const GameState* game) {
 
 /**
  * Render the local player's currency display.
+ *
+ * Only the coin of the nearest kingdom appears here, because that is the one
+ * local trade uses. The currency panel holds every balance.
  */
 void hud_render_currencies(const HUDLayout* hud, const GameState* game) {
     float x = hud->currency_x;
     float y = hud->currency_y;
 
-    // Gold — received from server via KILL_REWARD / PLAYER_DATA
+    int local = (int)world_local_currency_px(game->player.x, game->player.y);
+
+    // Balances arrive from the server via PLAYER_DATA and the shop responses.
     char gold_text[64];
-    snprintf(gold_text, sizeof(gold_text), "Gold: %u", game->player.info.gold);
-    float tw = 130.0f, th = 22.0f;
+    snprintf(gold_text, sizeof(gold_text), "%s: %u",
+             world_currency_city_name(local),
+             world_currency_valid(local) ? game->player.info.currency[local] : 0u);
+    float tw = 160.0f, th = 22.0f;
     renderer_draw_rect(x - 6, y - 16, tw, th, 0.10f, 0.09f, 0.04f, 0.85f);
     renderer_draw_rect(x - 6, y - 16, tw, 1.5f, 0.70f, 0.55f, 0.10f, 0.8f);
     renderer_draw_rect(x - 6, y - 16 + th - 1.5f, tw, 1.5f, 0.70f, 0.55f, 0.10f, 0.8f);

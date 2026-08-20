@@ -3,38 +3,49 @@
 
 #include <stdint.h>
 
+/**
+ * The world scale, the capital coordinates, and CityId live in world_regions.h,
+ * which the world server shares so respawn and the economy cannot drift from
+ * the map the generator writes. Everything below is generation-only detail.
+ */
+#include "world_regions.h"
+
 /** Continent dimensions in tiles, and tile edge length in pixels. */
-#define WORLDGEN_WIDTH   15400
-#define WORLDGEN_HEIGHT   7700
-#define WORLDGEN_TILE_PX     16
+#define WORLDGEN_WIDTH   WG_SCALE(15400)
+#define WORLDGEN_HEIGHT  WG_SCALE(7700)
+#define WORLDGEN_TILE_PX WORLD_TILE_PX
 
 /** Biome band lower bounds in tile rows; each band runs to the next bound. */
-#define BAND_SNOW_END     1771
-#define BAND_TROPICAL_END 4697
-#define BAND_DESERT_END   6468
+#define BAND_SNOW_END     WG_SCALE(1771)
+#define BAND_TROPICAL_END WG_SCALE(4697)
+#define BAND_DESERT_END   WG_SCALE(6468)
 
 /** Maximum vertical wobble applied to band boundaries, in tiles. */
-#define BAND_WOBBLE 90.0f
+#define BAND_WOBBLE WG_SCALEF(90.0f)
+
+/** Noise cell size for the band and coast wobble, in tiles. */
+#define BAND_WOBBLE_CELL  WG_SCALE(64)
+#define OCEAN_WOBBLE_CELL WG_SCALE(32)
 
 /** Ocean ring thickness at the map edge, in tiles, before wobble. */
-#define OCEAN_MARGIN 360
-#define OCEAN_WOBBLE 80.0f
+#define OCEAN_MARGIN WG_SCALE(360)
+#define OCEAN_WOBBLE WG_SCALEF(80.0f)
 
 /** Capital footprint half-width in tiles; full footprint is twice this. */
-#define CAPITAL_HALF 1000
+#define CAPITAL_HALF WG_SCALE(1000)
 
-/** Capital centre coordinates in tiles. */
-#define K2_X  4600
-#define K2_Y   900
-#define K1_X  8100
-#define K1_Y  3200
-#define K3_X  7300
-#define K3_Y  6550
-#define ENNARA_X 13900
-#define ENNARA_Y  5580
+/** Capital centre coordinates in tiles, named from the shared city table. */
+#define K1_X  CITY_K1_TILE_X
+#define K1_Y  CITY_K1_TILE_Y
+#define K2_X  CITY_K2_TILE_X
+#define K2_Y  CITY_K2_TILE_Y
+#define K3_X  CITY_K3_TILE_X
+#define K3_Y  CITY_K3_TILE_Y
+#define ENNARA_X CITY_ENNARA_TILE_X
+#define ENNARA_Y CITY_ENNARA_TILE_Y
 
 /** Extra margin around Ennara forced to desert so the city sits in one biome. */
-#define ENNARA_BIOME_MARGIN 200
+#define ENNARA_BIOME_MARGIN WG_SCALE(200)
 
 /** Identify a terrain band. */
 typedef enum {
@@ -52,23 +63,17 @@ int     worldgen_is_ocean(int x, int y);
 BiomeId worldgen_biome_at(int x, int y);
 
 /** Wall thickness and road width inside capitals, in tiles. */
-#define CITY_WALL_THICKNESS 12
-#define CITY_ROAD_HALF      14
+#define CITY_WALL_THICKNESS WG_SCALE(12)
+#define CITY_ROAD_HALF      WG_SCALE(14)
+
+/** Extra half-width of the gate gap beyond the road itself, in tiles. */
+#define CITY_GATE_MARGIN    WG_SCALE(6)
 
 /** Ennara building block grid pitch and size bounds, in tiles. */
-#define BUILDING_CELL     72
-#define BUILDING_MIN      24
-#define BUILDING_MAX      48
-#define COURTYARD_RADIUS 220
-
-/** Identify a capital. */
-typedef enum {
-    CITY_NONE = 0,
-    CITY_K1,
-    CITY_K2,
-    CITY_K3,
-    CITY_ENNARA
-} CityId;
+#define BUILDING_CELL    WG_SCALE(72)
+#define BUILDING_MIN     WG_SCALE(24)
+#define BUILDING_MAX     WG_SCALE(48)
+#define COURTYARD_RADIUS WG_SCALE(220)
 
 /** Identify an Ennara district. */
 typedef enum {
@@ -108,8 +113,12 @@ void worldgen_spawn_point(float* out_x, float* out_y);
 
 int worldgen_write(const char* path, int width, int height);
 
-/** Tiles per overview cell. 15400x7700 downscales to 963x482 (~453 KB). */
-#define WORLDGEN_OVERVIEW_SCALE 16
+/**
+ * Tiles per overview cell. Scaled with the world so the in-game map keeps the
+ * same on-screen resolution: at full size 15400x7700 downscales to 963x482,
+ * and at the 1/3 dev scale 5133x2567 downscales to 1027x514 (~500 KB).
+ */
+#define WORLDGEN_OVERVIEW_SCALE WG_SCALE(16)
 
 int worldgen_write_overview(const char* path, int width, int height, int scale);
 

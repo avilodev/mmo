@@ -69,7 +69,7 @@ int worldgen_is_city_wall(int x, int y) {
     int inner = CAPITAL_HALF - CITY_WALL_THICKNESS;
 
     // A gate gap on each side keeps the capital enterable.
-    int gate_half = CITY_ROAD_HALF + 6;
+    int gate_half = CITY_ROAD_HALF + CITY_GATE_MARGIN;
     if (dx <= gate_half || dy <= gate_half) return 0;
 
     return dx > inner || dy > inner;
