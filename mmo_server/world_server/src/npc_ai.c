@@ -413,6 +413,9 @@ static int point_in_telegraph(float px, float py,
 
 #define MAX_DEFERRED 128
 
+/** Radius within which a telegraph start/resolve packet is broadcast. */
+#define TELEGRAPH_BROADCAST_RADIUS 500.0f
+
 typedef enum {
     DSEND_TELEGRAPH_START,
     DSEND_TELEGRAPH_RESOLVE,
@@ -477,9 +480,22 @@ static void dq_push(DeferredQueue* q, const DeferredAction* item) {
 /**
  * Execute deferred telegraph broadcasts, damage, and projectile spawns.
  *
+ * Player positions come from the tick snapshot rather than from live slots. The
+ * previous version read pos_x, pos_y, is_dead, and client_fd straight out of
+ * active_players[] holding only the registry read lock, which is not the lock that
+ * protects those fields — and this is the code that decides whether an NPC ability
+ * hits you. It also scanned all MAX_PLAYERS slots per deferred action; the snapshot
+ * it was already handed carries these fields plus a spatial index over them.
+ *
  * The caller must hold neither the NPC-world lock nor player locks.
+ *
+ * @param snap Tick-wide player snapshot; must be the one built for this tick.
  */
-static void dq_flush(DeferredQueue* q) {
+static void dq_flush(DeferredQueue* q, TickSnapshot* snap) {
+    if (!snap) return;
+
+    int nearby[MAX_PLAYERS];
+
     for (int i = 0; i < q->count; i++) {
         DeferredAction* d = &q->items[i];
 
@@ -504,16 +520,12 @@ static void dq_flush(DeferredQueue* q) {
                 pkt.cast_time  = d->tstart.cast_time;
 
                 // Send to nearby players
-                player_registry_rdlock();
-                for (int p = 0; p < MAX_PLAYERS; p++) {
-                    if (!active_players[p].is_loaded) continue;
-                    float pd = dist2d(d->tstart.npc_x, d->tstart.npc_y,
-                                      active_players[p].pos_x, active_players[p].pos_y);
-                    if (pd <= 500.0f) {
-                        server_send(active_players[p].client_fd, &pkt, sizeof(pkt));
-                    }
+                int near_count = tick_snapshot_query(snap, d->tstart.npc_x, d->tstart.npc_y,
+                                                     TELEGRAPH_BROADCAST_RADIUS,
+                                                     nearby, MAX_PLAYERS);
+                for (int k = 0; k < near_count; k++) {
+                    server_send(snap->client_fd[nearby[k]], &pkt, sizeof(pkt));
                 }
-                player_registry_unlock();
                 break;
             }
 
@@ -526,23 +538,31 @@ static void dq_flush(DeferredQueue* q) {
                 rpkt.npc_id     = htonl(d->tresolve.npc_id);
                 rpkt.ability_id = htons(d->tresolve.ability_id);
 
-                // Deal damage to players inside the shape
-                player_registry_rdlock();
-                for (int p = 0; p < MAX_PLAYERS; p++) {
-                    if (!active_players[p].is_loaded) continue;
+                // Send resolve packet to players near the NPC
+                int near_count = tick_snapshot_query(snap, d->tresolve.npc_x, d->tresolve.npc_y,
+                                                     TELEGRAPH_BROADCAST_RADIUS,
+                                                     nearby, MAX_PLAYERS);
+                for (int k = 0; k < near_count; k++) {
+                    server_send(snap->client_fd[nearby[k]], &rpkt, sizeof(rpkt));
+                }
 
-                    // Send resolve packet to nearby players
-                    float pd = dist2d(d->tresolve.npc_x, d->tresolve.npc_y,
-                                      active_players[p].pos_x, active_players[p].pos_y);
-                    if (pd <= 500.0f) {
-                        server_send(active_players[p].client_fd, &rpkt, sizeof(rpkt));
-                    }
+                /* Deal damage to players inside the shape. The query radius is the
+                 * shape's farthest reach from its own origin, so it is a superset of
+                 * what point_in_telegraph can accept — the broadcast radius above is a
+                 * different centre and cannot stand in for it. */
+                float rect_reach = sqrtf(d->tresolve.length * d->tresolve.length +
+                                         (d->tresolve.width * 0.5f) * (d->tresolve.width * 0.5f));
+                float extent = d->tresolve.radius > rect_reach ? d->tresolve.radius : rect_reach;
 
-                    // Check if player is inside the telegraph shape
-                    if (active_players[p].is_dead) continue;
+                int hit_count = tick_snapshot_query(snap, d->tresolve.pos_x, d->tresolve.pos_y,
+                                                    extent, nearby, MAX_PLAYERS);
+
+                for (int k = 0; k < hit_count; k++) {
+                    int di = nearby[k];
+                    if (snap->is_dead[di]) continue;
 
                     int inside = point_in_telegraph(
-                        active_players[p].pos_x, active_players[p].pos_y,
+                        snap->pos_x[di], snap->pos_y[di],
                         d->tresolve.shape,
                         d->tresolve.pos_x, d->tresolve.pos_y,
                         d->tresolve.dir_x, d->tresolve.dir_y,
@@ -551,8 +571,11 @@ static void dq_flush(DeferredQueue* q) {
 
                     if (!inside) continue;
 
-                    // Apply damage
-                    pthread_mutex_lock(&active_players[p].lock);
+                    /* Take the slot lock to mutate, and let it reject a slot recycled
+                     * to another character since the snapshot was built. */
+                    ActivePlayer* target = player_acquire_slot(snap->slot[di],
+                                                               snap->character_id[di]);
+                    if (!target) continue;
 
                     int damage = d->tresolve.damage;
                     int variance = (rand() % 21) - 10;
@@ -561,20 +584,20 @@ static void dq_flush(DeferredQueue* q) {
                     /* Collect the player's own mitigation: armor, the race passive if
                      * they are in Animal Form, and any active percentage reducers. */
                     DamageModifiers target_mods;
-                    player_collect_modifiers(&active_players[p], 0, &target_mods);
+                    player_collect_modifiers(target, 0, &target_mods);
                     damage = damage_resolve(damage, NULL, &target_mods);
 
-                    active_players[p].health -= damage;
-                    if (active_players[p].health < 0) active_players[p].health = 0;
-                    active_players[p].last_combat_time = get_time();
-                    player_add_rage(&active_players[p], 0, damage);
+                    target->health -= damage;
+                    if (target->health < 0) target->health = 0;
+                    target->last_combat_time = get_time();
+                    player_add_rage(target, 0, damage);
 
-                    int new_hp = active_players[p].health;
+                    int new_hp = target->health;
                     uint8_t is_kill = (new_hp == 0) ? 1 : 0;
-                    int client_fd = active_players[p].client_fd;
-                    uint32_t char_id = active_players[p].character_id;
+                    int client_fd = target->client_fd;
+                    uint32_t char_id = target->character_id;
 
-                    pthread_mutex_unlock(&active_players[p].lock);
+                    player_release(target);
 
                     // Send damage via AbilityEffectPacket
                     AbilityEffectPacket epkt = {0};
@@ -592,7 +615,6 @@ static void dq_flush(DeferredQueue* q) {
 
                     LOG_DEBUG("[NPC_AI] Telegraph hit player %u for %d dmg (hp=%d)%s", char_id, damage, new_hp, is_kill ? " — KILLED" : "");
                 }
-                player_registry_unlock();
                 break;
             }
 
@@ -978,5 +1000,5 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
 
     pthread_mutex_unlock(&world->lock);
 
-    dq_flush(&q);
+    dq_flush(&q, snap);
 }

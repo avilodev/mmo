@@ -19,6 +19,7 @@
 #include "move_validator.h"
 #include "player_level.h"
 #include "quest_system.h"
+#include "world_regions.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,15 @@
 #include <sys/socket.h>
 
 #define SAVE_INTERVAL_SECONDS 120
+
+/** Bound one persistence batch.
+ *
+ * PlayerSaveData is roughly 6 KB, so a queue sized MAX_PLAYERS is 5.7 MB — past a
+ * musl thread stack by 40x and most of a glibc one. Batching keeps the buffer small
+ * enough to allocate once on the heap and also caps how long the registry read lock
+ * is held in a single pass.
+ */
+#define SAVE_BATCH_SIZE 64
 
 ActivePlayer active_players[MAX_PLAYERS];
 
@@ -295,7 +305,7 @@ void player_snapshot_for_save(const ActivePlayer* player, PlayerSaveData* out) {
     d->resource     = player->resource;
     d->max_resource = player->max_resource;
     d->experience   = player->experience;
-    d->gold         = player->gold;
+    memcpy(d->currency, player->currency, sizeof(d->currency));
 
     memcpy(out->inventory, player->inventory, sizeof(out->inventory));
     memcpy(out->equipment, player->equipment, sizeof(out->equipment));
@@ -378,13 +388,19 @@ int playerdata_init(const char* conn_str) {
 void playerdata_close(void) {
     LOG_DEBUG("Closing player data system...");
 
-    // Snapshot all loaded players, clear slots, then save lock-free
-    PlayerSaveData save_buf[MAX_PLAYERS];
+    /* Snapshot all loaded players, clear slots, then save lock-free.
+     * On the heap: MAX_PLAYERS PlayerSaveData is 5.7 MB, well past a thread stack. */
+    PlayerSaveData* save_buf = calloc(MAX_PLAYERS, sizeof(PlayerSaveData));
     int save_count = 0;
+
+    if (!save_buf) {
+        LOG_ERROR("Shutdown save buffer allocation failed; "
+                  "unsaved player state will be lost");
+    }
 
     player_registry_wrlock();
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (active_players[i].is_loaded) {
+        if (save_buf && active_players[i].is_loaded) {
             pthread_mutex_lock(&active_players[i].lock);
             player_snapshot_for_save(&active_players[i], &save_buf[save_count++]);
             pthread_mutex_unlock(&active_players[i].lock);
@@ -400,6 +416,7 @@ void playerdata_close(void) {
             LOG_ERROR("Shutdown save failed for character %u",
                       save_buf[i].scalars.character_id);
     }
+    free(save_buf);
 
     character_database_close();
 
@@ -439,9 +456,9 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
 
     // assign the default spawn to unplaced characters
     if (player->pos_x == 0.0f && player->pos_y == 0.0f) {
-        // Ennara Courtyard centre (tile 13900, 5580 at 16 px tiles).
-        player->pos_x = 222400.0f;
-        player->pos_y = 89280.0f;
+        // Ennara Courtyard centre, from the shared city table.
+        const WorldCity* start = world_city_find(CITY_ENNARA);
+        world_city_center_px(start, &player->pos_x, &player->pos_y);
         player->is_dirty = 1;  // Mark for save so this persists
         LOG_DEBUG("[SPAWN] New character %u spawned at default location (%.1f, %.1f)", character_id, player->pos_x, player->pos_y);
     }
@@ -455,7 +472,7 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     player->resource = char_info.resource;
     player->max_resource = char_info.max_resource;
     player->experience = char_info.experience;
-    player->gold = char_info.gold;
+    memcpy(player->currency, char_info.currency, sizeof(player->currency));
 
     player->race_id = char_info.race_id;
 
@@ -877,7 +894,8 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
     response->resource = (int32_t)htonl((uint32_t)player->resource);
     response->max_resource = (int32_t)htonl((uint32_t)player->max_resource);
     response->experience = mmo_htonll(player->experience);
-    response->gold = htonl(player->gold);
+    for (int c = 0; c < CURRENCY_COUNT; c++)
+        response->currency[c] = htonl(player->currency[c]);
 
     response->pos_x = player->pos_x;
     response->pos_y = player->pos_y;
@@ -913,6 +931,21 @@ void* periodic_save_thread(void* arg) {
     (void)arg;
     g_save_thread_running = 1;
 
+    /* One heap buffer for the life of the thread. See SAVE_BATCH_SIZE. */
+    PlayerSaveData* save_queue = calloc(SAVE_BATCH_SIZE, sizeof(PlayerSaveData));
+    if (!save_queue) {
+        LOG_ERROR("Periodic save thread cannot allocate its %zu-byte batch buffer; "
+                  "player state will only be persisted on logout and shutdown",
+                  SAVE_BATCH_SIZE * sizeof(PlayerSaveData));
+        g_save_thread_running = 0;
+        return NULL;
+    }
+
+    /* Cap the passes per interval so a database outage cannot spin here: a failed
+     * commit marks the player dirty again, and without a bound the drain below would
+     * pick them straight back up. */
+    const int max_passes = (MAX_PLAYERS + SAVE_BATCH_SIZE - 1) / SAVE_BATCH_SIZE;
+
     while (1) {
 
         struct timespec deadline;
@@ -929,42 +962,52 @@ void* periodic_save_thread(void* arg) {
         // If we were told to stop, exit immediately
         if (!g_save_thread_running) break;
 
-        // snapshot dirty players before database I/O
-        PlayerSaveData save_queue[MAX_PLAYERS];
-        int save_count = 0;
+        /* Drain in batches. is_dirty is cleared under the slot lock as each player is
+         * snapshotted, so restarting the scan from the top never saves anyone twice. */
+        for (int pass = 0; pass < max_passes; pass++) {
+            int save_count = 0;
 
-        // retain shared occupancy access while locking individual slots
-        player_registry_rdlock();
-        int online_count = 0;
-        const int* online = player_active_list_locked(&online_count);
-        for (int s_i = 0; s_i < online_count; s_i++) {
-            int i = online[s_i];
-            if (!active_players[i].is_loaded) continue;
-            pthread_mutex_lock(&active_players[i].lock);
-            if (active_players[i].is_dirty) {
-                player_snapshot_for_save(&active_players[i], &save_queue[save_count++]);
-                active_players[i].is_dirty = 0;  // cleared while we hold the lock
-            }
-            pthread_mutex_unlock(&active_players[i].lock);
-        }
-        player_registry_unlock();
-
-        // Now write to DB without holding any locks
-        for (int i = 0; i < save_count; i++) {
-            uint32_t character_id = save_queue[i].scalars.character_id;
-            LOG_DEBUG("Periodic save: character %u", character_id);
-
-            if (!player_commit_save(&save_queue[i])) {
-                // restore dirty state after a failed commit
-                ActivePlayer* player = player_acquire(character_id);
-                if (player) {
-                    player->is_dirty = 1;
-                    player_release(player);
+            // retain shared occupancy access while locking individual slots
+            player_registry_rdlock();
+            int online_count = 0;
+            const int* online = player_active_list_locked(&online_count);
+            for (int s_i = 0; s_i < online_count && save_count < SAVE_BATCH_SIZE; s_i++) {
+                int i = online[s_i];
+                if (!active_players[i].is_loaded) continue;
+                pthread_mutex_lock(&active_players[i].lock);
+                if (active_players[i].is_dirty) {
+                    player_snapshot_for_save(&active_players[i], &save_queue[save_count++]);
+                    active_players[i].is_dirty = 0;  // cleared while we hold the lock
                 }
-                LOG_ERROR("Periodic save failed for character %u; queued for retry", character_id);
+                pthread_mutex_unlock(&active_players[i].lock);
             }
+            player_registry_unlock();
+
+            if (save_count == 0) break;
+
+            // Now write to DB without holding any locks
+            for (int i = 0; i < save_count; i++) {
+                uint32_t character_id = save_queue[i].scalars.character_id;
+                LOG_DEBUG("Periodic save: character %u", character_id);
+
+                if (!player_commit_save(&save_queue[i])) {
+                    // restore dirty state after a failed commit
+                    ActivePlayer* player = player_acquire(character_id);
+                    if (player) {
+                        player->is_dirty = 1;
+                        player_release(player);
+                    }
+                    LOG_ERROR("Periodic save failed for character %u; queued for retry", character_id);
+                }
+            }
+
+            /* A short batch means the scan found nothing more waiting. Stopping here
+             * also keeps a commit failure from being retried within this interval. */
+            if (save_count < SAVE_BATCH_SIZE) break;
         }
     }
+
+    free(save_queue);
 
     LOG_DEBUG("Periodic save thread exiting");
     return NULL;

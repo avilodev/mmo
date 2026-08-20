@@ -10,12 +10,106 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <hiredis/hiredis.h>
 
 redisContext* g_redis = NULL;
 pthread_mutex_t g_redis_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/** Cap how long a worker may block inside the global Redis lock.
+ *
+ * Without a timeout a hung or unreachable Redis parks one worker in a blocking
+ * socket read while every other worker queues behind g_redis_lock, which takes the
+ * whole authentication path down with it.
+ */
+#define REDIS_CONNECT_TIMEOUT_MS 2000
+#define REDIS_COMMAND_TIMEOUT_MS 2000
+
+/** Space out reconnect attempts so an outage does not turn every request into a
+ *  blocking connect behind the global lock. */
+#define REDIS_RECONNECT_BACKOFF_SECONDS 1.0
+
+static const struct timeval k_redis_timeout = {
+    .tv_sec  = REDIS_COMMAND_TIMEOUT_MS / 1000,
+    .tv_usec = (REDIS_COMMAND_TIMEOUT_MS % 1000) * 1000,
+};
+
+static double g_redis_next_reconnect = 0.0;   /* CLOCK_MONOTONIC seconds */
+
+/**
+ * Read a monotonic clock in seconds.
+ */
+static double redis_now_monotonic(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/**
+ * Restore the shared context to a usable state after a connection error.
+ *
+ * A redisContext is sticky: once its err field is set every later redisCommand on it
+ * returns NULL, so a Redis restart, failover, or idle disconnect would otherwise
+ * disable logins until the process was restarted. The errored context is deliberately
+ * kept rather than freed, both so redisReconnect can reuse its endpoint and so the
+ * `if (!g_redis)` guards throughout this file keep meaning "session_init never ran".
+ *
+ * The caller must hold g_redis_lock.
+ *
+ * @return Nonzero when the context is ready to carry a command.
+ */
+static int redis_heal_locked(void) {
+    if (!g_redis) return 0;
+    if (!g_redis->err) return 1;
+
+    double now = redis_now_monotonic();
+    if (now < g_redis_next_reconnect) return 0;
+    g_redis_next_reconnect = now + REDIS_RECONNECT_BACKOFF_SECONDS;
+
+    if (redisReconnect(g_redis) == REDIS_OK && !g_redis->err) {
+        redisSetTimeout(g_redis, k_redis_timeout);
+        fprintf(stderr, "Redis reconnected\n");
+        return 1;
+    }
+
+    fprintf(stderr, "Redis reconnect failed: %s\n", g_redis->errstr);
+    return 0;
+}
+
+/**
+ * Issue a Redis command on the shared context, healing a broken connection.
+ *
+ * A NULL reply leaves the context permanently errored, so the connection is rebuilt
+ * and the command retried once. Every command here is idempotent under a repeat
+ * except the single-use ticket and token consumes; for those a retry that lands after
+ * a successful-but-unread delete rejects one login, which the client recovers from by
+ * requesting a new ticket.
+ *
+ * The caller must hold g_redis_lock.
+ *
+ * @return A reply the caller must free, or NULL when Redis is unreachable.
+ */
+static redisReply* redis_command_locked(const char* format, ...) {
+    if (!redis_heal_locked()) return NULL;
+
+    va_list ap;
+    va_start(ap, format);
+    redisReply* reply = (redisReply*)redisvCommand(g_redis, format, ap);
+    va_end(ap);
+    if (reply) return reply;
+
+    // An in-flight failure justifies reconnecting now rather than after the backoff.
+    g_redis_next_reconnect = 0.0;
+    if (!redis_heal_locked()) return NULL;
+
+    va_start(ap, format);
+    reply = (redisReply*)redisvCommand(g_redis, format, ap);
+    va_end(ap);
+    return reply;
+}
 
 /**
  * Connect the shared session context to the configured Redis endpoint.
@@ -33,8 +127,12 @@ int session_init(void) {
     if (redis_port_str) {
         redis_port = atoi(redis_port_str);
     }
-    
-    g_redis = redisConnect(redis_host, redis_port);
+
+    const struct timeval connect_timeout = {
+        .tv_sec  = REDIS_CONNECT_TIMEOUT_MS / 1000,
+        .tv_usec = (REDIS_CONNECT_TIMEOUT_MS % 1000) * 1000,
+    };
+    g_redis = redisConnectWithTimeout(redis_host, redis_port, connect_timeout);
     
     if (g_redis == NULL || g_redis->err) {
         if (g_redis) {
@@ -45,6 +143,10 @@ int session_init(void) {
             fprintf(stderr, "Redis connection error: can't allocate context\n");
         }
         return 0;
+    }
+
+    if (redisSetTimeout(g_redis, k_redis_timeout) != REDIS_OK) {
+        fprintf(stderr, "Redis command timeout could not be set: %s\n", g_redis->errstr);
     }
     
     printf("Session system initialized (Redis: %s:%d)\n", redis_host, redis_port);
@@ -81,7 +183,7 @@ int session_create(uint32_t account_id, const char* ip_address, char* out_sessio
     pthread_mutex_lock(&g_redis_lock);
     
     // Use %b for binary-safe session key storage (exactly 32 bytes)
-    redisReply* reply = redisCommand(g_redis, 
+    redisReply* reply = redis_command_locked(
         "HMSET %s session_key %b created_at %ld expires_at %ld ip_address %s",
         redis_key, key_buffer, (size_t)32, now, expires_at,
         ip_address ? ip_address : "unknown"
@@ -98,7 +200,7 @@ int session_create(uint32_t account_id, const char* ip_address, char* out_sessio
     }
     freeReplyObject(reply);
     
-    reply = redisCommand(g_redis, "EXPIRE %s %d", redis_key, SESSION_EXPIRY_SECONDS);
+    reply = redis_command_locked("EXPIRE %s %d", redis_key, SESSION_EXPIRY_SECONDS);
     if (reply) freeReplyObject(reply);
     
     pthread_mutex_unlock(&g_redis_lock);
@@ -130,7 +232,7 @@ int session_validate(uint32_t account_id, const char* session_key) {
     pthread_mutex_lock(&g_redis_lock);
     
     // First check if key exists
-    redisReply* exists_reply = redisCommand(g_redis, "EXISTS %s", redis_key);
+    redisReply* exists_reply = redis_command_locked("EXISTS %s", redis_key);
     if (!exists_reply || exists_reply->type != REDIS_REPLY_INTEGER || exists_reply->integer == 0) {
         printf("Session validate: Key '%s' does not exist in Redis\n", redis_key);
         if (exists_reply) freeReplyObject(exists_reply);
@@ -140,7 +242,7 @@ int session_validate(uint32_t account_id, const char* session_key) {
     freeReplyObject(exists_reply);
     
     // Get the session_key field from hash
-    redisReply* reply = redisCommand(g_redis, "HGET %s session_key", redis_key);
+    redisReply* reply = redis_command_locked("HGET %s session_key", redis_key);
     
     if (!reply) {
         printf("Session validate: Redis command failed for HGET %s session_key\n", redis_key);
@@ -154,7 +256,7 @@ int session_validate(uint32_t account_id, const char* session_key) {
         freeReplyObject(reply);
         
         // Try simple GET for backward compatibility with session_store
-        reply = redisCommand(g_redis, "GET %s", redis_key);
+        reply = redis_command_locked("GET %s", redis_key);
         if (!reply || reply->type != REDIS_REPLY_STRING) {
             printf("Session validate: GET also failed\n");
             if (reply) freeReplyObject(reply);
@@ -193,7 +295,7 @@ int session_validate(uint32_t account_id, const char* session_key) {
     }
     
     // Check expiry
-    reply = redisCommand(g_redis, "HGET %s expires_at", redis_key);
+    reply = redis_command_locked("HGET %s expires_at", redis_key);
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         printf("Session validate: No expires_at field, assuming valid\n");
         if (reply) freeReplyObject(reply);
@@ -208,14 +310,14 @@ int session_validate(uint32_t account_id, const char* session_key) {
     time_t now = time(NULL);
     if (now > expires_at) {
         printf("Session validate: Session expired (now=%ld, expires=%ld)\n", now, expires_at);
-        redisReply* del_reply = redisCommand(g_redis, "DEL %s", redis_key);
+        redisReply* del_reply = redis_command_locked("DEL %s", redis_key);
         if (del_reply) freeReplyObject(del_reply);
         pthread_mutex_unlock(&g_redis_lock);
         return 0;
     }
 
     // Refresh expiry
-    reply = redisCommand(g_redis, "EXPIRE %s %d", redis_key, SESSION_EXPIRY_SECONDS);
+    reply = redis_command_locked("EXPIRE %s %d", redis_key, SESSION_EXPIRY_SECONDS);
     if (reply) freeReplyObject(reply);
     
     pthread_mutex_unlock(&g_redis_lock);
@@ -238,7 +340,7 @@ int session_invalidate(uint32_t account_id) {
     snprintf(redis_key, sizeof(redis_key), "session:%u", account_id);
     
     pthread_mutex_lock(&g_redis_lock);
-    redisReply* reply = redisCommand(g_redis, "DEL %s", redis_key);
+    redisReply* reply = redis_command_locked("DEL %s", redis_key);
     
     int success = 0;
     if (reply && reply->type == REDIS_REPLY_INTEGER) {
@@ -258,7 +360,7 @@ void session_cleanup_expired(void) {
     
     pthread_mutex_lock(&g_redis_lock);
     
-    redisReply* reply = redisCommand(g_redis, "KEYS session:*");
+    redisReply* reply = redis_command_locked("KEYS session:*");
     
     if (!reply || reply->type != REDIS_REPLY_ARRAY) {
         if (reply) freeReplyObject(reply);
@@ -272,12 +374,12 @@ void session_cleanup_expired(void) {
     for (size_t i = 0; i < reply->elements; i++) {
         const char* key = reply->element[i]->str;
         
-        redisReply* exp_reply = redisCommand(g_redis, "HGET %s expires_at", key);
+        redisReply* exp_reply = redis_command_locked("HGET %s expires_at", key);
         if (exp_reply && exp_reply->type == REDIS_REPLY_STRING) {
             time_t expires_at = atol(exp_reply->str);
             
             if (now > expires_at) {
-                redisReply* del_r = redisCommand(g_redis, "DEL %s", key);
+                redisReply* del_r = redis_command_locked("DEL %s", key);
                 if (del_r) freeReplyObject(del_r);
                 expired_count++;
             }
@@ -327,7 +429,7 @@ int session_store(uint32_t player_id, const char* session_key) {
     
     // Use HMSET format with binary-safe key storage (exactly 32 bytes)
     // Format the session_key as a binary-safe string by using %b with explicit length
-    redisReply *reply = redisCommand(g_redis, 
+    redisReply *reply = redis_command_locked(
         "HMSET %s session_key %b created_at %ld expires_at %ld",
         key, key_buffer, (size_t)32, now, expires_at);
     
@@ -343,7 +445,7 @@ int session_store(uint32_t player_id, const char* session_key) {
     freeReplyObject(reply);
     
     // Set expiry on the hash
-    reply = redisCommand(g_redis, "EXPIRE %s %d", key, SESSION_EXPIRY_SECONDS);
+    reply = redis_command_locked("EXPIRE %s %d", key, SESSION_EXPIRY_SECONDS);
     if (reply) freeReplyObject(reply);
     
     pthread_mutex_unlock(&g_redis_lock);
@@ -362,7 +464,7 @@ void session_mark_active(uint32_t player_id) {
     snprintf(key, sizeof(key), "session:%u:active", player_id);
     
     pthread_mutex_lock(&g_redis_lock);
-    redisReply *reply = redisCommand(g_redis, "SETEX %s %d 1", 
+    redisReply *reply = redis_command_locked("SETEX %s %d 1", 
                                      key, SESSION_EXPIRY_SECONDS);
     
     if (reply) freeReplyObject(reply);
@@ -381,7 +483,7 @@ void session_remove(uint32_t player_id) {
     snprintf(active_key, sizeof(active_key), "session:%u:active", player_id);
     
     pthread_mutex_lock(&g_redis_lock);
-    redisReply *reply = redisCommand(g_redis, "DEL %s %s", session_key, active_key);
+    redisReply *reply = redis_command_locked("DEL %s %s", session_key, active_key);
     
     if (reply) freeReplyObject(reply);
     pthread_mutex_unlock(&g_redis_lock);
@@ -397,7 +499,7 @@ void session_refresh(uint32_t player_id) {
     snprintf(key, sizeof(key), "session:%u", player_id);
     
     pthread_mutex_lock(&g_redis_lock);
-    redisReply *reply = redisCommand(g_redis, "EXPIRE %s %d", key, SESSION_EXPIRY_SECONDS);
+    redisReply *reply = redis_command_locked("EXPIRE %s %d", key, SESSION_EXPIRY_SECONDS);
     if (reply) freeReplyObject(reply);
     pthread_mutex_unlock(&g_redis_lock);
 }
@@ -447,7 +549,7 @@ int store_game_ticket_in_redis(const char* key, const char* value, int expiry_se
     if (!g_redis) return 0;
     
     pthread_mutex_lock(&g_redis_lock);
-    redisReply* reply = redisCommand(g_redis, "SETEX %s %d %s", 
+    redisReply* reply = redis_command_locked("SETEX %s %d %s", 
                                      key, expiry_seconds, value);
     if (!reply) {
         pthread_mutex_unlock(&g_redis_lock);
@@ -476,7 +578,7 @@ int auth_token_store(const char* token, uint32_t player_id) {
     snprintf(value, sizeof(value), "%u", player_id);
 
     pthread_mutex_lock(&g_redis_lock);
-    redisReply* reply = redisCommand(g_redis, "SETEX %s 60 %s", key, value);
+    redisReply* reply = redis_command_locked("SETEX %s 60 %s", key, value);
     int ok = (reply && reply->type == REDIS_REPLY_STATUS &&
               strcmp(reply->str, "OK") == 0);
     if (reply) freeReplyObject(reply);
@@ -503,7 +605,7 @@ uint32_t auth_token_consume(const char* token) {
     static const char consume_script[] =
         "local v=redis.call('GET',KEYS[1]); "
         "if v then redis.call('DEL',KEYS[1]) end; return v";
-    redisReply* reply = redisCommand(g_redis, "EVAL %b 1 %s",
+    redisReply* reply = redis_command_locked("EVAL %b 1 %s",
                                      consume_script, strlen(consume_script), key);
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         if (reply) freeReplyObject(reply);
@@ -533,7 +635,19 @@ int validate_game_ticket(const char* ticket, uint32_t* out_account_id, uint32_t*
     snprintf(ticket_key, sizeof(ticket_key), "ticket:%s", ticket);
     
     pthread_mutex_lock(&g_redis_lock);
-    redisReply* reply = redisCommand(g_redis, "GET %s", ticket_key);
+
+    /* Fetch and delete in one server-side step, the same way auth_token_consume does.
+     * A separate GET then DEL leaves a window in which two connections replaying the
+     * same ticket both read it before either deletes; because session_registry_add
+     * kicks the older session, the replayer would win and boot the real player. Only
+     * the caller whose script actually removed the key gets a value back.
+     *
+     * EVAL rather than GETDEL so this does not require Redis 6.2. */
+    static const char consume_script[] =
+        "local v=redis.call('GET',KEYS[1]); "
+        "if v then redis.call('DEL',KEYS[1]) end; return v";
+    redisReply* reply = redis_command_locked("EVAL %b 1 %s",
+                                     consume_script, strlen(consume_script), ticket_key);
     
     if (!reply || reply->type != REDIS_REPLY_STRING) {
         if (reply) freeReplyObject(reply);
@@ -551,10 +665,6 @@ int validate_game_ticket(const char* ticket, uint32_t* out_account_id, uint32_t*
     }
     
     freeReplyObject(reply);
-    
-    // Delete the ticket (single-use)
-    reply = redisCommand(g_redis, "DEL %s", ticket_key);
-    if (reply) freeReplyObject(reply);
     
     pthread_mutex_unlock(&g_redis_lock);
     

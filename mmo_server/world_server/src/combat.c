@@ -12,6 +12,7 @@
 #include "loot.h"
 #include "quest_system.h"
 #include "projectile.h"
+#include "world_regions.h"
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
@@ -342,6 +343,45 @@ void combat_npc_remove(NPCWorld* world, uint32_t npc_id) {
 static PendingCast g_pending_casts[MAX_PLAYERS];
 static pthread_mutex_t g_pending_casts_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/**
+ * Report whether a slot is free to start a new cast for a character.
+ *
+ * A cast left behind by a previous occupant of the slot does not block the current
+ * one; it is stale and will be overwritten. Only the caller's own in-flight cast
+ * counts as busy.
+ *
+ * @return 1 when a new cast may be started, or 0 when one is already in flight.
+ */
+static int pending_cast_slot_is_free(int slot, uint32_t character_id) {
+    pthread_mutex_lock(&g_pending_casts_lock);
+    int busy = (g_pending_casts[slot].is_active &&
+                g_pending_casts[slot].character_id == character_id);
+    pthread_mutex_unlock(&g_pending_casts_lock);
+    return !busy;
+}
+
+/**
+ * Publish a fully resolved cast into a slot.
+ *
+ * The whole record is written under the lock, so a drain never observes a half-filled
+ * cast. The busy check is repeated here because target resolution runs unlocked.
+ *
+ * @return 1 when the cast was stored, or 0 when another cast won the slot first.
+ */
+static int pending_cast_commit(int slot, uint32_t character_id, const PendingCast* src) {
+    pthread_mutex_lock(&g_pending_casts_lock);
+    if (g_pending_casts[slot].is_active &&
+        g_pending_casts[slot].character_id == character_id) {
+        pthread_mutex_unlock(&g_pending_casts_lock);
+        return 0;
+    }
+    g_pending_casts[slot] = *src;
+    g_pending_casts[slot].character_id = character_id;
+    g_pending_casts[slot].is_active    = 1;
+    pthread_mutex_unlock(&g_pending_casts_lock);
+    return 1;
+}
+
 static int combat_find_player_slot(uint32_t character_id) {
     return player_slot_of(character_id);
 }
@@ -420,19 +460,6 @@ void combat_handle_attack_intent(NPCWorld* world,
         return;
     }
 
-    pthread_mutex_lock(&g_pending_casts_lock);
-    if (g_pending_casts[player_slot].is_active) {
-        pthread_mutex_unlock(&g_pending_casts_lock);
-        player_release(attacker);
-
-        AttackResultPacket result = {0};
-        result.header.type       = PACKET_ATTACK_RESULT;
-        result.header.player_id  = htonl(attacker_id);
-        result.result_code       = ATTACK_RESULT_ALREADY_CASTING;
-        server_send(client_fd, &result, sizeof(result));
-        return;
-    }
-
     /* Nothing clamps to a fixed race count: an unknown race resolves to the fallback
      * profile rather than being silently rewritten as race 1. */
     const RaceAttackProfile* profile = combat_profile_for_race(attacker->race_id);
@@ -445,7 +472,22 @@ void combat_handle_attack_intent(NPCWorld* world,
     // Mark combat timestamp for HP regen suppression
     attacker->last_combat_time = now;
 
+    /* Release the slot before touching g_pending_casts_lock. This is a lock-order
+     * rule, not a tidiness one: combat_tick holds no slot lock while it drains the
+     * pending casts, and this path must hold no slot lock while it takes the pending
+     * lock. Taking them in opposite orders froze the gameplay thread against an
+     * epoll loop for good. */
     player_release(attacker);
+    attacker = NULL;
+
+    if (!pending_cast_slot_is_free(player_slot, attacker_id)) {
+        AttackResultPacket result = {0};
+        result.header.type       = PACKET_ATTACK_RESULT;
+        result.header.player_id  = htonl(attacker_id);
+        result.result_code       = ATTACK_RESULT_ALREADY_CASTING;
+        server_send(client_fd, &result, sizeof(result));
+        return;
+    }
 
     // resolve targets
     uint32_t hit_targets[MAX_CAST_TARGETS];
@@ -539,8 +581,6 @@ void combat_handle_attack_intent(NPCWorld* world,
     pthread_mutex_unlock(&world->lock);
 
     if (hit_count == 0) {
-        pthread_mutex_unlock(&g_pending_casts_lock);
-
         AttackResultPacket result = {0};
         result.header.type       = PACKET_ATTACK_RESULT;
         result.header.player_id  = htonl(attacker_id);
@@ -549,8 +589,9 @@ void combat_handle_attack_intent(NPCWorld* world,
         return;
     }
 
-    PendingCast* cast = &g_pending_casts[player_slot];
-    cast->is_active        = 1;
+    PendingCast staged;
+    memset(&staged, 0, sizeof(staged));
+    PendingCast* cast = &staged;
     cast->cast_start_time  = now;
     cast->cast_duration    = profile->cast_time;
     cast->attack_type      = profile->attack_type;
@@ -571,7 +612,14 @@ void combat_handle_attack_intent(NPCWorld* world,
     cast->damage_stat            = profile->damage_stat;
     cast->projectile_damage_type = profile->projectile_damage_type;
 
-    pthread_mutex_unlock(&g_pending_casts_lock);
+    if (!pending_cast_commit(player_slot, attacker_id, &staged)) {
+        AttackResultPacket result = {0};
+        result.header.type       = PACKET_ATTACK_RESULT;
+        result.header.player_id  = htonl(attacker_id);
+        result.result_code       = ATTACK_RESULT_ALREADY_CASTING;
+        server_send(client_fd, &result, sizeof(result));
+        return;
+    }
 
     CastStartV2Packet cast_pkt;
     memset(&cast_pkt, 0, sizeof(cast_pkt));
@@ -603,7 +651,10 @@ void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
     if (slot < 0) return;
 
     pthread_mutex_lock(&g_pending_casts_lock);
-    if (g_pending_casts[slot].is_active) {
+    /* Only cancel a cast this character actually owns. A slot recycled from a
+     * disconnected player can still hold their cast. */
+    if (g_pending_casts[slot].is_active &&
+        g_pending_casts[slot].character_id == attacker_id) {
         g_pending_casts[slot].is_active = 0;
 
         CastCancelPacket cancel;
@@ -627,36 +678,60 @@ void combat_tick(NPCWorld* world) {
     extern ActivePlayer active_players[];
     double now = combat_get_time();
 
-    // resolve pending basic attacks
+    /* Drain every expired cast under g_pending_casts_lock, then release it before
+     * resolving any of them.
+     *
+     * Resolution acquires player slot locks, world->lock, and reaches into
+     * party_award_xp, loot_roll, and quest_on_npc_kill (which does file I/O). Holding
+     * the pending lock across all of that both serialised every attack packet in the
+     * world behind this loop and deadlocked against combat_handle_attack_intent, which
+     * takes the same two locks in the opposite order.
+     *
+     * Owned by the single gameplay thread that calls combat_tick, like the tick
+     * snapshot in combat_update_thread, so it is static rather than 90 KB of stack. */
+    static PendingCast expired[MAX_PLAYERS];
+    static int         expired_slot[MAX_PLAYERS];
+    int expired_count = 0;
+
     pthread_mutex_lock(&g_pending_casts_lock);
-
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        PendingCast* cast = &g_pending_casts[i];
-        if (!cast->is_active) continue;
+        PendingCast* pending = &g_pending_casts[i];
+        if (!pending->is_active) continue;
+        if (now - pending->cast_start_time < pending->cast_duration) continue;
 
-        double elapsed = now - cast->cast_start_time;
-        if (elapsed < cast->cast_duration) continue;
+        pending->is_active = 0;
+        expired[expired_count]      = *pending;
+        expired_slot[expired_count] = i;
+        expired_count++;
+    }
+    pthread_mutex_unlock(&g_pending_casts_lock);
 
-        cast->is_active = 0;
-        uint32_t attacker_id = active_players[i].character_id;
-        int      client_fd   = active_players[i].client_fd;
+    for (int e = 0; e < expired_count; e++) {
+        const PendingCast* cast = &expired[e];
+        uint32_t attacker_id    = cast->character_id;
 
-        // Snapshot attacker stats for damage calc
-        pthread_mutex_lock(&active_players[i].lock);
-        active_players[i].last_attack_time = now;
-        active_players[i].attack_cooldown  = cast->cooldown;
-        active_players[i].last_combat_time = now;
+        /* Confirm the caster is still the one in this slot. A player who logged out
+         * mid-cast leaves the cast behind; without this check it would resolve as
+         * whoever took the slot next, crediting them with the damage, XP, loot, and
+         * quest kill. Reading client_fd here also happens under the slot lock, where
+         * every other reader in the codebase takes it. */
+        ActivePlayer* attacker = player_acquire_slot(expired_slot[e], attacker_id);
+        if (!attacker) continue;
+
+        int client_fd = attacker->client_fd;
+
+        attacker->last_attack_time = now;
+        attacker->attack_cooldown  = cast->cooldown;
+        attacker->last_combat_time = now;
 
         int a_stats[STAT_COUNT];
-        memcpy(a_stats, active_players[i].stats, sizeof(a_stats));
-        int a_wpn = active_players[i].weapon_damage;
+        memcpy(a_stats, attacker->stats, sizeof(a_stats));
+        int a_wpn = attacker->weapon_damage;
 
         DamageModifiers a_mods;
-        player_collect_modifiers(&active_players[i], 0, &a_mods);
-        float a_form_power = player_form_power(&active_players[i]);
-        uint32_t a_race = active_players[i].race_id;
-        pthread_mutex_unlock(&active_players[i].lock);
-        (void)a_race;
+        player_collect_modifiers(attacker, 0, &a_mods);
+        float a_form_power = player_form_power(attacker);
+        player_release(attacker);
 
         float origin_x      = cast->origin_x;
         float origin_y      = cast->origin_y;
@@ -707,7 +782,6 @@ void combat_tick(NPCWorld* world) {
             uint8_t  is_kill;
             uint8_t  is_crit;
             uint64_t xp_reward;
-            uint32_t gold_reward;
             uint16_t npc_type_id;   // For loot roll on kill
             float    npc_x, npc_y;  // NPC position for loot drop
         } HitResult;
@@ -757,7 +831,6 @@ void combat_tick(NPCWorld* world) {
                     hits[hit_count].is_kill     = is_kill;
                     hits[hit_count].is_crit     = is_crit;
                     hits[hit_count].xp_reward   = (is_kill && best->xp_reward > 0) ? best->xp_reward : 0;
-                    hits[hit_count].gold_reward = is_kill ? best->gold_reward : 0;
                     hits[hit_count].npc_type_id = best->npc_type_id;
                     hits[hit_count].npc_x       = best->pos_x;
                     hits[hit_count].npc_y       = best->pos_y;
@@ -785,13 +858,11 @@ void combat_tick(NPCWorld* world) {
                     if (hits[h].xp_reward > 0) {
                         party_award_xp(attacker_id, hits[h].xp_reward);
                     }
-                    if (hits[h].gold_reward > 0 || hits[h].xp_reward > 0) {
+                    if (hits[h].xp_reward > 0) {
                         ActivePlayer* killer = player_acquire(attacker_id);
                         if (killer) {
-                            if (hits[h].gold_reward > 0)
-                                player_award_gold_locked(killer, hits[h].gold_reward);
                             player_send_kill_reward_locked(client_fd, killer,
-                                (uint32_t)hits[h].xp_reward, hits[h].gold_reward);
+                                                           (uint32_t)hits[h].xp_reward);
                             player_release(killer);
                         }
                     }
@@ -880,7 +951,6 @@ void combat_tick(NPCWorld* world) {
             hits[hit_count].is_kill     = is_kill;
             hits[hit_count].is_crit     = is_crit;
             hits[hit_count].xp_reward   = (is_kill && npc->xp_reward > 0) ? npc->xp_reward : 0;
-            hits[hit_count].gold_reward = is_kill ? npc->gold_reward : 0;
             hits[hit_count].npc_type_id = npc->npc_type_id;
             hits[hit_count].npc_x       = npc->pos_x;
             hits[hit_count].npc_y       = npc->pos_y;
@@ -908,13 +978,11 @@ void combat_tick(NPCWorld* world) {
                 if (hits[h].xp_reward > 0) {
                     party_award_xp(attacker_id, hits[h].xp_reward);
                 }
-                if (hits[h].gold_reward > 0 || hits[h].xp_reward > 0) {
+                if (hits[h].xp_reward > 0) {
                     ActivePlayer* killer = player_acquire(attacker_id);
                     if (killer) {
-                        if (hits[h].gold_reward > 0)
-                            player_award_gold_locked(killer, hits[h].gold_reward);
                         player_send_kill_reward_locked(client_fd, killer,
-                            (uint32_t)hits[h].xp_reward, hits[h].gold_reward);
+                                                       (uint32_t)hits[h].xp_reward);
                         player_release(killer);
                     }
                 }
@@ -922,8 +990,6 @@ void combat_tick(NPCWorld* world) {
             }
         }
     }
-
-    pthread_mutex_unlock(&g_pending_casts_lock);
 
     // regenerate out-of-combat health
     {
@@ -1020,10 +1086,11 @@ void combat_tick(NPCWorld* world) {
     // respawn players after the configured local delay
     {
         #define RESPAWN_DELAY 3.0
-        #define RESPAWN_X 608.0f
-        #define RESPAWN_Y 608.0f
 
         #define MAX_RESPAWN_EVENTS 16
+        /* The world bible sends a dead player to their house, or to the nearest
+         * known city when they have none. Housing does not exist yet, so every
+         * respawn resolves to the nearest capital from where the player died. */
         typedef struct {
             uint32_t player_id;
             int      client_fd;
@@ -1031,6 +1098,8 @@ void combat_tick(NPCWorld* world) {
             int32_t  max_health;
             int32_t  mana;
             int32_t  max_mana;
+            float    pos_x;
+            float    pos_y;
         } RespawnEvent;
 
         RespawnEvent respawns[MAX_RESPAWN_EVENTS];
@@ -1054,8 +1123,14 @@ void combat_tick(NPCWorld* world) {
                 active_players[i].resource =
                     (active_players[i].resource_type == RESOURCE_RAGE)
                         ? 0 : active_players[i].max_resource;
-                active_players[i].pos_x = RESPAWN_X;
-                active_players[i].pos_y = RESPAWN_Y;
+                const WorldCity* home =
+                    world_nearest_city_px(active_players[i].pos_x,
+                                          active_players[i].pos_y);
+                float respawn_x = 0.0f, respawn_y = 0.0f;
+                world_city_center_px(home, &respawn_x, &respawn_y);
+
+                active_players[i].pos_x = respawn_x;
+                active_players[i].pos_y = respawn_y;
                 active_players[i].is_dirty = 1;
 
                 if (respawn_count < MAX_RESPAWN_EVENTS) {
@@ -1065,10 +1140,14 @@ void combat_tick(NPCWorld* world) {
                     respawns[respawn_count].max_health   = active_players[i].max_health;
                     respawns[respawn_count].mana        = active_players[i].resource;
                     respawns[respawn_count].max_mana     = active_players[i].max_resource;
+                    respawns[respawn_count].pos_x        = respawn_x;
+                    respawns[respawn_count].pos_y        = respawn_y;
                     respawn_count++;
                 }
 
-                LOG_DEBUG("[COMBAT] Player %u respawned at (%.0f, %.0f)", active_players[i].character_id, RESPAWN_X, RESPAWN_Y);
+                LOG_DEBUG("[COMBAT] Player %u respawned in %s at (%.0f, %.0f)",
+                          active_players[i].character_id, home->city_name,
+                          respawn_x, respawn_y);
             }
 
             pthread_mutex_unlock(&active_players[i].lock);
@@ -1081,8 +1160,8 @@ void combat_tick(NPCWorld* world) {
             pkt.header.player_id    = htonl(respawns[r].player_id);
             pkt.header.payload_size = htons(sizeof(PlayerRespawnPacket) - sizeof(PacketHeader));
             pkt.player_id = htonl(respawns[r].player_id);
-            pkt.pos_x = RESPAWN_X;
-            pkt.pos_y = RESPAWN_Y;
+            pkt.pos_x = respawns[r].pos_x;
+            pkt.pos_y = respawns[r].pos_y;
             pkt.health = htonl((uint32_t)respawns[r].health);
             pkt.max_health = htonl((uint32_t)respawns[r].max_health);
             pkt.mana = htonl((uint32_t)respawns[r].mana);

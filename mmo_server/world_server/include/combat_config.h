@@ -61,7 +61,9 @@ typedef struct {
      * attack that reaches an NPC always connects. */
     int         armor;
     uint32_t    xp_reward;         // XP granted to killer
-    uint32_t    gold_reward;       // Gold granted to killer
+
+    /* No coin reward: enemies drop items, which the killer sells to a
+     * kingdom's NPCs for that kingdom's currency. See loot.h. */
 
     uint8_t     is_alive;          // 0 = dead, 1 = alive
     uint8_t     category;          // NPCCategory — passive/hostile/quest
@@ -112,6 +114,14 @@ typedef struct {
 /** Snapshot an in-flight basic attack between intent and resolution. */
 typedef struct {
     uint8_t     is_active;          // 1 if this attacker has a pending cast
+    /** Identify the character that started this cast.
+     *
+     * The array is indexed by player slot, and slots are recycled on logout. Without
+     * an owner the cast of a player who disconnects mid-cast would resolve as whoever
+     * next occupies the slot, handing them the damage credit, XP, loot, and quest kill.
+     * Every reader must confirm this matches the character now in the slot.
+     */
+    uint32_t    character_id;
     double      cast_start_time;    // Epoch seconds when cast began
     float       cast_duration;      // How long it takes (from the race's profile)
     uint8_t     attack_type;        // Which shape to resolve at completion
