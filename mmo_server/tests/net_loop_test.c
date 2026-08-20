@@ -103,8 +103,6 @@ uint32_t character_get_owner(uint32_t c) { (void)c; return 1000; }
 int  session_registry_add(int fd, uint32_t a, uint32_t c) { (void)fd;(void)a;(void)c; return 0; }
 /** Stub session removal. */
 void session_registry_remove(int fd) { (void)fd; }
-/** Stub session activity updates. */
-void session_update_activity(int fd) { (void)fd; }
 
 /** Stub successful active-player insertion. */
 int  player_add_active(uint32_t c, int fd, int* out_slot) {

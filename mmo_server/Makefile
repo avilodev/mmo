@@ -271,8 +271,12 @@ TEST_CFLAGS_BASE = $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$
 TEST_CFLAGS = -Wall -Wextra -g -pthread $(TEST_CFLAGS_BASE)
 
 .PHONY: test
-test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
-      $(TEST_BIN)/stats_test $(TEST_BIN)/passive_gating_test $(TEST_BIN)/cooldown_test $(TEST_BIN)/ability_data_test
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/session_registry_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
+      $(TEST_BIN)/stats_test $(TEST_BIN)/passive_gating_test $(TEST_BIN)/cooldown_test $(TEST_BIN)/ability_data_test \
+      $(TEST_BIN)/world_regions_test
+	@echo "=== Running world regions test ==="
+	@./$(TEST_BIN)/world_regions_test
+	@echo ""
 	@echo "=== Running JSON parser test ==="
 	@./$(TEST_BIN)/json_util_test
 	@echo ""
@@ -321,6 +325,9 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo "=== Running player index test ==="
 	@./$(TEST_BIN)/player_index_test
 	@echo ""
+	@echo "=== Running session registry test ==="
+	@./$(TEST_BIN)/session_registry_test
+	@echo ""
 	@echo "=== Running tick snapshot test ==="
 	@./$(TEST_BIN)/tick_snapshot_test
 	@echo ""
@@ -368,6 +375,25 @@ player-index-sanitize:
 	  -o $(TEST_BIN)/player_index_asan tests/player_index_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
 	@setarch `uname -m` -R ./$(TEST_BIN)/player_index_asan > /tmp/player_index_asan.log 2>&1 && echo "  clean" || \
 	  { tail -40 /tmp/player_index_asan.log; exit 1; }
+
+# The session registry is written by every login and read by lookups on other
+# threads. Run this when touching session_registry.c. Same ASLR caveat as above.
+.PHONY: session-registry-sanitize
+session-registry-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (concurrent logins vs. identifier lookups) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/session_registry_tsan tests/session_registry_test.c $(WORLD_DIR)/src/session_registry.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/session_registry_tsan > /tmp/session_registry_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/session_registry_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/session_registry_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan (index probing and bounds) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/session_registry_asan tests/session_registry_test.c $(WORLD_DIR)/src/session_registry.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/session_registry_asan > /tmp/session_registry_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR: |runtime error|leak' /tmp/session_registry_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
 
 .PHONY: net-loop-sanitize
 net-loop-sanitize:
@@ -422,6 +448,10 @@ $(TEST_BIN)/progression_test: tests/progression_test.c $(COMMON_DIR)/src/progres
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
+$(TEST_BIN)/world_regions_test: tests/world_regions_test.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
 # Covers the percentage-stacking rule all mitigation runs through: additive
 # stacking, order independence across every permutation, and the immunity clamp.
 $(TEST_BIN)/damage_stacking_test: tests/damage_stacking_test.c $(COMMON_DIR)/src/damage_model.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
@@ -472,6 +502,12 @@ $(TEST_BIN)/tick_snapshot_test: tests/tick_snapshot_test.c $(WORLD_DIR)/src/tick
 # Covers the character_id -> slot index: correctness, the ABA guard on a
 # recycled slot, and that lookup cost stays flat as the table fills.
 $(TEST_BIN)/player_index_test: tests/player_index_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -O2 -o $@ $^
+
+# Covers the descriptor-indexed session table: the three lookup routes, the
+# stale-login kick, and index churn hard enough to force a rebuild.
+$(TEST_BIN)/session_registry_test: tests/session_registry_test.c $(WORLD_DIR)/src/session_registry.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -O2 -o $@ $^
 

@@ -470,7 +470,10 @@ static int dispatch_packets(Connection* conn) {
 
         if (remaining < (ssize_t)packet_size) break;   // incomplete, carry over
 
-        session_update_activity(conn->fd);
+        /* No session bookkeeping here. conn->last_recv, already stored atomically by
+         * every read, is what drives the idle timeout below; the registry write this
+         * used to make took a process-wide exclusive lock and scanned 10,000 entries
+         * per packet to refresh a field nothing read. */
         int result = process_packet(conn->fd, conn->character_id, conn->player_slot,
                                     (ssize_t)packet_size, ptr);
 

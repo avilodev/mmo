@@ -1034,6 +1034,7 @@ int main(int argc, char** argv) {
     world_collision_shutdown();
     zone_system_cleanup();
     connection_io_shutdown();
+    session_registry_shutdown();
     session_close();
 
     printf("World Server stopped\n");
