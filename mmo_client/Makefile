@@ -468,14 +468,15 @@ NET_TEST_CFLAGS = -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE 
 $(TEST_BIN):
 	mkdir -p $(TEST_BIN)
 
-# The launcher's pin parsing is deliberately free of OpenSSL and Windows, so it
-# builds and runs on the host like any other test. Listed before the pattern
-# rule below, which would otherwise link it against the world generator.
+# The pin parsing is deliberately free of OpenSSL and Windows, so it builds and
+# runs on the host like any other test. It lives in common/ because the launcher
+# and the game both pin a server now. Listed before the pattern rule below,
+# which would otherwise link these against the world generator.
 $(TEST_BIN)/cert_pin_digest_test: $(TEST_DIR)/cert_pin_digest_test.c $(COMMON_DIR)/cert_pin.c $(COMMON_DIR)/cert_spki.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) $(OPENSSL_CFLAGS) -o $@ $^ $(OPENSSL_LDFLAGS) -lm
 
 $(TEST_BIN)/cert_pin_test: $(TEST_DIR)/cert_pin_test.c $(COMMON_DIR)/cert_pin.c | $(TEST_BIN)
-	$(CC) -Wall -Wextra -std=c11 -g -I$(LAUNCHER_INCLUDE_DIR) -o $@ $^
+	$(CC) -Wall -Wextra -std=c11 -g -I$(COMMON_DIR) -o $@ $^
 
 # Listed before the pattern rule below, which would otherwise link the packet
 # dispatchers against the world generator.
