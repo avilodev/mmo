@@ -1,0 +1,81 @@
+{
+  "id": 11,
+  "name": "Gate Sentry",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "South gate. Nobody through without a name, and nobody back in after dark\nwithout a better one.\n\nState your business.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I was sent. I am to be written down.",
+          "next_page": 1,
+          "fail_page": 2,
+          "action": "quest_turnin",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "Nothing yet.",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "Passing through.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "[She writes, without hurrying, and turns the book around so you can see it.]\n\nThere. You exist now, officially, which is more than most things that come out\nof that rift manage.\n\nEnnara is open to you. Market north, guild east of the ring road, harbour past\nthat. Whatever your one told you to go and do -- go and do it. I only keep the\nlist.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Thank you.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Then you are not going through my gate yet.\n\nWarden is in the middle of the courtyard. Start there, like everybody does.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Right.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "You are on the list. Go where you like.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

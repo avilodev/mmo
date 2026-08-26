@@ -4,6 +4,7 @@
  */
 
 #include "types.h"
+#include "log.h"
 #include "player_level.h"
 #include "class_stats.h"
 #include "player_effects.h"
@@ -76,9 +77,9 @@ void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
     player->health = player->max_health;
     player->resource = (player->resource_type == RESOURCE_RAGE) ? 0 : player->max_resource;
 
-    printf("[LEVEL] Player %u (%s) leveled up: %d -> %d (HP=%d, resource=%d)\n",
-           player->character_id, player->username,
-           old_level, new_level, player->max_health, player->max_resource);
+    LOG_INFO("[LEVEL] Player %u (%s) leveled up: %d -> %d (HP=%d, resource=%d)",
+             player->character_id, player->username,
+             old_level, new_level, player->max_health, player->max_resource);
 
     /* Both forms' bars are rebuilt: a level can unlock an ability in either. */
     ability_refresh_hotbars(player);

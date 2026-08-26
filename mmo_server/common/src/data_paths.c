@@ -4,6 +4,7 @@
  */
 
 #include "data_paths.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +45,7 @@ int data_path_resolve(char* out, size_t out_size, const char* relative) {
     size_t dir_len = strlen(dir);
     size_t rel_len = strlen(relative);
     if (dir_len + rel_len + 1 > out_size) {
-        fprintf(stderr, "Runtime data path is too long: %s%s\n", dir, relative);
+        LOG_ERROR("Runtime data path is too long: %s%s", dir, relative);
         out[0] = '\0';
         return 0;
     }

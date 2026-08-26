@@ -1,69 +1,86 @@
 #ifndef QUEST_SYSTEM_H
 #define QUEST_SYSTEM_H
 
+/** @file Decide who may take a quest, grant it, advance it, and hand it in.
+ *
+ * The quest feature is three files, split by what changes them:
+ *
+ *   quest_registry.h  what a quest *is*, authored in quests.json
+ *   quest_storage.h   what one character has done with quests, and its file
+ *   quest_system.h    the rules connecting the two, and the packets
+ *
+ * Including this header pulls in the other two, so a caller that just wants
+ * "the quest system" still gets one include.
+ *
+ * An objective knows what advances it (QuestObjectiveType) and what it points
+ * at, and that travels to the client so the quest log can mark the target NPC
+ * overhead and on the map. Where the target *is* is answered from the live
+ * world at send time rather than copied into the quest file, so moving a spawn
+ * moves its marker.
+ */
+
+#include "quest_registry.h"
+#include "quest_storage.h"
+#include "server_types.h"   /* ActivePlayer */
+#include "protocol.h"
+
 #include <stdint.h>
+#include <time.h>
 
-/** Bound loaded quests, per-player records, objectives, and item rewards. */
-#define MAX_QUESTS          256
-#define MAX_PLAYER_QUESTS   32
+/** Name the on-disk record for one in-progress quest.
+ *
+ * Deliberately identical to PlayerQuestSlot: the save path writes slots
+ * straight out, and this alias is what says that the file format and the
+ * in-memory shape are the same thing on purpose.
+ */
+typedef struct PlayerQuestSlot PlayerQuestEntry;
 
-#define MAX_QUEST_OBJECTIVES 4
+/** Report whether a character may take a quest right now.
+ *
+ * Checks race, level, prerequisites, and that the quest is neither already in
+ * progress nor already finished. This is the single definition of "eligible";
+ * quest_player_accept() and the dialogue condition both call it.
+ *
+ * @param p  A locked character.
+ * @return   1 when the quest may be granted, or 0 otherwise.
+ */
+int quest_is_available_for(const QuestDef* q, const ActivePlayer* p);
 
-/** Identify objective progress sources. */
-#define QUEST_OBJ_KILL    0
-#define QUEST_OBJ_COLLECT 1
-#define QUEST_OBJ_TALK    2
+/** Report whether a character may take a quest at a given instant.
+ *
+ * What quest_is_available_for() calls with the current time. Split out so a
+ * daily's reset can be tested without waiting a day for it, and so the whole
+ * eligibility rule stays a pure function of the character and the clock.
+ */
+int quest_is_available_at(const QuestDef* q, const ActivePlayer* p, time_t now);
 
-/** Define one objective's event type, target, description, and required count. */
-typedef struct {
-    uint8_t  type;              // QUEST_OBJ_KILL / QUEST_OBJ_COLLECT
-    uint32_t target_id;         // npc_type_id (kill) or item_id (collect)
-    char     description[64];   // e.g. "Kill 5 Wolves"
-    int32_t  required_count;
-} QuestObjectiveDef;
-
-/** Define one item stack granted as a quest reward. */
-typedef struct {
-    uint32_t item_id;
-    uint8_t  quantity;
-} QuestItemReward;
-
-/** Aggregate objectives and completion rewards for one quest. */
-typedef struct {
-    uint32_t          quest_id;
-    char              title[48];
-    uint8_t           obj_count;
-    QuestObjectiveDef objectives[MAX_QUEST_OBJECTIVES];
-    uint32_t          xp_reward;
-    /** Coin paid on completion, and which kingdom mints it. */
-    uint32_t          currency_reward;
-    uint8_t           currency_id;
-    uint8_t           item_reward_count;
-    QuestItemReward   item_rewards[MAX_QUEST_OBJECTIVES];
-} QuestDef;
-
-/** Mirror ActivePlayer.PlayerQuestSlot for persistence and packet handling. */
-typedef struct {
-    uint32_t quest_id;
-    uint8_t  is_active;
-    uint8_t  is_complete;
-    uint8_t  _pad[2];
-    int32_t  progress[4];   // MAX_QUEST_OBJECTIVES
-} PlayerQuestEntry;
-
-// load quest definitions from JSON
-int  quest_system_init(const char* json_path);
-void quest_system_cleanup(void);
-void quest_system_set_dir(const char* dir);
-
-// return a registry-owned definition or NULL when absent
-const QuestDef* quest_get(uint32_t quest_id);
-
-// return nonzero after accepting and notifying the player
+/** Grant a quest to a character and send its initial state.
+ *
+ * @return Nonzero when accepted, or 0 when unknown, duplicated, gated out, or
+ *         out of memory. There is no cap on how many quests a character may
+ *         hold at once, so a full log is not among the reasons this can fail.
+ */
 int quest_player_accept(uint32_t character_id, int client_fd, uint32_t quest_id);
 
-// return nonzero after successful completed-quest turn-in
+/** Hand in a completed quest and grant its rewards.
+ *
+ * @return Nonzero on a successful turn-in, or 0 when absent, inactive, or unfinished.
+ */
 int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id);
+
+/** Give up an active quest, freeing its slot and its progress.
+ *
+ * The only quest action a client starts. The named quest must actually be in
+ * this character's own log -- the packet is never trusted to say whose quest it
+ * is, and an abandon that does not find it changes nothing and sends nothing.
+ *
+ * Nothing is recorded as completed. An abandoned quest was never finished, and
+ * an identifier in the completion history is permanent, so writing one here
+ * would take the quest away for the rest of the character's life.
+ *
+ * @return 1 when the quest was held and is now gone, or 0 otherwise.
+ */
+int quest_player_abandon(uint32_t character_id, int client_fd, uint32_t quest_id);
 
 void quest_on_npc_kill(uint32_t character_id, int client_fd, uint16_t npc_type_id);
 
@@ -71,10 +88,7 @@ void quest_on_item_collect(uint32_t character_id, int client_fd, uint32_t item_i
 
 void quest_on_npc_talk(uint32_t character_id, int client_fd, uint16_t npc_type_id);
 
-// persist and restore per-character quest state from files
-int quest_player_save(uint32_t character_id, const PlayerQuestEntry* quests, int count);
-int  quest_player_load(uint32_t character_id, PlayerQuestEntry* quests, int max_count);
-
+/** Resend every active quest and its progress, as after entering the world. */
 void quest_send_all(uint32_t character_id, int client_fd);
 
 #endif // QUEST_SYSTEM_H

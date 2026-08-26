@@ -90,4 +90,19 @@ uint16_t packet_limiter_retry_after_ms(int fd, uint8_t packet_type);
 PacketLimitClass packet_limiter_class_of(uint8_t packet_type);
 const char*      packet_limiter_class_name(PacketLimitClass cls);
 
+/** Read what the limiter has done since startup. Any pointer may be NULL.
+ *
+ * The limiter's only output used to be a rate-limited log line, so "how much
+ * traffic is this service refusing" was a question nothing outside the process
+ * could answer -- and the rate limiting on the line meant the log did not
+ * carry the count either. These are monotonic totals for /metrics and for the
+ * world's periodic [STATS] line.
+ */
+void packet_limiter_totals(unsigned long long* allowed,
+                           unsigned long long* dropped,
+                           unsigned long long* kicked);
+
+/** Reset the running totals. For tests, which need a known starting point. */
+void packet_limiter_reset_totals(void);
+
 #endif // PACKET_LIMITER_H

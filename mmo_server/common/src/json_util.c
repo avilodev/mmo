@@ -405,6 +405,41 @@ const JsonValue* json_get(const JsonValue* value, const char* key) {
 }
 
 /** Count an array's elements, or zero when `value` is not an array. */
+/**
+ * Count the `{...}` elements left unconsumed in the tail of a JSON array.
+ *
+ * Deliberately independent of the document parser above: the callers are the
+ * substring loaders that never built a tree, and the whole point is to report
+ * what they dropped without rewriting them.
+ *
+ * @param array_tail  Position inside a JSON array, at or before the next element.
+ * @return            Elements remaining before the array's closing bracket.
+ */
+int json_count_remaining_objects(const char* array_tail) {
+    if (!array_tail) return 0;
+
+    int count = 0;
+    int depth = 0;
+    int in_string = 0;
+
+    for (const char* p = array_tail; *p; p++) {
+        if (in_string) {
+            if (*p == '\\' && p[1]) p++;        // skip the escaped character
+            else if (*p == '"') in_string = 0;
+            continue;
+        }
+
+        switch (*p) {
+            case '"': in_string = 1; break;
+            case '{': if (depth++ == 0) count++; break;
+            case '}': if (depth > 0) depth--; break;
+            case ']': if (depth == 0) return count;   // end of this array
+            default: break;
+        }
+    }
+    return count;
+}
+
 int json_count(const JsonValue* value) {
     if (!value || value->type != JSON_ARRAY) return 0;
     return value->as.list.count;

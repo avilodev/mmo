@@ -15,12 +15,24 @@
 #define REALM_SERVER_PORT 7777
 #define WORLD_SERVER_PORT 7778
 
-/** Configure shared connection, tick, timeout, session, and packet limits. */
+/** Configure shared connection and packet limits.
+ *
+ * Three constants used to live here and no longer do:
+ *
+ *   * TICK_RATE (60.0f) was read by nothing at all, and it disagreed with the
+ *     20Hz gameplay tick the world server actually runs -- so the one thing it
+ *     could have been used for was getting the tick rate wrong. The real rate
+ *     is per-world configuration; see world_server/include/config.h.
+ *   * TIMEOUT_SECONDS (30.0f) was likewise unreferenced. Idle timeouts belong
+ *     to the reactor and are set in net_tuning.h.
+ *   * SESSION_EXPIRY_SECONDS was defined here *and* in session.h with the same
+ *     value. Sessions belong to session.h, which is where it stayed.
+ *
+ * Unused shared constants are not free: the next person to need a tick rate
+ * finds one here, uses it, and is wrong.
+ */
 #define MAX_PLAYERS 1000
 #define MAX_PENDING_CONNECTIONS 10
-#define TICK_RATE 60.0f
-#define TIMEOUT_SECONDS 30.0f
-#define SESSION_EXPIRY_SECONDS 300
 #define MAX_PACKET_SIZE 8192
 
 #endif

@@ -3,6 +3,8 @@
  * Configure realm-server signals, listening sockets, and runtime identity.
  */
 #include "config.h"
+#include "log.h"
+#include "str_fixed.h"
 
 ServerConfig g_server;
 ServerState g_state;
@@ -13,7 +15,7 @@ void signal_handler(int signum) {
         case SIGINT: 
         case SIGTERM:
         case SIGQUIT:
-            printf("\nReceived shutdown signal (%d)\n", signum);
+            LOG_INFO("\nReceived shutdown signal (%d)", signum);
             g_server.running = 0;
             break;
         default:
@@ -44,13 +46,13 @@ void setup_signals(void) {
 int create_tcp_server_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        printf("Socket Creation Failed\n");
+        LOG_INFO("Socket Creation Failed");
         return -1;
     }
     
     int opt = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        printf("setsockopt SO_REUSEADDR failed\n");
+        LOG_INFO("setsockopt SO_REUSEADDR failed");
         close(sock);
         return -1;
     }
@@ -62,18 +64,18 @@ int create_tcp_server_socket(int port) {
     server_addr.sin_port = htons(port);
     
     if (bind(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        printf("Bind Failed\n");
+        LOG_INFO("Bind Failed");
         close(sock);
         return -1;
     }
     
     if (listen(sock, MAX_PENDING_CONNECTIONS) < 0) {
-        printf("Listen Failed\n");
+        LOG_INFO("Listen Failed");
         close(sock);
         return -1;
     }
     
-    printf("TCP server socket bound to port %d\n", port);
+    LOG_INFO("TCP server socket bound to port %d", port);
     return sock;
 }
 
@@ -85,7 +87,7 @@ int create_tcp_server_socket(int port) {
 int set_config(const char* filepath) {
     FILE* file = fopen(filepath, "r");
     if (!file) {
-        fprintf(stderr, "Failed to open config file: %s\n", filepath);
+        LOG_ERROR("Failed to open config file: %s", filepath);
         return 0;
     }
 
@@ -116,13 +118,13 @@ int set_config(const char* filepath) {
         // Parse based on field order
         if (field_count == 0) {
             // Server Name
-            strncpy(g_server.name, value, sizeof(g_server.name) - 1);
+            STR_COPY_FIELD(g_server.name, value);
             field_count++;
         } else if (field_count == 1) {
             // Port
             int port = atoi(value);
             if (port <= 0 || port > 65535) {
-                fprintf(stderr, "Invalid port: %s\n", value);
+                LOG_ERROR("Invalid port: %s", value);
                 fclose(file);
                 return 0;
             }
@@ -136,26 +138,26 @@ int set_config(const char* filepath) {
     
     // Verify required fields were read
     if (field_count != 2) {
-        fprintf(stderr, "Incomplete config file. Expected 2 fields, got %d\n", field_count);
+        LOG_ERROR("Incomplete config file. Expected 2 fields, got %d", field_count);
         return 0;
     }
     
     // Validation
     if (strlen(g_server.name) == 0) {
-        fprintf(stderr, "Server name cannot be empty\n");
+        LOG_ERROR("Server name cannot be empty");
         return 0;
     }
     
     if (g_server.port == 0) {
-        fprintf(stderr, "Port cannot be 0\n");
+        LOG_ERROR("Port cannot be 0");
         return 0;
     }
     
     // Success - print loaded config
-    printf("=== Realm Server Configuration ===\n");
-    printf("Server Name: %s\n", g_server.name);
-    printf("Port: %d\n", g_server.port);
-    printf("===================================\n");
+    LOG_INFO("=== Realm Server Configuration ===");
+    LOG_INFO("Server Name: %s", g_server.name);
+    LOG_INFO("Port: %d", g_server.port);
+    LOG_INFO("===================================");
     
     return 1;  // Success
 }

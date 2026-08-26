@@ -6,6 +6,7 @@
  */
 
 #include "utils.h"
+#include "log.h"
 #include "connection_io.h"
 #include <errno.h>
 #include <string.h>
@@ -80,7 +81,7 @@ ssize_t server_send_direct(int fd, void* buf, size_t len) {
         }
         if (sent < 0 && errno == EINTR) continue;
         if (sent < 0 && errno != EPIPE && errno != ECONNRESET) {
-            fprintf(stderr, "[NET] send() failed on fd %d: %s\n", fd, strerror(errno));
+            LOG_ERROR("[NET] send() failed on fd %d: %s", fd, strerror(errno));
         }
         return -1;
     }

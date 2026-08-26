@@ -4,6 +4,7 @@
  */
 
 #include "npc_spawns.h"
+#include "npc_world.h"
 #include "combat.h"
 #include "log.h"
 
@@ -30,8 +31,8 @@ static char* read_file(const char* filepath) {
     char* buffer = malloc(size + 1);
     if (!buffer) { fclose(f); return NULL; }
 
-    fread(buffer, 1, size, f);
-    buffer[size] = '\0';
+    size_t got = fread(buffer, 1, (size_t)size, f);
+    buffer[got] = '\0';
     fclose(f);
     return buffer;
 }
@@ -91,18 +92,18 @@ static uint8_t parse_category(const char* str) {
  * @return               The number spawned, or -1 when the file or root array is unavailable.
  */
 int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
-    printf("Loading NPC spawns from: %s\n", json_filepath);
+    LOG_INFO("Loading NPC spawns from: %s", json_filepath);
 
     char* json = read_file(json_filepath);
     if (!json) {
-        fprintf(stderr, "Failed to read spawns file: %s\n", json_filepath);
+        LOG_ERROR("Failed to read spawns file: %s", json_filepath);
         return -1;
     }
 
     // Find the "spawns" array
     const char* arr_start = strstr(json, "\"spawns\"");
     if (!arr_start) {
-        fprintf(stderr, "No 'spawns' array found in JSON\n");
+        LOG_ERROR("No 'spawns' array found in JSON");
         free(json);
         return -1;
     }
@@ -160,19 +161,18 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
          * keeps working; "armor" is the name that matches the player attribute. */
         int armor = json_get_int(obj, "armor", json_get_int(obj, "defense", 0));
 
-        uint32_t npc_id = combat_npc_spawn(world, name, x, y, health,
+        uint32_t npc_id = npc_world_spawn(world, name, x, y, health,
                                             hitbox, dialogue_id, interactable,
                                             npc_type_id, respawn, category);
 
         if (npc_id > 0) {
-            // Set optional fields that combat_npc_spawn doesn't cover
-            pthread_mutex_lock(&world->lock);
-            NPCEntity* npc = combat_npc_find(world, npc_id);
+            // Set optional fields that npc_world_spawn doesn't cover
+            NPCEntity* npc = npc_world_acquire(world, npc_id);
             if (npc) {
                 if (xp >= 0) npc->xp_reward = (uint32_t)xp;
                 npc->armor = armor;
+                npc_world_release(world, npc);
             }
-            pthread_mutex_unlock(&world->lock);
             spawned++;
         }
 
@@ -183,6 +183,6 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
     }
 
     free(json);
-    printf("Spawned %d NPCs from %s\n", spawned, json_filepath);
+    LOG_INFO("Spawned %d NPCs from %s", spawned, json_filepath);
     return spawned;
 }

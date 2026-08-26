@@ -5,6 +5,8 @@
  */
 
 #include "npc_ai.h"
+#include "json_util.h"
+#include "npc_world.h"
 #include "player_effects.h"
 #include "log.h"
 #include "projectile.h"
@@ -54,8 +56,8 @@ static char* read_file(const char* filepath) {
     fseek(f, 0, SEEK_SET);
     char* buf = malloc(size + 1);
     if (!buf) { fclose(f); return NULL; }
-    fread(buf, 1, size, f);
-    buf[size] = '\0';
+    size_t got = fread(buf, 1, (size_t)size, f);
+    buf[got] = '\0';
     fclose(f);
     return buf;
 }
@@ -106,9 +108,11 @@ static void parse_string_val(const char* json, const char* key, char* out, int m
 /**
  * Parse NPC behavior profiles into the fixed registry.
  *
+ * @param source  Path the JSON came from, named in truncation logs.
+ *
  * @return 1 when parsing completes or no section exists, or 0 on malformed input or allocation failure.
  */
-static int parse_npc_types(const char* json) {
+static int parse_npc_types(const char* json, const char* source) {
     const char* types_start = strstr(json, "\"npc_types\"");
     if (!types_start) {
         LOG_DEBUG("[NPC_AI] No npc_types section found");
@@ -279,6 +283,16 @@ static int parse_npc_types(const char* json) {
                         while (*ap && *ap != ',' && *ap != ']') ap++;
                         if (*ap == ',') ap++;
                     }
+
+                    if (prof->ability_count >= MAX_NPC_ABILITIES) {
+                        int dropped = json_count_remaining_objects(ap);
+                        if (dropped > 0) {
+                            LOG_ERROR("[NPC_AI] %s: npc_type_id=%u kept %d abilities and "
+                                      "dropped %d more; MAX_NPC_ABILITIES is %d in npc_ai.h",
+                                      source, prof->npc_type_id, prof->ability_count,
+                                      dropped, MAX_NPC_ABILITIES);
+                        }
+                    }
                 }
             }
         }
@@ -292,6 +306,18 @@ static int parse_npc_types(const char* json) {
         pos = obj_end + 1;
         while (*pos && *pos != ',' && *pos != ']') pos++;
         if (*pos == ',') pos++;
+    }
+
+    /* A data file with one more profile than MAX_NPC_AI_PROFILES used to load
+     * the first N and say nothing, leaving one NPC type with no behaviour at
+     * all -- which reads in game as a mob that will not aggro. */
+    if (g_ai_profile_count >= MAX_NPC_AI_PROFILES) {
+        int dropped = json_count_remaining_objects(pos);
+        if (dropped > 0) {
+            LOG_ERROR("[NPC_AI] %s: loaded %d profiles and dropped %d more; "
+                      "MAX_NPC_AI_PROFILES is %d in npc_ai.h",
+                      source, g_ai_profile_count, dropped, MAX_NPC_AI_PROFILES);
+        }
     }
 
     free(arr_json);
@@ -312,7 +338,7 @@ int npc_ai_init(const char* json_path) {
         return 0;
     }
 
-    int result = parse_npc_types(json);
+    int result = parse_npc_types(json, json_path);
     free(json);
 
     LOG_INFO("[NPC_AI] Initialized with %d NPC type profiles", g_ai_profile_count);
@@ -411,8 +437,6 @@ static int point_in_telegraph(float px, float py,
     }
 }
 
-#define MAX_DEFERRED 128
-
 /** Radius within which a telegraph start/resolve packet is broadcast. */
 #define TELEGRAPH_BROADCAST_RADIUS 500.0f
 
@@ -464,17 +488,55 @@ typedef struct {
     };
 } DeferredAction;
 
+/** Hold one tick's worth of NPC actions until every NPC lock has been released.
+ *
+ * Sized from the NPC pool rather than from a constant. An NPC contributes at most
+ * one action per tick, so a queue as large as the pool cannot overflow -- which
+ * matters because the previous fixed 128 entries sat below even the default pool
+ * of 256, and the overflow was silent. Past the limit a telegraph's start would
+ * be sent and its resolve dropped, leaving a warning painted on the ground
+ * forever and its damage never dealt.
+ */
 typedef struct {
-    DeferredAction items[MAX_DEFERRED];
+    DeferredAction* items;
     int count;
+    int capacity;
 } DeferredQueue;
 
-static void dq_init(DeferredQueue* q) { q->count = 0; }
+/** Reset a queue and ensure it can hold one action for every NPC in the pool.
+ *
+ * The storage is retained between ticks: npc_ai_tick() runs on the single
+ * gameplay thread, so one buffer serves every tick and the allocation happens
+ * once, on the first tick after the pool's capacity is known.
+ */
+static void dq_init(DeferredQueue* q, int capacity) {
+    static DeferredAction* buffer = NULL;
+    static int             buffer_capacity = 0;
+
+    if (capacity > buffer_capacity) {
+        DeferredAction* grown = realloc(buffer, (size_t)capacity * sizeof(*grown));
+        if (grown) {
+            buffer = grown;
+            buffer_capacity = capacity;
+        } else {
+            LOG_ERROR("[NPC_AI] could not size the deferred queue to %d actions; "
+                      "holding at %d", capacity, buffer_capacity);
+        }
+    }
+
+    q->items    = buffer;
+    q->capacity = buffer_capacity;
+    q->count    = 0;
+}
 
 static void dq_push(DeferredQueue* q, const DeferredAction* item) {
-    if (q->count < MAX_DEFERRED) {
+    if (q->count < q->capacity) {
         q->items[q->count++] = *item;
+        return;
     }
+    // Only reachable when the allocation above failed; never silently.
+    LOG_WARN_RL(5, 60, "[NPC_AI] deferred queue full at %d actions -- "
+                       "an NPC ability was dropped this tick", q->capacity);
 }
 
 /**
@@ -658,17 +720,41 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
     if (!snap || snap->count == 0) return;
 
     DeferredQueue q;
-    dq_init(&q);
+    dq_init(&q, npc_world_capacity(world));
+    if (!q.items) return;   // nothing can be deferred, so nothing may be started
 
-    pthread_mutex_lock(&world->lock);
+    /* Every NPC has to think, so this phase iterates rather than queries — there
+     * is no position to query from. Two things make that affordable.
+     *
+     * The locking: the pool read lock plus one NPC's mutex at a time, instead
+     * of one exclusive lock across the whole pass. An AI tick no longer blocks
+     * combat, projectiles, or any inbound packet for its full duration.
+     *
+     * And what it walks. This used to run over all `capacity` slots, twenty
+     * times a second, whatever fraction of them held an NPC — a pool sized for
+     * a launch-day crowd cost the same to think for whether two hundred NPCs
+     * were spawned or none. It walks the occupied-slot list now, so the cost
+     * tracks the NPCs that exist. */
+    npc_world_read_begin(world);
 
-    for (int n = 0; n < MAX_NPCS; n++) {
-        NPCEntity* npc = &world->npcs[n];
-        if (npc->id == 0 || !npc->is_alive) continue;
-        if (npc->npc_type_id == 0) continue;
+    int live_count = 0;
+    const int* live = npc_world_live_slots(world, &live_count);
+
+    for (int i = 0; i < live_count; i++) {
+        int n = live[i];
+        NPCEntity* npc = npc_world_slot(world, n);
+        if (!npc || npc->id == 0) continue;   // unlocked pre-filter only
+
+        npc_world_slot_lock(world, n);
+
+        if (npc->id == 0 || !npc->is_alive || npc->npc_type_id == 0) {
+            goto next_npc;
+        }
 
         const NPCAIProfile* prof = npc_ai_get_profile(npc->npc_type_id);
-        if (!prof || prof->ability_count == 0) continue;
+        if (!prof || prof->ability_count == 0) {
+            goto next_npc;
+        }
 
         // stagger initial ability cooldown phases per NPC
         if (!npc->ai_cd_seeded) {
@@ -692,7 +778,7 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 // Invalid — cancel
                 npc->ai_is_casting = 0;
                 npc->ai_state = NPC_AI_AGGRO;
-                continue;
+                goto next_npc;
             }
 
             const NPCAbilityDef* ab = &prof->abilities[abi];
@@ -733,7 +819,7 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 LOG_DEBUG("[NPC_AI] NPC %u (%s) telegraph resolved — ability %u", npc->id, npc->name, ab->ability_id);
             }
             // While casting, NPC is locked — no movement, no other abilities
-            continue;
+            goto next_npc;
         }
 
         if (npc->ai_state == NPC_AI_RETURNING) {
@@ -743,7 +829,7 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 npc->ai_state = NPC_AI_IDLE;
                 npc->ai_target_id = 0;
                 npc->health = npc->max_health;
-                continue;
+                goto next_npc;
             }
             float dx = npc->spawn_x - npc->pos_x;
             float dy = npc->spawn_y - npc->pos_y;
@@ -754,7 +840,7 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 npc->pos_x += (dx / len) * move;
                 npc->pos_y += (dy / len) * move;
             }
-            continue;
+            goto next_npc;
         }
 
         float best_dist = 1e9f;
@@ -819,13 +905,13 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 npc->ai_state = NPC_AI_RETURNING;
                 npc->ai_target_id = 0;
             }
-            continue;
+            goto next_npc;
         }
 
         if (spawn_dist >= prof->leash_range) {
             npc->ai_state = NPC_AI_RETURNING;
             npc->ai_target_id = 0;
-            continue;
+            goto next_npc;
         }
 
         npc->ai_state = NPC_AI_AGGRO;
@@ -996,9 +1082,15 @@ void npc_ai_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                 }
             }
         }
+
+next_npc:
+        /* Single exit for the loop body. The body is long and branches often;
+         * with a plain `continue` at each of those branches, every future edit
+         * would have to remember to drop this NPC's lock on the way out. */
+        npc_world_slot_unlock(world, n);
     }
 
-    pthread_mutex_unlock(&world->lock);
+    npc_world_read_end(world);
 
     dq_flush(&q, snap);
 }

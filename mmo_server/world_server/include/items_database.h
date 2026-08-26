@@ -5,8 +5,9 @@
 
 #include <stdint.h>
 
-/** Bound loaded item definitions and their display names. */
-#define MAX_ITEMS 100000
+/** Bound an item's display name. There is deliberately no bound on the number of
+ * item definitions or on item ids: the registry is a hash table sized to the
+ * content actually loaded (see items_database.c). */
 #define MAX_ITEM_NAME 64
 
 /** Identify an item's gameplay category. */

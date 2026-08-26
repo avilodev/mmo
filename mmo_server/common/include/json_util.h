@@ -53,6 +53,19 @@ const JsonValue* json_get(const JsonValue* value, const char* key);
 /** Count an array's elements, or zero when `value` is not an array. */
 int json_count(const JsonValue* value);
 
+/** Count the `{...}` elements left unconsumed in the tail of a JSON array.
+ *
+ * For the hand-rolled substring loaders that stop at a compiled cap. Pass the
+ * position where the loop gave up and learn how many elements it refused, so the
+ * refusal can be logged instead of being indistinguishable from content that was
+ * never written. Braces inside strings and escapes are not counted.
+ *
+ * @param array_tail  Position inside a JSON array, at or before the next element.
+ * @return            Elements remaining before the array's closing bracket, or 0
+ *                    when `array_tail` is NULL or the array is exhausted.
+ */
+int json_count_remaining_objects(const char* array_tail);
+
 /** Index an array.
  *
  * @return The element, or NULL when out of range or when `value` is not an array.

@@ -4,6 +4,7 @@
  */
 
 #include "items_database.h"
+#include "log.h"
 #include "race_registry.h"
 
 #include <stdio.h>
@@ -11,13 +12,108 @@
 #include <string.h>
 #include <ctype.h>
 
-// Hash table for O(1) item lookup
-static ItemDefinition* item_table[MAX_ITEMS];
-static int items_loaded = 0;
+/* Item registry: open-addressed by item id, sized to the content actually loaded.
+ *
+ * This was `ItemDefinition* item_table[MAX_ITEMS]` with MAX_ITEMS 100000 -- and
+ * a comment calling it a hash table, which it was not. It was a direct index, so
+ * it cost 800 KB resident in every world process at all times to hold a few
+ * hundred items (8 MB across ten worlds), and it capped item ids at 100000 for
+ * no reason except that the id was the array subscript.
+ *
+ * Hashing is safe here in a way it would not be for active_players or the NPC
+ * pool. Those hand out interior pointers whose mutexes live inside the element,
+ * so rehashing one under a held lock is a use-after-free. This registry is
+ * filled once at startup, never mutated during a tick, and hands out pointers to
+ * individually allocated definitions -- growth moves the bucket array, never an
+ * ItemDefinition, and nothing anywhere holds a bucket.
+ */
+typedef struct {
+    uint32_t        id;
+    ItemDefinition* def;   /**< NULL marks a free bucket. */
+} ItemBucket;
+
+/** Initial bucket count; grows by doubling past a 0.7 load factor. */
+#define ITEM_BUCKETS_MIN 256
+
+static ItemBucket* g_item_buckets;
+static uint32_t    g_item_bucket_count;   /**< Power of two, or 0 before first insert. */
+static int         items_loaded = 0;
+
+/** Mix an item id across the bucket space (murmur3 32-bit finalizer).
+ *
+ * Content ids are small and consecutive, which linear probing handles badly
+ * without a mix step.
+ */
+static uint32_t item_hash(uint32_t id) {
+    id ^= id >> 16;
+    id *= 0x85ebca6bu;
+    id ^= id >> 13;
+    id *= 0xc2b2ae35u;
+    id ^= id >> 16;
+    return id;
+}
+
+/**
+ * Locate the bucket holding an id, or the free bucket where it belongs.
+ *
+ * Terminates because the table is never allowed past a 0.7 load factor.
+ *
+ * @return The matching or free bucket; never NULL once the table is allocated.
+ */
+static ItemBucket* item_slot_for(uint32_t id) {
+    const uint32_t mask = g_item_bucket_count - 1;
+    uint32_t i = item_hash(id) & mask;
+
+    while (g_item_buckets[i].def) {
+        if (g_item_buckets[i].id == id) return &g_item_buckets[i];
+        i = (i + 1) & mask;
+    }
+    return &g_item_buckets[i];
+}
+
+/**
+ * Ensure the table can absorb one more insert, doubling and rehashing if not.
+ *
+ * @return 1 when there is room, or 0 when allocation failed.
+ */
+static int items_reserve_one(void) {
+    if (g_item_bucket_count &&
+        ((uint32_t)items_loaded + 1u) * 10u < g_item_bucket_count * 7u) {
+        return 1;
+    }
+
+    const uint32_t next = g_item_bucket_count ? g_item_bucket_count * 2u
+                                              : ITEM_BUCKETS_MIN;
+    ItemBucket* fresh = calloc(next, sizeof(*fresh));
+    if (!fresh) {
+        LOG_ERROR("[ITEMS] could not grow the registry to %u buckets", next);
+        return 0;
+    }
+
+    ItemBucket* old       = g_item_buckets;
+    const uint32_t old_n  = g_item_bucket_count;
+    g_item_buckets        = fresh;
+    g_item_bucket_count   = next;
+
+    for (uint32_t i = 0; i < old_n; i++) {
+        if (old[i].def) *item_slot_for(old[i].id) = old[i];
+    }
+    free(old);
+    return 1;
+}
 
 // Forward declarations for JSON parsing
 static char* read_file(const char* filepath);
 static int parse_items_json(const char* json_content);
+
+/** Free every definition and release the bucket array. */
+static void items_reset(void) {
+    for (uint32_t i = 0; i < g_item_bucket_count; i++) free(g_item_buckets[i].def);
+    free(g_item_buckets);
+    g_item_buckets      = NULL;
+    g_item_bucket_count = 0;
+    items_loaded        = 0;
+}
 
 /**
  * Initialize the item registry from a JSON file.
@@ -28,16 +124,15 @@ static int parse_items_json(const char* json_content);
  * @return               1 on success, or 0 when the file cannot be read or parsed.
  */
 int items_init(const char* json_filepath) {
-    printf("Loading items from: %s\n", json_filepath);
+    LOG_INFO("Loading items from: %s", json_filepath);
 
-    // Clear the item table
-    memset(item_table, 0, sizeof(item_table));
-    items_loaded = 0;
+    // Discard any previous registry contents
+    items_reset();
 
     // Read JSON file
     char* json_content = read_file(json_filepath);
     if (!json_content) {
-        fprintf(stderr, "Failed to read items file: %s\n", json_filepath);
+        LOG_ERROR("Failed to read items file: %s", json_filepath);
         return 0;
     }
 
@@ -46,9 +141,9 @@ int items_init(const char* json_filepath) {
     free(json_content);
 
     if (result) {
-        printf("Successfully loaded %d items\n", items_loaded);
+        LOG_INFO("Successfully loaded %d items", items_loaded);
     } else {
-        fprintf(stderr, "Failed to parse items JSON\n");
+        LOG_ERROR("Failed to parse items JSON");
     }
 
     return result;
@@ -62,8 +157,8 @@ int items_init(const char* json_filepath) {
  * @return The item definition, or NULL when the identifier is absent or out of range.
  */
 const ItemDefinition* item_get(uint32_t item_id) {
-    if (item_id >= MAX_ITEMS) return NULL;
-    return item_table[item_id];
+    if (!g_item_bucket_count) return NULL;
+    return item_slot_for(item_id)->def;
 }
 
 /**
@@ -134,14 +229,8 @@ int items_get_count(void) {
  * Release all item definitions and clear the registry.
  */
 void items_cleanup(void) {
-    for (int i = 0; i < MAX_ITEMS; i++) {
-        if (item_table[i]) {
-            free(item_table[i]);
-            item_table[i] = NULL;
-        }
-    }
-    items_loaded = 0;
-    printf("Items system cleaned up\n");
+    items_reset();
+    LOG_INFO("Items system cleaned up");
 }
 
 /**
@@ -223,8 +312,8 @@ static char* read_file(const char* filepath) {
         return NULL;
     }
 
-    fread(buffer, 1, size, f);
-    buffer[size] = '\0';
+    size_t got = fread(buffer, 1, (size_t)size, f);
+    buffer[got] = '\0';
     fclose(f);
 
     return buffer;
@@ -300,7 +389,7 @@ static int parse_items_json(const char* json_content) {
     // Find the "items" array
     const char* items_start = strstr(json_content, "\"items\"");
     if (!items_start) {
-        fprintf(stderr, "No 'items' array found in JSON\n");
+        LOG_ERROR("No 'items' array found in JSON");
         return 0;
     }
 
@@ -482,14 +571,29 @@ static int parse_items_json(const char* json_content) {
         item->value = value_val ? (uint32_t)atoi(value_val)
                                 : (uint32_t)((item->rarity + 1) * 10);
 
-        // Store in hash table
-        if (item->id < MAX_ITEMS) {
-            item_table[item->id] = item;
-            items_loaded++;
-            printf("  Loaded: [%u] %s (%s)\n", item->id, item->name,
-                   rarity_get_name(item->rarity));
-        } else {
+        // Store in the registry. Any uint32_t id is addressable.
+        if (!items_reserve_one()) {
+            LOG_ERROR("[ITEMS] Dropped item '%s' (id %u): registry full",
+                      item->name, item->id);
             free(item);
+        } else {
+            ItemBucket* slot = item_slot_for(item->id);
+
+            /* A repeated id used to overwrite the earlier definition and leak
+             * it, silently -- and every character already holding that item now
+             * holds the new one's stats. */
+            if (slot->def) {
+                LOG_ERROR("[ITEMS] item id %u is defined more than once; replacing "
+                          "'%s' with '%s'",
+                          item->id, slot->def->name, item->name);
+                free(slot->def);
+                items_loaded--;
+            }
+            slot->id  = item->id;
+            slot->def = item;
+            items_loaded++;
+            LOG_INFO("  Loaded: [%u] %s (%s)", item->id, item->name,
+                     rarity_get_name(item->rarity));
         }
 
         free(obj_json);

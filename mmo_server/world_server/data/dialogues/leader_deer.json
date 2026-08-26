@@ -1,0 +1,135 @@
+{
+  "id": 26,
+  "name": "God of Aid",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "There you are. Sit, if you like -- nothing here is going to test you.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me to you.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 106,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 106
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me to you.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 106
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 106
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 106
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 106
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Of course she did. Everyone comes through me eventually, and it is far easier to\nlearn this before you need it than during.\n\nSo. Human Form first, because Human Form is the same for every one of us. No passive,\nno trick, nothing borrowed from the shape you were born to. It is the honest baseline,\nand it is where you will do most of your thinking.\n\nHere -- hold your hands like this. Mending is mostly attention. What you are watching\nfor is the moment somebody stops being able to ask for help.\n\nThe other shape will come when it comes. I am not going to push you into it in a\ncourtyard.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "And if I need it before then?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "And if I need it before then?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Then you will have it, and you will be clumsy with it, and that is survivable.\n\nThe sentry at the south gate is expecting you. Go gently.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "You have not been sent, have you. That is all right -- nobody is in trouble.\n\nFind the Warden in the middle of the courtyard first. She likes to be told.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Back so soon. Are you eating?",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

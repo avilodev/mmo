@@ -4,6 +4,9 @@
  */
 
 #include "combat.h"
+#include "npc_snapshot.h"
+#include "npc_query.h"
+#include "npc_world.h"
 #include "log.h"
 #include "combat_stats.h"
 #include "player_level.h"
@@ -210,134 +213,76 @@ static int combat_point_in_line(float ox, float oy,
     return (perp_dist <= half_width) ? 1 : 0;
 }
 
-static uint32_t g_next_npc_id = 1000;
+/** One resolved hit, collected under lock and sent after the lock is dropped. */
+typedef struct {
+    uint32_t target_id;
+    uint32_t damage;
+    uint32_t new_health;
+    uint8_t  is_kill;
+    uint8_t  is_crit;
+    uint64_t xp_reward;
+    uint16_t npc_type_id;   // For loot roll on kill
+    float    npc_x, npc_y;  // NPC position for loot drop
+} HitResult;
+
+/* Cast-resolution scratch, sized to the NPC pool.
+ *
+ * Both of these used to be fixed stack arrays, and the pair of them hid a bug in
+ * each other. candidates[] was 64 with a comment explaining that 64 left room
+ * for shape-test rejections above MAX_CAST_TARGETS -- which was true, and
+ * irrelevant, because hits[] was 16 and the resolve loop broke out at it. No
+ * attack in this build has ever damaged more than 16 NPCs, whatever the query
+ * returned, and nothing said so. Neither number is a wire cap: damage goes out
+ * as one DamageV2Packet per hit, not packed into a bounded array.
+ *
+ * The producer for both is the NPC pool: the grid can legitimately return every
+ * NPC in the world, and an AoE can legitimately damage every NPC it returns.
+ * File-scope rather than stack because at NPC_CAPACITY_MAX these are megabytes,
+ * and file-scope is safe for the same reason expired[] below is -- combat_tick
+ * runs only on the single gameplay thread.
+ */
+static int*       g_cast_candidates;
+static HitResult* g_cast_hits;
+static int        g_cast_scratch_capacity;
 
 /**
- * Initialize an NPC world and its mutex.
+ * Grow the cast-resolution scratch to hold one entry per NPC slot.
+ *
+ * Allocation happens on the first tick and never again: the NPC pool is sized
+ * once at startup and never grows.
+ *
+ * @param capacity  Required entry count, normally npc_world_capacity().
+ * @return          Entries the scratch can actually hold, which is less than
+ *                  `capacity` only when allocation failed.
  */
-void combat_npc_init(NPCWorld* world) {
-    memset(world->npcs, 0, sizeof(world->npcs));
-    world->count = 0;
-    pthread_mutex_init(&world->lock, NULL);
-    LOG_INFO("[COMBAT] NPC world initialized");
+static int combat_scratch_reserve(int capacity) {
+    if (capacity <= g_cast_scratch_capacity) return g_cast_scratch_capacity;
+
+    int* candidates = realloc(g_cast_candidates, (size_t)capacity * sizeof(*candidates));
+    if (!candidates) {
+        LOG_ERROR("[COMBAT] could not size cast scratch to %d candidates; "
+                  "resolution is capped at %d this tick",
+                  capacity, g_cast_scratch_capacity);
+        return g_cast_scratch_capacity;
+    }
+    g_cast_candidates = candidates;
+
+    HitResult* hits = realloc(g_cast_hits, (size_t)capacity * sizeof(*hits));
+    if (!hits) {
+        LOG_ERROR("[COMBAT] could not size cast scratch to %d hits; "
+                  "resolution is capped at %d this tick",
+                  capacity, g_cast_scratch_capacity);
+        return g_cast_scratch_capacity;
+    }
+    g_cast_hits = hits;
+
+    g_cast_scratch_capacity = capacity;
+    return g_cast_scratch_capacity;
 }
 
-/**
- * Spawn an NPC in a free or reclaimable world slot.
- *
- * @param world            NPC world receiving the entity.
- * @param name             Terminated NPC display name.
- * @param x                Spawn X coordinate in world units.
- * @param y                Spawn Y coordinate in world units.
- * @param health           Initial and maximum health.
- * @param hitbox_radius    Collision radius in world units.
- * @param dialogue_id      Associated dialogue identifier, or zero.
- * @param is_interactable  Nonzero when client interaction is allowed.
- * @param npc_type_id      Content type used for AI, loot, and quests.
- * @param respawn_time     Respawn delay in seconds; nonpositive disables respawn.
- * @param category         NPC_CATEGORY_* value controlling default rewards.
- * @return                 The assigned identifier, or 0 when the pool is full.
- */
-uint32_t combat_npc_spawn(NPCWorld* world,
-                          const char* name,
-                          float x, float y,
-                          int health,
-                          float hitbox_radius,
-                          uint32_t dialogue_id,
-                          uint8_t is_interactable,
-                          uint16_t npc_type_id,
-                          float respawn_time,
-                          uint8_t category) {
-    pthread_mutex_lock(&world->lock);
-
-    if (world->count >= MAX_NPCS) {
-        pthread_mutex_unlock(&world->lock);
-        LOG_ERROR("[COMBAT] NPC pool full (%d/%d)", world->count, MAX_NPCS);
-        return 0;
-    }
-
-    int slot = -1;
-    for (int i = 0; i < MAX_NPCS; i++) {
-        if (!world->npcs[i].is_alive && world->npcs[i].id == 0) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot == -1) {
-        for (int i = 0; i < MAX_NPCS; i++) {
-            if (!world->npcs[i].is_alive) {
-                slot = i;
-                break;
-            }
-        }
-    }
-    if (slot == -1) {
-        pthread_mutex_unlock(&world->lock);
-        LOG_ERROR("[COMBAT] No reclaimable NPC slot");
-        return 0;
-    }
-
-    NPCEntity* npc = &world->npcs[slot];
-    memset(npc, 0, sizeof(NPCEntity));
-    npc->id             = g_next_npc_id++;
-    strncpy(npc->name, name, sizeof(npc->name) - 1);
-    npc->name[sizeof(npc->name) - 1] = '\0';
-    npc->pos_x          = x;
-    npc->pos_y          = y;
-    npc->health         = health;
-    npc->max_health     = health;
-    npc->hitbox_radius  = hitbox_radius;
-    npc->is_alive       = 1;
-    npc->category       = category;
-    npc->xp_reward      = (category == NPC_CATEGORY_HOSTILE) ? 50 : 0;
-    npc->armor          = 0;
-    npc->dialogue_id    = dialogue_id;
-    npc->is_interactable = is_interactable;
-    npc->spawn_x        = x;
-    npc->spawn_y        = y;
-    npc->npc_type_id    = npc_type_id;
-    npc->respawn_time   = respawn_time;
-    npc->death_time     = 0.0;
-
-    if (world->count < MAX_NPCS) world->count++;
-
-    uint32_t id = npc->id;
-    pthread_mutex_unlock(&world->lock);
-
-    const char* cat_names[] = {"passive", "hostile", "quest"};
-    LOG_DEBUG("[COMBAT] Spawned NPC '%s' id=%u at (%.1f, %.1f) hp=%d category=%s", name, id, x, y, health, cat_names[category < 3 ? category : 0]);
-    return id;
-}
-
-/**
- * Find an NPC by identifier.
- *
- * The caller must hold world->lock while using the returned pool pointer.
- *
- * @return The matching entity, or NULL when absent.
- */
-NPCEntity* combat_npc_find(NPCWorld* world, uint32_t npc_id) {
-    for (int i = 0; i < MAX_NPCS; i++) {
-        if (world->npcs[i].id == npc_id) {
-            return &world->npcs[i];
-        }
-    }
-    return NULL;
-}
-
-/**
- * Remove an NPC from the world by identifier.
- */
-void combat_npc_remove(NPCWorld* world, uint32_t npc_id) {
-    pthread_mutex_lock(&world->lock);
-    for (int i = 0; i < MAX_NPCS; i++) {
-        if (world->npcs[i].id == npc_id) {
-            memset(&world->npcs[i], 0, sizeof(NPCEntity));
-            LOG_DEBUG("[COMBAT] Removed NPC id=%u", npc_id);
-            break;
-        }
-    }
-    pthread_mutex_unlock(&world->lock);
+/** Widen a query radius to cover NPCs whose body is in range but whose centre is not. */
+static float npc_search_margin(const NPCTickSnapshot* npcs) {
+    return npcs ? npcs->max_hitbox_radius : 0.0f;
 }
 
 static PendingCast g_pending_casts[MAX_PLAYERS];
@@ -436,15 +381,28 @@ void combat_handle_attack_intent(NPCWorld* world,
                                  int client_fd,
                                  uint32_t attacker_id,
                                  AttackIntentPacket* pkt) {
-    ActivePlayer* attacker = player_acquire(attacker_id);
-    if (!attacker) {
-        LOG_DEBUG("[COMBAT] Attack intent from unknown attacker %u", attacker_id);
+    /* Resolve the slot BEFORE acquiring the player, not after.
+     *
+     * combat_find_player_slot() takes the player registry's read lock, and
+     * player_acquire() returns holding that player's slot mutex. Doing the
+     * lookup second meant taking the registry lock while holding a slot mutex —
+     * the exact reverse of player_add_active(), which takes the registry write
+     * lock and then the slot mutex. A login landing between the two halves of
+     * an attack deadlocked the loop thread against the auth worker.
+     *
+     * Both calls release their own lock before returning, so ordering them this
+     * way means the two are never held at once. ThreadSanitizer flags the
+     * original ordering; see `make net-loop-sanitize`.
+     */
+    int player_slot = combat_find_player_slot(attacker_id);
+    if (player_slot < 0) {
+        LOG_DEBUG("[COMBAT] Attack intent from offline attacker %u", attacker_id);
         return;
     }
 
-    int player_slot = combat_find_player_slot(attacker_id);
-    if (player_slot < 0) {
-        player_release(attacker);
+    ActivePlayer* attacker = player_acquire_slot(player_slot, attacker_id);
+    if (!attacker) {
+        LOG_DEBUG("[COMBAT] Attack intent from unknown attacker %u", attacker_id);
         return;
     }
 
@@ -493,8 +451,6 @@ void combat_handle_attack_intent(NPCWorld* world,
     uint32_t hit_targets[MAX_CAST_TARGETS];
     uint8_t  hit_count = 0;
 
-    pthread_mutex_lock(&world->lock);
-
     float aim_dx = aim_x - origin_x;
     float aim_dy = aim_y - origin_y;
     float aim_len = sqrtf(aim_dx * aim_dx + aim_dy * aim_dy);
@@ -504,29 +460,66 @@ void combat_handle_attack_intent(NPCWorld* world,
     float cone_half_rad = profile->cone_half_angle * (M_PI / 180.0f);
     float line_half_w   = profile->line_width / 2.0f;
 
+    /* Query the shared spatial index rather than scanning the pool.
+     *
+     * This ran on a network loop thread and walked every slot in the NPC pool,
+     * taking each NPC's mutex in turn, for every attack packet -- so the cost
+     * of one player attacking scaled with how many NPCs the world holds, not
+     * with how many are near them, and it was paid at whatever rate players
+     * choose to attack. The gameplay thread publishes an index once per tick
+     * (npc_query.h); this reads it under a read lock with its own scratch.
+     *
+     * The index is a copy taken at the top of a tick, which is the right thing
+     * to reject candidates with and the wrong thing to damage. Survivors are
+     * resolved through the pool by the caller, exactly as before.
+     *
+     * The search radius is widened by the largest hitbox in the index: a shape
+     * test is against an NPC's edge, but the index holds its centre. */
+    float search_radius = profile->range + npc_query_max_hitbox_radius();
+
+    /* A line or cone reaches `range` along its axis, so a circle of `range`
+     * around the origin already contains everything either can hit. */
+    int npc_capacity = npc_world_capacity(world);
+    int max_hits = npc_capacity > 0 ? npc_capacity : 1;
+
+    NpcQueryHit* candidates = malloc(sizeof(*candidates) * (size_t)max_hits);
+    if (!candidates) {
+        LOG_ERROR("[COMBAT] out of memory resolving attack targets");
+        AttackResultPacket result = {0};
+        result.header.type       = PACKET_ATTACK_RESULT;
+        result.header.player_id  = htonl(attacker_id);
+        result.result_code       = ATTACK_RESULT_NO_TARGETS;
+        server_send(client_fd, &result, sizeof(result));
+        return;
+    }
+
+    int candidate_count = npc_query_near(origin_x, origin_y, search_radius,
+                                         candidates, max_hits);
+
     uint32_t best_single_id   = 0;
     float    best_single_dist = 1e9f;
 
-    for (int i = 0; i < MAX_NPCS && hit_count < MAX_CAST_TARGETS; i++) {
-        NPCEntity* npc = &world->npcs[i];
-        if (!npc->is_alive || npc->id == 0) continue;
-
-        float npc_cx = npc->pos_x;
-        float npc_cy = npc->pos_y;
+    for (int i = 0; i < candidate_count && hit_count < MAX_CAST_TARGETS; i++) {
+        const NpcQueryHit* hit = &candidates[i];
+        float npc_cx = hit->pos_x;
+        float npc_cy = hit->pos_y;
 
         switch (profile->attack_type) {
             case ATTACK_TYPE_SINGLE: {
                 float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                if (d <= profile->range + npc->hitbox_radius && d < best_single_dist) {
+                if (d <= profile->range + hit->hitbox_radius && d < best_single_dist) {
                     best_single_dist = d;
-                    best_single_id   = npc->id;
+                    best_single_id   = hit->id;
                 }
                 break;
             }
             case ATTACK_TYPE_AOE: {
                 float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                if (d <= profile->range + npc->hitbox_radius) {
-                    hit_targets[hit_count++] = npc->id;
+                if (d <= profile->range + hit->hitbox_radius) {
+                    /* Nearest-first, because npc_query_near() returns them that
+                     * way -- which is the ordering rule protocol.h states for
+                     * MAX_CAST_TARGETS and the pool scan never honoured. */
+                    hit_targets[hit_count++] = hit->id;
                 }
                 break;
             }
@@ -534,15 +527,15 @@ void combat_handle_attack_intent(NPCWorld* world,
                 if (combat_point_in_cone(origin_x, origin_y, aim_x, aim_y,
                                          cone_half_rad, profile->range,
                                          npc_cx, npc_cy)) {
-                    hit_targets[hit_count++] = npc->id;
+                    hit_targets[hit_count++] = hit->id;
                 } else {
                     float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                    if (d <= profile->range + npc->hitbox_radius && d > 0.001f) {
-                        float nx = npc_cx + (origin_x - npc_cx) / d * npc->hitbox_radius;
-                        float ny = npc_cy + (origin_y - npc_cy) / d * npc->hitbox_radius;
+                    if (d <= profile->range + hit->hitbox_radius && d > 0.001f) {
+                        float nx = npc_cx + (origin_x - npc_cx) / d * hit->hitbox_radius;
+                        float ny = npc_cy + (origin_y - npc_cy) / d * hit->hitbox_radius;
                         if (combat_point_in_cone(origin_x, origin_y, aim_x, aim_y,
                                                  cone_half_rad, profile->range, nx, ny)) {
-                            hit_targets[hit_count++] = npc->id;
+                            hit_targets[hit_count++] = hit->id;
                         }
                     }
                 }
@@ -552,19 +545,19 @@ void combat_handle_attack_intent(NPCWorld* world,
                 if (combat_point_in_line(origin_x, origin_y, dir_x, dir_y,
                                          profile->range, line_half_w,
                                          npc_cx, npc_cy)) {
-                    hit_targets[hit_count++] = npc->id;
+                    hit_targets[hit_count++] = hit->id;
                 } else {
                     float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                    if (d <= profile->range + npc->hitbox_radius && d > 0.001f) {
-                        float e1x = npc_cx + (-dir_y) * npc->hitbox_radius;
-                        float e1y = npc_cy +  dir_x  * npc->hitbox_radius;
-                        float e2x = npc_cx - (-dir_y) * npc->hitbox_radius;
-                        float e2y = npc_cy -  dir_x  * npc->hitbox_radius;
+                    if (d <= profile->range + hit->hitbox_radius && d > 0.001f) {
+                        float e1x = npc_cx + (-dir_y) * hit->hitbox_radius;
+                        float e1y = npc_cy +  dir_x  * hit->hitbox_radius;
+                        float e2x = npc_cx - (-dir_y) * hit->hitbox_radius;
+                        float e2y = npc_cy -  dir_x  * hit->hitbox_radius;
                         if (combat_point_in_line(origin_x, origin_y, dir_x, dir_y,
                                                  profile->range, line_half_w, e1x, e1y) ||
                             combat_point_in_line(origin_x, origin_y, dir_x, dir_y,
                                                  profile->range, line_half_w, e2x, e2y)) {
-                            hit_targets[hit_count++] = npc->id;
+                            hit_targets[hit_count++] = hit->id;
                         }
                     }
                 }
@@ -573,12 +566,12 @@ void combat_handle_attack_intent(NPCWorld* world,
         }
     }
 
+    free(candidates);
+
     if (profile->attack_type == ATTACK_TYPE_SINGLE && best_single_id != 0) {
         hit_targets[0] = best_single_id;
         hit_count = 1;
     }
-
-    pthread_mutex_unlock(&world->lock);
 
     if (hit_count == 0) {
         AttackResultPacket result = {0};
@@ -674,9 +667,13 @@ void combat_handle_cast_cancel(int client_fd, uint32_t attacker_id) {
 /**
  * Resolve pending attacks and advance regeneration, deaths, and respawns.
  */
-void combat_tick(NPCWorld* world) {
+void combat_tick(NPCWorld* world, NPCTickSnapshot* npcs) {
     extern ActivePlayer active_players[];
     double now = combat_get_time();
+
+    /* Every bounded query and every hit list below is capped at this, and this
+     * is the NPC pool -- so none of them can truncate a real result. */
+    const int scratch_cap = combat_scratch_reserve(npc_world_capacity(world));
 
     /* Drain every expired cast under g_pending_casts_lock, then release it before
      * resolving any of them.
@@ -774,73 +771,72 @@ void combat_tick(NPCWorld* world) {
         }
 
         // Collect hit results under lock, send after unlock
-        #define MAX_HIT_RESULTS 16
-        typedef struct {
-            uint32_t target_id;
-            uint32_t damage;
-            uint32_t new_health;
-            uint8_t  is_kill;
-            uint8_t  is_crit;
-            uint64_t xp_reward;
-            uint16_t npc_type_id;   // For loot roll on kill
-            float    npc_x, npc_y;  // NPC position for loot drop
-        } HitResult;
-
-        HitResult hits[MAX_HIT_RESULTS];
+        HitResult* hits = g_cast_hits;
         int hit_count = 0;
 
-        pthread_mutex_lock(&world->lock);
+        /* Candidates come from this tick's NPC grid rather than a scan of the
+         * whole pool.
+         *
+         * Two widenings, both required or the query silently drops real targets:
+         * the largest hitbox in the snapshot, because the grid indexes centres
+         * while the shape tests are against edges; and, for a line, half its
+         * width, because a line reaches sqrt(range^2 + half_width^2) from the
+         * origin at its far corners rather than just `range`. line_half_w is
+         * zero for every other attack type, so this costs them nothing. */
+        const float search_radius = range + line_half_w + npc_search_margin(npcs);
 
         // resolve the closest single target
         if (attack_type == ATTACK_TYPE_SINGLE) {
-            NPCEntity* best = NULL;
-            float best_dist = 1e9f;
+            int* candidates = g_cast_candidates;
+            int candidate_count = npc_snapshot_query(npcs, origin_x, origin_y,
+                                                     search_radius, candidates,
+                                                     scratch_cap);
 
-            for (int n = 0; n < MAX_NPCS; n++) {
-                NPCEntity* npc = &world->npcs[n];
-                if (!npc->is_alive || npc->id == 0) continue;
-                float d = combat_dist(origin_x, origin_y, npc->pos_x, npc->pos_y);
-                if (d <= range + npc->hitbox_radius && d < best_dist) {
-                    best_dist = d;
-                    best      = npc;
-                }
-            }
+            /* Nearest-first, so the first candidate whose own hitbox brings it
+             * into range is also the closest such NPC — the same target the old
+             * full scan picked, without visiting anything further away. */
+            for (int k = 0; k < candidate_count; k++) {
+                int c = candidates[k];
+                float d = combat_dist(origin_x, origin_y, npcs->pos_x[c], npcs->pos_y[c]);
+                if (d > range + npcs->hitbox_radius[c]) continue;
 
-            if (best) {
+                NPCEntity* best = npc_world_acquire_slot(world, npcs->slot[c], npcs->id[c]);
+                if (!best) continue;              // died or was recycled this tick
+                if (!best->is_alive) { npc_world_release(world, best); continue; }
+
                 /* An attack that reaches its target connects. There is no dodge roll. */
-                {
-                    uint8_t is_crit = 0;
-                    int damage = compute_final_damage(cast->base_damage + a_wpn,
-                                                       cast->damage_variance,
-                                                       a_stats, cast->damage_stat,
-                                                       a_form_power, &a_mods,
-                                                       best->armor, &is_crit);
+                uint8_t is_crit = 0;
+                int damage = compute_final_damage(cast->base_damage + a_wpn,
+                                                   cast->damage_variance,
+                                                   a_stats, cast->damage_stat,
+                                                   a_form_power, &a_mods,
+                                                   best->armor, &is_crit);
 
-                    best->health -= damage;
-                    if (best->health < 0) best->health = 0;
+                best->health -= damage;
+                if (best->health < 0) best->health = 0;
 
-                    uint8_t is_kill = (best->health == 0) ? 1 : 0;
-                    if (is_kill) {
-                        best->is_alive = 0;
-                        best->death_time = now;
-                    }
-
-                    hits[hit_count].target_id   = best->id;
-                    hits[hit_count].damage      = (uint32_t)damage;
-                    hits[hit_count].new_health  = (uint32_t)best->health;
-                    hits[hit_count].is_kill     = is_kill;
-                    hits[hit_count].is_crit     = is_crit;
-                    hits[hit_count].xp_reward   = (is_kill && best->xp_reward > 0) ? best->xp_reward : 0;
-                    hits[hit_count].npc_type_id = best->npc_type_id;
-                    hits[hit_count].npc_x       = best->pos_x;
-                    hits[hit_count].npc_y       = best->pos_y;
-                    hit_count++;
-
-                    LOG_DEBUG("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s", attacker_id, best->id, best->name, damage, is_crit ? " (CRIT)" : "", best->health, is_kill ? " — KILLED" : "");
+                uint8_t is_kill = (best->health == 0) ? 1 : 0;
+                if (is_kill) {
+                    best->is_alive = 0;
+                    best->death_time = now;
                 }
-            }
 
-            pthread_mutex_unlock(&world->lock);
+                hits[hit_count].target_id   = best->id;
+                hits[hit_count].damage      = (uint32_t)damage;
+                hits[hit_count].new_health  = (uint32_t)best->health;
+                hits[hit_count].is_kill     = is_kill;
+                hits[hit_count].is_crit     = is_crit;
+                hits[hit_count].xp_reward   = (is_kill && best->xp_reward > 0) ? best->xp_reward : 0;
+                hits[hit_count].npc_type_id = best->npc_type_id;
+                hits[hit_count].npc_x       = best->pos_x;
+                hits[hit_count].npc_y       = best->pos_y;
+                hit_count++;
+
+                LOG_DEBUG("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s", attacker_id, best->id, best->name, damage, is_crit ? " (CRIT)" : "", best->health, is_kill ? " — KILLED" : "");
+
+                npc_world_release(world, best);
+                break;
+            }
 
             // Send packets outside lock
             for (int h = 0; h < hit_count; h++) {
@@ -874,18 +870,26 @@ void combat_tick(NPCWorld* world) {
         }
 
         // resolve area targets
-        for (int n = 0; n < MAX_NPCS; n++) {
-            NPCEntity* npc = &world->npcs[n];
-            if (!npc->is_alive || npc->id == 0) continue;
+        int* candidates = g_cast_candidates;
+        int candidate_count = npc_snapshot_query(npcs, origin_x, origin_y,
+                                                 search_radius, candidates,
+                                                 scratch_cap);
 
+        for (int k = 0; k < candidate_count; k++) {
+            int c = candidates[k];
+
+            /* Shape tests run against the snapshot's copy. They only decide
+             * whether an NPC is worth locking, and positions do not move within
+             * a tick — the damage below reads live health and armor. */
             int hit = 0;
-            float npc_cx = npc->pos_x;
-            float npc_cy = npc->pos_y;
+            float npc_cx  = npcs->pos_x[c];
+            float npc_cy  = npcs->pos_y[c];
+            float npc_hit = npcs->hitbox_radius[c];
 
             switch (attack_type) {
                 case ATTACK_TYPE_AOE: {
                     float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                    hit = (d <= range + npc->hitbox_radius);
+                    hit = (d <= range + npc_hit);
                     break;
                 }
                 case ATTACK_TYPE_CONE: {
@@ -895,9 +899,9 @@ void combat_tick(NPCWorld* world) {
                                                npc_cx, npc_cy);
                     if (!hit) {
                         float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                        if (d <= range + npc->hitbox_radius && d > 0.001f) {
-                            float nx = npc_cx + (origin_x - npc_cx) / d * npc->hitbox_radius;
-                            float ny = npc_cy + (origin_y - npc_cy) / d * npc->hitbox_radius;
+                        if (d <= range + npc_hit && d > 0.001f) {
+                            float nx = npc_cx + (origin_x - npc_cx) / d * npc_hit;
+                            float ny = npc_cy + (origin_y - npc_cy) / d * npc_hit;
                             hit = combat_point_in_cone(origin_x, origin_y,
                                                        aim_x, aim_y,
                                                        cone_half_rad, range, nx, ny);
@@ -912,11 +916,11 @@ void combat_tick(NPCWorld* world) {
                                                npc_cx, npc_cy);
                     if (!hit) {
                         float d = combat_dist(origin_x, origin_y, npc_cx, npc_cy);
-                        if (d <= range + npc->hitbox_radius && d > 0.001f) {
-                            float e1x = npc_cx + (-dir_y) * npc->hitbox_radius;
-                            float e1y = npc_cy +  dir_x  * npc->hitbox_radius;
-                            float e2x = npc_cx - (-dir_y) * npc->hitbox_radius;
-                            float e2y = npc_cy -  dir_x  * npc->hitbox_radius;
+                        if (d <= range + npc_hit && d > 0.001f) {
+                            float e1x = npc_cx + (-dir_y) * npc_hit;
+                            float e1y = npc_cy +  dir_x  * npc_hit;
+                            float e2x = npc_cx - (-dir_y) * npc_hit;
+                            float e2y = npc_cy -  dir_x  * npc_hit;
                             hit = combat_point_in_line(origin_x, origin_y, dir_x, dir_y,
                                                        range, line_half_w, e1x, e1y) ||
                                   combat_point_in_line(origin_x, origin_y, dir_x, dir_y,
@@ -928,7 +932,14 @@ void combat_tick(NPCWorld* world) {
             }
 
             if (!hit) continue;
-            if (hit_count >= MAX_HIT_RESULTS) break;
+            /* Cannot trigger: hits[] and candidates[] are both scratch_cap
+             * entries and this loop runs at most candidate_count times. Kept as
+             * an assertion against a future caller that sizes them differently. */
+            if (hit_count >= scratch_cap) break;
+
+            NPCEntity* npc = npc_world_acquire_slot(world, npcs->slot[c], npcs->id[c]);
+            if (!npc) continue;
+            if (!npc->is_alive) { npc_world_release(world, npc); continue; }
 
             uint8_t is_crit = 0;
             int damage = compute_final_damage(cast->base_damage + a_wpn, cast->damage_variance,
@@ -957,9 +968,9 @@ void combat_tick(NPCWorld* world) {
             hit_count++;
 
             LOG_DEBUG("[COMBAT] %u hit NPC %u (%s) for %d dmg%s (hp=%d)%s", attacker_id, npc->id, npc->name, damage, is_crit ? " (CRIT)" : "", npc->health, is_kill ? " — KILLED" : "");
-        }
 
-        pthread_mutex_unlock(&world->lock);
+            npc_world_release(world, npc);
+        }
 
         // Send all damage packets outside lock
         for (int h = 0; h < hit_count; h++) {
@@ -1035,13 +1046,24 @@ void combat_tick(NPCWorld* world) {
 
     // snapshot newly dead players before sending
     {
-        #define MAX_DEATH_EVENTS 16
         typedef struct {
             uint32_t player_id;
             int      client_fd;
         } DeathEvent;
 
-        DeathEvent deaths[MAX_DEATH_EVENTS];
+        /* One slot per player, because one tick can kill every player online.
+         *
+         * This was [16] with the record guarded by `if (death_count < 16)` while
+         * the kill itself -- is_dead, death_time, health -- ran unconditionally.
+         * Past the 16th death in a tick the server considered a player dead and
+         * never told them: their client kept them upright, accepting input, in a
+         * world that had stopped acknowledging it. Sixteen is well inside one
+         * AoE wipe or one contested spawn, and deaths in a tick are correlated
+         * rather than spread out, which is exactly the case that overran it.
+         *
+         * Static for the same reason expired[] is: gameplay thread only, and
+         * this is 8 KB that does not belong on a thread stack. */
+        static DeathEvent deaths[MAX_PLAYERS];
         int death_count = 0;
 
         player_registry_rdlock();
@@ -1057,11 +1079,9 @@ void combat_tick(NPCWorld* world) {
                 active_players[i].death_time = now;
                 active_players[i].health = 0;
 
-                if (death_count < MAX_DEATH_EVENTS) {
-                    deaths[death_count].player_id = active_players[i].character_id;
-                    deaths[death_count].client_fd = active_players[i].client_fd;
-                    death_count++;
-                }
+                deaths[death_count].player_id = active_players[i].character_id;
+                deaths[death_count].client_fd = active_players[i].client_fd;
+                death_count++;
 
                 LOG_DEBUG("[COMBAT] Player %u has died!", active_players[i].character_id);
             }
@@ -1087,7 +1107,6 @@ void combat_tick(NPCWorld* world) {
     {
         #define RESPAWN_DELAY 3.0
 
-        #define MAX_RESPAWN_EVENTS 16
         /* The world bible sends a dead player to their house, or to the nearest
          * known city when they have none. Housing does not exist yet, so every
          * respawn resolves to the nearest capital from where the player died. */
@@ -1102,7 +1121,13 @@ void combat_tick(NPCWorld* world) {
             float    pos_y;
         } RespawnEvent;
 
-        RespawnEvent respawns[MAX_RESPAWN_EVENTS];
+        /* One slot per player, for the same reason deaths[] above is: the
+         * respawn moved the player and restored their health whether or not
+         * there was room to record it, so past the 16th respawn in a tick the
+         * server teleported someone across the map and left their client
+         * standing at the corpse with the old health bar. Deaths cluster, so
+         * respawns cluster three seconds later. */
+        static RespawnEvent respawns[MAX_PLAYERS];
         int respawn_count = 0;
 
         player_registry_rdlock();
@@ -1133,17 +1158,15 @@ void combat_tick(NPCWorld* world) {
                 active_players[i].pos_y = respawn_y;
                 active_players[i].is_dirty = 1;
 
-                if (respawn_count < MAX_RESPAWN_EVENTS) {
-                    respawns[respawn_count].player_id  = active_players[i].character_id;
-                    respawns[respawn_count].client_fd   = active_players[i].client_fd;
-                    respawns[respawn_count].health      = active_players[i].health;
-                    respawns[respawn_count].max_health   = active_players[i].max_health;
-                    respawns[respawn_count].mana        = active_players[i].resource;
-                    respawns[respawn_count].max_mana     = active_players[i].max_resource;
-                    respawns[respawn_count].pos_x        = respawn_x;
-                    respawns[respawn_count].pos_y        = respawn_y;
-                    respawn_count++;
-                }
+                respawns[respawn_count].player_id   = active_players[i].character_id;
+                respawns[respawn_count].client_fd   = active_players[i].client_fd;
+                respawns[respawn_count].health      = active_players[i].health;
+                respawns[respawn_count].max_health  = active_players[i].max_health;
+                respawns[respawn_count].mana        = active_players[i].resource;
+                respawns[respawn_count].max_mana    = active_players[i].max_resource;
+                respawns[respawn_count].pos_x       = respawn_x;
+                respawns[respawn_count].pos_y       = respawn_y;
+                respawn_count++;
 
                 LOG_DEBUG("[COMBAT] Player %u respawned in %s at (%.0f, %.0f)",
                           active_players[i].character_id, home->city_name,
@@ -1170,13 +1193,29 @@ void combat_tick(NPCWorld* world) {
         }
     }
 
-    // respawn eligible NPCs
-    pthread_mutex_lock(&world->lock);
-    for (int i = 0; i < MAX_NPCS; i++) {
-        NPCEntity* npc = &world->npcs[i];
-        if (npc->id == 0) continue;
-        if (npc->is_alive) continue;
-        if (npc->respawn_time <= 0.0f) continue;
+    /* Respawn eligible NPCs.
+     *
+     * This one genuinely has to consider every NPC — a corpse anywhere in the
+     * world can come due — so it iterates rather than queries. It holds only
+     * the pool read lock plus one slot at a time, so a large pool no longer
+     * blocks combat for the length of the sweep, and it walks the occupied-slot
+     * list rather than the pool, so an empty slot costs nothing. */
+    npc_world_read_begin(world);
+
+    int live_count = 0;
+    const int* live = npc_world_live_slots(world, &live_count);
+
+    for (int n = 0; n < live_count; n++) {
+        int i = live[n];
+        NPCEntity* npc = npc_world_slot(world, i);
+        if (!npc || npc->id == 0) continue;   // unlocked pre-filter only
+
+        npc_world_slot_lock(world, i);
+
+        if (npc->id == 0 || npc->is_alive || npc->respawn_time <= 0.0f) {
+            npc_world_slot_unlock(world, i);
+            continue;
+        }
 
         if (npc->death_time > 0.0 && (now - npc->death_time) >= npc->respawn_time) {
             npc->is_alive = 1;
@@ -1198,6 +1237,8 @@ void combat_tick(NPCWorld* world) {
 
             LOG_DEBUG("[COMBAT] NPC '%s' (id=%u) respawned at (%.1f, %.1f)", npc->name, npc->id, npc->spawn_x, npc->spawn_y);
         }
+
+        npc_world_slot_unlock(world, i);
     }
-    pthread_mutex_unlock(&world->lock);
+    npc_world_read_end(world);
 }

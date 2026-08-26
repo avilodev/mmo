@@ -8,6 +8,7 @@
  */
 
 #include "ability_def.h"
+#include "log.h"
 #include "json_util.h"
 #include "race_registry.h"
 
@@ -206,8 +207,8 @@ static int parse_status_effects(const JsonValue* obj, AbilityEffectDef* effects,
         const char* type_name = json_get_string(src, "type", NULL);
         StatusEffectType type = parse_effect_type(type_name);
         if (type == EFFECT_NONE) {
-            fprintf(stderr, "  %s: unknown status effect \"%s\" ignored\n",
-                    key, type_name ? type_name : "(missing)");
+            LOG_ERROR("  %s: unknown status effect \"%s\" ignored",
+                      key, type_name ? type_name : "(missing)");
             continue;
         }
 
@@ -225,8 +226,8 @@ static int parse_status_effects(const JsonValue* obj, AbilityEffectDef* effects,
     }
 
     if (listed > max_effects) {
-        fprintf(stderr, "  %s: %d status effects exceeds the %d supported; extras ignored\n",
-                key, listed, MAX_ABILITY_EFFECTS);
+        LOG_ERROR("  %s: %d status effects exceeds the %d supported; extras ignored",
+                  key, listed, MAX_ABILITY_EFFECTS);
     }
     return count;
 }
@@ -251,8 +252,8 @@ static AbilityDef* parse_ability(const char* key, const JsonValue* obj) {
     const char* race_key = json_get_string(obj, "race", NULL);
     const RaceDef* race = race_key ? race_get_by_key(race_key) : NULL;
     if (race_key && !race) {
-        fprintf(stderr, "  %s: unknown race \"%s\"; the ability will belong to no race\n",
-                key, race_key);
+        LOG_ERROR("  %s: unknown race \"%s\"; the ability will belong to no race",
+                  key, race_key);
     }
     ability->race_id = race ? (uint8_t)race->id : 0;
 
@@ -263,8 +264,8 @@ static AbilityDef* parse_ability(const char* key, const JsonValue* obj) {
      * rather than a design choice. Refuse it instead of charging an absent resource. */
     ability->resource_cost = json_get_int(obj, "resourceCost", 0);
     if (ability->form == FORM_HUMAN && ability->resource_cost != 0) {
-        fprintf(stderr, "  %s: Human Form has no resource pool; resourceCost %d ignored\n",
-                key, ability->resource_cost);
+        LOG_ERROR("  %s: Human Form has no resource pool; resourceCost %d ignored",
+                  key, ability->resource_cost);
         ability->resource_cost = 0;
     }
 
@@ -321,8 +322,8 @@ int abilities_init(const char* json_filepath) {
     const char* err = NULL;
     JsonValue* root = json_parse_file(json_filepath, &err);
     if (!root) {
-        fprintf(stderr, "[ABILITIES] %s: %s\n", json_filepath ? json_filepath : "(no path)",
-                err ? err : "unreadable");
+        LOG_ERROR("[ABILITIES] %s: %s", json_filepath ? json_filepath : "(no path)",
+                  err ? err : "unreadable");
         return 0;
     }
 
@@ -330,13 +331,13 @@ int abilities_init(const char* json_filepath) {
      * registry silently orphans every one of them. Say so rather than letting it
      * present later as abilities that belong to nobody. */
     if (race_registry_count() == 0) {
-        fprintf(stderr, "[ABILITIES] The race registry is empty — load races.json first, "
-                        "or every ability will belong to no race\n");
+        LOG_ERROR("[ABILITIES] The race registry is empty — load races.json first, "
+                          "or every ability will belong to no race");
     }
 
     const JsonValue* abilities = json_get(root, "abilities");
     if (!abilities) {
-        fprintf(stderr, "[ABILITIES] %s: no \"abilities\" object\n", json_filepath);
+        LOG_ERROR("[ABILITIES] %s: no \"abilities\" object", json_filepath);
         json_free(root);
         return 0;
     }
@@ -347,12 +348,12 @@ int abilities_init(const char* json_filepath) {
         if (!key || key[0] == '_') continue;   /* leading underscore marks a comment */
 
         if (next_ability_id >= MAX_ABILITIES) {
-            fprintf(stderr, "[ABILITIES] registry full at %d; skipping \"%s\"\n",
-                    MAX_ABILITIES, key);
+            LOG_ERROR("[ABILITIES] registry full at %d; skipping \"%s\"",
+                      MAX_ABILITIES, key);
             break;
         }
         if (ability_get_by_key(key)) {
-            fprintf(stderr, "[ABILITIES] duplicate key \"%s\" ignored\n", key);
+            LOG_ERROR("[ABILITIES] duplicate key \"%s\" ignored", key);
             continue;
         }
 
@@ -365,7 +366,7 @@ int abilities_init(const char* json_filepath) {
     }
 
     json_free(root);
-    printf("[ABILITIES] Loaded %d abilities from %s\n", abilities_loaded, json_filepath);
+    LOG_INFO("[ABILITIES] Loaded %d abilities from %s", abilities_loaded, json_filepath);
     return 1;
 }
 
@@ -414,7 +415,7 @@ int ability_resolve_keys(const char keys[][MAX_ABILITY_KEY], int key_count,
 
         const AbilityDef* ability = ability_get_by_key(keys[i]);
         if (!ability) {
-            fprintf(stderr, "[ABILITIES] spec names \"%s\", which is not defined\n", keys[i]);
+            LOG_ERROR("[ABILITIES] spec names \"%s\", which is not defined", keys[i]);
             continue;
         }
         out_ids[count++] = ability->id;

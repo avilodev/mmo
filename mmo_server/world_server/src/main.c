@@ -6,11 +6,17 @@
 #include "log.h"
 #include "packet_limiter.h"
 #include "limit_profiles.h"
+#include "metrics_server.h"
 #include "net_notify.h"
 #include "net_loop.h"
 #include "session.h"
 #include "realm_world_auth.h"
+#include "tls.h"
 #include "world_database_config.h"
+#include "world_table.h"
+#include "ip_allowlist.h"
+#include "peer_addr.h"
+#include "str_fixed.h"
 
 #include "ability_def.h"
 #include "ability_handler.h"
@@ -21,20 +27,28 @@
 #include "combat.h"
 #include "dialogue_system.h"
 #include "projectile.h"
+#include "chat.h"
 #include "loot.h"
 #include "npc_ai.h"
+#include "npc_snapshot.h"
 #include "npc_spawns.h"
+#include "npc_query.h"
+#include "npc_world.h"
 #include "routes.h"
 #include "packet_handler.h"
 #include "player_data.h"
 #include "players_database.h"
+#include "item_instance.h"
 #include "session_registry.h"
 #include "spatial_grid.h"
+#include "broadcast_pool.h"
 #include "broadcast_snapshot.h"
 #include "tick_scheduler.h"
 #include "party.h"
 #include "quest_system.h"
+#include "net_tuning.h"
 #include "shop.h"
+#include "shop_session.h"
 #include "utils.h"
 #include "world_collision.h"
 #include "zone_system.h"
@@ -42,6 +56,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <errno.h>
 #include <poll.h>
 #include <stddef.h>
@@ -66,8 +81,8 @@ static void set_data_path(char* destination, size_t destination_size,
     size_t relative_length = strlen(relative_path);
 
     if (directory_length + relative_length + 1 > destination_size) {
-        fprintf(stderr, "Runtime data path is too long: %s%s\n",
-                directory, relative_path);
+        LOG_ERROR("Runtime data path is too long: %s%s",
+                  directory, relative_path);
         exit(EXIT_FAILURE);
     }
 
@@ -75,24 +90,12 @@ static void set_data_path(char* destination, size_t destination_size,
     memcpy(destination + directory_length, relative_path, relative_length + 1);
 }
 
-/**
- * Receive an exact byte count while applying a poll timeout to each read.
- *
- * @return      The requested byte count, or -1 on timeout, socket error, or disconnection.
- */
-static ssize_t recv_exact_timeout(int fd, void* buffer, size_t length, int timeout_ms) {
-    uint8_t* ptr = buffer;
-    size_t total = 0;
-    while (total < length) {
-        struct pollfd wait_fd = {.fd = fd, .events = POLLIN};
-        int ready = poll(&wait_fd, 1, timeout_ms);
-        if (ready <= 0 || !(wait_fd.revents & POLLIN)) return -1;
-        ssize_t got = recv(fd, ptr + total, length - total, 0);
-        if (got <= 0) return -1;
-        total += (size_t)got;
-    }
-    return (ssize_t)total;
-}
+/* recv_exact_timeout() lived here, reading the realm's auth packet and its
+ * heartbeats off a bare descriptor. That link is TLS now and reads go through
+ * tls_recv_exact(), which also checks SSL_pending() before polling: one TLS
+ * record can carry more than one heartbeat, and a poll-first loop would wait
+ * out the full fifteen seconds on bytes already decrypted in the session and
+ * then report the realm as timed out. */
 
 /** Resolve all world runtime assets relative to the server executable. */
 static void init_data_paths(void) {
@@ -118,7 +121,7 @@ static void init_data_paths(void) {
     set_data_path(QUEST_SAVE_DIR,       sizeof(QUEST_SAVE_DIR),       exe, "/data/quests");
     // Runtime assets are packaged beside the binary by the Makefile.
     set_data_path(WORLD_DAT_PATH,       sizeof(WORLD_DAT_PATH),       exe, "/data/world.dat");
-    printf("[PATHS] Data directory: %s/data/\n", exe);
+    LOG_INFO("[PATHS] Data directory: %s/data/", exe);
 }
 
 static pthread_t g_combat_thread;
@@ -127,87 +130,174 @@ static pthread_t g_combat_thread;
 // below for why they were merged.
 static pthread_t g_broadcast_thread;
 
-static volatile int g_combat_running = 0;
-static volatile int g_broadcast_running = 0;
+/* Atomic for the same reason as g_server.running: the signal handler writes
+ * these while the gameplay and broadcast threads read them, and `volatile`
+ * orders nothing between threads. */
+static _Atomic int g_combat_running = 0;
+static _Atomic int g_broadcast_running = 0;
 
 // Global for tracking world server uptime
 time_t g_server_start_time = 0;
 
 NPCWorld g_npc_world;
 
+/* --- Realm handshake admission ------------------------------------------- */
+
+/** Concurrently running realm handler threads; see g_server.realm_max_handlers. */
+static _Atomic int g_realm_handlers = 0;
+
+/** The world's TLS identity on the realm link, and the realms it accepts.
+ *
+ * Mutual: the realm checks this world's key against its own pin file, and this
+ * checks the realm's certificate against g_realm_pins. Requiring a client
+ * certificate is what makes the second half possible -- a peer that sends none
+ * has nothing to pin, and would otherwise reach the server-key comparison on
+ * the strength of having completed a handshake.
+ *
+ * The link is worth this because of what crosses it: the shared server auth
+ * key, which is the credential a realm proves itself with, and which a world
+ * accepts as licence to be listed and to admit the tickets that realm mints.
+ */
+static SSL_CTX*   g_realm_tls_ctx = NULL;
+static CertPinSet g_realm_pins;
+
+/** One accepted realm connection handed to its detached handler thread. */
+typedef struct {
+    int  fd;
+    char peer[PEER_ADDR_MAXLEN];
+} RealmHandlerArg;
+
+
+/** Send one realm auth refusal over the session. */
+static void realm_auth_refuse(SSL* ssl, const char* message) {
+    RealmAuthAckPacket ack = {0};
+    ack.header.type = PACKET_REALM_AUTH_ACK;
+    ack.header.player_id = 0;
+    ack.header.payload_size = 0;
+    ack.success = 0;
+    STR_COPY_FIELD(ack.message, message);
+
+    tls_send_exact(ssl, &ack, sizeof(ack), 5000);
+}
+
+/** Load the world's realm-link identity and the realm keys it will accept.
+ *
+ * @return 1 when the realm listener can be opened, otherwise 0.
+ */
+static int realm_link_tls_init(const char* cert_path, const char* key_path,
+                               const char* realm_pin_path) {
+    char reason[256];
+    cert_pin_reset(&g_realm_pins);
+
+    if (!cert_pin_load_file(&g_realm_pins, realm_pin_path, reason, sizeof(reason))) {
+        LOG_ERROR("No usable realm public-key pins in %s: %s", realm_pin_path, reason);
+        LOG_INFO("This world will refuse every realm handshake without them.");
+        LOG_INFO("Run setup/setup.sh, which generates and cross-installs them.");
+        return 0;
+    }
+
+    g_realm_tls_ctx = tls_server_init_mutual(cert_path, key_path);
+    if (!g_realm_tls_ctx) {
+        LOG_ERROR("Could not load this world's certificate (%s)", cert_path);
+        cert_pin_reset(&g_realm_pins);
+        return 0;
+    }
+
+    LOG_INFO("Realm link TLS ready (%d realm key%s pinned)",
+             g_realm_pins.count, g_realm_pins.count == 1 ? "" : "s");
+    return 1;
+}
+
+/** Release what realm_link_tls_init() loaded. */
+static void realm_link_tls_cleanup(void) {
+    if (g_realm_tls_ctx) {
+        SSL_CTX_free(g_realm_tls_ctx);
+        g_realm_tls_ctx = NULL;
+    }
+    cert_pin_reset(&g_realm_pins);
+}
+
 /**
  * Authenticate one realm connection and answer its world-status heartbeats.
  *
- * The function owns and frees the heap-allocated descriptor argument, then closes the realm descriptor before returning.
+ * The function owns and frees the heap-allocated argument, releases its handler
+ * slot, then closes the realm descriptor before returning.
  *
  * @return      Always NULL.
  */
 void* realm_handler_thread(void* arg) {
-    int realm_fd = *(int*)arg;
-    free(arg);
+    RealmHandlerArg* handoff = (RealmHandlerArg*)arg;
+    int realm_fd = handoff->fd;
 
-    printf("Realm server connection handler started: fd %d\n", realm_fd);
+    char peer[PEER_ADDR_MAXLEN];
+    STR_COPY_FIELD(peer, handoff->peer);
+    free(handoff);
+
+    LOG_INFO("Realm server connection handler started: fd %d (%s)", realm_fd, peer);
+
+    /* The handshake comes before anything else, and the pin check is inside it.
+     * The peer has already passed the address allowlist, which says where it
+     * came from; this says who it is. A peer that fails either never reaches
+     * the server-key comparison below -- and the server key is the thing worth
+     * protecting here, because it is the same secret for every realm. */
+    SSL* ssl = tls_accept_pinned(g_realm_tls_ctx, realm_fd, &g_realm_pins,
+                                 peer, 10000);
+    if (!ssl) {
+        LOG_WARN("Realm TLS handshake from %s failed or was not pinned", peer);
+        close(realm_fd);
+        atomic_fetch_sub(&g_realm_handlers, 1);
+        return NULL;
+    }
 
     // First packet should be REALM_AUTH
     RealmAuthPacket auth;
     struct pollfd pfd = {.fd = realm_fd, .events = POLLIN};
 
-    // Wait for auth packet with timeout
-    if (poll(&pfd, 1, 10000) <= 0) {
-        printf("Realm auth timeout\n");
+    if (!tls_recv_exact(ssl, &auth, sizeof(auth), 10000)) {
+        LOG_ERROR("Failed to receive realm auth from %s", peer);
+        tls_close(ssl);
         close(realm_fd);
-        return NULL;
-    }
-
-    if (recv_exact_timeout(realm_fd, &auth, sizeof(auth), 10000) != (ssize_t)sizeof(auth)) {
-        printf("Failed to receive realm auth\n");
-        close(realm_fd);
+        atomic_fetch_sub(&g_realm_handlers, 1);
         return NULL;
     }
 
     if (auth.header.type != PACKET_REALM_AUTH) {
-        printf("Invalid packet type, expected REALM_AUTH\n");
+        LOG_ERROR("Invalid packet type from %s, expected REALM_AUTH", peer);
+        tls_close(ssl);
         close(realm_fd);
+        atomic_fetch_sub(&g_realm_handlers, 1);
         return NULL;
     }
+
+    /* Terminate both fixed-width fields before anything reads them as strings.
+     *
+     * server_key and realm_name arrive straight off the wire as char[128] and
+     * char[32] with no guarantee of a NUL anywhere inside them. strcmp() and
+     * "%s" both read until they find one, so a peer that fills either field
+     * completely walked the comparison and the log line off the end of the
+     * packet and into the rest of this thread's stack -- reachable before any
+     * authentication, by anyone who could open the port. */
+    char provided_key[sizeof(auth.server_key) + 1];
+    char realm_name[sizeof(auth.realm_name) + 1];
+    str_copy_fixed(provided_key, sizeof(provided_key), auth.server_key);
+    str_copy_fixed(realm_name, sizeof(realm_name), auth.realm_name);
 
     const char* world_name = g_server.server_name;
 
-    // Fetch current key from Redis
-    char* current_key = get_server_auth_key_from_redis(world_name);
-    if (!current_key) {
-        printf("Failed to fetch current auth key from Redis\n");
-
-        RealmAuthAckPacket ack = {0};
-        ack.header.type = PACKET_REALM_AUTH_ACK;
-        ack.header.player_id = 0;
-        ack.header.payload_size = 0;
-        ack.success = 0;
-        strncpy(ack.message, "Server key unavailable", 63);
-
-        server_send_direct(realm_fd, &ack, sizeof(ack));
+    /* Accepts the current key or the one it replaced, and compares in constant
+     * time. The overlap matters: keys are rotated on a schedule and the realm
+     * caches one for a whole probe cycle, so without it a rotation landing
+     * between the realm's read and this check takes the world off the world
+     * list until the next cycle -- and a missed rotation takes it off
+     * permanently, reported only as "Server key unavailable". */
+    if (!validate_server_auth_key(provided_key, world_name)) {
+        LOG_WARN("Invalid realm server key from '%s' at %s", realm_name, peer);
+        realm_auth_refuse(ssl, "Invalid server key");
+        tls_close(ssl);
         close(realm_fd);
+        atomic_fetch_sub(&g_realm_handlers, 1);
         return NULL;
     }
-
-    // Validate against current key
-    if (strcmp(auth.server_key, current_key) != 0) {
-        printf("Invalid realm server key from '%s' (key validation failed)\n", auth.realm_name);
-
-        RealmAuthAckPacket ack = {0};
-        ack.header.type = PACKET_REALM_AUTH_ACK;
-        ack.header.player_id = 0;
-        ack.header.payload_size = 0;
-        ack.success = 0;
-        strncpy(ack.message, "Invalid server key", 63);
-
-        server_send_direct(realm_fd, &ack, sizeof(ack));
-        free(current_key);
-        close(realm_fd);
-        return NULL;
-    }
-
-    free(current_key);
 
     // Send success response
     RealmAuthAckPacket ack = {0};
@@ -215,41 +305,53 @@ void* realm_handler_thread(void* arg) {
     ack.header.player_id = 0;
     ack.header.payload_size = 0;
     ack.success = 1;
-    strncpy(ack.message, "Authenticated successfully", 63);
+    STR_COPY_FIELD(ack.message, "Authenticated successfully");
 
-    if (server_send_direct(realm_fd, &ack, sizeof(ack)) <= 0) {
-        printf("Failed to send auth ack\n");
+    if (!tls_send_exact(ssl, &ack, sizeof(ack), 5000)) {
+        LOG_ERROR("Failed to send auth ack");
+        tls_close(ssl);
         close(realm_fd);
+        atomic_fetch_sub(&g_realm_handlers, 1);
         return NULL;
     }
 
-    printf("Realm server '%s' authenticated successfully\n", auth.realm_name);
+    LOG_INFO("Realm server '%s' at %s authenticated over TLS", realm_name, peer);
 
     // Handle heartbeats
     pfd.fd = realm_fd;
     pfd.events = POLLIN;
 
     while (g_server.running) {
-        // Wait for heartbeat (15 second timeout)
-        int ret = poll(&pfd, 1, 15000);
+        /* Poll only when the session has nothing buffered. A TLS record can
+         * carry more than one heartbeat, and poll() reports the descriptor
+         * rather than the record -- so polling unconditionally would sit out
+         * the full fifteen seconds on a heartbeat that had already arrived and
+         * then declare the realm timed out. */
+        if (!tls_pending(ssl)) {
+            int ret = poll(&pfd, 1, 15000);
 
-        if (ret < 0) {
-            if (errno == EINTR) continue;
-            printf("Poll error on realm connection\n");
-            break;
+            if (ret < 0) {
+                if (errno == EINTR) continue;
+                LOG_INFO("Poll error on realm connection");
+                break;
+            }
+
+            if (ret == 0) {
+                LOG_INFO("Realm server heartbeat timeout");
+                break;
+            }
+
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                LOG_INFO("Realm connection error");
+                break;
+            }
+            if (!(pfd.revents & POLLIN)) continue;
         }
 
-        if (ret == 0) {
-            printf("Realm server heartbeat timeout\n");
-            break;
-        }
-
-        if (pfd.revents & POLLIN) {
+        {
             WorldHeartbeatPacket hb;
-            ssize_t bytes = recv_exact_timeout(realm_fd, &hb, sizeof(hb), 15000);
-
-            if (bytes <= 0) {
-                printf("Realm server disconnected\n");
+            if (!tls_recv_exact(ssl, &hb, sizeof(hb), 15000)) {
+                LOG_INFO("Realm server disconnected");
                 break;
             }
 
@@ -269,23 +371,20 @@ void* realm_handler_thread(void* arg) {
                 // Use server name from config
                 strncpy(status.server_name, g_server.server_name, 63);
 
-                if (server_send_direct(realm_fd, &status, sizeof(status)) <= 0) {
-                    printf("Failed to send status to realm server\n");
+                if (!tls_send_exact(ssl, &status, sizeof(status), 5000)) {
+                    LOG_ERROR("Failed to send status to realm server");
                     break;
                 }
             } else {
-                printf("Unexpected packet type %d from realm server\n", hb.header.type);
+                LOG_INFO("Unexpected packet type %d from realm server", hb.header.type);
             }
-        }
-
-        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            printf("Realm connection error\n");
-            break;
         }
     }
 
+    tls_close(ssl);
     close(realm_fd);
-    printf("Realm server handler exiting\n");
+    atomic_fetch_sub(&g_realm_handlers, 1);
+    LOG_INFO("Realm server handler exiting (%s)", peer);
     return NULL;
 }
 
@@ -311,47 +410,96 @@ void* accept_thread_func(void* arg) {
 
         if (client_fd < 0) continue;
 
-        printf("New connection from %s:%d\n",
-               inet_ntoa(client_addr.sin_addr),
-               ntohs(client_addr.sin_port));
+        LOG_DEBUG("New connection from %s:%d",
+                  inet_ntoa(client_addr.sin_addr),
+                  ntohs(client_addr.sin_port));
 
-        // Peek at the first packet to determine connection type.
-        // Use poll() with a timeout first so the accept thread never blocks
-        // indefinitely if a client connects but sends nothing.
-        struct pollfd cpfd = {.fd = client_fd, .events = POLLIN};
-        if (poll(&cpfd, 1, 3000) <= 0) {
-            printf("Peek timeout/error for fd %d — dropping connection\n", client_fd);
-            close(client_fd);
+        /* Straight to an event loop. Nothing is peeked at and nothing is
+         * classified: this listener carries one protocol.
+         *
+         * What used to happen here was a 3-second poll and an MSG_PEEK on
+         * every accepted connection to see whether the first byte was
+         * PACKET_REALM_AUTH -- so the realm's privileged handshake lived on
+         * the same port as the game, every player paid a syscall pair to prove
+         * they were not a realm, and a client that sent nothing held the
+         * single accept thread for three seconds before being dropped. The
+         * realm has its own listener now; see realm_accept_thread_func().
+         *
+         * The socket is pinned to loop (fd % N) for its whole life, so exactly
+         * one thread ever services it. */
+        net_loop_submit(client_fd);
+    }
+
+    return NULL;
+}
+
+/**
+ * Accept realm-to-world connections on the private realm listener.
+ *
+ * Everything reaching this socket is claiming to be a realm, so the checks are
+ * the admission policy for that claim rather than a classification step: the
+ * source address must be in `realm_allow`, and the number of handlers already
+ * running must be under the configured cap. Both happen before any allocation
+ * and before a thread exists, because each handler blocks for up to twenty
+ * seconds before authentication decides anything.
+ *
+ * @return Always NULL after the server stops.
+ */
+void* realm_accept_thread_func(void* arg) {
+    (void)arg;
+
+    struct pollfd pfd = {.fd = g_server.realm_sockfd, .events = POLLIN};
+
+    while (g_server.running) {
+        int ret = poll(&pfd, 1, 1000);
+        if (ret <= 0) continue;
+
+        struct sockaddr_in peer_addr;
+        socklen_t addr_len = sizeof(peer_addr);
+
+        int realm_fd = accept(g_server.realm_sockfd,
+                              (struct sockaddr*)&peer_addr, &addr_len);
+        if (realm_fd < 0) continue;
+
+        if (!ip_allowlist_contains(&g_server.realm_allow,
+                                   (struct sockaddr*)&peer_addr)) {
+            LOG_ERROR("Refused realm handshake from %s (not in realm_allow)",
+                      inet_ntoa(peer_addr.sin_addr));
+            close(realm_fd);
             continue;
         }
 
-        uint8_t peek_buffer[16];
-        ssize_t peek = recv(client_fd, peek_buffer, sizeof(peek_buffer), MSG_PEEK);
-
-        if (peek > 0) {
-            PacketType type = peek_buffer[0];
-
-            // Check if this is a realm server connecting
-            if (type == PACKET_REALM_AUTH) {
-                printf("Detected realm server connection\n");
-
-                pthread_t thread;
-                int* fd_ptr = malloc(sizeof(int));
-                *fd_ptr = client_fd;
-
-                if (pthread_create(&thread, NULL, realm_handler_thread, fd_ptr) != 0) {
-                    printf("Failed to create realm handler thread\n");
-                    close(client_fd);
-                    free(fd_ptr);
-                } else {
-                    pthread_detach(thread);
-                }
-                continue;
-            }
+        int in_flight = atomic_fetch_add(&g_realm_handlers, 1) + 1;
+        if (in_flight > g_server.realm_max_handlers) {
+            atomic_fetch_sub(&g_realm_handlers, 1);
+            LOG_ERROR("Refused realm handshake from %s (%d handlers already running, cap %d)",
+                      inet_ntoa(peer_addr.sin_addr), in_flight - 1,
+                      g_server.realm_max_handlers);
+            close(realm_fd);
+            continue;
         }
-        // Hand the socket to an event loop. It is pinned to loop (fd % N) for
-        // its whole life, so exactly one thread ever services it.
-        net_loop_submit(client_fd);
+
+        RealmHandlerArg* handoff = malloc(sizeof(*handoff));
+        if (!handoff) {
+            atomic_fetch_sub(&g_realm_handlers, 1);
+            LOG_ERROR("Out of memory accepting a realm connection");
+            close(realm_fd);
+            continue;
+        }
+
+        handoff->fd = realm_fd;
+        peer_addr_text(realm_fd, handoff->peer, sizeof(handoff->peer));
+        LOG_INFO("Realm server connection from %s", handoff->peer);
+
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, realm_handler_thread, handoff) != 0) {
+            atomic_fetch_sub(&g_realm_handlers, 1);
+            LOG_ERROR("Failed to create realm handler thread");
+            close(realm_fd);
+            free(handoff);
+        } else {
+            pthread_detach(thread);
+        }
     }
 
     return NULL;
@@ -359,12 +507,34 @@ void* accept_thread_func(void* arg) {
 
 /** Number of measured phases in each gameplay tick. */
 #define TICK_PHASE_COUNT 6
+
+/** Milliseconds one gameplay tick may take before the world falls behind 20Hz.
+ *
+ * The same 50ms the tick report has always printed as "the budget"; named here
+ * so the health check and the log line cannot disagree about it. */
+#define TICK_BUDGET_MS 50.0
 static const char* g_phase_name[TICK_PHASE_COUNT] = {
     "snapshot", "combat", "ability", "projectile", "npc_ai", "loot"
 };
 static double g_phase_total_ms[TICK_PHASE_COUNT];
 static double g_phase_worst_ms[TICK_PHASE_COUNT];
 static long   g_phase_samples;
+
+/* The last completed timing window, kept for the metrics endpoint.
+ *
+ * The accumulators above are cleared every ten seconds by tick_phase_report(),
+ * so a scrape landing just after one would see almost nothing. These hold the
+ * window that just closed, which is a stable value to read at any moment.
+ *
+ * Written by the gameplay thread and read by the metrics thread. Plain doubles
+ * rather than atomics on purpose: a torn read produces a slightly wrong number
+ * on one scrape, and paying for atomics on a 20Hz gameplay path to avoid that
+ * would be the wrong trade. Nothing decides anything from them but a graph.
+ */
+static double g_published_phase_mean[TICK_PHASE_COUNT];
+static double g_published_phase_worst[TICK_PHASE_COUNT];
+static double g_published_tick_mean_ms;
+static double g_published_tick_worst_ms;
 
 static inline double mono_ms(void) {
     struct timespec ts;
@@ -388,14 +558,169 @@ static void tick_phase_report(void) {
     }
     if (n < (int)sizeof(line))
         snprintf(line + n, sizeof(line) - (size_t)n,
-                 " | total mean %.2fms of 50ms budget", mean_total);
+                 " | total mean %.2fms of %.0fms budget",
+                 mean_total, TICK_BUDGET_MS);
 
     LOG_INFO("%s", line);
     LOG_DEBUG("[TICK] figures are mean/worst milliseconds per phase");
 
+    /* Publish before clearing, so the endpoint always has a whole window. */
+    double worst_total = 0.0;
+    for (int p = 0; p < TICK_PHASE_COUNT; p++) {
+        g_published_phase_mean[p]  = g_phase_total_ms[p] / (double)g_phase_samples;
+        g_published_phase_worst[p] = g_phase_worst_ms[p];
+        worst_total += g_phase_worst_ms[p];
+    }
+    g_published_tick_mean_ms  = mean_total;
+    g_published_tick_worst_ms = worst_total;
+
     memset(g_phase_total_ms, 0, sizeof(g_phase_total_ms));
     memset(g_phase_worst_ms, 0, sizeof(g_phase_worst_ms));
     g_phase_samples = 0;
+}
+
+/* --- The metrics endpoint ------------------------------------------------ */
+
+/** Write this world's numbers in Prometheus text format. */
+static size_t world_metrics(char* out, size_t out_size, void* user) {
+    (void)user;
+    size_t used = 0;
+
+    metrics_write(out, out_size, &used, "mmo_world_players",
+                  "Players currently in this world", "gauge",
+                  (double)atomic_load(&g_state.current_players));
+    metrics_write(out, out_size, &used, "mmo_world_max_players",
+                  "Configured capacity", "gauge",
+                  (double)g_server.max_players);
+    metrics_write(out, out_size, &used, "mmo_world_uptime_seconds",
+                  "Seconds since this world started", "counter",
+                  (double)(time(NULL) - g_server_start_time));
+    metrics_write(out, out_size, &used, "mmo_world_id",
+                  "This world's identifier in worlds.conf", "gauge",
+                  (double)g_server.world_id);
+
+    /* Tick health. The budget is 50ms; a mean approaching it means the world
+     * is about to stop keeping 20Hz, which is the single most useful early
+     * warning this process can emit. */
+    metrics_write(out, out_size, &used, "mmo_world_tick_mean_ms",
+                  "Mean total gameplay tick time over the last window, against a 50ms budget",
+                  "gauge", g_published_tick_mean_ms);
+    metrics_write(out, out_size, &used, "mmo_world_tick_worst_ms",
+                  "Worst total gameplay tick time over the last window", "gauge",
+                  g_published_tick_worst_ms);
+
+    for (int p = 0; p < TICK_PHASE_COUNT; p++) {
+        char name[96], help[160];
+        snprintf(name, sizeof(name), "mmo_world_tick_phase_mean_ms_%s", g_phase_name[p]);
+        snprintf(help, sizeof(help), "Mean time in the %s tick phase", g_phase_name[p]);
+        metrics_write(out, out_size, &used, name, help, "gauge",
+                      g_published_phase_mean[p]);
+
+        snprintf(name, sizeof(name), "mmo_world_tick_phase_worst_ms_%s", g_phase_name[p]);
+        snprintf(help, sizeof(help), "Worst time in the %s tick phase", g_phase_name[p]);
+        metrics_write(out, out_size, &used, name, help, "gauge",
+                      g_published_phase_worst[p]);
+    }
+
+    metrics_write(out, out_size, &used, "mmo_world_npcs_alive",
+                  "NPCs occupying a pool slot", "gauge",
+                  (double)npc_world_count(&g_npc_world));
+    metrics_write(out, out_size, &used, "mmo_world_npc_capacity",
+                  "Configured NPC pool size", "gauge",
+                  (double)npc_world_capacity(&g_npc_world));
+
+    /* Queue depths. Both are backpressure signals: a chat queue that stays
+     * deep means the dispatcher is behind the players, and a worker queue that
+     * stays deep means the blocking work -- saves, logins -- is behind the
+     * network. */
+    metrics_write(out, out_size, &used, "mmo_world_chat_queue_depth",
+                  "Chat messages waiting to be delivered", "gauge",
+                  (double)chat_queue_depth());
+    metrics_write(out, out_size, &used, "mmo_world_chat_dropped_total",
+                  "Chat messages dropped for backpressure since startup", "counter",
+                  (double)chat_dropped_count());
+
+    int job_capacity = 0;
+    int job_depth = net_loop_job_depth(&job_capacity);
+    metrics_write(out, out_size, &used, "mmo_world_worker_queue_depth",
+                  "Blocking jobs waiting for a worker", "gauge", (double)job_depth);
+    metrics_write(out, out_size, &used, "mmo_world_worker_queue_capacity",
+                  "Blocking job queue capacity", "gauge", (double)job_capacity);
+    metrics_write(out, out_size, &used, "mmo_world_connections",
+                  "Open client connections, authenticated or not", "gauge",
+                  (double)net_loop_connection_count());
+
+    int pool_in_use = 0, pool_size = 0, pool_waiters = 0;
+    character_database_pool_stats(&pool_in_use, &pool_size, &pool_waiters);
+    metrics_write(out, out_size, &used, "mmo_world_db_pool_in_use",
+                  "Database connections checked out", "gauge", (double)pool_in_use);
+    metrics_write(out, out_size, &used, "mmo_world_db_pool_size",
+                  "Database connection pool size", "gauge", (double)pool_size);
+    metrics_write(out, out_size, &used, "mmo_world_db_pool_waiters",
+                  "Threads waiting for a database connection", "gauge",
+                  (double)pool_waiters);
+
+    metrics_write(out, out_size, &used, "mmo_world_shops_open",
+                  "Characters with a shop open", "gauge",
+                  (double)shop_session_count());
+
+    /* What the packet limiter has refused. Until these existed the limiter's
+     * only output was a rate-limited log line, so a world under a packet flood
+     * looked exactly like a quiet one to anything scraping it. */
+    unsigned long long lim_allowed = 0, lim_dropped = 0, lim_kicked = 0;
+    packet_limiter_totals(&lim_allowed, &lim_dropped, &lim_kicked);
+    metrics_write(out, out_size, &used, "mmo_world_packets_allowed_total",
+                  "Packets accepted by the rate limiter since startup", "counter",
+                  (double)lim_allowed);
+    metrics_write(out, out_size, &used, "mmo_world_packets_dropped_total",
+                  "Packets dropped for exceeding a packet budget since startup", "counter",
+                  (double)lim_dropped);
+    metrics_write(out, out_size, &used, "mmo_world_limiter_kicks_total",
+                  "Connections closed for sustained packet-budget abuse since startup",
+                  "counter", (double)lim_kicked);
+
+    return used;
+}
+
+/**
+ * Decide whether this world is healthy enough to be sent players.
+ *
+ * Three things make it not: the gameplay loop has stopped, the tick is over
+ * budget so the world is no longer running at 20Hz, or the database pool is
+ * saturated with threads queued behind it. Each is a reason a load balancer
+ * should route elsewhere and a restart policy should look closer.
+ *
+ * Being full is deliberately not one of them. A full world is working
+ * correctly; the realm already reports capacity and steers players away.
+ */
+static int world_health(char* reason, size_t reason_size, void* user) {
+    (void)user;
+
+    if (!g_server.running) {
+        snprintf(reason, reason_size, "shutting down");
+        return 0;
+    }
+    if (!atomic_load(&g_combat_running)) {
+        snprintf(reason, reason_size, "the gameplay thread is not running");
+        return 0;
+    }
+    if (g_published_tick_mean_ms > TICK_BUDGET_MS) {
+        snprintf(reason, reason_size,
+                 "gameplay tick averaging %.1fms against a %.0fms budget",
+                 g_published_tick_mean_ms, TICK_BUDGET_MS);
+        return 0;
+    }
+
+    int in_use = 0, size = 0, waiters = 0;
+    character_database_pool_stats(&in_use, &size, &waiters);
+    if (size > 0 && in_use >= size && waiters > 0) {
+        snprintf(reason, reason_size,
+                 "database pool saturated (%d/%d in use, %d waiting)",
+                 in_use, size, waiters);
+        return 0;
+    }
+
+    return 1;
 }
 
 /**
@@ -420,20 +745,43 @@ void* combat_update_thread(void* arg) {
         return NULL;
     }
 
+    // The NPC counterpart, for the same reason: every phase below used to
+    // rescan the whole NPC pool under one lock. See npc_snapshot.h.
+    static NPCTickSnapshot npc_snapshot;
+    if (!npc_snapshot_init(&npc_snapshot, &g_npc_world)) {
+        LOG_ERROR("[TICK] gameplay thread cannot start without an NPC grid");
+        tick_snapshot_free(&snapshot);
+        return NULL;
+    }
+
     double phase_ms[TICK_PHASE_COUNT];
     double last_report = mono_ms();
 
-    printf("Combat update thread started (20Hz)\n");
+    LOG_INFO("Combat update thread started (20Hz)");
 
     while (g_combat_running && g_server.running) {
         double t0 = mono_ms(), t1;
 
-        tick_snapshot_build(&snapshot);       t1 = mono_ms(); phase_ms[0] = t1 - t0; t0 = t1;
-        combat_tick(&g_npc_world);            t1 = mono_ms(); phase_ms[1] = t1 - t0; t0 = t1;
-        ability_tick(&g_npc_world, DELTA_TIME);            t1 = mono_ms(); phase_ms[2] = t1 - t0; t0 = t1;
-        projectile_tick(&g_npc_world, &snapshot, DELTA_TIME); t1 = mono_ms(); phase_ms[3] = t1 - t0; t0 = t1;
+        // Both snapshots are rebuilt together, at the top of the tick, so every
+        // phase below sees one consistent view of players and NPCs.
+        tick_snapshot_build(&snapshot);
+        npc_snapshot_build(&npc_snapshot, &g_npc_world);
+        /* Republish the shared index the packet threads read, from the same
+         * sample instant. Without it, attack packets fall back to scanning the
+         * whole pool on a network loop thread. */
+        npc_query_publish(&g_npc_world);
+                                              t1 = mono_ms(); phase_ms[0] = t1 - t0; t0 = t1;
+        combat_tick(&g_npc_world, &npc_snapshot);          t1 = mono_ms(); phase_ms[1] = t1 - t0; t0 = t1;
+        ability_tick(&g_npc_world, &snapshot, &npc_snapshot, DELTA_TIME); t1 = mono_ms(); phase_ms[2] = t1 - t0; t0 = t1;
+        projectile_tick(&g_npc_world, &snapshot, &npc_snapshot, DELTA_TIME);
+                                              t1 = mono_ms(); phase_ms[3] = t1 - t0; t0 = t1;
         npc_ai_tick(&g_npc_world, &snapshot, DELTA_TIME);  t1 = mono_ms(); phase_ms[4] = t1 - t0; t0 = t1;
-        loot_tick();                          t1 = mono_ms(); phase_ms[5] = t1 - t0;
+        loot_tick(&snapshot);                 t1 = mono_ms(); phase_ms[5] = t1 - t0;
+
+        /* Off the phase table on purpose: it walks one entry per character
+         * with a shop open, which is a handful, and giving it a phase would
+         * cost more in clock reads than the sweep itself. */
+        shop_session_tick();
 
         for (int p = 0; p < TICK_PHASE_COUNT; p++) {
             g_phase_total_ms[p] += phase_ms[p];
@@ -459,14 +807,15 @@ void* combat_update_thread(void* arg) {
         long drift_ns = (now.tv_sec - next_tick.tv_sec) * 1000000000 +
                         (now.tv_nsec - next_tick.tv_nsec);
         if (drift_ns > 10000000) {
-            printf("[WARNING] Combat thread lagging by %ldms\n", drift_ns / 1000000);
+            LOG_INFO("[WARNING] Combat thread lagging by %ldms", drift_ns / 1000000);
         }
     }
 
     tick_phase_report();          // final numbers before the counters go away
+    npc_snapshot_free(&npc_snapshot);
     tick_snapshot_free(&snapshot);
 
-    printf("Combat update thread exiting\n");
+    LOG_INFO("Combat update thread exiting");
     return NULL;
 }
 
@@ -477,6 +826,11 @@ void* combat_update_thread(void* arg) {
 /** Player-to-NPC interest radius in world pixels. */
 #define NPC_VIEW_RADIUS 2000.0f
 
+/** Bucket count for the party-dedup set; a power of two above MAX_PLAYERS. */
+#define PARTY_SET_BUCKETS 2048
+_Static_assert(PARTY_SET_BUCKETS > MAX_PLAYERS,
+               "the party set must have room for one bucket per broadcast player");
+
 /** Own one shared player snapshot and broadcast-task scratch storage. */
 typedef struct {
     BroadcastPlayer   players[MAX_PLAYERS];
@@ -484,11 +838,21 @@ typedef struct {
     BroadcastSnapshot snapshot;
 
     // NPC scratch. Only the NPC task reads this, so it is filled there rather
-    // than in prepare — sampling 256 NPCs on every 30Hz pass to feed a 10Hz
+    // than in prepare — sampling every NPC on every 30Hz pass to feed a 10Hz
     // stream would be two thirds wasted.
-    NPCPositionData   npc_wire[MAX_NPCS];
-    SpatialPoint      npc_points[MAX_NPCS];
-    SpatialGrid*      npc_grid;
+    //
+    // Heap-allocated and sized from the pool's capacity, which is a runtime
+    // value now rather than a compile-time one.
+    NPCPositionData*  npc_wire;
+    SpatialPoint*     npc_points;
+    int               npc_capacity;
+
+    /** One NPC grid per shard; SpatialGrid keeps query scratch and is not shared. */
+    SpatialGrid*      npc_grids[BROADCAST_POOL_MAX_SHARDS];
+    int               shard_count;
+
+    /** Dedup set for the party stream; see task_broadcast_parties(). */
+    uint32_t          party_seen[PARTY_SET_BUCKETS];
 } BroadcastContext;
 
 /** Snapshot active players and rebuild their interest grid for one scheduler pass. */
@@ -535,15 +899,19 @@ static void broadcast_prepare(void* ctx) {
     player_registry_unlock();
 
     bc->snapshot.count = count;
-    spatial_grid_build(bc->snapshot.grid, bc->player_points, count);
 }
 
-/** Broadcast nearby player state and one update per represented party. */
-static void task_broadcast_players(void* ctx) {
+/** Broadcast nearby player state for one shard of the pass. */
+static void shard_broadcast_players(void* ctx, int shard, int shard_count) {
     BroadcastContext* bc = ctx;
     const BroadcastSnapshot* snap = &bc->snapshot;
 
     for (int i = 0; i < snap->count; i++) {
+        // Sharded on the descriptor, matching how net_loop pins connections, so
+        // this shard writes only to sockets its own loop owns.
+        if (shard_count > 1 && (snap->players[i].client_fd % shard_count) != shard)
+            continue;
+
         PlayerPositionBroadcastPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header.type = PACKET_PLAYER_POSITIONS;
@@ -554,7 +922,7 @@ static void task_broadcast_players(void* ctx) {
         // own nearest result, so without it a full crowd would cost this
         // player one visible neighbour.
         int nearby[MAX_NEARBY_PLAYERS + 1];
-        int nearby_count = spatial_grid_query(snap->grid,
+        int nearby_count = spatial_grid_query(snap->grids[shard],
                                               snap->players[i].pos_x,
                                               snap->players[i].pos_y,
                                               PLAYER_VIEW_RADIUS,
@@ -589,62 +957,68 @@ static void task_broadcast_players(void* ctx) {
         }
     }
 
-    // Party HP/mana updates, one broadcast per party per tick.
-    uint32_t broadcast_parties[MAX_PLAYERS];
-    int broadcast_count = 0;
+}
+
+/** Broadcast one party update per represented party.
+ *
+ * Not sharded: party_broadcast_update() sends to a party's whole roster, which
+ * spans descriptors and therefore shards. It runs once, on the pass thread,
+ * after the sharded player fan-out has finished.
+ */
+static void task_broadcast_parties(void* ctx) {
+    BroadcastContext* bc = ctx;
+    const BroadcastSnapshot* snap = &bc->snapshot;
+
+    /* Dedup through an open-addressed set rather than a linear scan of what has
+     * already been seen. The scan was O(n^2) over every broadcast player, every
+     * tick — at 1000 players in parties that is half a million comparisons a
+     * tick to produce at most a few hundred sends. */
+    uint32_t* seen = bc->party_seen;
+    memset(seen, 0, sizeof(bc->party_seen));   // 0 is "empty"
 
     for (int i = 0; i < snap->count; i++) {
         uint32_t pid = snap->players[i].party_id;
         if (pid == 0) continue;
 
+        uint32_t bucket = (pid * 2654435761u) & (PARTY_SET_BUCKETS - 1);
         int already = 0;
-        for (int b = 0; b < broadcast_count; b++) {
-            if (broadcast_parties[b] == pid) { already = 1; break; }
+
+        // Terminates: the table has more buckets than there can be players.
+        while (seen[bucket] != 0) {
+            if (seen[bucket] == pid) { already = 1; break; }
+            bucket = (bucket + 1) & (PARTY_SET_BUCKETS - 1);
         }
         if (already) continue;
 
-        broadcast_parties[broadcast_count++] = pid;
+        seen[bucket] = pid;
         party_broadcast_update(pid);
     }
 }
 
-/** Snapshot NPCs and broadcast nearest in-range entries to each player. */
-static void task_broadcast_npcs(void* ctx) {
+/** Fan the player stream out across the pool, then send party updates once. */
+static void task_broadcast_players(void* ctx) {
+    BroadcastContext* bc = ctx;
+
+    /* One grid per shard over the same points. Built here rather than in
+     * broadcast_prepare() because prepare runs every pass (30Hz) while this
+     * stream only goes out at 20Hz — indexing the players a third more often
+     * than anything reads the result is wasted work. */
+    for (int g = 0; g < bc->snapshot.shard_count; g++)
+        spatial_grid_build(bc->snapshot.grids[g], bc->player_points, bc->snapshot.count);
+
+    broadcast_pool_run(shard_broadcast_players, ctx);
+    task_broadcast_parties(ctx);
+}
+
+/** Broadcast nearest in-range NPCs to one shard of the pass. */
+static void shard_broadcast_npcs(void* ctx, int shard, int shard_count) {
     BroadcastContext* bc = ctx;
     const BroadcastSnapshot* snap = &bc->snapshot;
 
-    // Sample the NPCs once, under one lock acquisition. The previous version
-    // took this lock once per player per tick.
-    int npc_count = 0;
-
-    pthread_mutex_lock(&g_npc_world.lock);
-    for (int n = 0; n < MAX_NPCS; n++) {
-        NPCEntity* npc = &g_npc_world.npcs[n];
-        if (npc->id == 0) continue;
-
-        // Byte-swapped once here rather than once per recipient.
-        NPCPositionData* data = &bc->npc_wire[npc_count];
-        data->npc_id = htonl(npc->id);
-        data->pos_x = npc->pos_x;
-        data->pos_y = npc->pos_y;
-        data->health = htonl(npc->health);
-        data->max_health = htonl(npc->max_health);
-        data->is_alive = npc->is_alive;
-        data->category = npc->category;
-        data->is_interactable = npc->is_interactable;
-        data->npc_type_id = (uint8_t)npc->npc_type_id;
-
-        bc->npc_points[npc_count].x = npc->pos_x;
-        bc->npc_points[npc_count].y = npc->pos_y;
-        npc_count++;
-    }
-    pthread_mutex_unlock(&g_npc_world.lock);
-
-    if (npc_count == 0) return;
-
-    spatial_grid_build(bc->npc_grid, bc->npc_points, npc_count);
-
     for (int i = 0; i < snap->count; i++) {
+        if (shard_count > 1 && (snap->players[i].client_fd % shard_count) != shard)
+            continue;
+
         NPCPositionPacket pkt;
         memset(&pkt, 0, sizeof(pkt));
         pkt.header.type = PACKET_NPC_POSITIONS;
@@ -653,7 +1027,7 @@ static void task_broadcast_npcs(void* ctx) {
         pkt.npc_count = 0;
 
         int nearby[MAX_NPCS_PER_PACKET];
-        int nearby_count = spatial_grid_query(bc->npc_grid,
+        int nearby_count = spatial_grid_query(bc->npc_grids[shard],
                                               snap->players[i].pos_x,
                                               snap->players[i].pos_y,
                                               NPC_VIEW_RADIUS,
@@ -674,9 +1048,84 @@ static void task_broadcast_npcs(void* ctx) {
     }
 }
 
-static void task_broadcast_projectiles(void* ctx) {
+/** Sample NPCs once, then fan their stream out across the pool. */
+static void task_broadcast_npcs(void* ctx) {
     BroadcastContext* bc = ctx;
-    projectile_broadcast(&bc->snapshot);
+
+    /* Nobody to send to. Sampling the pool first and discovering that
+     * afterwards is what this pass used to do -- ten times a second, holding
+     * the pool read lock and every NPC's mutex in turn, to build a stream with
+     * no recipients. An empty world now costs one comparison. */
+    if (bc->snapshot.count == 0) return;
+
+    // Sample the NPCs once for the whole pass. The version before last took the
+    // NPC lock once per player per tick; this takes the pool read lock once and
+    // one slot lock at a time.
+
+    int npc_count = 0;
+
+    // Shares the pool read lock with the gameplay thread and takes one NPC's
+    // mutex at a time, so a broadcast pass no longer excludes gameplay.
+    npc_world_read_begin(&g_npc_world);
+
+    /* And it walks the NPCs that exist rather than the pool they live in: a
+     * world configured with room for four thousand NPCs and running two
+     * hundred used to pay for four thousand, ten times a second. */
+    int live_count = 0;
+    const int* live = npc_world_live_slots(&g_npc_world, &live_count);
+
+    for (int i = 0; i < live_count && npc_count < bc->npc_capacity; i++) {
+        int n = live[i];
+        NPCEntity* npc = npc_world_slot(&g_npc_world, n);
+        if (!npc || npc->id == 0) continue;   // unlocked pre-filter only
+
+        npc_world_slot_lock(&g_npc_world, n);
+
+        if (npc->id != 0) {
+            // Byte-swapped once here rather than once per recipient.
+            NPCPositionData* data = &bc->npc_wire[npc_count];
+            data->npc_id = htonl(npc->id);
+            data->pos_x = npc->pos_x;
+            data->pos_y = npc->pos_y;
+            data->health = htonl(npc->health);
+            data->max_health = htonl(npc->max_health);
+            data->is_alive = npc->is_alive;
+            data->category = npc->category;
+            data->is_interactable = npc->is_interactable;
+            data->npc_type_id = (uint8_t)npc->npc_type_id;
+
+            bc->npc_points[npc_count].x = npc->pos_x;
+            bc->npc_points[npc_count].y = npc->pos_y;
+            npc_count++;
+        }
+
+        npc_world_slot_unlock(&g_npc_world, n);
+    }
+
+    npc_world_read_end(&g_npc_world);
+
+    if (npc_count == 0) return;
+
+    /* One grid per shard, all built from the same points.
+     *
+     * SpatialGrid keeps its query scratch inside itself and is documented as
+     * single-thread-only, so shards cannot share one. Building N copies of an
+     * index over a few hundred NPCs is far cheaper than serialising N shards'
+     * worth of queries and sends behind a shared one. */
+    for (int g = 0; g < bc->shard_count; g++)
+        spatial_grid_build(bc->npc_grids[g], bc->npc_points, npc_count);
+
+    broadcast_pool_run(shard_broadcast_npcs, ctx);
+}
+
+/** Send the projectile stream for one shard of the pass. */
+static void shard_broadcast_projectiles(void* ctx, int shard, int shard_count) {
+    BroadcastContext* bc = ctx;
+    projectile_broadcast(&bc->snapshot, shard, shard_count);
+}
+
+static void task_broadcast_projectiles(void* ctx) {
+    broadcast_pool_run(shard_broadcast_projectiles, ctx);
 }
 
 /**
@@ -700,14 +1149,40 @@ void* world_broadcast_thread(void* arg) {
     world_collision_extent(&world_w, &world_h);
 
     bc->snapshot.players = bc->players;
-    bc->snapshot.grid = spatial_grid_create(world_w, world_h,
-                                            SPATIAL_GRID_DEFAULT_CELL, MAX_PLAYERS);
-    bc->npc_grid = spatial_grid_create(world_w, world_h,
-                                       SPATIAL_GRID_DEFAULT_CELL, MAX_NPCS);
-    if (!bc->snapshot.grid || !bc->npc_grid) {
+
+    bc->npc_capacity = npc_world_capacity(&g_npc_world);
+    bc->npc_wire     = calloc((size_t)bc->npc_capacity, sizeof(NPCPositionData));
+    bc->npc_points   = calloc((size_t)bc->npc_capacity, sizeof(SpatialPoint));
+
+    /* Shard on the loop count so a connection's outbound traffic stays on the
+     * thread whose epoll loop already owns that descriptor. */
+    broadcast_pool_start(net_loop_count());
+    bc->shard_count          = broadcast_pool_shards();
+    bc->snapshot.shard_count = bc->shard_count;
+
+    /* Both streams need one grid per shard, for the same reason: a shard queries
+     * concurrently with every other shard, and a grid's query scratch belongs to
+     * one thread. */
+    int grids_ok = 1;
+    for (int g = 0; g < bc->shard_count; g++) {
+        bc->snapshot.grids[g] = spatial_grid_create(world_w, world_h,
+                                                    SPATIAL_GRID_DEFAULT_CELL,
+                                                    MAX_PLAYERS);
+        bc->npc_grids[g]      = spatial_grid_create(world_w, world_h,
+                                                    SPATIAL_GRID_DEFAULT_CELL,
+                                                    bc->npc_capacity);
+        if (!bc->snapshot.grids[g] || !bc->npc_grids[g]) grids_ok = 0;
+    }
+
+    if (!grids_ok || !bc->npc_wire || !bc->npc_points) {
         LOG_ERROR("[BROADCAST] could not allocate the interest grids");
-        spatial_grid_destroy(bc->snapshot.grid);
-        spatial_grid_destroy(bc->npc_grid);
+        for (int g = 0; g < bc->shard_count; g++) {
+            spatial_grid_destroy(bc->snapshot.grids[g]);
+            spatial_grid_destroy(bc->npc_grids[g]);
+        }
+        broadcast_pool_stop();
+        free(bc->npc_wire);
+        free(bc->npc_points);
         free(bc);
         return NULL;
     }
@@ -721,7 +1196,7 @@ void* world_broadcast_thread(void* arg) {
 
     {
         int cols = 0, rows = 0;
-        spatial_grid_dimensions(bc->snapshot.grid, &cols, &rows);
+        spatial_grid_dimensions(bc->snapshot.grids[0], &cols, &rows);
         LOG_INFO("[BROADCAST] thread started — projectiles 30Hz, players 20Hz, "
                  "npcs 10Hz, %dx%d interest grid @ %.0fpx",
                  cols, rows, SPATIAL_GRID_DEFAULT_CELL);
@@ -734,17 +1209,70 @@ void* world_broadcast_thread(void* arg) {
 
     tick_scheduler_report(&scheduler);
 
-    spatial_grid_destroy(bc->snapshot.grid);
-    spatial_grid_destroy(bc->npc_grid);
+    broadcast_pool_stop();
+
+    for (int g = 0; g < bc->shard_count; g++) {
+        spatial_grid_destroy(bc->snapshot.grids[g]);
+        spatial_grid_destroy(bc->npc_grids[g]);
+    }
+    free(bc->npc_wire);
+    free(bc->npc_points);
     free(bc);
 
     LOG_INFO("[BROADCAST] thread exiting");
     return NULL;
 }
 
-/** Request shutdown of the world server and its gameplay threads. */
+/**
+ * Tell every connected client that the world is going down.
+ *
+ * Best-effort and non-blocking: connection_io_send() queues on a socket that
+ * cannot take the bytes now, and the loops are still running here, so a slow
+ * client does not hold up the shutdown. A client that misses it falls back to
+ * the ping timeout it would have hit anyway.
+ */
+static void broadcast_shutdown_notice(void) {
+    extern ActivePlayer active_players[];
+
+    uint8_t packet[sizeof(DisconnectPacket)];
+    size_t n = net_build_disconnect(packet, sizeof(packet),
+                                    DISCONNECT_REASON_SHUTDOWN, NULL);
+    if (!n) return;
+
+    int sent = 0;
+    player_registry_rdlock();
+    int online_count = 0;
+    const int* online = player_active_list_locked(&online_count);
+    for (int i = 0; i < online_count; i++) {
+        int slot = online[i];
+        if (!active_players[slot].is_loaded) continue;
+        int fd = active_players[slot].client_fd;
+        if (fd < 0) continue;
+        connection_io_send(fd, packet, n);
+        sent++;
+    }
+    player_registry_unlock();
+
+    if (sent > 0) LOG_INFO("Told %d client(s) the server is shutting down", sent);
+}
+
+/** Record which signal asked for the shutdown, for the main thread to report. */
+static volatile sig_atomic_t g_shutdown_signal = 0;
+
+/** Request shutdown of the world server and its gameplay threads.
+ *
+ * Flag writes only. This used to call LOG_INFO(), which reaches vsnprintf(),
+ * a mutex and write(2) -- none of them async-signal-safe. A SIGINT arriving
+ * while another thread held the log's lock deadlocked the handler, and one
+ * arriving inside malloc() during formatting could corrupt the heap. The main
+ * loop below reports the signal once it wakes.
+ *
+ * sig_atomic_t for the signal number and _Atomic ints for the run flags: both
+ * are safe to write from a handler, and the flags are already read by the
+ * gameplay threads.
+ */
 void signal_handler(int signum) {
-    printf("\n[SIGNAL] Received signal %d, shutting down gracefully...\n", signum);
+    g_shutdown_signal = signum;
     g_server.running = 0;
     g_combat_running = 0;
     g_broadcast_running = 0;
@@ -762,14 +1290,14 @@ int main(int argc, char** argv) {
 
     log_init();   // reads MMO_LOG_LEVEL; must run before any thread starts
 
-    printf("=== WORLD SERVER ===\n");
-    printf("PID: %d\n", getpid());
+    LOG_INFO("=== WORLD SERVER ===");
+    LOG_INFO("PID: %d", getpid());
 
     init_data_paths();
 
     g_server_start_time = time(NULL);
     if (!session_init()) {
-        fprintf(stderr, "Failed to initialize Redis session connection\n");
+        LOG_ERROR("Failed to initialize Redis session connection");
         return 1;
     }
     session_registry_init();
@@ -797,16 +1325,16 @@ int main(int argc, char** argv) {
     sigaction(SIGINT, &sa, NULL);   // Ctrl+C
     sigaction(SIGTERM, &sa, NULL);  // kill command
 
-    printf("[SIGNAL] Signal handlers installed\n");
+    LOG_INFO("[SIGNAL] Signal handlers installed");
 
     // Parse config file
     if(argv && argv[1]) {
         if(!set_config(argv[1])) {
-            printf("Usage: ./world_server <server>.conf\n");
+            LOG_INFO("Usage: ./world_server <server>.conf");
             exit(1);
         }
     } else {
-        printf("Usage: ./world_server <server>.conf\n");
+        LOG_INFO("Usage: ./world_server <server>.conf");
         exit(1);
     }
 
@@ -820,7 +1348,7 @@ int main(int argc, char** argv) {
     }
 
     if (!items_init(DATA_PATH)) {
-        fprintf(stderr, "FAILED - Item system initialization\n");
+        LOG_ERROR("FAILED - Item system initialization");
         return 1;
     }
 
@@ -831,12 +1359,12 @@ int main(int argc, char** argv) {
     data_path_resolve(races_path, sizeof(races_path), "/data/races.json");
     data_path_resolve(progression_path, sizeof(progression_path), "/data/progression.json");
     if (!class_stats_init(races_path, progression_path)) {
-        fprintf(stderr, "FATAL: no races loaded from %s — no character can be run\n", races_path);
+        LOG_ERROR("FATAL: no races loaded from %s — no character can be run", races_path);
         return 1;
     }
 
     if (!abilities_init(ABILITIES_PATH)) {
-        fprintf(stderr, "FAILED - Ability system initialization\n");
+        LOG_ERROR("FAILED - Ability system initialization");
         return 1;
     }
 
@@ -846,95 +1374,167 @@ int main(int argc, char** argv) {
     projectile_init();
 
     if (!loot_init(DATA_PATH)) {
-        fprintf(stderr, "FAILED - Loot system initialization\n");
+        LOG_ERROR("FAILED - Loot system initialization");
         return 1;
     }
 
     if (!npc_ai_init(NPC_TYPES_PATH)) {
-        fprintf(stderr, "FAILED - NPC AI system initialization\n");
+        LOG_ERROR("FAILED - NPC AI system initialization");
         return 1;
     }
 
-    printf("Loading dialogue system... ");
-    fflush(stdout);
+    /* One record per subsystem, stated after the fact.
+     *
+     * These used to be "Loading X... " with no newline, an fflush, and a bare
+     * "OK" once it finished -- a progress line assembled from two writes. That
+     * shape cannot survive a log: a record is a whole line, it carries a
+     * timestamp and a level, and it may be interleaved with another thread's.
+     * Saying what happened once it has happened costs nothing and is what can
+     * actually be read back out of a file afterwards. */
     if (!dialogue_system_init(DIALOGUES_PATH)) {
-        fprintf(stderr, "FAILED - Dialogue system initialization\n");
+        LOG_ERROR("FAILED - Dialogue system initialization");
         return 1;
     }
-    printf("OK (%d dialogues loaded)\n", dialogues_get_count());
+    LOG_INFO("Dialogue system loaded (%d dialogues)", dialogues_get_count());
 
-    quest_system_set_dir(QUEST_SAVE_DIR);
-    printf("Loading quest system... ");
-    fflush(stdout);
-    quest_system_init(QUESTS_PATH);
-    printf("OK\n");
+    quest_storage_set_dir(QUEST_SAVE_DIR);
+    quest_registry_load(QUESTS_PATH);
+    LOG_INFO("Quest system loaded");
 
-    printf("Loading shop system... ");
-    fflush(stdout);
     shop_init(SHOPS_PATH);
     {
         // invalid shop content does not prevent startup
         int shop_problems = shop_validate();
-        if (shop_problems == 0) printf("OK\n");
-        else                    printf("OK (%d content problems — see log)\n", shop_problems);
+        if (shop_problems == 0) LOG_INFO("Shop system loaded");
+        else                    LOG_WARN("Shop system loaded with %d content problem(s)",
+                                         shop_problems);
     }
 
-    printf("Loading zone definitions... ");
-    fflush(stdout);
     if (zone_system_init(ZONES_PATH) >= 0) {
-        printf("OK\n");
+        LOG_INFO("Zone definitions loaded");
     } else {
-        printf("SKIPPED (zones.json not found — zone notifications disabled)\n");
+        LOG_WARN("Zone definitions skipped (zones.json not found — "
+                 "zone notifications disabled)");
     }
 
-    printf("Loading world collision map... ");
-    fflush(stdout);
-    if (world_collision_init(WORLD_DAT_PATH)) {
-        printf("OK\n");
-    } else {
+    if (!world_collision_init(WORLD_DAT_PATH)) {
         // Fatal on purpose. Without a collision map the server cannot tell open
         // ground from a wall, and starting anyway would mean running a world
         // where movement is unvalidated — which is worse than not running.
-        printf("FAILED\n");
-        fprintf(stderr, "Cannot start without a collision map at '%s'. "
-                        "Movement validation depends on it.\n", WORLD_DAT_PATH);
+        LOG_ERROR("Cannot start without a collision map at '%s'. "
+                  "Movement validation depends on it.", WORLD_DAT_PATH);
         return 1;
     }
+    LOG_INFO("World collision map loaded");
 
     // Connect to database
-    printf("Connecting to database for world '%s'\n", g_server.server_name);
+    LOG_INFO("Connecting to database for world '%s'", g_server.server_name);
 
-    const char* pg_conn_str = get_database_for_world(g_server.server_name);
-    if (!pg_conn_str) {
-        fprintf(stderr, "FAILED - No database configured for world '%s'\n",
-                g_server.server_name);
+    /* The world roster is read from worlds.conf, so a world that is not listed
+     * there fails here with a clear message instead of at the first NULL
+     * connection string. */
+    {
+        char worlds_path[1024];
+        if (!world_table_default_path(worlds_path, sizeof(worlds_path)) ||
+            !world_table_load(worlds_path)) {
+            LOG_ERROR("FAILED - no world table. Set MMO_WORLDS_CONF, or run "
+                      "`make setup` so worlds.conf is packaged beside the binary.");
+            return 1;
+        }
+    }
+
+    const WorldEntry* self = world_table_by_name(g_server.server_name);
+    if (!self) {
+        LOG_ERROR("FAILED - world '%s' is not listed in worlds.conf",
+                  g_server.server_name);
         return 1;
     }
 
-    printf("Database connection string: %s\n", pg_conn_str);
+    /* This world's identifier, so a ticket the realm minted for another world
+     * can be refused at admission. Row order in worlds.conf assigns it, which
+     * is the same rule the realm uses when it hands the identifier out. */
+    g_server.world_id = self->id;
+    playerdata_set_world_id(g_server.world_id);
+    LOG_INFO("World id: %u", g_server.world_id);
+
+    /* The realm listener's port comes from the same table the realm dials, so
+     * the two cannot disagree. A `realm_port` line in the world's own .conf
+     * wins, for a deployment that has to move it on one host only. */
+    if (g_server.realm_port == 0) g_server.realm_port = self->realm_port;
+    if (g_server.realm_port == g_server.port) {
+        LOG_ERROR("FAILED - the realm port and the client port are both %u",
+                  (unsigned)g_server.port);
+        return 1;
+    }
+
+    const char* pg_conn_str = self->conninfo;
+
+    /* The database name only. The full connection string may carry a password
+     * once a deployment sets one, and this line goes to a log everyone reads. */
+    LOG_INFO("Database: %s", self->database);
 
     if (!playerdata_init(pg_conn_str)) {
-        printf("FAILED - PostgreSQL initialization\n");
+        LOG_ERROR("FAILED - PostgreSQL initialization");
         return 1;
     }
 
-    printf("✓ Connected to world database\n");
+    LOG_INFO("✓ Connected to world database");
 
-    combat_npc_init(&g_npc_world);
+    /* Seed the item-instance allocator from what is already persisted.
+     *
+     * item_instance_next_id() hands out process-local identifiers starting at 1.
+     * Without this call every restart begins reissuing identifiers that live
+     * character_items rows already own: the next save collides on
+     * PK(instance_id) / UNIQUE(character_id, slot), and the rows that do land
+     * overwrite another character's items. The defect is silent -- nothing fails
+     * until two characters' inventories have already merged.
+     *
+     * A failed query is fatal rather than seeded as zero. The query returns 0
+     * both for an empty table and for a failure, and guessing "empty" is exactly
+     * the case that reissues live identifiers.
+     */
+    {
+        uint64_t highest_instance_id = 0;
+        if (!character_items_max_instance_id_checked(&highest_instance_id)) {
+            LOG_ERROR("FAILED - could not read the highest persisted item-instance id. "
+                      "Starting anyway would reissue identifiers that persisted items "
+                      "already own and corrupt inventories.");
+            playerdata_close();
+            return 1;
+        }
+        item_instance_seed(highest_instance_id);
+        LOG_INFO("✓ Item-instance allocator seeded above %llu",
+                 (unsigned long long)highest_instance_id);
+    }
+
+    if (!npc_world_init(&g_npc_world, g_server.max_npcs)) {
+        LOG_ERROR("FAILED - could not allocate the NPC pool");
+        playerdata_close();
+        return 1;
+    }
+
+    /* The index packet threads query instead of scanning the pool. Allocated
+     * here, published every tick by the gameplay thread. */
+    if (!npc_query_init(&g_npc_world)) {
+        LOG_ERROR("FAILED - could not allocate the shared NPC query index");
+        npc_world_shutdown(&g_npc_world);
+        playerdata_close();
+        return 1;
+    }
     party_init();
 
     // Load NPC spawns from data file
     {
         int spawn_count = npc_spawns_load(SPAWNS_PATH, &g_npc_world);
         if (spawn_count < 0) {
-            fprintf(stderr, "FAILED - Could not load NPC spawns from %s\n", SPAWNS_PATH);
+            LOG_ERROR("FAILED - Could not load NPC spawns from %s", SPAWNS_PATH);
             return 1;
         }
-        printf("Loaded %d NPC spawns\n", spawn_count);
+        LOG_INFO("Loaded %d NPC spawns", spawn_count);
     }
 
     if (!playerdata_start_save_thread()) {
-        fprintf(stderr, "FAILED - Periodic save thread\n");
+        LOG_ERROR("FAILED - Periodic save thread");
         playerdata_close();
         return 1;
     }
@@ -945,9 +1545,45 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* The realm link is mutual TLS, and the identity has to load before the
+     * listener opens: a world that accepted realm connections while it had no
+     * certificate would be accepting them in plaintext, which is the one
+     * outcome worse than refusing them. */
+    if (!realm_link_tls_init("./certs/server.crt", "./certs/server.key",
+                             "./certs/realm_pins.txt")) {
+        LOG_ERROR("FAILED - the realm link's TLS identity could not be loaded");
+        close(g_server.tcp_sockfd);
+        playerdata_close();
+        return 1;
+    }
+
+    /* The realm link's own listener. Fatal if it cannot be opened: a world the
+     * realm cannot reach is a world nobody can enter, and failing at startup
+     * says so once instead of appearing later as an unexplained absence from
+     * the world list. */
+    g_server.realm_sockfd = create_bound_server_socket(g_server.realm_bind,
+                                                       g_server.realm_port);
+    if (g_server.realm_sockfd < 0) {
+        LOG_ERROR("FAILED - could not open the realm listener on port %u",
+                  (unsigned)g_server.realm_port);
+        realm_link_tls_cleanup();
+        close(g_server.tcp_sockfd);
+        playerdata_close();
+        return 1;
+    }
+
+    /* START CHAT DISPATCH — before the loops, so no packet can be routed to a
+     * chat queue that does not exist yet. */
+    if (!chat_init()) {
+        LOG_ERROR("FAILED - could not start the chat dispatch thread");
+        g_server.running = 0;
+        playerdata_close();
+        return 1;
+    }
+
     // INIT EVENT LOOPS — connection count is no longer bounded by thread count.
-    if (net_loop_start() != 0) {
-        fprintf(stderr, "FAILED - could not start event loops\n");
+    if (net_loop_start(net_tuning_workers("MMO_WORLD_WORKERS")) != 0) {
+        LOG_ERROR("FAILED - could not start event loops");
         g_server.running = 0;
         playerdata_close();
         return 1;
@@ -955,15 +1591,38 @@ int main(int argc, char** argv) {
 
     // START ACCEPT THREAD
     if (pthread_create(&g_server.accept_thread, NULL, accept_thread_func, NULL) != 0) {
-        fprintf(stderr, "FAILED - Accept thread\n");
+        LOG_ERROR("FAILED - Accept thread");
         close(g_server.tcp_sockfd);
+        close(g_server.realm_sockfd);
+        playerdata_close();
+        return 1;
+    }
+
+    /* START THE METRICS ENDPOINT — after everything it reports exists, and
+     * before the banner, so a failure to bind is reported next to the other
+     * startup problems rather than after "server ready". Each world offsets
+     * the configured base port by its own id, so one MMO_METRICS_PORT
+     * configures the whole stack. */
+    metrics_server_start(g_server.server_name,
+                         metrics_bind_from_env(),
+                         metrics_port_from_env((int)g_server.world_id),
+                         world_metrics, world_health, NULL);
+
+    // START REALM ACCEPT THREAD
+    if (pthread_create(&g_server.realm_accept_thread, NULL,
+                       realm_accept_thread_func, NULL) != 0) {
+        LOG_ERROR("FAILED - Realm accept thread");
+        g_server.running = 0;
+        close(g_server.tcp_sockfd);
+        close(g_server.realm_sockfd);
+        pthread_join(g_server.accept_thread, NULL);
         playerdata_close();
         return 1;
     }
 
     // START COMBAT THREAD (20Hz)
     if (pthread_create(&g_combat_thread, NULL, combat_update_thread, NULL) != 0) {
-        fprintf(stderr, "FAILED - Combat update thread\n");
+        LOG_ERROR("FAILED - Combat update thread");
         g_server.running = 0;
         pthread_join(g_server.accept_thread, NULL);
         close(g_server.tcp_sockfd);
@@ -974,7 +1633,7 @@ int main(int argc, char** argv) {
     // START WORLD BROADCAST THREAD (projectiles 30Hz, players 20Hz, npcs 10Hz)
     g_broadcast_running = 1;
     if (pthread_create(&g_broadcast_thread, NULL, world_broadcast_thread, NULL) != 0) {
-        fprintf(stderr, "FAILED - World broadcast thread\n");
+        LOG_ERROR("FAILED - World broadcast thread");
         g_broadcast_running = 0;
         g_combat_running = 0;
         g_server.running = 0;
@@ -985,11 +1644,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    printf("✓ All systems online - server ready\n");
-    printf("  - Accept thread: Running\n");
-    printf("  - Event loops: epoll (see [NET] line above for counts)\n");
-    printf("  - Combat thread: 20Hz\n");
-    printf("  - World broadcast thread: projectiles 30Hz, players 20Hz, npcs 10Hz\n");
+    LOG_INFO("✓ All systems online - server ready");
+    LOG_INFO("  - Accept thread: Running (clients on %u, realm on %u)",
+             (unsigned)g_server.port, (unsigned)g_server.realm_port);
+    LOG_INFO("  - Event loops: epoll (see [NET] line above for counts)");
+    LOG_INFO("  - Combat thread: 20Hz");
+    LOG_INFO("  - World broadcast thread: projectiles 30Hz, players 20Hz, npcs 10Hz");
 
     // MAIN THREAD: Wait for shutdown signal
     while (g_server.running) {
@@ -999,13 +1659,54 @@ int main(int argc, char** argv) {
         static time_t last_stats = 0;
         time_t now = time(NULL);
         if (now - last_stats >= 10) {
-            printf("[STATS] Players: %d, Uptime: %lds\n",
-                   g_state.current_players, now - g_server_start_time);
+            /* Players and uptime used to be the whole line, which said nothing
+             * about whether the world was keeping its tick, whether anything
+             * was queueing behind it, or whether it was refusing traffic --
+             * the three things someone reads a log for when a world is
+             * misbehaving. /metrics carries all of it for a scraper; this is
+             * the same numbers for a deployment that has not set one up. */
+            unsigned long long lim_dropped = 0, lim_kicked = 0;
+            packet_limiter_totals(NULL, &lim_dropped, &lim_kicked);
+
+            int job_capacity = 0;
+            int job_depth = net_loop_job_depth(&job_capacity);
+
+            int pool_in_use = 0, pool_size = 0, pool_waiters = 0;
+            character_database_pool_stats(&pool_in_use, &pool_size, &pool_waiters);
+
+            LOG_INFO("[STATS] players=%d/%d uptime=%lds "
+                     "tick=%.1f/%.1fms(mean/worst) "
+                     "queues=chat:%zu,jobs:%d/%d db=%d/%d(+%d waiting) "
+                     "limiter=%llu dropped,%llu kicked",
+                     g_state.current_players, g_server.max_players,
+                     (long)(now - g_server_start_time),
+                     g_published_tick_mean_ms, g_published_tick_worst_ms,
+                     chat_queue_depth(), job_depth, job_capacity,
+                     pool_in_use, pool_size, pool_waiters,
+                     lim_dropped, lim_kicked);
             last_stats = now;
         }
     }
 
-    printf("\nShutting down...\n");
+    if (g_shutdown_signal) {
+        LOG_INFO("[SIGNAL] Received signal %d, shutting down gracefully...",
+                 (int)g_shutdown_signal);
+    }
+    LOG_INFO("Shutting down...");
+
+    /* Tell the players before the sockets go quiet.
+     *
+     * protocol.h has defined DISCONNECT_REASON_SHUTDOWN since the first
+     * version and nothing ever sent it: the world simply stopped answering,
+     * and every client sat there until its own ping timeout expired ~35s
+     * later and reported a lost connection. One packet turns that into "the
+     * server is restarting", which is the difference between a reconnect
+     * prompt and a bug report.
+     *
+     * Sent here rather than from net_loop_stop(): the loops must still be
+     * running for connection_io_send() to flush, and the accept thread is
+     * already closed above so no new connection can arrive behind it. */
+    broadcast_shutdown_notice();
 
     // Stop the broadcast and combat threads
     g_broadcast_running = 0;
@@ -1014,20 +1715,34 @@ int main(int argc, char** argv) {
     pthread_join(g_broadcast_thread, NULL);
     pthread_join(g_combat_thread, NULL);
 
-    // Stop accept thread
+    metrics_server_stop();
+
+    // Stop both accept threads
     close(g_server.tcp_sockfd);
+    close(g_server.realm_sockfd);
     pthread_join(g_server.accept_thread, NULL);
+    pthread_join(g_server.realm_accept_thread, NULL);
 
     // Drain and shut down the event loops and their blocking workers
     net_loop_stop();
 
+    /* After the loops, so nothing can enqueue behind the drain; the dispatcher
+     * delivers what is already queued before it exits. */
+    chat_shutdown();
+
+    /* After the realm accept thread is joined, so no handler is still using it. */
+    realm_link_tls_cleanup();
+
     // Cleanup
     npc_ai_cleanup();
+    npc_query_shutdown();
+    npc_world_shutdown(&g_npc_world);
     loot_cleanup();
     projectile_cleanup();
     ability_handler_cleanup();
     abilities_cleanup();
     dialogue_system_cleanup();
+    shop_session_shutdown();
     items_cleanup();
     playerdata_stop_save_thread();
     playerdata_close();
@@ -1037,6 +1752,7 @@ int main(int argc, char** argv) {
     session_registry_shutdown();
     session_close();
 
-    printf("World Server stopped\n");
+    LOG_INFO("World Server stopped");
+    log_close();
     return 0;
 }

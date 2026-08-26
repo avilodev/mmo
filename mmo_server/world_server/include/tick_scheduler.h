@@ -5,6 +5,7 @@
  * Discard missed deadlines and run due work in registration order.
  */
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -62,7 +63,9 @@ int tick_scheduler_collect_due(TickScheduler* scheduler,
                                int* out_indices, int max_out);
 
 // dispatch until cleared with shutdown latency bounded by the shortest interval
-void tick_scheduler_run(TickScheduler* scheduler, const volatile int* keep_running);
+/* _Atomic, not volatile: the flag is cleared by a signal handler and read here
+ * on the broadcast thread, which volatile does not order. */
+void tick_scheduler_run(TickScheduler* scheduler, const _Atomic int* keep_running);
 
 void tick_scheduler_report(const TickScheduler* scheduler);
 

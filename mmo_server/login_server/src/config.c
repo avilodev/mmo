@@ -3,11 +3,12 @@
  * Configure login-server signals and its TCP listening socket.
  */
 #include "config.h"
+#include "log.h"
 
 /** Request termination of the login-server accept loop. */
 void signal_handler(int sig) {
     (void)sig;
-    printf("\nReceived shutdown signal\n");
+    LOG_INFO("\nReceived shutdown signal");
     g_server.running = 0;
 }
 

@@ -11,6 +11,7 @@
  */
 
 #include "player_effects.h"
+#include "log.h"
 
 #include "class_stats.h"
 #include "combat_stats.h"
@@ -176,8 +177,8 @@ void player_recompute_stats(ActivePlayer* player) {
 
     DerivedStats base;
     if (!class_stats_compute(player->race_id, player->level, &base)) {
-        printf("[STATS] Race %u is not in the registry; player %u keeps its last stats\n",
-               player->race_id, player->character_id);
+        LOG_INFO("[STATS] Race %u is not in the registry; player %u keeps its last stats",
+                 player->race_id, player->character_id);
         return;
     }
 
@@ -292,7 +293,7 @@ int player_effect_apply(ActivePlayer* player, const AbilityEffectDef* effect,
         return 1;
     }
 
-    printf("[EFFECT] No free effect slot on player %u; effect %d dropped\n",
-           player->character_id, (int)effect->type);
+    LOG_INFO("[EFFECT] No free effect slot on player %u; effect %d dropped",
+             player->character_id, (int)effect->type);
     return 0;
 }

@@ -176,6 +176,52 @@ int main(void) {
     printf("  realm character lists allowed=%d (expect ≈4 at cost 5)\n", a2);
     assert(a2 >= 3 && a2 <= 6);
 
+    printf("\nTEST 15: the running totals count every verdict exactly once\n");
+    /* These are what /metrics and the world's [STATS] line report. The limiter
+     * used to say what it had done only through a rate-limited log line --
+     * which is deliberately lossy, so the count was not recoverable from it
+     * even by reading. Nothing branches on these numbers, so what has to hold
+     * is only that they add up: one increment per call, on the class the call
+     * actually returned. */
+    packet_limiter_init(limit_profile_world());
+    packet_limiter_reset_totals();
+
+    unsigned long long t_allowed = 0, t_dropped = 0, t_kicked = 0;
+    packet_limiter_totals(&t_allowed, &t_dropped, &t_kicked);
+    printf("  after a reset: allowed=%llu dropped=%llu kicked=%llu (expect 0/0/0)\n",
+           t_allowed, t_dropped, t_kicked);
+    assert(t_allowed == 0 && t_dropped == 0 && t_kicked == 0);
+
+    packet_limiter_reset(26);
+    count_verdicts(26, PACKET_CHAT_SEND, 200, &a, &d, &k);
+
+    packet_limiter_totals(&t_allowed, &t_dropped, &t_kicked);
+    printf("  local tally  allowed=%d dropped=%d kicked=%d\n", a, d, k);
+    printf("  global tally allowed=%llu dropped=%llu kicked=%llu\n",
+           t_allowed, t_dropped, t_kicked);
+    assert(t_allowed == (unsigned long long)a);
+    assert(t_dropped == (unsigned long long)d);
+    assert(t_kicked  == (unsigned long long)k);
+    assert(t_allowed + t_dropped + t_kicked == 200);
+
+    /* An out-of-range descriptor is refused before any bucket is touched, and
+     * it is still a kick and still counted -- that path returns early, which
+     * is exactly the kind of return a hand-placed counter gets forgotten on. */
+    unsigned long long kicked_before = t_kicked;
+    (void)packet_limiter_check(-1, PACKET_PLAYER_MOVE);
+    packet_limiter_totals(NULL, NULL, &t_kicked);
+    printf("  a kick from the fd range check is counted too: %llu -> %llu\n",
+           kicked_before, t_kicked);
+    assert(t_kicked == kicked_before + 1);
+
+    /* Totals are process-wide and monotonic: a per-connection reset must not
+     * roll them back, or a scrape would see a counter go down. */
+    packet_limiter_reset(26);
+    unsigned long long after_reset = 0;
+    packet_limiter_totals(&after_reset, NULL, NULL);
+    printf("  a connection reset leaves the totals alone: allowed=%llu\n", after_reset);
+    assert(after_reset == (unsigned long long)a);
+
     printf("\nALL ASSERTIONS PASSED\n");
     return 0;
 }

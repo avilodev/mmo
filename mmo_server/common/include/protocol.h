@@ -8,8 +8,79 @@
 /* CURRENCY_COUNT sizes the player's balance array on the wire. */
 #include "world_regions.h"
 
+/** Identify the wire contract this build speaks.
+ *
+ * The client and server trees each carry their own copy of this file and are
+ * built, shipped, and run independently — neither tree includes from the other.
+ * That independence is deliberate, and it is also why nothing structural can
+ * catch the two copies drifting apart. This number is what catches it: the
+ * client states its version when it connects, the server compares, and a
+ * mismatch is refused with DISCONNECT_REASON_VERSION instead of both ends
+ * quietly misparsing each other's bytes.
+ *
+ * Bump this in BOTH copies whenever a packet layout, an opcode value, or an
+ * enum that travels on the wire changes. tests/check_protocol_version.sh (and
+ * the client's equivalent) fails the build when this file changes without it.
+ */
+#define PROTOCOL_VERSION 5
+
+/* --- Byte order ----------------------------------------------------------
+ *
+ * The rule, which was true in the code and written down nowhere:
+ *
+ *   * Every multi-byte INTEGER on the wire is in network byte order. Senders
+ *     call htonl/htons, receivers call ntohl/ntohs. That includes every field
+ *     of PacketHeader, every id, every count, and every length.
+ *
+ *   * Every FLOAT on the wire is in the sender's native byte order, memcpy'd
+ *     as-is. There is no htonf, and the fields carrying them are hot -- player
+ *     and NPC positions at 20Hz and 10Hz, aim vectors per attack.
+ *
+ * The float rule is a real constraint, not an oversight: it is correct only
+ * while both ends are little-endian IEEE-754, which every x86-64 and
+ * AArch64 target this ships to is. It is stated here so that a port to a
+ * big-endian target is a decision someone makes on purpose rather than a
+ * bug they spend a week finding.
+ *
+ * The native-endian fields are, exhaustively:
+ *
+ *   PlayerMovePacket        pos_x, pos_y, vel_x, vel_y
+ *   PlayerPositionPacket    pos_x, pos_y
+ *   AttackIntentPacket      aim_x, aim_y
+ *   NearbyPlayerData        pos_x, pos_y
+ *   NPCPositionData         pos_x, pos_y
+ *   ProjectileData          origin, direction, speed
+ *   WorldStatusPacket       cpu_usage
+ *
+ * WorldStatusPacket.uptime is a native-endian integer for the same historical
+ * reason and travels only between the world and the realm, which are the same
+ * build on the same architecture.
+ *
+ * Anything ADDED to this file must use network order unless it has the same
+ * reason these have, and must be listed above if it does.
+ */
+
+/* Wire caps. These bound what one packet carries, and they are deliberate.
+ *
+ * A packet that grows with population is a bandwidth amplifier aimed at your own
+ * clients, so these are NOT arbitrary ceilings to be derived away -- changing any
+ * of them is a PROTOCOL_VERSION bump in both the server and client trees.
+ *
+ * What each one does owe is ordering: a truncating cap must drop the least
+ * useful results, not whichever ones happened to sit at low pool indices. Every
+ * filler below is nearest-first, so hitting the cap behaves like a shorter view
+ * radius rather than like a slot-order accident. Any new filler must do the same.
+ */
 #define MAX_WORLDS 10
+/* Filled by combat_handle_attack_intent(), which runs on a network thread and
+ * scans the NPC pool rather than the gameplay tick grid. Single-target picks the
+ * nearest; the AoE branch is the one exception to the ordering rule above and
+ * fills in slot order. It is a cast-start *preview* used to highlight targets --
+ * damage is resolved independently in combat_tick() against a fresh nearest-first
+ * query -- so past 16 targets the highlight can name a different 16 than the ones
+ * that get hit. Worth making nearest-first; not a correctness bug today. */
 #define MAX_CAST_TARGETS    16
+/** Filled nearest-first from the NPC broadcast grid in main.c. */
 #define MAX_NPCS_PER_PACKET 32
 #define MAX_ABILITY_SLOTS    5
 
@@ -159,10 +230,31 @@ typedef enum {
     PACKET_SHOP_SELL         = 197,  // Client -> Server: sell item
     PACKET_SHOP_SELL_RESPONSE = 198, // Server -> Client: sell result
 
+    /* Quest management (204-205). The quest block at 191-193 is full, and
+     * these two are the only quest traffic that starts at the client: quests
+     * are taken and handed in through dialogue, never by packet. */
+    PACKET_QUEST_ABANDON   = 204,  // Client -> Server: give up an active quest
+    PACKET_QUEST_ABANDONED = 205,  // Server -> Client: the quest left the log
+
     PACKET_SESSION_LIST_REQUEST  = 210, // Client -> Server: request page of online players
     PACKET_SESSION_LIST_RESPONSE = 211, // Server -> Client: paginated list of online players
 
     PACKET_ZONE_CHANGE = 220,           // Server -> Client: player crossed a zone boundary
+
+    /* Name resolution (212-213).
+     *
+     * Nearby players arrive as identifiers with no names -- the client used to
+     * label them "Player_<id>", which is a number where a name should be. The
+     * obvious fix, a name field in NearbyPlayerData, is the wrong one: it adds
+     * 32 bytes per player per broadcast, thirty-two players at 20Hz, to resend
+     * a string that never changes. Roughly 38 KB/s per client, forever, for a
+     * constant.
+     *
+     * So the client asks. It sends the identifiers it does not recognise, once
+     * each, and caches the answers for the session. A name is requested when a
+     * player first comes into view and never again. */
+    PACKET_NAME_QUERY_REQUEST  = 212,   // Client -> Server: who are these ids?
+    PACKET_NAME_QUERY_RESPONSE = 213,   // Server -> Client: their names
 } PacketType;
 
 /** Bound race identifiers on the wire.
@@ -275,7 +367,8 @@ typedef enum {
     DISCONNECT_REASON_RATE_LIMIT  = 2,   // sustained packet budget abuse
     DISCONNECT_REASON_PROTOCOL    = 3,   // malformed or oversized packet
     DISCONNECT_REASON_AUTH        = 4,   // session invalid or expired
-    DISCONNECT_REASON_KICKED      = 5    // administrative
+    DISCONNECT_REASON_KICKED      = 5,   // administrative
+    DISCONNECT_REASON_VERSION     = 6    // client and server speak different PROTOCOL_VERSIONs
 } DisconnectReason;
 
 /** Describe a server-initiated disconnect before closing the socket. */
@@ -377,9 +470,14 @@ typedef struct {
     char message[128];
 } StartGameResponsePacket;
 
-/** Authenticate the game client to the realm service. */
+/** Authenticate the game client to the realm service.
+ *
+ * Carries the client's PROTOCOL_VERSION so a mismatched build is turned away at
+ * the first packet, before it can misread any later one.
+ */
 typedef struct {
     AuthPacketHeader header;
+    uint16_t protocol_version;   /**< Network byte order. */
 } RealmConnectPacket;
 
 /** Acknowledge the game client's realm connection. */
@@ -488,11 +586,17 @@ typedef struct {
     char message[128];
 } EnterWorldResponsePacket;
 
-/** Present a realm-issued ticket to a world server. */
+/** Present a realm-issued ticket to a world server.
+ *
+ * Carries the client's PROTOCOL_VERSION for the same reason RealmConnectPacket
+ * does: a world entry is the last point at which a version mismatch can still
+ * be reported as a version mismatch rather than as corrupt gameplay.
+ */
 typedef struct {
     PacketHeader header;
     char game_ticket[64];
     uint32_t character_id;
+    uint16_t protocol_version;   /**< Network byte order. */
 } WorldConnectPacket;
 
 /** Acknowledge admission to a world server. */
@@ -624,16 +728,31 @@ _Static_assert(sizeof(CharacterInfo) <= 8192,
 _Static_assert(sizeof(PacketHeader) == 7,
                "PacketHeader must stay 7 bytes");
 
+/* The two handshake packets are the only ones whose layout must be agreed on
+ * before a version can even be exchanged, so their sizes are pinned here. */
+_Static_assert(sizeof(RealmConnectPacket) == 41,
+               "RealmConnectPacket must stay 41 bytes on every target");
+_Static_assert(sizeof(WorldConnectPacket) == 77,
+               "WorldConnectPacket must stay 77 bytes on every target");
 
 
-/** Submit a player's position, velocity, and movement speed. */
+
+/** Submit a player's position and velocity.
+ *
+ * `player_speed` used to be here, sent by the client and correctly ignored by
+ * the server, which uses `player->move_speed` from its own record. A field on
+ * the wire that exists only to be discarded is an invitation for someone to
+ * start trusting it -- at which point a client picks its own movement speed.
+ * Removed at the PROTOCOL_VERSION 5 bump, which is what the audit said to wait
+ * for.
+ *
+ * Positions and velocities are native-endian floats; see the byte-order note
+ * at the top of this file.
+ */
 typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
-
-    float player_speed;
-
     float vel_x;
     float vel_y;
 } PlayerMovePacket;
@@ -896,8 +1015,25 @@ typedef struct {
     NPCPositionData npcs[MAX_NPCS_PER_PACKET];
 } NPCPositionPacket;
 
-/** Bound the choices exposed on one locally rendered dialogue page. */
+/** Bound the choices one dialogue page may offer at once.
+ *
+ * This is the count a page can *show*, not the count it may declare: the server
+ * hides options whose conditions the asking player fails, so a page written with
+ * one branch per race stays inside this while still reading as a single line of
+ * dialogue. A page that lets more than this through at once is an authoring
+ * error, and the server says so rather than silently truncating.
+ */
 #define MAX_DIALOGUE_OPTIONS 6
+
+/** Bound the text one page and one choice carry.
+ *
+ * Dialogue text travels on the wire rather than shipping with the client. That
+ * is what keeps a single source of truth for what an NPC says -- the same rule
+ * races, abilities, items and zones already follow -- and it is affordable
+ * because these two packets are sent once per click and never in a broadcast.
+ */
+#define MAX_DIALOGUE_TEXT 1024
+#define MAX_OPTION_TEXT    192
 
 /** Request interaction with an NPC. */
 typedef struct {
@@ -905,7 +1041,7 @@ typedef struct {
     uint32_t npc_id;
 } NPCInteractRequestPacket;
 
-/** Open an NPC dialogue whose text is indexed locally by dialogue and page. */
+/** Open an NPC dialogue, carrying the page's text and the choices offered. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
@@ -913,21 +1049,25 @@ typedef struct {
     uint8_t  page_num;
     uint8_t  option_count;
     char     npc_name[32];
+    /** Identify each offered choice. The client sends one of these back, never a
+     *  row number: the rows differ between two players reading the same page. */
     uint8_t  option_ids[MAX_DIALOGUE_OPTIONS];
     uint8_t  padding[2];
+    char     text[MAX_DIALOGUE_TEXT];
+    char     option_text[MAX_DIALOGUE_OPTIONS][MAX_OPTION_TEXT];
 } NPCInteractResponsePacket;
 
-/** Submit a selected option from the current dialogue page. */
+/** Submit a chosen option from the current dialogue page. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
     uint32_t dialogue_id;
     uint8_t  current_page;
-    uint8_t  option_selected;
+    uint8_t  option_id;   /**< One of the identifiers the page was sent with. */
     uint8_t  padding[2];
 } DialogueOptionSelectPacket;
 
-/** Advance an NPC dialogue to a locally indexed page. */
+/** Advance an NPC dialogue to another page. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
@@ -936,6 +1076,8 @@ typedef struct {
     uint8_t  option_count;
     uint8_t  option_ids[MAX_DIALOGUE_OPTIONS];
     uint8_t  padding[2];
+    char     text[MAX_DIALOGUE_TEXT];
+    char     option_text[MAX_DIALOGUE_OPTIONS][MAX_OPTION_TEXT];
 } DialogueUpdatePacket;
 
 /** Close an NPC dialogue in either direction. */
@@ -1005,7 +1147,16 @@ typedef struct {
     PacketHeader header;
     uint8_t success;
     uint8_t effect_type;
-    uint8_t padding[2];
+    /** The slot the request named, echoed back.
+     *
+     * Without it the client had only item_id to go on, and removed the unit
+     * from the first slot holding that item rather than from the stack the
+     * player actually used. The authoritative INVENTORY_UPDATE that follows
+     * repairs the correct slot and says nothing about the wrong one, so the
+     * mistaken stack stayed short until the player relogged. Took one of the
+     * two padding bytes, so the packet is the same size it always was. */
+    uint8_t inventory_slot;
+    uint8_t padding;
     int32_t health_changed;
     int32_t mana_changed;
     int32_t new_health;
@@ -1046,7 +1197,10 @@ typedef struct {
     uint8_t padding;
 } MoveItemResponsePacket;
 
-/** Bound the projectiles carried by one batch update. */
+/** Bound the projectiles carried by one batch update.
+ *
+ * Filled nearest-first by projectile_broadcast(); see the note beside
+ * MAX_WORLDS. */
 #define MAX_PROJECTILES_PER_PACKET 32
 
 /** Announce a projectile's owner, origin, direction, and speed. */
@@ -1133,7 +1287,11 @@ typedef struct {
     uint32_t ground_item_id;
 } LootDespawnPacket;
 
-/** Bound the nearby players carried by one position broadcast. */
+/** Bound the nearby players carried by one position broadcast.
+ *
+ * Filled nearest-first from the tick grid by the player broadcast in main.c,
+ * which queries one slot wider than this because the viewer comes back as its
+ * own nearest result. */
 #define MAX_NEARBY_PLAYERS 32
 
 /** Describe one nearby player's position, state, and reported latency. */
@@ -1149,6 +1307,48 @@ typedef struct {
     uint16_t ping_ms;       // client-reported RTT in milliseconds
     uint8_t  padding[2];
 } NearbyPlayerData;
+
+/** Identifiers one name query may ask about.
+ *
+ * Sized to MAX_NEARBY_PLAYERS: the worst realistic case is a client walking
+ * into a crowd it has never seen, which is exactly one broadcast's worth of
+ * strangers. A larger cap would make the request the amplifier the response
+ * field was going to be.
+ */
+#define MAX_NAME_QUERY 32
+
+/** Ask for the names behind a set of character identifiers.
+ *
+ * Answered from what is loaded in the world, so an identifier that has since
+ * logged out is simply absent from the response rather than an error. The
+ * client keeps its last known name in that case, which is what a player
+ * expects to see for someone who just left.
+ */
+typedef struct {
+    PacketHeader header;
+    uint8_t      count;
+    uint8_t      _reserved[3];
+    uint32_t     character_ids[MAX_NAME_QUERY];   // network order
+} NameQueryRequestPacket;
+
+/** One resolved identifier and its name. */
+typedef struct {
+    uint32_t character_id;   // network order
+    char     name[32];
+} NameQueryEntry;
+
+/** Return the names for as many of the requested identifiers as are online.
+ *
+ * `count` may be smaller than the request's: identifiers that resolve to
+ * nobody are left out rather than returned blank, so the client can tell
+ * "not online" from "named the empty string".
+ */
+typedef struct {
+    PacketHeader   header;
+    uint8_t        count;
+    uint8_t        _reserved[3];
+    NameQueryEntry entries[MAX_NAME_QUERY];
+} NameQueryResponsePacket;
 
 /** Broadcast a bounded batch of nearby player states. */
 typedef struct {
@@ -1378,10 +1578,36 @@ typedef struct {
 /** Bound objectives and item rewards carried by quest packets. */
 #define MAX_QUEST_OBJECTIVES 4
 
-/** Describe one quest objective and its required count. */
+/** Identify what advances a quest objective.
+ *
+ * One definition for the wire, the world server's quest registry, and the
+ * "type" string in quests.json. Adding a source is one enum entry plus its
+ * spelling in the loader -- nothing here is duplicated anywhere else.
+ */
+typedef enum {
+    QUEST_OBJECTIVE_KILL    = 0,   /**< target_id is an npc_type_id. */
+    QUEST_OBJECTIVE_COLLECT = 1,   /**< target_id is an item_id. */
+    QUEST_OBJECTIVE_TALK    = 2,   /**< target_id is an npc_type_id. */
+    QUEST_OBJECTIVE_TYPE_COUNT
+} QuestObjectiveType;
+
+/** Describe one quest objective, what advances it, and where it happens.
+ *
+ * The target and marker travel with the objective so the client can point at it
+ * without a second lookup table: the overhead badge needs target_id to know
+ * which NPCs to flag, and the map marker needs a position for a target that is
+ * nowhere near the player. The server fills the marker from the live world when
+ * the quest data does not pin one, so moving an NPC moves its marker.
+ */
 typedef struct {
-    char    description[64];
-    int32_t required;
+    char     description[64];
+    int32_t  required;
+    uint8_t  objective_type;   /**< QuestObjectiveType. */
+    uint8_t  has_marker;       /**< Nonzero when marker_x/marker_y locate the objective. */
+    uint8_t  _reserved[2];     /**< Must be 0. */
+    uint32_t target_id;        /**< npc_type_id or item_id, per objective_type. */
+    float    marker_x;         /**< World position, valid when has_marker. */
+    float    marker_y;
 } QuestObjectiveInfo;
 
 /** Add a quest and its objectives to the client's log. */
@@ -1411,6 +1637,23 @@ typedef struct {
     uint8_t  inventory_slot;
     uint8_t  padding[2];
 } QuestRewardItem;
+
+_Static_assert(sizeof(QuestObjectiveInfo) == 84,
+               "QuestObjectiveInfo must stay 84 bytes on every target");
+
+/** Name one quest whose log entry is being given up.
+ *
+ * One shape for both directions: PACKET_QUEST_ABANDON is the request, and
+ * PACKET_QUEST_ABANDONED is the confirmation sent once the quest is actually
+ * gone. Two opcodes rather than an echo, because the direction is what says
+ * which one is a claim and which one is a fact -- the client removes the quest
+ * from its own log only on the confirmation, so a refused abandon leaves both
+ * sides agreeing that the quest is still there.
+ */
+typedef struct {
+    PacketHeader header;
+    uint32_t     quest_id;
+} QuestAbandonPacket;
 
 /** Announce quest completion and all granted rewards. */
 typedef struct {

@@ -7,6 +7,8 @@
 #include "packet_limiter.h"
 #include "limit_profiles.h"
 #include "connection_io.h"
+#include "session_registry.h"
+#include "server_types.h"
 #include "protocol.h"
 #include "log.h"
 
@@ -64,15 +66,26 @@ static int connect_client(void) {
     return c;
 }
 
-/** Send the valid test authentication packet. */
-static void send_auth(int c) {
+/** Send a valid test authentication packet for one identity.
+ *
+ * The suffix selects who the ticket is for; see validate_game_ticket() below.
+ * It matters because session_registry.c is linked for real, and the registry's
+ * whole job on a duplicate is to kick the older session -- so a test that
+ * wants many simultaneous connections needs many identities, and a test that
+ * wants a reconnect needs the same one twice.
+ */
+static void send_auth_as(int c, int identity) {
     WorldConnectPacket pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.header.type = PACKET_WORLD_CONNECT;
     pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
-    strncpy(pkt.game_ticket, "test-ticket", sizeof(pkt.game_ticket) - 1);
+    snprintf(pkt.game_ticket, sizeof(pkt.game_ticket), "test-ticket-%d", identity);
+    pkt.protocol_version = htons(PROTOCOL_VERSION);
     assert(send(c, &pkt, sizeof(pkt), 0) == (ssize_t)sizeof(pkt));
 }
+
+/** Send the authentication packet for identity 0. */
+static void send_auth(int c) { send_auth_as(c, 0); }
 
 /** Receive with a bounded timeout in milliseconds. */
 static ssize_t recv_timeout(int fd, void* buf, size_t len, int ms) {
@@ -88,30 +101,138 @@ static void wait_for(atomic_int* counter, int target, int ms) {
 }
 
 /** Validate the sole ticket accepted by the event-loop fixture. */
-int validate_game_ticket(const char* t, uint32_t* acct, uint32_t* chr, uint32_t* world) {
+int validate_game_ticket(const char* t, const char* peer_ip, uint32_t expected_world,
+                         uint32_t* acct, uint32_t* chr, uint32_t* world) {
+    (void)peer_ip;         /* the fixture connects over loopback; binding is covered elsewhere */
+    (void)expected_world;  /* the fixture runs one world; world binding is covered elsewhere */
     atomic_fetch_add(&g_auth_calls, 1);
     if (!t || strncmp(t, "test-ticket", 11) != 0) return 0;
-    *acct = 1000; *chr = 2000; *world = 1;
+
+    /* "test-ticket-N" is identity N. Distinct identities are what let TEST 7
+     * hold 250 connections open at once: the session registry is linked for
+     * real here, and it resolves a duplicate account by kicking the older
+     * session -- so 250 tickets for one account would leave one connection,
+     * not 250. */
+    int identity = 0;
+    const char* dash = t + 11;
+    if (*dash == '-') identity = (int)strtol(dash + 1, NULL, 10);
+
+    *acct  = 1000 + (uint32_t)identity;
+    *chr   = 2000 + (uint32_t)identity;
+    *world = 1;
     return 1;
 }
-/** Stub the account associated with the test ticket. */
-uint32_t get_account_from_ticket(const char* t) { (void)t; return 1000; }
-/** Stub the owner of every test character. */
-uint32_t character_get_owner(uint32_t c) { (void)c; return 1000; }
+/** Stub recording that a character is live in a world. */
+int world_session_mark(uint32_t character_id, uint32_t world_id) {
+    (void)character_id; (void)world_id; return 1;
+}
+/** Stub clearing that record. */
+void world_session_clear(uint32_t character_id) { (void)character_id; }
 
-/** Stub successful session registration. */
-int  session_registry_add(int fd, uint32_t a, uint32_t c) { (void)fd;(void)a;(void)c; return 0; }
-/** Stub session removal. */
-void session_registry_remove(int fd) { (void)fd; }
+/** Stub the database pool size the worker count is derived from.
+ *
+ * The real one reads $MMO_DB_POOL_SIZE; this test opens no database, and what
+ * it cares about is that net_loop_start() asks for a plausible worker count,
+ * not which number it gets. */
+int character_database_pool_configured_size(void);
+int character_database_pool_configured_size(void) { return 4; }
 
-/** Stub successful active-player insertion. */
-int  player_add_active(uint32_t c, int fd, int* out_slot) {
-    (void)c;(void)fd;
-    if (out_slot) *out_slot = 0;
+/** The account that owns a test character, matching validate_game_ticket(). */
+uint32_t character_get_owner(uint32_t c) { return 1000 + (c - 2000); }
+
+/* session_registry.c is linked for real rather than stubbed.
+ *
+ * It is where a duplicate login is resolved -- the stale session is kicked so
+ * the new one can proceed -- and that is a behaviour with no test at all while
+ * the registry is a stub that returns 0. It is self-contained (a table sized
+ * from RLIMIT_NOFILE, two indexes and shutdown(2)), so linking it costs
+ * nothing and turns TEST 10 and TEST 11 below into an actual reconnect. */
+
+/** The active-player roster.
+ *
+ * The real one loads a character out of PostgreSQL. What the reconnect cases
+ * need is the bookkeeping the teardown path in net_loop.c actually consults:
+ * which descriptor owns a character right now. That path acquires the player,
+ * compares `client_fd` against its own, and removes the entry only when the
+ * two match -- which is the whole of how a kicked session avoids evicting the
+ * session that replaced it. A stub that returned NULL from player_acquire()
+ * skipped all of it, so none of it was ever exercised.
+ *
+ * One mutex covers both the table and every entry: this is a test, and
+ * serializing it removes a class of fixture bug without changing what is
+ * being measured.
+ */
+#define ROSTER_MAX 512
+static pthread_mutex_t g_roster_lock = PTHREAD_MUTEX_INITIALIZER;
+static ActivePlayer    g_players[ROSTER_MAX];
+static int             g_player_used[ROSTER_MAX];
+
+/** Find the entry holding a character, or -1. Caller holds g_roster_lock. */
+static int roster_find_locked(uint32_t character_id) {
+    for (int i = 0; i < ROSTER_MAX; i++)
+        if (g_player_used[i] && g_players[i].character_id == character_id) return i;
+    return -1;
+}
+
+int player_add_active(uint32_t c, int fd, int* out_slot) {
+    pthread_mutex_lock(&g_roster_lock);
+
+    int slot = roster_find_locked(c);
+    if (slot < 0) {
+        for (int i = 0; i < ROSTER_MAX && slot < 0; i++)
+            if (!g_player_used[i]) slot = i;
+    }
+    if (slot < 0) { pthread_mutex_unlock(&g_roster_lock); return 0; }
+
+    memset(&g_players[slot], 0, sizeof(g_players[slot]));
+    g_players[slot].character_id = c;
+    g_players[slot].client_fd    = fd;
+    g_players[slot].is_loaded    = 1;
+    g_player_used[slot]          = 1;
+
+    pthread_mutex_unlock(&g_roster_lock);
+    if (out_slot) *out_slot = slot;
     return 1;
 }
-/** Stub active-player removal. */
-int  player_remove_active_if_fd(uint32_t c, int fd) { (void)c;(void)fd; return 1; }
+
+ActivePlayer* player_acquire(uint32_t c) {
+    pthread_mutex_lock(&g_roster_lock);
+    int slot = roster_find_locked(c);
+    if (slot < 0) { pthread_mutex_unlock(&g_roster_lock); return NULL; }
+    return &g_players[slot];       /* released by player_release() */
+}
+
+void player_release(ActivePlayer* p) {
+    if (p) pthread_mutex_unlock(&g_roster_lock);
+}
+
+/** Remove the entry only when the descriptor still owns it.
+ *
+ * The real function's contract, and the point of its name: after a stale
+ * session has been kicked, the old connection's teardown must not evict the
+ * new one that took its place.
+ */
+int player_remove_active_if_fd(uint32_t c, int fd) {
+    int removed = 0;
+    pthread_mutex_lock(&g_roster_lock);
+    int slot = roster_find_locked(c);
+    if (slot >= 0 && g_players[slot].client_fd == fd) {
+        g_player_used[slot] = 0;
+        removed = 1;
+    }
+    pthread_mutex_unlock(&g_roster_lock);
+    return removed;
+}
+
+/** How many characters the roster believes are in the world. */
+static int roster_count(void) {
+    int n = 0;
+    pthread_mutex_lock(&g_roster_lock);
+    for (int i = 0; i < ROSTER_MAX; i++) if (g_player_used[i]) n++;
+    pthread_mutex_unlock(&g_roster_lock);
+    return n;
+}
+
 /** Stub initial player-data transmission. */
 void player_send_data_response(int fd, uint32_t c) { (void)fd;(void)c; }
 
@@ -121,20 +242,15 @@ void player_snapshot_for_save(const void* p, void* out) { (void)p; (void)out; }
 /** Stub successful player save commit. */
 int  player_commit_save(const void* s) { (void)s; return 1; }
 
-struct ActivePlayer;
-/** Stub an absent active-player slot during cleanup. */
-struct ActivePlayer* player_acquire(uint32_t c) { (void)c; return NULL; }
-/** Stub active-player release. */
-void player_release(struct ActivePlayer* p) { (void)p; }
 /** Stub player-stat transmission. */
-void player_send_stats_locked(int fd, struct ActivePlayer* p) { (void)fd;(void)p; }
+void player_send_stats_locked(int fd, ActivePlayer* p) { (void)fd;(void)p; }
 /** Stub ability-data transmission. */
-void ability_send_data(int fd, struct ActivePlayer* p) { (void)fd;(void)p; }
+void ability_send_data(int fd, ActivePlayer* p) { (void)fd;(void)p; }
 
 /** Stub quest-data transmission. */
 void quest_send_all(uint32_t c, int fd) { (void)c;(void)fd; }
 /** Stub successful quest persistence. */
-int  quest_player_save(uint32_t c, const void* q, int n) { (void)c;(void)q;(void)n; return 1; }
+int  quest_player_save(uint32_t c, const void* state) { (void)c;(void)state; return 1; }
 /** Stub successful character persistence. */
 int  character_update_full_data(const void* info) { (void)info; return 1; }
 /** Stub party disconnect cleanup. */
@@ -162,6 +278,12 @@ int process_packet(int fd, uint32_t character_id, int player_slot,
 }
 
 #include "config.h"
+
+/** Stub the whole-character save that commits scalars, currency and items together. */
+int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq) {
+    (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
+}
 ServerConfig g_server;
 ServerState  g_state;
 
@@ -176,8 +298,9 @@ int main(void) {
 
     connection_io_init();
     packet_limiter_init(limit_profile_world());
+    session_registry_init();
     start_listener();
-    assert(net_loop_start() == 0);
+    assert(net_loop_start(0) == 0);
 
     printf("TEST 1: a client authenticates and receives its ack\n");
     int c1 = connect_client();
@@ -270,7 +393,8 @@ int main(void) {
 
     for (int i = 0; i < MANY; i++) {
         clients[i] = connect_client();
-        send_auth(clients[i]);
+        /* One identity each: see send_auth_as(). */
+        send_auth_as(clients[i], i + 1);
     }
     for (int i = 0; i < MANY; i++) {
         ssize_t n = recv_timeout(clients[i], &ack, sizeof(ack), 3000);
@@ -316,6 +440,7 @@ int main(void) {
         pkt.header.type = PACKET_WORLD_CONNECT;
         pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
         strncpy(pkt.game_ticket, "forged", sizeof(pkt.game_ticket) - 1);
+        pkt.protocol_version = htons(PROTOCOL_VERSION);
         assert(send(c3, &pkt, sizeof(pkt), 0) == (ssize_t)sizeof(pkt));
     }
     got = recv_timeout(c3, &ack, sizeof(ack), 2000);
@@ -327,7 +452,154 @@ int main(void) {
     for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
     assert(net_loop_connection_count() == 0);
 
+    printf("\nTEST 9: a client on another protocol version is turned away\n");
+    int c4 = connect_client();
+    {
+        // Ticket is valid; only the version is wrong. The rejection must come
+        // from the version check, which runs before the ticket is even looked
+        // at — otherwise a stale client gets "invalid ticket" and its player
+        // goes looking for an account problem that does not exist.
+        WorldConnectPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type = PACKET_WORLD_CONNECT;
+        pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+        strncpy(pkt.game_ticket, "test-ticket", sizeof(pkt.game_ticket) - 1);
+        pkt.protocol_version = htons(PROTOCOL_VERSION + 1);
+        assert(send(c4, &pkt, sizeof(pkt), 0) == (ssize_t)sizeof(pkt));
+    }
+    got = recv_timeout(c4, &ack, sizeof(ack), 2000);
+    printf("  ack success=%d msg=\"%s\" (expect 0)\n",
+           got > 0 ? ack.success : -1, got > 0 ? ack.welcome_message : "");
+    assert(got == (ssize_t)sizeof(ack));
+    assert(ack.success == 0);
+    assert(strstr(ack.welcome_message, "version") != NULL);
+    close(c4);
+    for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
+    assert(net_loop_connection_count() == 0);
+
+    printf("\nTEST 10: a clean disconnect frees the character to reconnect\n");
+    /* The ordinary case, and the baseline for TEST 11: after a socket closes,
+     * nothing about that character is left claimed. */
+    {
+        int a = connect_client();
+        send_auth(a);
+        got = recv_timeout(a, &ack, sizeof(ack), 2000);
+        assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
+        printf("  first session admitted, roster=%d\n", roster_count());
+        assert(roster_count() == 1);
+
+        close(a);
+        for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
+        for (int i = 0; i < 400 && roster_count() > 0; i++) usleep(5000);
+        printf("  after the close: connections=%d roster=%d (expect 0 and 0)\n",
+               net_loop_connection_count(), roster_count());
+        assert(net_loop_connection_count() == 0);
+        assert(roster_count() == 0);
+
+        int b = connect_client();
+        send_auth(b);
+        got = recv_timeout(b, &ack, sizeof(ack), 2000);
+        printf("  reconnect ack success=%d (expect 1)\n", got > 0 ? ack.success : -1);
+        assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
+        assert(roster_count() == 1);
+
+        close(b);
+        for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
+        for (int i = 0; i < 400 && roster_count() > 0; i++) usleep(5000);
+        assert(roster_count() == 0);
+    }
+
+    printf("\nTEST 11: a reconnect while the old session is live kicks the stale one\n");
+    /* The half-open TCP case: the client's socket is gone but the server never
+     * saw the FIN, so the old session is still registered and still holding
+     * the character. A player who reconnects must get in, and must not end up
+     * with the world believing they are logged in twice.
+     *
+     * The order matters and is the subtle part: the new session is admitted
+     * first, and only then does the old connection's teardown run. If that
+     * teardown removed the character unconditionally instead of checking that
+     * the descriptor still owns it, the reconnect would be admitted and then
+     * immediately evicted by the corpse of the connection it replaced --
+     * leaving a live socket attached to nobody. */
+    {
+        int old_c = connect_client();
+        send_auth(old_c);
+        got = recv_timeout(old_c, &ack, sizeof(ack), 2000);
+        assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
+        assert(roster_count() == 1);
+        printf("  old session live: connections=%d roster=%d\n",
+               net_loop_connection_count(), roster_count());
+
+        /* Reconnect without closing the first socket. */
+        int new_c = connect_client();
+        send_auth(new_c);
+        got = recv_timeout(new_c, &ack, sizeof(ack), 2000);
+        printf("  reconnect ack success=%d msg=\"%s\" (expect 1)\n",
+               got > 0 ? ack.success : -1, got > 0 ? ack.welcome_message : "");
+        assert(got == (ssize_t)sizeof(ack));
+        assert(ack.success == 1);
+
+        /* The registry shut the old descriptor down; the reactor notices and
+         * reaps it, which is what brings the connection count back to one. */
+        for (int i = 0; i < 600 && net_loop_connection_count() > 1; i++) usleep(5000);
+        printf("  after the kick: connections=%d roster=%d (expect 1 and 1)\n",
+               net_loop_connection_count(), roster_count());
+        assert(net_loop_connection_count() == 1);
+        assert(roster_count() == 1);
+
+        /* And the surviving session is the new one: it still answers. */
+        atomic_store(&g_packets_dispatched, 0);
+        {
+            PacketHeader ping = { .type = PACKET_PING, .player_id = 0, .payload_size = htons(0) };
+            assert(send(new_c, &ping, sizeof(ping), 0) == (ssize_t)sizeof(ping));
+        }
+        wait_for(&g_packets_dispatched, 1, 2000);
+        printf("  the surviving session dispatches: %d (expect 1)\n",
+               atomic_load(&g_packets_dispatched));
+        assert(atomic_load(&g_packets_dispatched) == 1);
+
+        close(old_c);
+        close(new_c);
+        for (int i = 0; i < 600 && net_loop_connection_count() > 0; i++) usleep(5000);
+        for (int i = 0; i < 600 && roster_count() > 0; i++) usleep(5000);
+        printf("  after both close: connections=%d roster=%d (expect 0 and 0)\n",
+               net_loop_connection_count(), roster_count());
+        assert(net_loop_connection_count() == 0);
+        assert(roster_count() == 0);
+    }
+
+    printf("\nTEST 12: repeated reconnects leave nothing behind\n");
+    /* A flapping client. Each round admits a session and kicks the previous
+     * one; what must not happen is the roster or the connection count
+     * creeping, which is what a leak on either the kicked path or the
+     * teardown path would look like. */
+    {
+        int prev = -1;
+        for (int round = 0; round < 12; round++) {
+            int c = connect_client();
+            send_auth(c);
+            got = recv_timeout(c, &ack, sizeof(ack), 2000);
+            assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
+            if (prev >= 0) close(prev);
+            prev = c;
+            for (int i = 0; i < 600 && net_loop_connection_count() > 1; i++) usleep(5000);
+        }
+        printf("  after 12 rounds: connections=%d roster=%d (expect 1 and 1)\n",
+               net_loop_connection_count(), roster_count());
+        assert(net_loop_connection_count() == 1);
+        assert(roster_count() == 1);
+
+        close(prev);
+        for (int i = 0; i < 600 && net_loop_connection_count() > 0; i++) usleep(5000);
+        for (int i = 0; i < 600 && roster_count() > 0; i++) usleep(5000);
+        printf("  and after the last close: connections=%d roster=%d\n",
+               net_loop_connection_count(), roster_count());
+        assert(net_loop_connection_count() == 0);
+        assert(roster_count() == 0);
+    }
+
     net_loop_stop();
+    session_registry_shutdown();
     close(g_listen_fd);
 
     printf("\nALL ASSERTIONS PASSED\n");

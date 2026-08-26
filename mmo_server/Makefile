@@ -1,5 +1,22 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g -pthread
+
+# Optimization level. Overridable so a debugging session can drop to -O0
+# without editing this file:  make OPT=-O0
+#
+# -fno-strict-aliasing is not optional here, and must move wherever OPT moves.
+# The packet paths type-pun a byte buffer into PacketHeader* and friends
+# (net_loop.c, routes.c, connection_io.c, and both other services), which is a
+# strict-aliasing violation that -O0 happened to hide. Optimizing without this
+# flag would let the compiler assume those pointers can never alias the buffer
+# and reorder the reads accordingly.
+OPT = -O2 -fno-strict-aliasing
+
+# -MMD -MP writes a .d file beside every object listing the headers it read, and
+# the -include at the bottom of this file feeds them back to make. Without them
+# an edit to protocol.h rebuilt nothing at all: the three services would keep
+# their stale objects, agree on a PROTOCOL_VERSION they no longer shared, and
+# refuse each other at the handshake with "different version than the server".
+CFLAGS = -Wall -Wextra -g $(OPT) -pthread -MMD -MP
 LDFLAGS = -pthread -lsqlite3 -lhiredis -lpq -lm
 
 # OpenSSL — used by the login server only
@@ -56,6 +73,8 @@ $(LOGIN_EXEC): $(COMMON_OBJS) $(DB_OBJS) $(LOGIN_OBJS)
 	@mkdir -p $(LOGIN_BIN)
 	@mkdir -p database
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LOGIN_LDFLAGS)
+	@mkdir -p $(LOGIN_BIN)/data
+	@cp setup/worlds.conf $(LOGIN_BIN)/data/
 	@echo "Built login_server -> $@"
 
 # Realm server (needs PostgreSQL for player_data and character operations)
@@ -65,6 +84,10 @@ $(REALM_EXEC): $(COMMON_OBJS) $(REALM_OBJS) $(DB_OBJS)
 	@mkdir -p $(REALM_BIN)/data
 	@cp world_server/data/races.json $(REALM_BIN)/data/
 	@cp world_server/data/progression.json $(REALM_BIN)/data/
+	@# The world roster. One file feeds the realm's world list, every world's
+	@# database and every world's display name; it is packaged beside each
+	@# binary so a server finds it wherever it was launched from.
+	@cp setup/worlds.conf $(REALM_BIN)/data/
 	@echo "Built realm_server -> $@"
 
 # World server (needs PostgreSQL and Redis for game state) - FIXED: Added $(DB_OBJS)
@@ -87,6 +110,9 @@ data: $(if $(WORLD_DAT_SRC),$(WORLD_BIN)/data/world.dat)
 	@cp world_server/data/abilities.json $(WORLD_BIN)/data/
 	@cp world_server/data/races.json $(WORLD_BIN)/data/
 	@cp world_server/data/progression.json $(WORLD_BIN)/data/
+	@# Cleared first: cp -r into an existing directory nests it, and a dialogue
+	@# deleted from the source tree would otherwise keep loading from here.
+	@rm -rf $(WORLD_BIN)/data/dialogues
 	@cp -r world_server/data/dialogues $(WORLD_BIN)/data/
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
@@ -94,6 +120,7 @@ data: $(if $(WORLD_DAT_SRC),$(WORLD_BIN)/data/world.dat)
 	@cp world_server/data/quests.json $(WORLD_BIN)/data/
 	@cp world_server/data/shops.json $(WORLD_BIN)/data/
 	@cp world_server/data/zones.json $(WORLD_BIN)/data/
+	@cp setup/worlds.conf $(WORLD_BIN)/data/
 	@echo "Data files copied -> $(WORLD_BIN)/data/"
 
 # ~1 GB: copy only when the generated world is actually newer than the deployed
@@ -133,6 +160,28 @@ $(WORLD_OBJ)/%.o: $(WORLD_DIR)/src/%.c
 	@mkdir -p $(WORLD_OBJ)
 	$(CC) $(CFLAGS) $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$(WORLD_DIR)/include -c $< -o $@
 
+# ---------------------------------------------------------------------------
+# One-command setup
+#
+# Installs dependencies, starts PostgreSQL and Redis, creates every world
+# database, generates the world configuration from setup/worlds.conf, produces
+# the login certificate and the launcher pin, and generates world.dat.
+#
+# Idempotent: re-running reports what was already correct instead of redoing
+# it, so it is also how a half-configured machine gets repaired.
+# ---------------------------------------------------------------------------
+setup:
+	@bash setup/setup.sh
+
+# Same checks, changing nothing. Run this when something will not start.
+setup-check:
+	@bash setup/check.sh
+
+# Regenerate the world .conf files even where they disagree with worlds.conf.
+# Overwrites hand edits to the five positional values.
+setup-worlds:
+	@FORCE_CONFIGS=1 bash setup/setup.sh
+
 # Setup PostgreSQL databases for each world server
 setup-postgres:
 	@echo "=== Setting up PostgreSQL databases for world servers ==="
@@ -155,31 +204,14 @@ setup-postgres:
 	@echo ""
 	@echo "=== All world databases ready ==="
 
-# Initialize tables in each world database
-init-world-tables:
-	@echo "=== Initializing character tables in each world database ==="
-	@for db in armeia_db bosteuis_db cardinal_db derive_db exodus_db prototype_db karmel_db longevity_db nervow_db jatrus_db; do \
-		echo "Initializing $$db..."; \
-		sudo -u postgres psql -d $$db -c "CREATE TABLE IF NOT EXISTS characters ( \
-			character_id SERIAL PRIMARY KEY, \
-			account_id INTEGER NOT NULL, \
-			world_id INTEGER NOT NULL, \
-			name VARCHAR(32) NOT NULL UNIQUE, \
-			class_id INTEGER NOT NULL, \
-			race_id INTEGER NOT NULL, \
-			level INTEGER DEFAULT 1, \
-			pos_x REAL DEFAULT 0.0, \
-			pos_y REAL DEFAULT 0.0, \
-			pos_z REAL DEFAULT 0.0, \
-			health INTEGER DEFAULT 100, \
-			max_health INTEGER DEFAULT 100, \
-			experience BIGINT DEFAULT 0, \
-			gold INTEGER DEFAULT 0, \
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP \
-		);" && echo "  ✓ $$db tables created"; \
-		sudo -u postgres psql -d $$db -c "CREATE INDEX IF NOT EXISTS idx_characters_account ON characters(account_id);"; \
-	done
-	@echo "=== All tables initialized ==="
+# init-world-tables is gone deliberately.
+#
+# It held a second CREATE TABLE for `characters` that had already drifted from
+# the one character_database_init() issues -- different UNIQUE constraint, an
+# extra pos_z, no first_load. Both use CREATE TABLE IF NOT EXISTS, so whichever
+# ran first won silently and the server believed it had created a table it had
+# not. The servers own their schema and run their own migrations; setup creates
+# the databases and stops there.
 
 # Show all databases and character counts
 show-dbs:
@@ -268,14 +300,87 @@ strict:
 # ---------------------------------------------------------------------------
 TEST_BIN = tests/bin
 TEST_CFLAGS_BASE = $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -I$(WORLD_DIR)/include
-TEST_CFLAGS = -Wall -Wextra -g -pthread $(TEST_CFLAGS_BASE)
+# -Werror here as well as in `make strict`.
+#
+# The suite built with warnings on and errors off, which meant a warning in a
+# test was a line of scrollback rather than a failure. Converting the realm
+# suite to TLS turned `int client = connect_client()` into a pointer truncated
+# to an int -- a -Wint-conversion warning, a clean build, and a segfault at
+# run time that looked like a bug in the server rather than in the fixture.
+# The compiler had already found it and had no way to say so.
+TEST_CFLAGS = -Wall -Wextra -Werror -g $(OPT) -pthread $(TEST_CFLAGS_BASE)
+
+# The shared accept path, split by what a reader is looking for. Named once so
+# a fifth file is one edit rather than six.
+REACTOR_SRC = $(COMMON_DIR)/src/net_reactor.c $(COMMON_DIR)/src/net_reactor_conn.c \
+              $(COMMON_DIR)/src/net_reactor_work.c $(COMMON_DIR)/src/net_reactor_loop.c
+
+# The quest feature is three translation units split by what changes them: the
+# authored definitions, one character's tables and their file, and the rules
+# joining the two. Named once here so a fourth is one edit, not five.
+QUEST_SRC = $(WORLD_DIR)/src/quest_system.c $(WORLD_DIR)/src/quest_registry.c \
+            $(WORLD_DIR)/src/quest_storage.c $(WORLD_DIR)/src/quest_repeat.c
 
 .PHONY: test
-test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/session_registry_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/net_reactor_test $(TEST_BIN)/realm_net_test $(TEST_BIN)/cert_pin_digest_test $(TEST_BIN)/tls_link_test $(TEST_BIN)/login_net_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/session_registry_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/interest_test $(TEST_BIN)/npc_world_test $(TEST_BIN)/broadcast_pool_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/dialogue_system_test $(TEST_BIN)/opening_sequence_test $(TEST_BIN)/quest_persistence_test $(TEST_BIN)/quest_repeat_test $(TEST_BIN)/quest_abandon_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
       $(TEST_BIN)/stats_test $(TEST_BIN)/passive_gating_test $(TEST_BIN)/cooldown_test $(TEST_BIN)/ability_data_test \
-      $(TEST_BIN)/world_regions_test
+      $(TEST_BIN)/world_regions_test $(TEST_BIN)/ip_allowlist_test $(TEST_BIN)/party_test $(TEST_BIN)/world_table_test $(TEST_BIN)/loot_test $(TEST_BIN)/rate_limiter_test \
+      $(TEST_BIN)/metrics_server_test $(TEST_BIN)/schema_migration_test \
+      $(TEST_BIN)/shop_trade_test $(TEST_BIN)/log_trace_test \
+      $(TEST_BIN)/login_routes_fuzz_test $(TEST_BIN)/realm_routes_fuzz_test \
+      $(TEST_BIN)/world_routes_fuzz_test $(TEST_BIN)/chat_routing_test \
+      $(TEST_BIN)/inventory_handler_test
+	@echo "=== Checking the wire format against PROTOCOL_VERSION ==="
+	@./tests/check_protocol_version.sh
+	@echo ""
+	@echo "=== Checking both protocol.h trees declare the same thing ==="
+	@./tests/check_protocol_sync.sh
+	@echo ""
+	@echo "=== Checking the two trees are from the same release ==="
+	@./tests/check_tree_pairing.sh
+	@echo ""
+	@echo "=== Checking both trees agree on the world.dat layout ==="
+	@./tests/check_world_format.sh
+	@echo ""
+	@echo "=== Checking the client names every NPC type the world spawns ==="
+	@./tests/check_client_content.sh
+	@echo ""
+	@echo "=== Checking scale constants are defined once ==="
+	@echo ""
+	@echo "=== Checking both trees compute a public-key pin the same way ==="
+	@./tests/check_pinning_sync.sh
+	@./tests/check_single_definition.sh
+	@echo ""
 	@echo "=== Running world regions test ==="
 	@./$(TEST_BIN)/world_regions_test
+	@echo ""
+	@echo "=== Running world table test ==="
+	@./$(TEST_BIN)/world_table_test
+	@echo ""
+	@echo "=== Running loot lifecycle test ==="
+	@./$(TEST_BIN)/loot_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/shop_trade_test
+	@echo ""
+	@echo "=== Running rate limiter test ==="
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/rate_limiter_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/metrics_server_test
+	@echo ""
+	@./$(TEST_BIN)/log_trace_test
+	@echo ""
+	@echo "=== Running chat routing test ==="
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/chat_routing_test
+	@echo ""
+	@echo "=== Running inventory handler test ==="
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/inventory_handler_test
+	@echo ""
+	@echo "=== Fuzzing the three server packet routers ==="
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/login_routes_fuzz_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/realm_routes_fuzz_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/world_routes_fuzz_test
 	@echo ""
 	@echo "=== Running JSON parser test ==="
 	@./$(TEST_BIN)/json_util_test
@@ -316,6 +421,21 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo "=== Running config limits test ==="
 	@./$(TEST_BIN)/config_limits_test
 	@echo ""
+	@echo "=== Running net reactor test ==="
+	@./$(TEST_BIN)/net_reactor_test
+	@echo ""
+	@echo "=== Running realm connection test ==="
+	@./$(TEST_BIN)/realm_net_test
+	@echo ""
+	@echo "=== Running public-key pin digest test ==="
+	@./$(TEST_BIN)/cert_pin_digest_test
+	@echo ""
+	@echo "=== Running realm<->world TLS test ==="
+	@./$(TEST_BIN)/tls_link_test
+	@echo ""
+	@echo "=== Running login connection test ==="
+	@./$(TEST_BIN)/login_net_test
+	@echo ""
 	@echo "=== Running event loop test ==="
 	@./$(TEST_BIN)/net_loop_test
 	@echo ""
@@ -331,6 +451,30 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo "=== Running tick snapshot test ==="
 	@./$(TEST_BIN)/tick_snapshot_test
 	@echo ""
+	@echo "=== Running interest broadcast test ==="
+	@./$(TEST_BIN)/interest_test
+	@echo ""
+	@echo "=== Running dialogue system test ==="
+	@./$(TEST_BIN)/dialogue_system_test
+	@echo ""
+	@echo "=== Running quest storage and persistence test ==="
+	@./$(TEST_BIN)/quest_persistence_test
+	@echo ""
+	@echo "=== Running repeatable quest test ==="
+	@./$(TEST_BIN)/quest_repeat_test
+	@echo ""
+	@echo "=== Running quest abandon test ==="
+	@./$(TEST_BIN)/quest_abandon_test
+	@echo ""
+	@echo "=== Running opening sequence content test ==="
+	@./$(TEST_BIN)/opening_sequence_test
+	@echo ""
+	@echo "=== Running NPC pool and snapshot test ==="
+	@./$(TEST_BIN)/npc_world_test
+	@echo ""
+	@echo "=== Running broadcast fan-out pool test ==="
+	@./$(TEST_BIN)/broadcast_pool_test
+	@echo ""
 	@echo "=== Running item data test ==="
 	@./$(TEST_BIN)/item_data_test
 	@echo ""
@@ -338,21 +482,111 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@./$(TEST_BIN)/item_instance_test
 	@echo ""
 	@echo "=== Running character items DB test ==="
+	@./$(TEST_BIN)/schema_migration_test
+	@echo ""
 	@./$(TEST_BIN)/character_items_db_test
 	@echo ""
+	@echo "=== Running IP allowlist test ==="
+	@./$(TEST_BIN)/ip_allowlist_test
+	@echo ""
+	@echo "=== Running party test ==="
+	@./$(TEST_BIN)/party_test
+	@echo ""
 	@echo "=== All tests passed ==="
+
+# Guards the realm-handshake admission check on the world's player listener.
+# The correlation id: what appears on a log line, and what must never leak
+# from one player's thread to another's.
+$(TEST_BIN)/log_trace_test: tests/log_trace_test.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+$(TEST_BIN)/metrics_server_test: tests/metrics_server_test.c $(COMMON_DIR)/src/metrics_server.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+$(TEST_BIN)/ip_allowlist_test: tests/ip_allowlist_test.c $(COMMON_DIR)/src/ip_allowlist.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# Party membership is decided on network loop threads and read from others, so
+# the concurrent cases matter as much as the sequential ones. See party-sanitize.
+$(TEST_BIN)/party_test: tests/party_test.c $(WORLD_DIR)/src/party.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# Address bucketing (an IPv6 /64 is one budget, not 2^64 of them) and a table
+# that grows instead of refusing whoever hashed into a crowded chain.
+$(TEST_BIN)/rate_limiter_test: tests/rate_limiter_test.c $(LOGIN_DIR)/src/rate_limiter.c $(COMMON_DIR)/src/log.c $(COMMON_DIR)/src/peer_addr.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -I$(LOGIN_DIR)/include -o $@ $^
+
+# The ground-item lifecycle: reserve-then-commit, snapshot-by-copy, and a floor
+# that grows instead of refusing the 257th drop.
+# The shop counter and the money that moves through it. shop_session.c plus
+# the currency and inventory helpers -- no player registry, no NPC pool, so
+# what is tested is the rules rather than the plumbing around them.
+$(TEST_BIN)/shop_trade_test: tests/shop_trade_test.c $(WORLD_DIR)/src/shop_session.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+$(TEST_BIN)/loot_test: tests/loot_test.c $(WORLD_DIR)/src/loot.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 $(TEST_BIN)/packet_limiter_test: tests/packet_limiter_test.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
 
-$(TEST_BIN)/config_limits_test: tests/config_limits_test.c $(WORLD_DIR)/src/config.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/log.c
+$(TEST_BIN)/config_limits_test: tests/config_limits_test.c $(WORLD_DIR)/src/config.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/ip_allowlist.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
 
 # Drives real loopback sockets through the epoll loops with the database and
 # gameplay layers stubbed out.
-$(TEST_BIN)/net_loop_test: tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+$(TEST_BIN)/net_reactor_test: tests/net_reactor_test.c $(REACTOR_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Its own include order, ahead of TEST_CFLAGS_BASE: the realm and the world both
+# ship a routes.h declaring a different process_packet(), and whichever include
+# directory comes first wins.
+# One fixed certificate against a pin produced by openssl(1) rather than by
+# this codebase. See the file header: it is the test the minted-certificate
+# suites structurally cannot be.
+$(TEST_BIN)/cert_pin_digest_test: tests/cert_pin_digest_test.c $(COMMON_DIR)/src/cert_pin.c $(COMMON_DIR)/src/cert_spki.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lssl -lcrypto
+
+# The mutually authenticated realm<->world link: both pin checks, the
+# no-certificate case, and the SSL_pending path the heartbeat loop depends on.
+$(TEST_BIN)/tls_link_test: tests/tls_link_test.c $(COMMON_DIR)/src/tls.c $(COMMON_DIR)/src/cert_pin.c $(COMMON_DIR)/src/cert_spki.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lssl -lcrypto -lm
+
+# Drives real TLS handshakes against the realm reactor, so the transport the
+# realm actually runs is exercised rather than a plaintext stand-in for it.
+$(TEST_BIN)/realm_net_test: tests/realm_net_test.c $(REALM_DIR)/src/realm_net.c $(REACTOR_SRC) $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/peer_addr.c $(COMMON_DIR)/src/tls.c $(COMMON_DIR)/src/cert_pin.c $(COMMON_DIR)/src/cert_spki.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) -Wall -Wextra -Werror -g $(OPT) -pthread -I$(REALM_DIR)/include $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -o $@ $^ -lssl -lcrypto -lm
+
+# Drives a real TLS handshake across event-loop wakeups, so it links the
+# actual OpenSSL path rather than a stand-in for it.
+$(TEST_BIN)/login_net_test: tests/login_net_test.c $(LOGIN_DIR)/src/login_net.c $(COMMON_DIR)/src/tls.c $(COMMON_DIR)/src/cert_pin.c $(COMMON_DIR)/src/cert_spki.c $(REACTOR_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) -Wall -Wextra -Werror -g $(OPT) -pthread -I$(LOGIN_DIR)/include $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include -o $@ $^ -lssl -lcrypto -lm
+
+# The one source list behind net_loop_test and both of its sanitizer
+# builds. It is a variable because it drifted: session_registry.c and
+# shop_session.c were added to the plain rule below and not to the
+# sanitizer targets, so `make sanitize` failed to link while `make test`
+# stayed green.
+NET_LOOP_TEST_SRC = tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(REACTOR_SRC) $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/session_registry.c $(WORLD_DIR)/src/shop_session.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/peer_addr.c $(COMMON_DIR)/src/log.c
+
+# session_registry.c is linked rather than stubbed: it is where a duplicate
+# login kicks the stale session, which is what TESTs 10-12 exercise. It is
+# self-contained, so linking it costs nothing.
+$(TEST_BIN)/net_loop_test: $(NET_LOOP_TEST_SRC)
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
 
@@ -360,6 +594,46 @@ $(TEST_BIN)/net_loop_test: tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(W
 # Run this when touching net_loop.c. TSan needs ASLR off on some kernels.
 # The player registry is read by every gameplay thread and written by logins.
 # Run this when touching player_data.c. Same ASLR caveat as above.
+# ---------------------------------------------------------------------------
+# Every sanitizer target, in one command.
+#
+# There are ten of them and they were each invoked by hand, which is to say
+# they were each run by whoever remembered. CI runs this.
+# ---------------------------------------------------------------------------
+.PHONY: sanitize
+sanitize: player-index-sanitize session-registry-sanitize party-sanitize \
+          npc-world-sanitize interest-sanitize broadcast-pool-sanitize \
+          net-reactor-sanitize net-loop-sanitize tick-scheduler-sanitize \
+          spatial-grid-sanitize routes-fuzz-sanitize
+	@echo ""
+	@echo "=== All sanitizer suites clean ==="
+
+# The three routers under AddressSanitizer and UBSan.
+#
+# The plain run above proves the corpus executes. This is the run that proves
+# it means something: every fixture is a heap block of exactly the length being
+# passed, so a router that reads one byte past what it was handed is a heap
+# overflow here rather than a read of whatever the previous fixture left
+# behind. -fsanitize=bounds-strict catches an index past a fixed array even
+# when that array is a field inside a larger packet, which is the shape every
+# one of these reads has.
+#
+# -fno-sanitize-recover=all makes the first violation the exit status rather
+# than a line in output nobody reads.
+.PHONY: routes-fuzz-sanitize
+routes-fuzz-sanitize:
+	@echo "=== The three packet routers under ASan + UBSan ==="
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(ROUTE_FUZZ_SAN) $(ROUTE_FUZZ_LOGIN) -o $(TEST_BIN)/login_routes_fuzz_asan $(ROUTE_FUZZ_LOGIN_SRC)
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/login_routes_fuzz_asan > /tmp/login_routes_asan.log 2>&1 \
+	  && echo "  login router clean" || { tail -40 /tmp/login_routes_asan.log; exit 1; }
+	$(CC) $(ROUTE_FUZZ_SAN) $(ROUTE_FUZZ_REALM) -o $(TEST_BIN)/realm_routes_fuzz_asan $(ROUTE_FUZZ_REALM_SRC)
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/realm_routes_fuzz_asan > /tmp/realm_routes_asan.log 2>&1 \
+	  && echo "  realm router clean" || { tail -40 /tmp/realm_routes_asan.log; exit 1; }
+	$(CC) $(ROUTE_FUZZ_SAN) $(ROUTE_FUZZ_WORLD) -o $(TEST_BIN)/world_routes_fuzz_asan $(ROUTE_FUZZ_WORLD_SRC)
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/world_routes_fuzz_asan > /tmp/world_routes_asan.log 2>&1 \
+	  && echo "  world router clean" || { tail -40 /tmp/world_routes_asan.log; exit 1; }
+
 .PHONY: player-index-sanitize
 player-index-sanitize:
 	@mkdir -p $(TEST_BIN)
@@ -395,19 +669,111 @@ session-registry-sanitize:
 	  { grep -A 8 -E 'ERROR: |runtime error|leak' /tmp/session_registry_asan.log | head -40; exit 1; }
 	@echo "=== sanitizers clean ==="
 
+# Party membership is mutated from network loop threads while other threads read
+# it, and its lookups used to hand out pointers into recyclable pool slots. Run
+# this when touching party.c. Same ASLR caveat as the targets above.
+.PHONY: party-sanitize
+party-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (concurrent accepts vs. party queries) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/party_tsan tests/party_test.c $(WORLD_DIR)/src/party.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/party_tsan > /tmp/party_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/party_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/party_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan (pool bounds and slot recycling) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/party_asan tests/party_test.c $(WORLD_DIR)/src/party.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/party_asan > /tmp/party_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR: |runtime error|leak' /tmp/party_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
+# The NPC pool is read by every gameplay phase and written by spawns, deaths,
+# and respawns, all concurrently. Run this when touching npc_world.c or
+# npc_snapshot.c. Same ASLR caveat as the targets above.
+.PHONY: npc-world-sanitize
+npc-world-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (concurrent damage vs. snapshots vs. churn) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/npc_world_tsan tests/npc_world_test.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(COMMON_DIR)/src/log.c -lm
+	@setarch `uname -m` -R ./$(TEST_BIN)/npc_world_tsan > /tmp/npc_world_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/npc_world_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/npc_world_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan (pool bounds and slot recycling) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/npc_world_asan tests/npc_world_test.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(COMMON_DIR)/src/log.c -lm
+	@setarch `uname -m` -R ./$(TEST_BIN)/npc_world_asan > /tmp/npc_world_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/npc_world_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
+# interest_collect_fds() takes the player registry read lock and each candidate's
+# slot lock while gameplay threads hold both. Run this when touching interest.c.
+# Same ASLR caveat as the targets above.
+.PHONY: interest-sanitize
+interest-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== AddressSanitizer + UBSan (radius maths and output bounds) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/interest_asan tests/interest_test.c $(WORLD_DIR)/src/interest.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c -lm
+	@setarch `uname -m` -R ./$(TEST_BIN)/interest_asan > /tmp/interest_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/interest_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
+# The fan-out pool runs the same function on several threads at once. Run this
+# when touching broadcast_pool.c. Same ASLR caveat as the targets above.
+.PHONY: broadcast-pool-sanitize
+broadcast-pool-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (shard coverage under concurrency) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/broadcast_pool_tsan tests/broadcast_pool_test.c $(WORLD_DIR)/src/broadcast_pool.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/broadcast_pool_tsan > /tmp/broadcast_pool_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/broadcast_pool_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/broadcast_pool_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/broadcast_pool_asan tests/broadcast_pool_test.c $(WORLD_DIR)/src/broadcast_pool.c $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/broadcast_pool_asan > /tmp/broadcast_pool_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/broadcast_pool_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
+.PHONY: net-reactor-sanitize
+# The reactor is the accept path for all three services, so it is the one piece
+# of this tree where a data race is a production incident rather than a test
+# failure. Run this on every change to it.
+net-reactor-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/net_reactor_tsan tests/net_reactor_test.c $(REACTOR_SRC) $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/net_reactor_tsan > /tmp/net_reactor_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/net_reactor_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/net_reactor_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/net_reactor_asan tests/net_reactor_test.c $(REACTOR_SRC) $(COMMON_DIR)/src/log.c
+	@setarch `uname -m` -R ./$(TEST_BIN)/net_reactor_asan > /tmp/net_reactor_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/net_reactor_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
 .PHONY: net-loop-sanitize
 net-loop-sanitize:
 	@mkdir -p $(TEST_BIN)
 	@echo "=== ThreadSanitizer ==="
 	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
-	  -o $(TEST_BIN)/net_loop_tsan tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+	  -o $(TEST_BIN)/net_loop_tsan $(NET_LOOP_TEST_SRC)
 	@setarch `uname -m` -R ./$(TEST_BIN)/net_loop_tsan > /tmp/net_loop_tsan.log 2>&1; \
 	  races=`grep -c 'data race' /tmp/net_loop_tsan.log`; \
 	  echo "  data races: $$races"; \
 	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/net_loop_tsan.log | head -40; exit 1; }
 	@echo "=== AddressSanitizer + UBSan ==="
 	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
-	  -o $(TEST_BIN)/net_loop_asan tests/net_loop_test.c $(WORLD_DIR)/src/net_loop.c $(WORLD_DIR)/src/connection_io.c $(WORLD_DIR)/src/utils.c $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+	  -o $(TEST_BIN)/net_loop_asan $(NET_LOOP_TEST_SRC)
 	@setarch `uname -m` -R ./$(TEST_BIN)/net_loop_asan > /tmp/net_loop_asan.log 2>&1 && echo "  clean" || \
 	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/net_loop_asan.log | head -40; exit 1; }
 	@echo "=== sanitizers clean ==="
@@ -418,7 +784,11 @@ $(TEST_BIN)/login_concurrency_test: tests/login_concurrency_test.c $(WORLD_DIR)/
 
 # Round-trips character_items through a real PostgreSQL. Skips itself (exit 0)
 # unless MMO_TEST_PGCONN is set, so the suite stays green without a database.
-$(TEST_BIN)/character_items_db_test: tests/character_items_db_test.c $(DB_DIR)/src/players_database.c $(DB_DIR)/src/class_stats.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
+$(TEST_BIN)/schema_migration_test: tests/schema_migration_test.c $(DB_DIR)/src/schema_migrations.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lpq
+
+$(TEST_BIN)/character_items_db_test: tests/character_items_db_test.c $(DB_DIR)/src/players_database.c $(DB_DIR)/src/schema_migrations.c $(DB_DIR)/src/class_stats.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lpq -lm
 
@@ -427,6 +797,78 @@ $(TEST_BIN)/character_items_db_test: tests/character_items_db_test.c $(DB_DIR)/s
 $(TEST_BIN)/item_instance_test: tests/item_instance_test.c $(WORLD_DIR)/src/item_instance.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# --- The three server packet routers, fuzzed -------------------------------
+#
+# The client's four dispatchers have been fuzzed since the P1 pass; the
+# server's three had nothing, which is the wrong way round -- the client parses
+# bytes from a server its user chose, and the server parses bytes from anyone
+# who can reach the port. Each of these links its router against recording
+# stubs and checks, per opcode, that no handler is entered with a buffer
+# shorter than the packet it is written against. See tests/routes_fuzz.h.
+#
+# Three binaries rather than one because the realm and world routers both
+# export process_packet() with different signatures, and login and realm each
+# carry their own routes.h.
+#
+# gnu11 for the world router: npc_world.h holds a pthread_rwlock_t, which is
+# not visible under strict ISO C.
+# Chat routing: who each channel reaches, and who it does not. The real chat.c
+# including its dispatch thread; the player registry and the socket are
+# replaced, so what is measured is recipient selection.
+$(TEST_BIN)/chat_routing_test: tests/chat_routing_test.c $(WORLD_DIR)/src/chat.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -std=gnu11 -o $@ $^
+
+# The five handlers that move a player's belongings. The real handlers, the
+# real inventory model and the real item registry; player_level.c is stubbed
+# rather than linked, because an inventory move does not touch class tables or
+# the experience curve.
+$(TEST_BIN)/inventory_handler_test: tests/inventory_handler_test.c $(WORLD_DIR)/src/packet_handler.c $(WORLD_DIR)/src/items_database.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -std=gnu11 -o $@ $^
+
+# All three services name their dispatcher's header "routes.h", so the search
+# path has to carry exactly one of them: TEST_CFLAGS_BASE includes the world's
+# include directory, and a login or realm fuzzer built with it silently picks
+# up the world's routes.h and its process_packet() signature. These flag sets
+# name only what each fuzzer needs.
+ROUTE_FUZZ_BASE   = -Itests $(PG_INCLUDE) -I$(COMMON_DIR)/include -I$(DB_DIR)/include
+ROUTE_FUZZ_LOGIN  = -I$(LOGIN_DIR)/include $(ROUTE_FUZZ_BASE)
+ROUTE_FUZZ_REALM  = -I$(REALM_DIR)/include $(ROUTE_FUZZ_BASE)
+# gnu11 for the world: npc_world.h holds a pthread_rwlock_t, which strict ISO C
+# does not expose.
+ROUTE_FUZZ_WORLD  = -std=gnu11 -I$(WORLD_DIR)/include $(ROUTE_FUZZ_BASE)
+
+# -fsanitize=bounds-strict catches an index past a fixed array even when that
+# array is a field inside a larger packet, which is the shape every one of
+# these reads has; plain ASan does not see it, because the read never leaves
+# the enclosing struct. -fno-sanitize-recover=all makes the first violation the
+# exit status rather than a line in output nobody reads.
+ROUTE_FUZZ_SAN = -Wall -Wextra -g -O1 -pthread \
+                 -fsanitize=address,undefined -fsanitize=bounds-strict \
+                 -fno-sanitize-recover=all
+
+ROUTE_FUZZ_LOGIN_SRC = tests/login_routes_fuzz_test.c $(LOGIN_DIR)/src/routes.c \
+                       $(COMMON_DIR)/src/log.c
+ROUTE_FUZZ_REALM_SRC = tests/realm_routes_fuzz_test.c $(REALM_DIR)/src/routes.c \
+                       $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c \
+                       $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+ROUTE_FUZZ_WORLD_SRC = tests/world_routes_fuzz_test.c $(WORLD_DIR)/src/routes.c \
+                       $(COMMON_DIR)/src/packet_limiter.c $(COMMON_DIR)/src/limit_profiles.c \
+                       $(COMMON_DIR)/src/net_notify.c $(COMMON_DIR)/src/log.c
+
+$(TEST_BIN)/login_routes_fuzz_test: $(ROUTE_FUZZ_LOGIN_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) -Wall -Wextra -Werror -g $(OPT) -pthread $(ROUTE_FUZZ_LOGIN) -o $@ $^
+
+$(TEST_BIN)/realm_routes_fuzz_test: $(ROUTE_FUZZ_REALM_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) -Wall -Wextra -Werror -g $(OPT) -pthread $(ROUTE_FUZZ_REALM) -o $@ $^
+
+$(TEST_BIN)/world_routes_fuzz_test: $(ROUTE_FUZZ_WORLD_SRC)
+	@mkdir -p $(TEST_BIN)
+	$(CC) -Wall -Wextra -Werror -g $(OPT) -pthread $(ROUTE_FUZZ_WORLD) -o $@ $^
 
 # Covers item definition parsing and shop content validation, including the
 # shipped data files so a bad content edit fails here rather than in play.
@@ -438,13 +880,48 @@ $(TEST_BIN)/json_util_test: tests/json_util_test.c $(COMMON_DIR)/src/json_util.c
 
 # Covers the race registry and, with it, contract M1: adding a race is a data
 # change. The eleventh-race fixture is the executable form of that promise.
-$(TEST_BIN)/race_registry_test: tests/race_registry_test.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/json_util.c
+$(TEST_BIN)/dialogue_system_test: tests/dialogue_system_test.c $(WORLD_DIR)/src/dialogue_system.c $(WORLD_DIR)/src/dialogue_loader.c $(QUEST_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Walks the opening sequence against live servers. Not in `make test`: it needs
+# the login, realm and world servers, PostgreSQL and Redis actually running.
+#   make tests/bin/opening_flow_test && ./tests/bin/opening_flow_test wolf
+# Points real concurrent clients at running servers and reports the latency
+# distribution at each junction. Not in `make test`: it needs the three servers
+# up, and it is a load generator.
+#   make tests/bin/load_test && ./tests/bin/load_test realm 32 20
+$(TEST_BIN)/load_test: tests/load_test.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lssl -lcrypto -lm
+
+$(TEST_BIN)/opening_flow_test: tests/opening_flow_test.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lssl -lcrypto -lm
+
+$(TEST_BIN)/quest_persistence_test: tests/quest_persistence_test.c $(QUEST_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+$(TEST_BIN)/quest_repeat_test: tests/quest_repeat_test.c $(QUEST_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+$(TEST_BIN)/quest_abandon_test: tests/quest_abandon_test.c $(QUEST_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+$(TEST_BIN)/opening_sequence_test: tests/opening_sequence_test.c $(QUEST_SRC) $(WORLD_DIR)/src/dialogue_system.c $(WORLD_DIR)/src/dialogue_loader.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_spawns.c $(WORLD_DIR)/src/items_database.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+$(TEST_BIN)/race_registry_test: tests/race_registry_test.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 # Covers the level and experience curve and, with it, contract M3: retuning never
 # needs a recompile.
-$(TEST_BIN)/progression_test: tests/progression_test.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
+$(TEST_BIN)/progression_test: tests/progression_test.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
@@ -452,9 +929,15 @@ $(TEST_BIN)/world_regions_test: tests/world_regions_test.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
+# The world roster: parsing, growth past any fixed ceiling, lookups, and the
+# failure modes that used to be silent when the mapping was compiled in.
+$(TEST_BIN)/world_table_test: tests/world_table_test.c $(COMMON_DIR)/src/world_table.c $(COMMON_DIR)/src/data_paths.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
 # Covers the percentage-stacking rule all mitigation runs through: additive
 # stacking, order independence across every permutation, and the immunity clamp.
-$(TEST_BIN)/damage_stacking_test: tests/damage_stacking_test.c $(COMMON_DIR)/src/damage_model.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c
+$(TEST_BIN)/damage_stacking_test: tests/damage_stacking_test.c $(COMMON_DIR)/src/damage_model.c $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
@@ -484,7 +967,7 @@ $(TEST_BIN)/cooldown_test: tests/cooldown_test.c $(BLESSED_PLAYER_SRC)
 
 # The joins between races.json and abilities.json, and a round-trip of every new
 # effect primitive through the loader.
-$(TEST_BIN)/ability_data_test: tests/ability_data_test.c $(WORLD_DIR)/src/ability_def.c $(BLESSED_CORE_SRC)
+$(TEST_BIN)/ability_data_test: tests/ability_data_test.c $(WORLD_DIR)/src/ability_def.c $(BLESSED_CORE_SRC) $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
@@ -495,7 +978,21 @@ $(TEST_BIN)/item_data_test: tests/item_data_test.c $(WORLD_DIR)/src/items_databa
 # Covers the gameplay tick's player snapshot and interest grid: correctness
 # against brute force, nearest-first ordering, and that query cost stops
 # scaling with population.
+$(TEST_BIN)/broadcast_pool_test: tests/broadcast_pool_test.c $(WORLD_DIR)/src/broadcast_pool.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+$(TEST_BIN)/npc_world_test: tests/npc_world_test.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
 $(TEST_BIN)/tick_snapshot_test: tests/tick_snapshot_test.c $(WORLD_DIR)/src/tick_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -O2 -o $@ $^ -lm
+
+# Covers who an unscheduled world event is broadcast to. Cheap to get wrong in a
+# way no two-player test notices; see the file header.
+$(TEST_BIN)/interest_test: tests/interest_test.c $(WORLD_DIR)/src/interest.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -O2 -o $@ $^ -lm
 
@@ -513,7 +1010,7 @@ $(TEST_BIN)/session_registry_test: tests/session_registry_test.c $(WORLD_DIR)/sr
 
 # Drives the movement rules against a synthetic collision map — no sockets, no
 # database, so this runs anywhere.
-$(TEST_BIN)/move_validator_test: tests/move_validator_test.c $(WORLD_DIR)/src/move_validator.c $(WORLD_DIR)/src/world_collision.c
+$(TEST_BIN)/move_validator_test: tests/move_validator_test.c $(WORLD_DIR)/src/move_validator.c $(WORLD_DIR)/src/world_collision.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
@@ -549,16 +1046,27 @@ spatial-grid-sanitize:
 	@setarch `uname -m` -R ./$(TEST_BIN)/spatial_grid_asan > /tmp/spatial_grid_asan.log 2>&1 && echo "  clean" || \
 	  { grep -A 8 -E 'ERROR|runtime error|leak' /tmp/spatial_grid_asan.log | head -40; exit 1; }
 
-# Full setup (databases + tables)
-setup-all: setup-postgres init-world-tables
-	@echo "=== Full database setup complete ==="
+# Kept as an alias so existing muscle memory and the older README still work.
+setup-all: setup
+	@echo "=== Setup complete (setup-all is an alias for 'make setup') ==="
 
 # Run Login server
 run-login: $(LOGIN_EXEC)
 	./$(LOGIN_EXEC)
 
 # Run Realm server
+#
+# Provisions the server-to-server key first, the same way start_servers.sh does.
+# The realm refuses to start without one and no longer invents a default, so
+# without this the standalone target fails on a fresh Redis. The key generated
+# here is random per run -- this is not a fallback credential, it is the same
+# provisioning step the supervised path performs.
 run-realm: $(REALM_EXEC)
+	@if [ "`redis-cli EXISTS server_auth_key:global 2>/dev/null`" != "1" ]; then \
+	    echo "No server auth key in Redis; generating one..."; \
+	    bash common/server_keys/generate_daily_server_keys.sh >/dev/null || \
+	        { echo "Could not generate Redis server keys"; exit 1; }; \
+	fi
 	./$(REALM_EXEC) realm_server/realm_config/realm_1.conf
 
 # Run World server
@@ -589,9 +1097,11 @@ help:
 	@echo "  make rebuild          - Clean and rebuild everything"
 	@echo ""
 	@echo "Database Setup:"
-	@echo "  make setup-postgres   - Create all world databases"
-	@echo "  make init-world-tables - Create character tables in all databases"
-	@echo "  make setup-all        - Full setup (databases + tables)"
+	@echo "  make setup            - One-command setup: deps, services, databases, configs, certs"
+	@echo "  make setup-check      - Verify this machine can run the stack (changes nothing)"
+	@echo "  make setup-worlds     - Regenerate world configs from setup/worlds.conf"
+	@echo "  make setup-postgres   - Create all world databases only"
+	@echo "  make setup-all        - Alias for 'make setup'"
 	@echo ""
 	@echo "Database Management:"
 	@echo "  make show-dbs         - Show all databases and character counts"
@@ -612,4 +1122,11 @@ help:
 	@echo "  Europe: karmel, longevity, nervow"
 	@echo "  Asia: jatrus"
 
-.PHONY: all data clean clean-db rebuild run-login run-realm run-world run-all run run-both stop help setup-postgres init-world-tables show-dbs reset-world reset-all-characters setup-all
+.PHONY: all data clean clean-db rebuild run-login run-realm run-world run-all run run-both stop help \
+        setup setup-check setup-worlds setup-postgres show-dbs reset-world reset-all-characters setup-all
+
+# Header dependencies generated by -MMD above. The dash keeps a clean tree, or
+# one whose objects predate this, from failing on the missing files.
+DEPFILES = $(COMMON_OBJS:.o=.d) $(LOGIN_OBJS:.o=.d) $(REALM_OBJS:.o=.d) \
+           $(WORLD_OBJS:.o=.d) $(DB_OBJS:.o=.d)
+-include $(DEPFILES)

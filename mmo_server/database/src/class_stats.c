@@ -8,6 +8,7 @@
  */
 
 #include "class_stats.h"
+#include "log.h"
 #include "progression.h"
 
 #include <stdio.h>
@@ -23,11 +24,11 @@ int class_stats_init(const char* races_path, const char* progression_path) {
 
     int races = races_path ? race_registry_init(races_path) : 0;
     if (races == 0) {
-        fprintf(stderr, "[CLASS_STATS] No races loaded — character creation will be refused\n");
+        LOG_ERROR("[CLASS_STATS] No races loaded — character creation will be refused");
         return 0;
     }
 
-    printf("[CLASS_STATS] %d races, max level %d\n", races, progression_max_level());
+    LOG_INFO("[CLASS_STATS] %d races, max level %d", races, progression_max_level());
     return 1;
 }
 

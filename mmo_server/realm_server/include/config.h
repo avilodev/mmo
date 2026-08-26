@@ -23,7 +23,15 @@ typedef struct {
     pthread_t accept_thread;
     
     pthread_t world_monitor_thread;
-    WorldServer world_servers[MAX_WORLDS];
+
+    /** One entry per configured world, allocated from the world table.
+     *
+     * Heap rather than a fixed array: the roster comes from worlds.conf at
+     * startup, so how many worlds exist is a deployment decision. The array is
+     * allocated once, before the monitor thread publishes anything into it,
+     * and freed at shutdown; only its contents change under the lock.
+     */
+    WorldServer* world_servers;
     int num_world_servers;
     pthread_mutex_t world_servers_lock;
 } ServerConfig;

@@ -1,0 +1,135 @@
+{
+  "id": 29,
+  "name": "God of Opportunity",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Mm. You are the new one.\n\nDo not stand there, you are blocking the good view of the market.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me over.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 109,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 109
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me over.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 109
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 109
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 109
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 109
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Course she did.\n\nWatch the fruit stall. No -- do not look at me, look at the stall. The one on the left\nhas been shorting weight all morning and the one on the right knows it. Neither of\nthem has said a word. Somebody is going to move first, and whoever moves first has\nthe corner for the season.\n\nThat is it. That is the entire teaching. Everything worth having is already in motion\nand mostly unattended. You do not need to be the strongest thing in Ennara. You need\nto be the one paying attention when the strongest thing gets tired.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "So I wait.",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "So I wait.",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "You watch. Waiting is what you call it afterwards, once it has worked.\n\nSentry, south gate. She will want your name -- give her the short version.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "Came over on your own. Bold. Slightly useless, but bold.\n\nWarden. Courtyard centre. She is the one holding the list.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Still watching the stall. It has not happened yet.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

@@ -146,7 +146,7 @@ int tick_scheduler_collect_due(TickScheduler* scheduler,
  *
  * @param keep_running  Volatile flag whose zero value requests shutdown.
  */
-void tick_scheduler_run(TickScheduler* scheduler, const volatile int* keep_running) {
+void tick_scheduler_run(TickScheduler* scheduler, const _Atomic int* keep_running) {
     if (!scheduler || !keep_running || scheduler->count == 0) return;
 
     struct timespec now;

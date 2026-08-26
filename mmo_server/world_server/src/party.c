@@ -4,6 +4,7 @@
  */
 
 #include "party.h"
+#include "str_fixed.h"
 #include "log.h"
 #include "player_level.h"
 #include "utils.h"
@@ -38,6 +39,171 @@ static void send_to_character(uint32_t character_id, void* packet, size_t size) 
     if (fd > 0) server_send(fd, packet, size);
 }
 
+/* --- Pool lookups -------------------------------------------------------- *
+ *
+ * Both of these hand back a pointer into the pool. They are private to this
+ * file and require g_parties_lock to be held across the lookup AND across every
+ * use of what they return: party_remove_member() and party_disband() zero a
+ * slot's party_id, and a caller holding a stale pointer would then lock and
+ * mutate a slot that has since been handed to a different party. They used to
+ * be exported, and packet_handler.c called them with no lock at all.
+ *
+ * Both used to answer by scanning: MAX_PARTIES slots for an identifier, and
+ * MAX_PARTIES x MAX_PARTY_SIZE for a member. They are called from the packet
+ * path -- every invite, accept, leave, kick and party chat line -- and once per
+ * party per broadcast pass, so the cost was paid at the tick rate against the
+ * size of the table rather than against the number of parties that exist.
+ *
+ * Two open-addressed indexes answer them in constant time instead. Both live
+ * under g_parties_lock, the same lock the pool itself lives under, so there is
+ * no second thing to get wrong: a slot and its index entries are written in the
+ * same critical section or not at all.
+ */
+
+/** Capacity of both party indexes.
+ *
+ * A power of two, because the probe walk masks rather than divides, and large
+ * enough that the member table -- the fuller of the two, with one entry per
+ * character in a party -- stays under half occupancy at MAX_PARTIES full
+ * parties. Open addressing degrades sharply past about three-quarters.
+ *
+ * 4096 covers 200 parties of 5 at 24% occupancy and costs 32 KB for both
+ * tables. The static assertions below fail the build rather than the runtime
+ * if MAX_PARTIES or MAX_PARTY_SIZE ever outgrow it.
+ */
+#define PARTY_INDEX_CAP  4096
+#define PARTY_INDEX_MASK (PARTY_INDEX_CAP - 1)
+_Static_assert((PARTY_INDEX_CAP & PARTY_INDEX_MASK) == 0,
+               "the party index capacity must be a power of two");
+_Static_assert(PARTY_INDEX_CAP > MAX_PARTIES * MAX_PARTY_SIZE * 2,
+               "the member index must stay under half full at full occupancy");
+
+#define PARTY_IDX_EMPTY (-1)
+
+/** One index bucket. slot is PARTY_IDX_EMPTY, or a pool index. */
+typedef struct {
+    uint32_t key;
+    int32_t  slot;
+} PartyIndexEntry;
+
+/** party_id -> pool slot. */
+static PartyIndexEntry g_party_by_id[PARTY_INDEX_CAP];
+/** character_id -> pool slot of the party holding them. */
+static PartyIndexEntry g_party_by_member[PARTY_INDEX_CAP];
+
+static inline uint32_t party_index_hash(uint32_t key) {
+    key ^= key >> 16;
+    key *= 0x7feb352dU;
+    key ^= key >> 15;
+    key *= 0x846ca68bU;
+    key ^= key >> 16;
+    return key;
+}
+
+static void party_index_reset(PartyIndexEntry* table) {
+    for (int i = 0; i < PARTY_INDEX_CAP; i++) {
+        table[i].key  = 0;
+        table[i].slot = PARTY_IDX_EMPTY;
+    }
+}
+
+/** Find a key's slot. Caller must hold g_parties_lock. */
+static int party_index_find(const PartyIndexEntry* table, uint32_t key) {
+    if (key == 0) return -1;
+    uint32_t pos = party_index_hash(key) & PARTY_INDEX_MASK;
+    for (int probe = 0; probe < PARTY_INDEX_CAP; probe++) {
+        const PartyIndexEntry* e = &table[pos];
+        if (e->slot == PARTY_IDX_EMPTY) return -1;
+        if (e->key == key) return e->slot;
+        pos = (pos + 1) & PARTY_INDEX_MASK;
+    }
+    return -1;
+}
+
+/** Bind a key to a slot, replacing any existing binding. Caller holds the lock. */
+static void party_index_insert(PartyIndexEntry* table, uint32_t key, int slot) {
+    if (key == 0) return;
+    uint32_t pos = party_index_hash(key) & PARTY_INDEX_MASK;
+    for (int probe = 0; probe < PARTY_INDEX_CAP; probe++) {
+        PartyIndexEntry* e = &table[pos];
+        if (e->slot == PARTY_IDX_EMPTY || e->key == key) {
+            e->key  = key;
+            e->slot = slot;
+            return;
+        }
+        pos = (pos + 1) & PARTY_INDEX_MASK;
+    }
+    /* Unreachable: both tables are sized above their maximum occupancy by the
+     * static assertions above. Never corrupt silently if that ever changes. */
+    LOG_ERROR("[PARTY] index full inserting key %u", key);
+}
+
+/**
+ * Unbind a key, closing the probe chain behind it. Caller holds the lock.
+ *
+ * Backward-shift deletion rather than tombstones: parties form and disband for
+ * as long as the server runs, and a table that only ever accumulates
+ * tombstones degrades until something rebuilds it.
+ */
+static void party_index_remove(PartyIndexEntry* table, uint32_t key) {
+    if (key == 0) return;
+
+    uint32_t pos = party_index_hash(key) & PARTY_INDEX_MASK;
+    int found = -1;
+    for (int probe = 0; probe < PARTY_INDEX_CAP; probe++) {
+        if (table[pos].slot == PARTY_IDX_EMPTY) return;
+        if (table[pos].key == key) { found = (int)pos; break; }
+        pos = (pos + 1) & PARTY_INDEX_MASK;
+    }
+    if (found < 0) return;
+
+    uint32_t hole = (uint32_t)found;
+    table[hole].key  = 0;
+    table[hole].slot = PARTY_IDX_EMPTY;
+
+    uint32_t scan = (hole + 1) & PARTY_INDEX_MASK;
+    while (table[scan].slot != PARTY_IDX_EMPTY) {
+        uint32_t home    = party_index_hash(table[scan].key) & PARTY_INDEX_MASK;
+        uint32_t to_hole = (scan - hole) & PARTY_INDEX_MASK;
+        uint32_t to_home = (scan - home) & PARTY_INDEX_MASK;
+        if (to_home >= to_hole) {
+            table[hole] = table[scan];
+            table[scan].key  = 0;
+            table[scan].slot = PARTY_IDX_EMPTY;
+            hole = scan;
+        }
+        scan = (scan + 1) & PARTY_INDEX_MASK;
+    }
+}
+
+/** Find a party by identifier. Caller must hold g_parties_lock. */
+static Party* party_find_locked(uint32_t party_id) {
+    int slot = party_index_find(g_party_by_id, party_id);
+    if (slot < 0) return NULL;
+    /* The index is only ever written under this lock alongside the slot it
+     * names, so a stale entry is a bug rather than a race -- verified anyway,
+     * because handing back the wrong party would corrupt someone's membership
+     * rather than merely fail. */
+    if (g_parties[slot].party_id != party_id) {
+        LOG_ERROR("[PARTY] index says party %u is in slot %d, which holds %u",
+                  party_id, slot, g_parties[slot].party_id);
+        return NULL;
+    }
+    return &g_parties[slot];
+}
+
+/** Find a character's party. Caller must hold g_parties_lock. */
+static Party* party_find_of_player_locked(uint32_t character_id) {
+    int slot = party_index_find(g_party_by_member, character_id);
+    if (slot < 0) return NULL;
+    if (g_parties[slot].party_id == 0) {
+        LOG_ERROR("[PARTY] member index says character %u is in empty slot %d",
+                  character_id, slot);
+        return NULL;
+    }
+    return &g_parties[slot];
+}
+
 /**
  * Initialize party slots, their mutexes, and pending invitations.
  */
@@ -46,45 +212,118 @@ void party_init(void) {
     for (int i = 0; i < MAX_PARTIES; i++) {
         pthread_mutex_init(&g_parties[i].lock, NULL);
     }
+    party_index_reset(g_party_by_id);
+    party_index_reset(g_party_by_member);
     memset(g_invites, 0, sizeof(g_invites));
     LOG_INFO("[PARTY] Party system initialized (%d max parties, %d max size)", MAX_PARTIES, MAX_PARTY_SIZE);
 }
 
 /**
- * Find a party by identifier without acquiring its lock.
+ * Empty a party slot and drop everything the indexes said about it.
  *
- * The returned pool pointer requires external synchronization before access.
- *
- * @return The matching party, or NULL for zero or absence.
+ * Caller must hold g_parties_lock and p->lock. One function rather than the
+ * four open-coded copies this replaced, because the slot and its two index
+ * entries have to go together: a slot cleared without its index entries leaves
+ * a party id and a set of characters pointing at a slot some other party will
+ * be given next.
  */
-Party* party_find(uint32_t party_id) {
-    if (party_id == 0) return NULL;
-    for (int i = 0; i < MAX_PARTIES; i++) {
-        if (g_parties[i].party_id == party_id) {
-            return &g_parties[i];
-        }
+static void party_clear_slot_locked(Party* p) {
+    party_index_remove(g_party_by_id, p->party_id);
+    for (int i = 0; i < MAX_PARTY_SIZE; i++) {
+        if (p->members[i] != 0) party_index_remove(g_party_by_member, p->members[i]);
     }
-    return NULL;
+
+    memset(p->members, 0, sizeof(p->members));
+    p->party_id     = 0;
+    p->leader_id    = 0;
+    p->member_count = 0;
 }
 
-/**
- * Find a character's party without acquiring its lock.
- *
- * The returned pool pointer requires external synchronization before access.
- *
- * @return The containing party, or NULL for zero or absence.
- */
-Party* party_find_by_player(uint32_t character_id) {
-    if (character_id == 0) return NULL;
-    for (int i = 0; i < MAX_PARTIES; i++) {
-        if (g_parties[i].party_id == 0) continue;
-        for (int j = 0; j < MAX_PARTY_SIZE; j++) {
-            if (g_parties[i].members[j] == character_id) {
-                return &g_parties[i];
-            }
-        }
+/** Copy one party's membership. Caller must hold g_parties_lock and p->lock. */
+static void party_copy_locked(const Party* p, PartySnapshot* out) {
+    out->party_id     = p->party_id;
+    out->leader_id    = p->leader_id;
+    out->member_count = p->member_count;
+    memcpy(out->members, p->members, sizeof(out->members));
+}
+
+/** Copy a party by identifier. */
+int party_snapshot(uint32_t party_id, PartySnapshot* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+
+    pthread_mutex_lock(&g_parties_lock);
+    Party* p = party_find_locked(party_id);
+    if (!p) {
+        pthread_mutex_unlock(&g_parties_lock);
+        return 0;
     }
-    return NULL;
+    pthread_mutex_lock(&p->lock);
+    party_copy_locked(p, out);
+    pthread_mutex_unlock(&p->lock);
+    pthread_mutex_unlock(&g_parties_lock);
+    return 1;
+}
+
+/** Copy the party containing a character. */
+int party_snapshot_of_player(uint32_t character_id, PartySnapshot* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+
+    pthread_mutex_lock(&g_parties_lock);
+    Party* p = party_find_of_player_locked(character_id);
+    if (!p) {
+        pthread_mutex_unlock(&g_parties_lock);
+        return 0;
+    }
+    pthread_mutex_lock(&p->lock);
+    party_copy_locked(p, out);
+    pthread_mutex_unlock(&p->lock);
+    pthread_mutex_unlock(&g_parties_lock);
+    return 1;
+}
+
+/** Return the party a character belongs to, or 0. */
+uint32_t party_id_of_player(uint32_t character_id) {
+    pthread_mutex_lock(&g_parties_lock);
+    Party* p = party_find_of_player_locked(character_id);
+    uint32_t party_id = p ? p->party_id : 0;
+    pthread_mutex_unlock(&g_parties_lock);
+    return party_id;
+}
+
+/** Report whether a character leads a party. */
+int party_is_leader(uint32_t party_id, uint32_t character_id) {
+    if (party_id == 0 || character_id == 0) return 0;
+
+    pthread_mutex_lock(&g_parties_lock);
+    Party* p = party_find_locked(party_id);
+    int is_leader = 0;
+    if (p) {
+        pthread_mutex_lock(&p->lock);
+        is_leader = (p->leader_id == character_id);
+        pthread_mutex_unlock(&p->lock);
+    }
+    pthread_mutex_unlock(&g_parties_lock);
+    return is_leader;
+}
+
+/** Report whether a character is a member of a party. */
+int party_has_member(uint32_t party_id, uint32_t character_id) {
+    if (party_id == 0 || character_id == 0) return 0;
+
+    pthread_mutex_lock(&g_parties_lock);
+    Party* p = party_find_locked(party_id);
+    int found = 0;
+    if (p) {
+        pthread_mutex_lock(&p->lock);
+        for (int i = 0; i < MAX_PARTY_SIZE; i++) {
+            if (p->members[i] == character_id) { found = 1; break; }
+        }
+        pthread_mutex_unlock(&p->lock);
+    }
+    pthread_mutex_unlock(&g_parties_lock);
+    return found;
 }
 
 /**
@@ -93,7 +332,21 @@ Party* party_find_by_player(uint32_t character_id) {
  * @return The assigned party identifier, or 0 when the pool is full.
  */
 uint32_t party_create(uint32_t leader_id) {
+    if (leader_id == 0) return 0;
+
     pthread_mutex_lock(&g_parties_lock);
+
+    /* Refuse a leader who already belongs to a party, under the same lock hold
+     * as the slot allocation. Without it, two accepts racing on one inviter
+     * create two parties and strand the first. */
+    Party* existing = party_find_of_player_locked(leader_id);
+    if (existing) {
+        uint32_t existing_id = existing->party_id;
+        pthread_mutex_unlock(&g_parties_lock);
+        LOG_DEBUG("[PARTY] Player %u already leads or belongs to party %u",
+                  leader_id, existing_id);
+        return 0;
+    }
 
     // Find empty slot
     int slot = -1;
@@ -120,6 +373,9 @@ uint32_t party_create(uint32_t leader_id) {
     p->members[0] = leader_id;
     p->member_count = 1;
 
+    party_index_insert(g_party_by_id, pid, slot);
+    party_index_insert(g_party_by_member, leader_id, slot);
+
     pthread_mutex_unlock(&p->lock);
     pthread_mutex_unlock(&g_parties_lock);
 
@@ -140,42 +396,65 @@ uint32_t party_create(uint32_t leader_id) {
  * @return 1 on success, or 0 for absence or a full party.
  */
 int party_add_member(uint32_t party_id, uint32_t character_id) {
+    if (party_id == 0 || character_id == 0) return 0;
+
     pthread_mutex_lock(&g_parties_lock);
-    Party* p = party_find(party_id);
+
+    /* Decided here, not by the caller.
+     *
+     * The membership test and the insertion have to be one atomic step. When the
+     * caller checked first and called second, two accepts racing for the same
+     * character both saw "not in a party" and both inserted -- leaving one
+     * character in two parties, with a player->party_id that named only one of
+     * them. */
+    if (party_find_of_player_locked(character_id)) {
+        pthread_mutex_unlock(&g_parties_lock);
+        LOG_DEBUG("[PARTY] Player %u is already in a party", character_id);
+        return 0;
+    }
+
+    Party* p = party_find_locked(party_id);
     if (!p) {
         pthread_mutex_unlock(&g_parties_lock);
         return 0;
     }
 
+    /* g_parties_lock stays held through the mutation, so no other thread can
+     * disband this slot between the lookup and the insert. It is released before
+     * player_acquire(), because a slot mutex must never be taken beneath it. */
     pthread_mutex_lock(&p->lock);
-    pthread_mutex_unlock(&g_parties_lock);
 
-    if (p->member_count >= MAX_PARTY_SIZE) {
-        pthread_mutex_unlock(&p->lock);
-        return 0;
-    }
-
-    // Find empty member slot
-    for (int i = 0; i < MAX_PARTY_SIZE; i++) {
-        if (p->members[i] == 0) {
-            p->members[i] = character_id;
-            p->member_count++;
-            pthread_mutex_unlock(&p->lock);
-
-            // Set party_id on the player
-            ActivePlayer* player = player_acquire(character_id);
-            if (player) {
-                player->party_id = party_id;
-                player_release(player);
+    int added = 0;
+    uint8_t new_count = 0;
+    if (p->member_count < MAX_PARTY_SIZE) {
+        for (int i = 0; i < MAX_PARTY_SIZE; i++) {
+            if (p->members[i] == 0) {
+                p->members[i] = character_id;
+                p->member_count++;
+                new_count = p->member_count;
+                added = 1;
+                party_index_insert(g_party_by_member, character_id,
+                                   (int)(p - g_parties));
+                break;
             }
-
-            LOG_DEBUG("[PARTY] Player %u joined party %u (%u members)", character_id, party_id, p->member_count);
-            return 1;
         }
     }
 
     pthread_mutex_unlock(&p->lock);
-    return 0;
+    pthread_mutex_unlock(&g_parties_lock);
+
+    if (!added) return 0;
+
+    // Set party_id on the player
+    ActivePlayer* player = player_acquire(character_id);
+    if (player) {
+        player->party_id = party_id;
+        player_release(player);
+    }
+
+    LOG_DEBUG("[PARTY] Player %u joined party %u (%u members)",
+              character_id, party_id, new_count);
+    return 1;
 }
 
 /**
@@ -183,7 +462,7 @@ int party_add_member(uint32_t party_id, uint32_t character_id) {
  */
 void party_remove_member(uint32_t character_id) {
     pthread_mutex_lock(&g_parties_lock);
-    Party* p = party_find_by_player(character_id);
+    Party* p = party_find_of_player_locked(character_id);
     if (!p) {
         pthread_mutex_unlock(&g_parties_lock);
         return;
@@ -191,16 +470,22 @@ void party_remove_member(uint32_t character_id) {
 
     uint32_t party_id = p->party_id;
     pthread_mutex_lock(&p->lock);
-    pthread_mutex_unlock(&g_parties_lock);
 
-    // Remove from members array
+    /* The members array and the member index are written in the same critical
+     * section: g_parties_lock is what orders them, so it is held across both
+     * rather than released the moment the slot lock is taken. It is still
+     * released before player_acquire() below -- a slot mutex must never be
+     * taken beneath it. */
     for (int i = 0; i < MAX_PARTY_SIZE; i++) {
         if (p->members[i] == character_id) {
             p->members[i] = 0;
             p->member_count--;
+            party_index_remove(g_party_by_member, character_id);
             break;
         }
     }
+
+    pthread_mutex_unlock(&g_parties_lock);
 
     // Clear party_id on the player
     ActivePlayer* player = player_acquire(character_id);
@@ -240,13 +525,10 @@ void party_remove_member(uint32_t character_id) {
 
         // Clear the party slot
         pthread_mutex_lock(&g_parties_lock);
-        Party* pp = party_find(party_id);
+        Party* pp = party_find_locked(party_id);
         if (pp) {
             pthread_mutex_lock(&pp->lock);
-            memset(pp->members, 0, sizeof(pp->members));
-            pp->party_id = 0;
-            pp->leader_id = 0;
-            pp->member_count = 0;
+            party_clear_slot_locked(pp);
             pthread_mutex_unlock(&pp->lock);
         }
         pthread_mutex_unlock(&g_parties_lock);
@@ -284,12 +566,17 @@ void party_remove_member(uint32_t character_id) {
  */
 void party_disband(uint32_t party_id) {
     pthread_mutex_lock(&g_parties_lock);
-    Party* p = party_find(party_id);
+    Party* p = party_find_locked(party_id);
     if (!p) {
         pthread_mutex_unlock(&g_parties_lock);
         return;
     }
 
+    /* g_parties_lock is released for the notification pass -- it calls
+     * player_acquire(), and a slot mutex must never be taken beneath it -- and
+     * retaken for the clear, because emptying the slot also empties its index
+     * entries and the two must move together. p->lock is held throughout, so
+     * nothing else can reuse the slot in between. */
     pthread_mutex_lock(&p->lock);
     pthread_mutex_unlock(&g_parties_lock);
 
@@ -312,10 +599,9 @@ void party_disband(uint32_t party_id) {
 
     LOG_DEBUG("[PARTY] Party %u disbanded", party_id);
 
-    memset(p->members, 0, sizeof(p->members));
-    p->party_id = 0;
-    p->leader_id = 0;
-    p->member_count = 0;
+    pthread_mutex_lock(&g_parties_lock);
+    party_clear_slot_locked(p);
+    pthread_mutex_unlock(&g_parties_lock);
 
     pthread_mutex_unlock(&p->lock);
 }
@@ -345,7 +631,7 @@ void party_handle_disconnect(uint32_t character_id) {
  */
 void party_broadcast_update(uint32_t party_id) {
     pthread_mutex_lock(&g_parties_lock);
-    Party* p = party_find(party_id);
+    Party* p = party_find_locked(party_id);
     if (!p) {
         pthread_mutex_unlock(&g_parties_lock);
         return;
@@ -378,7 +664,7 @@ void party_broadcast_update(uint32_t party_id) {
             member_fds[member_count] = mp->client_fd;
             member_count++;
             pkt.members[idx].character_id = htonl(mp->character_id);
-            strncpy(pkt.members[idx].name, mp->username, 31);
+            STR_COPY_FIELD(pkt.members[idx].name, mp->username);
             pkt.members[idx].level = (uint8_t)mp->level;
             pkt.members[idx].player_class = (uint8_t)mp->race_id;
             pkt.members[idx].health = htonl(mp->health);
@@ -452,25 +738,38 @@ int party_invite_create(uint32_t from_id, uint32_t to_id, uint32_t party_id) {
 }
 
 /**
- * Find a non-expired invitation for a target without locking the invite pool.
+ * Copy a target's pending, unexpired invitation.
  *
- * The returned pointer aliases mutable internal storage.
+ * Returns a copy under g_invites_lock rather than a pointer into the pool. The
+ * pool entry is cleared by party_invite_remove() and by expiry, so a caller
+ * reading through a returned pointer was reading a slot another thread was free
+ * to reuse -- and this function also mutated the pool with no lock held while
+ * expiring entries.
  *
- * @return The invitation, or NULL when absent or expired.
+ * @return 1 when an unexpired invitation was copied, otherwise 0.
  */
-PendingInvite* party_invite_find_for_player(uint32_t to_id) {
+int party_invite_find_for_player(uint32_t to_id, PendingInvite* out) {
+    if (!out || to_id == 0) return 0;
+
     double now = get_time_mono();
+    int found = 0;
+
+    pthread_mutex_lock(&g_invites_lock);
     for (int i = 0; i < MAX_PENDING_INVITES; i++) {
-        if (g_invites[i].to_id == to_id) {
-            if ((now - g_invites[i].invite_time) > INVITE_EXPIRY_SECONDS) {
-                g_invites[i].from_id = 0;
-                g_invites[i].to_id = 0;
-                return NULL; // Expired
-            }
-            return &g_invites[i];
+        if (g_invites[i].to_id != to_id) continue;
+
+        if ((now - g_invites[i].invite_time) > INVITE_EXPIRY_SECONDS) {
+            g_invites[i].from_id = 0;
+            g_invites[i].to_id = 0;
+            break;   // expired
         }
+
+        *out = g_invites[i];
+        found = 1;
+        break;
     }
-    return NULL;
+    pthread_mutex_unlock(&g_invites_lock);
+    return found;
 }
 
 /**
@@ -504,6 +803,21 @@ void party_invite_cleanup_expired(void) {
 }
 
 /**
+ * Award XP to one character, resolved by identifier.
+ *
+ * Every award goes through this rather than through a previously acquired
+ * ActivePlayer*. player_release() ends the caller's claim on the slot, and the
+ * slot is reused by the next login, so re-locking a released pointer can credit
+ * the XP to whoever holds that slot now.
+ */
+static void award_xp_to(uint32_t character_id, uint64_t xp_amount) {
+    ActivePlayer* p = player_acquire(character_id);
+    if (!p) return;
+    player_award_xp_locked(p, xp_amount);
+    player_release(p);
+}
+
+/**
  * Split an XP award among living nearby party members or grant it to the killer.
  */
 void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
@@ -520,53 +834,48 @@ void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
 
     if (pid == 0) {
         // Not in a party, award full XP to killer
-        player_award_xp(killer, xp_amount);
+        award_xp_to(killer_id, xp_amount);
         return;
     }
 
-    // Find party and get nearby members
-    pthread_mutex_lock(&g_parties_lock);
-    Party* p = party_find(pid);
-    if (!p) {
-        pthread_mutex_unlock(&g_parties_lock);
-        player_award_xp(killer, xp_amount);
+    /* Snapshot the membership, then work from the copy.
+     *
+     * Holding the party's mutex across a run of player_acquire() calls made the
+     * party pool an ordering dependency of every player slot it contains, on a
+     * path that runs on every kill. The copy costs one small memcpy and leaves
+     * the two locks unrelated. */
+    PartySnapshot party;
+    if (!party_snapshot(pid, &party)) {
+        award_xp_to(killer_id, xp_amount);
         return;
     }
 
-    pthread_mutex_lock(&p->lock);
-    pthread_mutex_unlock(&g_parties_lock);
-
-    // Collect nearby party members
+    // Collect nearby living party members
     uint32_t nearby[MAX_PARTY_SIZE];
     int nearby_count = 0;
     const float XP_SHARE_RANGE = 800.0f;
     const float range_sq = XP_SHARE_RANGE * XP_SHARE_RANGE;
 
     for (int i = 0; i < MAX_PARTY_SIZE; i++) {
-        if (p->members[i] == 0) continue;
+        if (party.members[i] == 0) continue;
 
-        ActivePlayer* mp = player_acquire(p->members[i]);
+        ActivePlayer* mp = player_acquire(party.members[i]);
         if (!mp) continue;
 
-        if (mp->is_dead) {
-            player_release(mp);
-            continue;
-        }
+        int is_dead = mp->is_dead;
         float dx = mp->pos_x - kx;
         float dy = mp->pos_y - ky;
-        float dist_sq = dx * dx + dy * dy;
         player_release(mp);
 
-        if (dist_sq <= range_sq) {
-            nearby[nearby_count++] = p->members[i];
+        if (is_dead) continue;
+        if (dx * dx + dy * dy <= range_sq) {
+            nearby[nearby_count++] = party.members[i];
         }
     }
 
-    pthread_mutex_unlock(&p->lock);
-
     if (nearby_count == 0) {
         // Shouldn't happen since killer should be nearby, but fallback
-        player_award_xp(killer, xp_amount);
+        award_xp_to(killer_id, xp_amount);
         return;
     }
 
@@ -574,13 +883,9 @@ void party_award_xp(uint32_t killer_id, uint64_t xp_amount) {
     uint64_t share = xp_amount / (uint64_t)nearby_count;
     if (share == 0) share = 1;
 
-    for (int i = 0; i < nearby_count; i++) {
-        ActivePlayer* mp = player_acquire(nearby[i]);
-        if (mp) {
-            player_release(mp);
-            player_award_xp(mp, share);
-        }
-    }
+    for (int i = 0; i < nearby_count; i++)
+        award_xp_to(nearby[i], share);
 
-    LOG_DEBUG("[PARTY] XP %lu split among %d members (%lu each) in party %u", (unsigned long)xp_amount, nearby_count, (unsigned long)share, pid);
+    LOG_DEBUG("[PARTY] XP %lu split among %d members (%lu each) in party %u",
+              (unsigned long)xp_amount, nearby_count, (unsigned long)share, pid);
 }

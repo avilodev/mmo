@@ -3,6 +3,7 @@
  * Cache login-server patch notes and serve them in protocol responses.
  */
 #include "patch_notes.h"
+#include "log.h"
 #include "tls.h"
 
 static char g_patch_notes_cache[PATCH_NOTES_MAX_SIZE] = {0};
@@ -12,7 +13,7 @@ static size_t g_patch_notes_len = 0;
 void patch_notes_init(void) {
     FILE* file = fopen(PATCH_NOTES_PATH, "r");
     if (file == NULL) {
-        printf("[PATCH NOTES] Warning: could not open %s — serving empty notes\n", PATCH_NOTES_PATH);
+        LOG_INFO("[PATCH NOTES] Warning: could not open %s — serving empty notes", PATCH_NOTES_PATH);
         snprintf(g_patch_notes_cache, sizeof(g_patch_notes_cache), "No patch notes available.");
         g_patch_notes_len = strlen(g_patch_notes_cache);
         return;
@@ -22,7 +23,7 @@ void patch_notes_init(void) {
     g_patch_notes_cache[g_patch_notes_len] = '\0';
     fclose(file);
 
-    printf("[PATCH NOTES] Cached %zu bytes from %s\n", g_patch_notes_len, PATCH_NOTES_PATH);
+    LOG_INFO("[PATCH NOTES] Cached %zu bytes from %s", g_patch_notes_len, PATCH_NOTES_PATH);
 }
 
 /**
@@ -34,7 +35,7 @@ void handle_patch_notes_request(int client_fd, PacketHeader* packet, ssize_t byt
     (void)packet;
     (void)bytes;
 
-    printf("[PATCH NOTES] Serving %zu cached bytes\n", g_patch_notes_len);
+    LOG_INFO("[PATCH NOTES] Serving %zu cached bytes", g_patch_notes_len);
 
     uint8_t send_buffer[7 + PATCH_NOTES_MAX_SIZE];
     int offset = 0;
@@ -56,6 +57,6 @@ void handle_patch_notes_request(int client_fd, PacketHeader* packet, ssize_t byt
     if (sent < 0) {
         perror("[PATCH NOTES] Failed to send response");
     } else if (sent != offset) {
-        printf("[PATCH NOTES] Warning: partial send (%zd/%d bytes)\n", sent, offset);
+        LOG_INFO("[PATCH NOTES] Warning: partial send (%zd/%d bytes)", sent, offset);
     }
 }

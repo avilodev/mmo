@@ -5,6 +5,10 @@
  */
 
 #include "projectile.h"
+
+#include "interest.h"
+#include "log.h"
+#include "npc_world.h"
 #include "player_effects.h"
 #include "log.h"
 #include "combat_stats.h"
@@ -29,7 +33,18 @@ static Projectile      g_projectiles[MAX_PROJECTILES];
 static pthread_mutex_t g_projectiles_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t        g_next_projectile_id = 1;
 
-#define MAX_DEFERRED_SENDS 256
+/** Bound one tick's deferred sends.
+ *
+ * Derived from the projectile pool rather than picked as a round number: a
+ * projectile can contribute at most one destroy, one effect, one XP award, and
+ * one loot roll in a single tick, so four entries per projectile cannot overflow.
+ *
+ * The previous fixed 256 was below that ceiling and the overflow was silent —
+ * the queue simply stopped accepting, and the packets it dropped were despawns,
+ * so clients kept rendering projectiles that no longer existed. Exactly the
+ * failure that only appears once the server is busy enough to matter.
+ */
+#define MAX_DEFERRED_SENDS (MAX_PROJECTILES * 4)
 
 typedef enum {
     DSEND_PROJECTILE_DESTROY,
@@ -45,6 +60,8 @@ typedef struct {
         struct {
             uint32_t projectile_id;
             uint8_t  reason;
+            /** Despawn position; recipients are resolved at flush time. */
+            float    pos_x, pos_y;
         } destroy;
         struct {
             uint32_t caster_id;
@@ -76,9 +93,13 @@ typedef struct {
 static void dq_init(DeferredQueue* q) { q->count = 0; }
 
 static void dq_push(DeferredQueue* q, const DeferredSend* item) {
-    if (q->count < MAX_DEFERRED_SENDS) {
-        q->items[q->count++] = *item;
+    if (q->count >= MAX_DEFERRED_SENDS) {
+        LOG_WARN_RL(5, 60, "[PROJECTILE] deferred queue full at %d sends — "
+                           "a projectile packet was dropped this tick",
+                    MAX_DEFERRED_SENDS);
+        return;
     }
+    q->items[q->count++] = *item;
 }
 
 static float dist2d(float ax, float ay, float bx, float by) {
@@ -157,11 +178,19 @@ static void dq_flush(DeferredQueue* q) {
     for (int i = 0; i < q->count; i++) {
         DeferredSend* ds = &q->items[i];
         switch (ds->type) {
-            case DSEND_PROJECTILE_DESTROY:
-                send_projectile_destroy(ds->client_fd,
-                                        ds->destroy.projectile_id,
-                                        ds->destroy.reason);
+            case DSEND_PROJECTILE_DESTROY: {
+                /* Recipients resolved here, not at queue time. Queueing one
+                 * entry per nearby player made a single despawn in a crowd
+                 * consume the whole queue; it is one entry now regardless of
+                 * how many people can see it. */
+                int fds[MAX_PLAYERS];
+                int n = interest_collect_fds(ds->destroy.pos_x, ds->destroy.pos_y,
+                                             PROJECTILE_VIEW_RANGE, fds, MAX_PLAYERS);
+                for (int k = 0; k < n; k++)
+                    send_projectile_destroy(fds[k], ds->destroy.projectile_id,
+                                            ds->destroy.reason);
                 break;
+            }
             case DSEND_ABILITY_EFFECT:
                 send_ability_effect(ds->client_fd,
                                     ds->effect.caster_id,
@@ -196,27 +225,23 @@ static void dq_flush(DeferredQueue* q) {
 }
 
 /**
- * Queue projectile-destruction packets for nearby players.
+ * Queue one projectile despawn for broadcast to whoever can see it.
  *
- * The caller must hold the player-registry read lock.
+ * Takes no locks and needs none held: the recipients are worked out by
+ * dq_flush(), after the projectile and NPC locks have been released. That is
+ * also why the callers below no longer reach for the player registry while
+ * holding g_projectiles_lock.
  */
 static void queue_destroy_broadcast(DeferredQueue* q, float px, float py,
                                      uint32_t projectile_id, uint8_t reason) {
-    int online_count = 0;
-    const int* online = player_active_list_locked(&online_count);
-    for (int n = 0; n < online_count; n++) {
-        int i = online[n];
-        if (!active_players[i].is_loaded) continue;
-        float d = dist2d(px, py, active_players[i].pos_x, active_players[i].pos_y);
-        if (d <= PROJECTILE_VIEW_RANGE) {
-            DeferredSend ds = {0};
-            ds.type = DSEND_PROJECTILE_DESTROY;
-            ds.client_fd = active_players[i].client_fd;
-            ds.destroy.projectile_id = projectile_id;
-            ds.destroy.reason = reason;
-            dq_push(q, &ds);
-        }
-    }
+    DeferredSend ds = {0};
+    ds.type = DSEND_PROJECTILE_DESTROY;
+    ds.client_fd = -1;                  // unused; recipients resolved at flush
+    ds.destroy.projectile_id = projectile_id;
+    ds.destroy.reason = reason;
+    ds.destroy.pos_x = px;
+    ds.destroy.pos_y = py;
+    dq_push(q, &ds);
 }
 
 /**
@@ -360,26 +385,13 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     pthread_mutex_unlock(&g_projectiles_lock);
 
     // Broadcast spawn to nearby players (outside projectile lock)
-    player_registry_rdlock();
-    typedef struct { int fd; } SpawnTarget;
-    SpawnTarget spawn_targets[MAX_PLAYERS];
-    int spawn_count = 0;
-    int online_count = 0;
-    const int* online = player_active_list_locked(&online_count);
-    for (int n = 0; n < online_count; n++) {
-        int i = online[n];
-        if (!active_players[i].is_loaded) continue;
-        float d = dist2d(spawn_x, spawn_y,
-                         active_players[i].pos_x, active_players[i].pos_y);
-        if (d <= PROJECTILE_VIEW_RANGE) {
-            spawn_targets[spawn_count++].fd = active_players[i].client_fd;
-        }
-    }
-    player_registry_unlock();
+    int spawn_targets[MAX_PLAYERS];
+    int spawn_count = interest_collect_fds(spawn_x, spawn_y, PROJECTILE_VIEW_RANGE,
+                                           spawn_targets, MAX_PLAYERS);
 
     // Send outside all locks
     for (int i = 0; i < spawn_count; i++) {
-        send_projectile_spawn_pkt(spawn_targets[i].fd, id,
+        send_projectile_spawn_pkt(spawn_targets[i], id,
                                    info->ability_id, info->owner_id,
                                    info->owner_type,
                                    spawn_x, spawn_y, dir_x, dir_y,
@@ -416,9 +428,7 @@ void projectile_remove(uint32_t projectile_id) {
     // Notify nearby players (outside projectile lock)
     DeferredQueue q;
     dq_init(&q);
-    player_registry_rdlock();
     queue_destroy_broadcast(&q, px, py, projectile_id, PROJECTILE_DESTROY_CANCELLED);
-    player_registry_unlock();
     dq_flush(&q);
 }
 
@@ -431,7 +441,8 @@ void projectile_remove(uint32_t projectile_id) {
  * @param snap        Player snapshot used to select NPC-projectile candidates; may be NULL.
  * @param delta_time  Elapsed tick time in seconds.
  */
-void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
+void projectile_tick(NPCWorld* world, TickSnapshot* snap, NPCTickSnapshot* npcs,
+                     double delta_time) {
     float dt = (float)delta_time;
     DeferredQueue q;
     dq_init(&q);
@@ -457,24 +468,39 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
         if (proj->distance_traveled >= proj->max_range) {
             proj->is_active = 0;
             // Queue destroy broadcast
-            player_registry_rdlock();
             queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
                                      PROJECTILE_DESTROY_EXPIRED);
-            player_registry_unlock();
             continue;
         }
 
         // --- Player projectile: collide with NPCs ---
         if (proj->owner_type == PROJECTILE_OWNER_PLAYER) {
-            pthread_mutex_lock(&world->lock);
-            for (int n = 0; n < MAX_NPCS; n++) {
-                NPCEntity* npc = &world->npcs[n];
-                if (!npc->is_alive || npc->id == 0) continue;
+            /* This was the worst offender in the old design: a full scan of the
+             * NPC pool per projectile, re-taking the one global NPC lock each
+             * time. At 128 projectiles and 256 NPCs that was 32,768 distance
+             * checks and 128 lock round-trips every tick, and it grew with the
+             * pool. Now each projectile asks the tick grid for the handful of
+             * NPCs near its own position. */
+            const float proj_half = proj->width / 2.0f;
+            int nearby_npcs[PROJECTILE_HIT_CANDIDATES];
+            int npc_near = npcs
+                ? npc_snapshot_query(npcs, proj_px, proj_py,
+                                     proj_half + npcs->max_hitbox_radius,
+                                     nearby_npcs, PROJECTILE_HIT_CANDIDATES)
+                : 0;
 
-                float d = dist2d(proj_px, proj_py, npc->pos_x, npc->pos_y);
-                float hit_range = (proj->width / 2.0f) + npc->hitbox_radius;
+            for (int k = 0; k < npc_near; k++) {
+                int c = nearby_npcs[k];
 
-                if (d <= hit_range) {
+                float d = dist2d(proj_px, proj_py, npcs->pos_x[c], npcs->pos_y[c]);
+                float hit_range = proj_half + npcs->hitbox_radius[c];
+                if (d > hit_range) continue;
+
+                NPCEntity* npc = npc_world_acquire_slot(world, npcs->slot[c], npcs->id[c]);
+                if (!npc) continue;               // died or was recycled this tick
+                if (!npc->is_alive) { npc_world_release(world, npc); continue; }
+
+                {
                     int owner_fd = proj->owner_fd;
 
                     /* There is no dodge roll: a projectile that reaches its target
@@ -534,15 +560,15 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
                     }
 
                     proj->is_active = 0;
-                    // Queue destroy broadcast
-                    player_registry_rdlock();
-                    queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
-                                             PROJECTILE_DESTROY_HIT);
-                    player_registry_unlock();
-                    break;
                 }
+
+                npc_world_release(world, npc);
+
+                // Queue destroy broadcast outside the NPC locks
+                queue_destroy_broadcast(&q, proj_px, proj_py, proj_id,
+                                         PROJECTILE_DESTROY_HIT);
+                break;
             }
-            pthread_mutex_unlock(&world->lock);
 
         // --- NPC projectile: collide with players ---
         } else if (proj->owner_type == PROJECTILE_OWNER_NPC) {
@@ -628,7 +654,7 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, double delta_time) {
  *
  * @param snapshot  Broadcast-pass player snapshot; may be NULL or empty.
  */
-void projectile_broadcast(const BroadcastSnapshot* snapshot) {
+void projectile_broadcast(const BroadcastSnapshot* snapshot, int shard, int shard_count) {
     // share the broadcast pass snapshot across entity streams
     if (!snapshot || snapshot->count == 0) return;
 
@@ -656,26 +682,63 @@ void projectile_broadcast(const BroadcastSnapshot* snapshot) {
 
     if (proj_count == 0) return;
 
-    // Build and send packets OUTSIDE all locks
+    // Build and send packets OUTSIDE all locks.
+    //
+    // Sharded on the descriptor, the same way connections are pinned to an
+    // epoll loop, so this shard only ever writes to sockets its matching loop
+    // owns. The snapshot is immutable here, so shards share it freely.
     for (int s = 0; s < snapshot_count; s++) {
+        if (shard_count > 1 && (snapshots[s].client_fd % shard_count) != shard) continue;
+
         ProjectileUpdatePacket pkt = {0};
         pkt.header.type      = PACKET_PROJECTILE_UPDATE;
         pkt.header.player_id = 0;
         pkt.count = 0;
 
+        /* Fill nearest-first, so the wire cap behaves like a view radius rather
+         * than like a slot-order accident.
+         *
+         * This used to walk the pool in slot order and break at the cap, so a
+         * player standing in a firefight denser than MAX_PROJECTILES_PER_PACKET
+         * saw an arbitrary subset chosen by pool index -- and because slots
+         * recycle as projectiles expire and spawn, the subset changed every
+         * tick, making projectiles flicker in and out at random rather than
+         * simply thinning out at distance.
+         *
+         * The window is the packet's own capacity, so the insertion sort below
+         * is bounded by the wire cap and not by the pool.
+         */
+        int   near_idx[MAX_PROJECTILES_PER_PACKET];
+        float near_dist[MAX_PROJECTILES_PER_PACKET];
+        int   near_count = 0;
+
         for (int p = 0; p < proj_count; p++) {
             float d = dist2d(proj_snaps[p].px, proj_snaps[p].py,
                              snapshots[s].pos_x, snapshots[s].pos_y);
+            if (d > PROJECTILE_VIEW_RANGE) continue;
 
-            if (d <= PROJECTILE_VIEW_RANGE) {
-                if (pkt.count >= MAX_PROJECTILES_PER_PACKET) break;
-
-                pkt.projectiles[pkt.count].projectile_id =
-                    htonl(proj_snaps[p].id);
-                pkt.projectiles[pkt.count].pos_x = proj_snaps[p].px;
-                pkt.projectiles[pkt.count].pos_y = proj_snaps[p].py;
-                pkt.count++;
+            if (near_count == MAX_PROJECTILES_PER_PACKET &&
+                d >= near_dist[near_count - 1]) {
+                continue;   // further than everything already kept
             }
+
+            int at = (near_count < MAX_PROJECTILES_PER_PACKET) ? near_count++
+                                                               : near_count - 1;
+            while (at > 0 && near_dist[at - 1] > d) {
+                near_dist[at] = near_dist[at - 1];
+                near_idx[at]  = near_idx[at - 1];
+                at--;
+            }
+            near_dist[at] = d;
+            near_idx[at]  = p;
+        }
+
+        for (int k = 0; k < near_count; k++) {
+            const int p = near_idx[k];
+            pkt.projectiles[pkt.count].projectile_id = htonl(proj_snaps[p].id);
+            pkt.projectiles[pkt.count].pos_x = proj_snaps[p].px;
+            pkt.projectiles[pkt.count].pos_y = proj_snaps[p].py;
+            pkt.count++;
         }
 
         if (pkt.count > 0) {

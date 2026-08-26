@@ -7,6 +7,7 @@
 
 #include "log.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -176,6 +177,51 @@ void packet_limiter_reset(int fd) {
     }
 }
 
+/* --- What the limiter has actually done ----------------------------------
+ *
+ * The limiter's only output was a rate-limited log line, which means the
+ * question "is this world dropping packets right now, and how many" could be
+ * answered by reading text and by nothing else -- and the log line is
+ * deliberately rate-limited, so the text does not even carry the count.
+ *
+ * Three counters, monotonic since startup, relaxed because nothing branches on
+ * them and a scrape that is one packet stale is a scrape that is one packet
+ * stale. They are read by each service's /metrics provider and by the world's
+ * periodic [STATS] line.
+ */
+static atomic_ullong g_allowed_total = 0;
+static atomic_ullong g_dropped_total = 0;
+static atomic_ullong g_kicked_total  = 0;
+
+/** Read the running totals. Any pointer may be NULL. */
+void packet_limiter_totals(unsigned long long* allowed,
+                           unsigned long long* dropped,
+                           unsigned long long* kicked) {
+    if (allowed) *allowed = atomic_load_explicit(&g_allowed_total, memory_order_relaxed);
+    if (dropped) *dropped = atomic_load_explicit(&g_dropped_total, memory_order_relaxed);
+    if (kicked)  *kicked  = atomic_load_explicit(&g_kicked_total,  memory_order_relaxed);
+}
+
+/** Reset the running totals. For tests, which need a known starting point. */
+void packet_limiter_reset_totals(void) {
+    atomic_store_explicit(&g_allowed_total, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_dropped_total, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_kicked_total,  0, memory_order_relaxed);
+}
+
+/** Count one verdict and hand it back, so no return path can forget to. */
+static PacketLimitVerdict counted(PacketLimitVerdict verdict) {
+    switch (verdict) {
+        case PACKET_LIMIT_ALLOW:
+            atomic_fetch_add_explicit(&g_allowed_total, 1, memory_order_relaxed); break;
+        case PACKET_LIMIT_DROP:
+            atomic_fetch_add_explicit(&g_dropped_total, 1, memory_order_relaxed); break;
+        case PACKET_LIMIT_KICK:
+            atomic_fetch_add_explicit(&g_kicked_total, 1, memory_order_relaxed); break;
+    }
+    return verdict;
+}
+
 /**
  * Charge an inbound packet to its class and overall token buckets.
  *
@@ -183,7 +229,7 @@ void packet_limiter_reset(int fd) {
  */
 PacketLimitVerdict packet_limiter_check(int fd, uint8_t packet_type) {
     // No table means init failed. Refuse rather than serve unmetered traffic.
-    if (!g_slots) return PACKET_LIMIT_KICK;
+    if (!g_slots) return counted(PACKET_LIMIT_KICK);
 
     if (fd < 0 || fd >= g_slot_count) {
         // The table is sized from the descriptor limit, so this cannot happen
@@ -192,7 +238,7 @@ PacketLimitVerdict packet_limiter_check(int fd, uint8_t packet_type) {
         LOG_WARN_RL(5, 60,
                     "[LIMIT] fd=%d outside slot table (%d) — closing connection",
                     fd, g_slot_count);
-        return PACKET_LIMIT_KICK;
+        return counted(PACKET_LIMIT_KICK);
     }
 
     LimiterSlot* slot = &g_slots[fd];
@@ -221,7 +267,7 @@ PacketLimitVerdict packet_limiter_check(int fd, uint8_t packet_type) {
     if (slot->overall_tokens >= cost && slot->tokens[cls] >= cost) {
         slot->overall_tokens -= cost;
         slot->tokens[cls]    -= cost;
-        return PACKET_LIMIT_ALLOW;
+        return counted(PACKET_LIMIT_ALLOW);
     }
 
     slot->violations++;
@@ -231,14 +277,14 @@ PacketLimitVerdict packet_limiter_check(int fd, uint8_t packet_type) {
                     "(class=%s, last opcode=%u) — closing connection",
                     fd, slot->violations, g_profile.violation_window,
                     CLASS_NAMES[cls], packet_type);
-        return PACKET_LIMIT_KICK;
+        return counted(PACKET_LIMIT_KICK);
     }
 
     LOG_WARN_RL(5, 60,
                 "[LIMIT] fd=%d over budget for class=%s (opcode=%u, cost=%u), "
                 "dropping packet",
                 fd, CLASS_NAMES[cls], packet_type, rule.cost);
-    return PACKET_LIMIT_DROP;
+    return counted(PACKET_LIMIT_DROP);
 }
 
 /**

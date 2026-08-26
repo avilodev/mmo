@@ -101,15 +101,10 @@ typedef struct {
     float       ai_cast_dir_y;
 } NPCEntity;
 
-/** Bound the fixed NPC pool owned by one world process. */
-#define MAX_NPCS    256
-
-/** Protect a fixed pool of active NPC entities with one mutex. */
-typedef struct {
-    NPCEntity   npcs[MAX_NPCS];
-    int         count;              // How many slots are in use
-    pthread_mutex_t lock;           // Protects the entire array
-} NPCWorld;
+/* The pool that holds these entities, its capacity, and its locking all live in
+ * npc_world.h. This header is deliberately left with plain data: NPCEntity is
+ * memset and copied in several places, which an embedded lock would break, and
+ * the tick snapshot copies these fields wholesale. */
 
 /** Snapshot an in-flight basic attack between intent and resolution. */
 typedef struct {

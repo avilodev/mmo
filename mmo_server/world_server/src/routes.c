@@ -13,6 +13,7 @@
 #include "combat.h"
 #include "dialogue_handler.h"
 #include "items_database.h"
+#include "chat.h"
 #include "loot.h"
 #include "shop.h"
 #include "quest_system.h"
@@ -83,15 +84,39 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
             break;
     }
 
-    // block state-changing actions while dead
-    if (header->type == PACKET_PLAYER_MOVE ||
-        header->type == PACKET_ATTACK_INTENT ||
-        header->type == PACKET_ABILITY_CAST_INTENT ||
-        header->type == PACKET_FORM_SWAP ||
-        header->type == PACKET_EQUIP_ITEM ||
-        header->type == PACKET_USE_ITEM ||
-        header->type == PACKET_DROP_ITEM ||
-        header->type == PACKET_NPC_INTERACT_REQUEST) {
+    /* Block state-changing actions while dead.
+     *
+     * The list started as the obvious four -- move, attack, cast, swap -- and
+     * then grew by whichever handler someone happened to think of. Everything
+     * a corpse should not be able to do belongs here, and the ones that were
+     * missing were the ones that move items and money: a dead player could
+     * pick loot off the ground, trade at a shop, unequip their gear and
+     * rearrange their bags. Death is meant to interrupt exactly that.
+     *
+     * A single table rather than a chain of ||, so adding an opcode is adding
+     * a line and forgetting one is visible. */
+    static const uint8_t dead_blocked[] = {
+        PACKET_PLAYER_MOVE,
+        PACKET_ATTACK_INTENT,
+        PACKET_ABILITY_CAST_INTENT,
+        PACKET_FORM_SWAP,
+        PACKET_EQUIP_ITEM,
+        PACKET_UNEQUIP_ITEM,
+        PACKET_MOVE_ITEM,
+        PACKET_USE_ITEM,
+        PACKET_DROP_ITEM,
+        PACKET_LOOT_PICKUP_REQUEST,
+        PACKET_SHOP_BUY,
+        PACKET_SHOP_SELL,
+        PACKET_NPC_INTERACT_REQUEST,
+    };
+
+    int blocked_while_dead = 0;
+    for (size_t i = 0; i < sizeof(dead_blocked) / sizeof(dead_blocked[0]); i++) {
+        if (header->type == dead_blocked[i]) { blocked_while_dead = 1; break; }
+    }
+
+    if (blocked_while_dead) {
         ActivePlayer* p = player_acquire_hint(character_id, player_slot);
         if (p) {
             int dead = p->is_dead;
@@ -107,7 +132,7 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
 
         case PACKET_PING:
             if (bytes >= (ssize_t)(sizeof(PacketHeader) + sizeof(uint16_t)))
-                handle_ping(client_fd, buffer, character_id, player_slot);
+                handle_ping(client_fd, buffer, bytes, character_id, player_slot);
             else
                 LOG_WARN_RL(5, 60, "[PING] Malformed ping packet (size: %zd)", bytes);
             break;
@@ -259,7 +284,7 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
             break;
 
         case PACKET_CHAT_SEND:
-            handle_chat_send(client_fd, character_id, buffer, bytes);
+            chat_handle_send(client_fd, character_id, buffer, bytes);
             break;
 
         case PACKET_PARTY_INVITE:
@@ -282,95 +307,23 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
             handle_party_kick(client_fd, character_id, buffer, bytes);
             break;
 
-        case PACKET_LOOT_PICKUP_REQUEST: {
-            if (bytes >= (ssize_t)sizeof(LootPickupRequestPacket)) {
-                LootPickupRequestPacket* req = (LootPickupRequestPacket*)buffer;
-                uint32_t ground_item_id = ntohl(req->ground_item_id);
+        case PACKET_LOOT_PICKUP_REQUEST:
+            /* Implemented in loot.c, which owns the ground-item state. It used
+             * to be written out inline here -- the one opcode implemented in
+             * the router rather than in its module, and the one that destroyed
+             * an item when the inventory insert it had already committed to
+             * turned out to store nothing. */
+            loot_handle_pickup_request(character_id, client_fd, buffer, bytes);
+            break;
 
-                LootPickupResponsePacket resp = {0};
-                resp.header.type         = PACKET_LOOT_PICKUP_RESPONSE;
-                resp.header.player_id    = htonl(character_id);
-                resp.header.payload_size = htons(sizeof(LootPickupResponsePacket) - sizeof(PacketHeader));
-                resp.ground_item_id = htonl(ground_item_id);
-
-                const GroundItem* gi = loot_get_ground_item(ground_item_id);
-                if (!gi) {
-                    resp.success = 0;
-                    strncpy(resp.message, "Item not found", sizeof(resp.message) - 1);
-                    server_send(client_fd, &resp, sizeof(resp));
-                    break;
-                }
-
-                ActivePlayer* player = player_acquire(character_id);
-                if (!player) break;
-
-                float dx = player->pos_x - gi->pos_x;
-                float dy = player->pos_y - gi->pos_y;
-                float dist = sqrtf(dx * dx + dy * dy);
-                int inv_slot = inventory_first_free(player->inventory);
-                player_release(player);
-
-                if (dist > LOOT_PICKUP_RANGE) {
-                    resp.success = 0;
-                    strncpy(resp.message, "Too far away", sizeof(resp.message) - 1);
-                    server_send(client_fd, &resp, sizeof(resp));
-                    break;
-                }
-
-                if (inv_slot < 0) {
-                    resp.success = 0;
-                    strncpy(resp.message, "Inventory full", sizeof(resp.message) - 1);
-                    server_send(client_fd, &resp, sizeof(resp));
-                    break;
-                }
-
-                uint32_t item_id = 0;
-                uint8_t quantity = 0;
-                if (!loot_try_pickup(ground_item_id, character_id, &item_id, &quantity)) {
-                    resp.success = 0;
-                    strncpy(resp.message, "Cannot pick up yet", sizeof(resp.message) - 1);
-                    server_send(client_fd, &resp, sizeof(resp));
-                    break;
-                }
-
-                // reacquire after pickup releases player ownership
-                player = player_acquire(character_id);
-                uint16_t stored = 0;
-                if (player && player->client_fd == client_fd) {
-                    const ItemDefinition* def = item_get(item_id);
-                    uint16_t want = quantity ? quantity : 1;
-                    uint16_t left = inventory_add(player->inventory, item_id, want,
-                                                  def ? def->max_stack : 1,
-                                                  def ? def->bind_on_pickup : 0);
-                    stored = (uint16_t)(want - left);
-                    if (stored > 0) player->is_dirty = 1;
-                }
-
-                if (player && stored > 0) {
-                    player_release(player);
-
-                    quest_on_item_collect(character_id, client_fd, item_id);
-
-                    resp.success = 1;
-                    resp.item_id = htonl(item_id);
-                    resp.quantity = (uint8_t)stored;
-                    resp.inventory_slot = (uint8_t)(inv_slot < 0 ? 0 : inv_slot);
-                    strncpy(resp.message, "Item picked up", sizeof(resp.message) - 1);
-                } else {
-                    if (player) player_release(player);
-                    resp.success = 0;
-                    strncpy(resp.message, "Player state changed", sizeof(resp.message) - 1);
-                }
-                server_send(client_fd, &resp, sizeof(resp));
-
-                // refresh the stack that may have absorbed the pickup
-                if (resp.success && inv_slot >= 0) {
-                    uint16_t changed[1] = { (uint16_t)inv_slot };
-                    player_send_slot_updates(client_fd, character_id, changed, 1);
-                }
+        case PACKET_QUEST_ABANDON:
+            if (bytes >= (ssize_t)sizeof(QuestAbandonPacket)) {
+                const QuestAbandonPacket* req = (const QuestAbandonPacket*)buffer;
+                quest_player_abandon(character_id, client_fd, ntohl(req->quest_id));
+            } else {
+                LOG_WARN_RL(5, 60, "[QUEST] Malformed abandon packet (size: %zd)", bytes);
             }
             break;
-        }
 
         case PACKET_SHOP_BUY:
             shop_handle_buy(character_id, client_fd, buffer, bytes);
@@ -382,6 +335,10 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
 
         case PACKET_SESSION_LIST_REQUEST:
             handle_session_list_request(client_fd, buffer, bytes);
+            break;
+
+        case PACKET_NAME_QUERY_REQUEST:
+            handle_name_query_request(client_fd, buffer, bytes);
             break;
 
         default: {

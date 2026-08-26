@@ -190,19 +190,42 @@ ssize_t connection_io_send(int fd, const void* data, size_t len) {
         return accepted ? (ssize_t)len : -1;
     }
 
-    ssize_t sent = send(fd, data, len, MSG_NOSIGNAL | MSG_DONTWAIT);
-    if (sent == (ssize_t)len) {
-        pthread_mutex_unlock(&output->lock);
-        return sent;
-    }
-    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        LOG_ERROR("[NET] queued send failed on fd %d: %s", fd, strerror(errno));
+    /* Write until the socket says it is full, retrying an interrupted call.
+     *
+     * EINTR is not "the socket is full", it is "a signal arrived first" -- and
+     * treating it as the former was a stall. Queueing on EINTR leaves the
+     * socket perfectly writable, and the loop is edge-triggered: EPOLLOUT only
+     * fires on a transition to writable, which had already happened, so the
+     * queued bytes waited for an edge that never came. The client saw nothing
+     * more from the server until the 35s ping timeout closed the connection.
+     *
+     * The loop also picks up short writes for free: a send() that took only
+     * part of the buffer is retried with the remainder rather than queueing it,
+     * because the second call is what tells us whether the socket is actually
+     * full. */
+    size_t offset = 0;
+    while (offset < len) {
+        ssize_t sent = send(fd, (const uint8_t*)data + offset, len - offset,
+                            MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (sent > 0) {
+            offset += (size_t)sent;
+            continue;
+        }
+        if (sent < 0 && errno == EINTR) continue;
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+
+        LOG_ERROR("[NET] queued send failed on fd %d: %s", fd,
+                  sent < 0 ? strerror(errno) : "peer closed");
         output->failed = 1;
         pthread_mutex_unlock(&output->lock);
         return -1;
     }
 
-    size_t offset = sent > 0 ? (size_t)sent : 0;
+    if (offset == len) {
+        pthread_mutex_unlock(&output->lock);
+        return (ssize_t)len;
+    }
+
     int accepted = append_locked(output, (const uint8_t*)data + offset, len - offset);
     pthread_mutex_unlock(&output->lock);
     return accepted ? (ssize_t)len : -1;

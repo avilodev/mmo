@@ -60,3 +60,13 @@ tests/bin/
 
 # Generated world map (~1 GB) — rebuild with `make world` in mmo_client
 world_server/data/world.dat
+
+# Rolling server logs written by scripts/start_servers.sh
+logs/
+
+# Agent scratch directories.
+#
+# These were kept out of the repository by .git/info/exclude, which is local to
+# one clone and shared with nobody -- so the tree looked clean on the machine
+# that had written the exclude and nowhere else. An ignore rule that is meant
+# to hold for everyone belongs in the tracked file.

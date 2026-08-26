@@ -4,9 +4,11 @@
  */
 
 #include "packet_handler.h"
+#include "str_fixed.h"
 #include "log.h"
 #include "player_data.h"
 #include "zone_system.h"
+#include "config.h"
 #include <stdlib.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -24,20 +26,45 @@ static int equip_index_for(uint8_t equip_slot) {
     }
 }
 
-/** Record client latency and echo its ping packet. */
-void handle_ping(int client_fd, uint8_t* buffer, uint32_t character_id, int player_slot) {
+/**
+ * Record client latency and echo the ping packet back.
+ *
+ * The echo is the framed packet, byte for byte -- not a fixed
+ * header-plus-two-bytes. The two differ whenever a client declares a
+ * payload_size larger than the latency field, and the old fixed reply left the
+ * surplus bytes unsent while the header the client reads still announced them:
+ * the client's next read then took the following packet's header as this
+ * packet's tail, and every packet after it on that connection was misframed.
+ * The realm's ping route (realm_server/src/routes.c) already echoed what it
+ * was given; this is the same rule on the world side.
+ *
+ * @param bytes  Length of the framed packet, as computed by the read loop from
+ *               the declared payload_size. Never larger than what was received.
+ */
+void handle_ping(int client_fd, uint8_t* buffer, ssize_t bytes, uint32_t character_id, int player_slot) {
     PacketHeader* hdr = (PacketHeader*)buffer;
-    if (ntohs(hdr->payload_size) >= sizeof(uint16_t)) {
-        uint16_t* ping_ptr = (uint16_t*)(buffer + sizeof(PacketHeader));
-        uint16_t client_ping = ntohs(*ping_ptr);
+    if (bytes >= (ssize_t)(sizeof(PacketHeader) + sizeof(uint16_t)) &&
+        ntohs(hdr->payload_size) >= sizeof(uint16_t)) {
+        /* memcpy, not *(uint16_t*)(buffer + sizeof(PacketHeader)).
+         *
+         * PacketHeader is 7 bytes, so the latency field sits at an odd offset.
+         * Casting the buffer to a uint16_t* asserts a 2-byte alignment that is
+         * never there: undefined behaviour on any target, and on the AArch64
+         * targets protocol.h names, a trap or a kernel fixup on the hot path.
+         * memcpy of two bytes compiles to the same unaligned load x86 was
+         * already doing, without the claim. The realm router carried the same
+         * defect in its character-list case; see realm_server/src/routes.c. */
+        uint16_t raw_ping = 0;
+        memcpy(&raw_ping, buffer + sizeof(PacketHeader), sizeof(raw_ping));
+        uint16_t client_ping = ntohs(raw_ping);
         ActivePlayer* player = player_acquire_hint(character_id, player_slot);
         if (player) {
             player->ping_ms = client_ping;
             player_release(player);
         }
     }
-    // echo the declared payload for stream framing
-    server_send(client_fd, buffer, sizeof(PacketHeader) + sizeof(uint16_t));
+    if (bytes < (ssize_t)sizeof(PacketHeader)) return;
+    server_send(client_fd, buffer, (size_t)bytes);
 }
 
 /** Send the requested character data to a client. */
@@ -104,7 +131,7 @@ void handle_player_move(int client_fd, uint32_t character_id, int player_slot, P
             zpkt.header.payload_size = htons(sizeof(ZoneChangePacket) - sizeof(PacketHeader));
             zpkt.zone_id   = zone->id;
             zpkt.zone_type = zone->type;
-            strncpy(zpkt.zone_name, zone->name, sizeof(zpkt.zone_name) - 1);
+            STR_COPY_FIELD(zpkt.zone_name, zone->name);
             server_send(client_fd, &zpkt, sizeof(zpkt));
         }
     } else {
@@ -268,8 +295,25 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         player_send_slot_updates(client_fd, character_id, changed, 2);
     }
 
-    // Send updated stats to client
-    player_send_stats(client_fd, player);
+    /* Re-resolve the character rather than reusing the released pointer.
+     *
+     * player_release() gave the slot up. It stays a valid address -- the
+     * registry is a static array -- but it stops being *this* character's:
+     * between the release above and here, this character can disconnect and
+     * the slot be handed to someone else, and player_send_stats() would then
+     * lock that stranger's slot and send their statistics down this
+     * descriptor. Narrow, but it is a cross-character read, and the ownership
+     * rule in player_data.h says a pointer is only good while it is held.
+     *
+     * The re-acquire is after the response and the slot updates on purpose, so
+     * the client still sees them in the order it did before. */
+    {
+        ActivePlayer* still_here = player_acquire(character_id);
+        if (still_here) {
+            player_send_stats_locked(client_fd, still_here);
+            player_release(still_here);
+        }
+    }
 
     LOG_DEBUG("Character %u equipped %s", character_id, item->name);
 }
@@ -342,8 +386,25 @@ void handle_unequip_item(int client_fd, uint32_t character_id, uint8_t* buffer, 
         player_send_slot_updates(client_fd, character_id, changed, 2);
     }
 
-    // Send updated stats to client
-    player_send_stats(client_fd, player);
+    /* Re-resolve the character rather than reusing the released pointer.
+     *
+     * player_release() gave the slot up. It stays a valid address -- the
+     * registry is a static array -- but it stops being *this* character's:
+     * between the release above and here, this character can disconnect and
+     * the slot be handed to someone else, and player_send_stats() would then
+     * lock that stranger's slot and send their statistics down this
+     * descriptor. Narrow, but it is a cross-character read, and the ownership
+     * rule in player_data.h says a pointer is only good while it is held.
+     *
+     * The re-acquire is after the response and the slot updates on purpose, so
+     * the client still sees them in the order it did before. */
+    {
+        ActivePlayer* still_here = player_acquire(character_id);
+        if (still_here) {
+            player_send_stats_locked(client_fd, still_here);
+            player_release(still_here);
+        }
+    }
 
     LOG_DEBUG("Character %u unequipped item from slot %u", character_id, equip_slot);
 }
@@ -461,6 +522,9 @@ void handle_use_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssiz
     response.new_health = htonl((uint32_t)player->health);
     response.new_mana = htonl((uint32_t)player->resource);
     response.item_id = htonl(item_id);
+    /* The slot the request named. The client used to have to guess it from
+     * item_id, and guessed wrong whenever the same item sat in two stacks. */
+    response.inventory_slot = (uint8_t)inventory_slot;
 
     player_release(player);
 
@@ -535,7 +599,7 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     uint8_t from_slot = move->from_slot;
     uint8_t to_slot = move->to_slot;
 
-    if (from_slot >= 150 || to_slot >= 150) return;
+    if (from_slot >= INVENTORY_SLOTS || to_slot >= INVENTORY_SLOTS) return;
 
     ActivePlayer* player = player_acquire(character_id);
     if (!player) return;
@@ -568,140 +632,13 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
     LOG_DEBUG("Character %u moved item from slot %u to %u", character_id, from_slot, to_slot);
 }
 
-#define CHAT_LOCAL_RANGE 800.0f
-
-/** Sanitize and distribute a chat message by channel rules. */
-void handle_chat_send(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
-    (void)client_fd;  // Sender receives via broadcast loop
-
-    if (bytes < (ssize_t)sizeof(ChatSendPacket)) {
-        LOG_WARN_RL(5, 60, "Invalid chat packet size");
-        return;
-    }
-
-    ChatSendPacket* chat = (ChatSendPacket*)buffer;
-
-    // Sanitize: ensure null termination
-    chat->message[MAX_CHAT_MESSAGE - 1] = '\0';
-
-    // Reject empty messages
-    if (chat->message[0] == '\0') return;
-
-    uint8_t channel = chat->channel;
-
-    // Get sender info — acquire lock, extract needed fields, release immediately
-    ActivePlayer* sender = player_acquire(character_id);
-    if (!sender) return;
-    char sender_name[32];
-    strncpy(sender_name, sender->username, sizeof(sender_name) - 1);
-    sender_name[31] = '\0';
-    float sender_x = sender->pos_x;
-    float sender_y = sender->pos_y;
-    uint32_t sender_party = sender->party_id;
-    player_release(sender);
-
-    // Build broadcast packet
-    ChatMessagePacket msg = {0};
-    msg.header.type = PACKET_CHAT_MESSAGE;
-    msg.header.player_id = htonl(character_id);
-    msg.header.payload_size = htons(sizeof(ChatMessagePacket) - sizeof(PacketHeader));
-    msg.sender_id = htonl(character_id);
-    msg.channel = channel;
-    strncpy(msg.sender_name, sender_name, sizeof(msg.sender_name) - 1);
-    strncpy(msg.message, chat->message, sizeof(msg.message) - 1);
-
-    LOG_DEBUG("[CHAT] %s (ch=%u): %s", msg.sender_name, channel, msg.message);
-
-    // collect recipients before performing socket writes
-    extern ActivePlayer active_players[];
-
-    int recipients[MAX_PLAYERS];
-    int recipient_count = 0;
-
-    player_registry_rdlock();
-    int n_slots = 0;
-    const int* slots = player_active_list_locked(&n_slots);
-
-    if (channel == CHAT_CHANNEL_WHISPER) {
-        // split "TargetName message" whisper framing
-        const char* space = strchr(msg.message, ' ');
-        if (!space || space == msg.message || *(space + 1) == '\0') {
-            // Malformed — no target name or no body; silently drop
-            player_registry_unlock();
-            return;
-        }
-
-        char target_name[32] = {0};
-        size_t name_len = (size_t)(space - msg.message);
-        if (name_len >= sizeof(target_name)) name_len = sizeof(target_name) - 1;
-        memcpy(target_name, msg.message, name_len);
-
-        // Rewrite msg.message to just the body text
-        char body[MAX_CHAT_MESSAGE];
-        strncpy(body, space + 1, sizeof(body) - 1);
-        body[sizeof(body) - 1] = '\0';
-        memset(msg.message, 0, sizeof(msg.message));
-        strncpy(msg.message, body, sizeof(msg.message) - 1);
-
-        LOG_DEBUG("[WHISPER] %s -> %s: %s", sender_name, target_name, msg.message);
-
-        // Find target
-        int target_fd = -1;
-        for (int s = 0; s < n_slots; s++) {
-            int i = slots[s];
-            if (!active_players[i].is_loaded) continue;
-            pthread_mutex_lock(&active_players[i].lock);
-            int match = (strncmp(active_players[i].username, target_name, 31) == 0);
-            int fd    = active_players[i].client_fd;
-            pthread_mutex_unlock(&active_players[i].lock);
-            if (match) {
-                target_fd = fd;
-                break;
-            }
-        }
-
-        player_registry_unlock();
-
-        if (target_fd == -1) {
-            LOG_WARN_RL(5, 60, "[WHISPER] Target '%s' not online", target_name);
-        } else {
-            server_send(target_fd, &msg, sizeof(msg));
-            // label the sender's whisper echo with its target
-            ChatMessagePacket echo = msg;
-            memset(echo.sender_name, 0, sizeof(echo.sender_name));
-            snprintf(echo.sender_name, sizeof(echo.sender_name), "-> %.28s", target_name);
-            server_send(client_fd, &echo, sizeof(echo));
-        }
-        return;
-    }
-
-    for (int s = 0; s < n_slots; s++) {
-        int i = slots[s];
-        if (!active_players[i].is_loaded) continue;
-
-        pthread_mutex_lock(&active_players[i].lock);
-        int      fd          = active_players[i].client_fd;
-        float    dx          = active_players[i].pos_x - sender_x;
-        float    dy          = active_players[i].pos_y - sender_y;
-        uint32_t their_party = active_players[i].party_id;
-        pthread_mutex_unlock(&active_players[i].lock);
-
-        int wants = 0;
-        if (channel == CHAT_CHANNEL_LOCAL)
-            wants = (dx * dx + dy * dy) <= CHAT_LOCAL_RANGE * CHAT_LOCAL_RANGE;
-        else if (channel == CHAT_CHANNEL_GLOBAL)
-            wants = 1;
-        else if (channel == CHAT_CHANNEL_PARTY)
-            wants = (sender_party != 0 && their_party == sender_party);
-
-        if (wants) recipients[recipient_count++] = fd;
-    }
-
-    player_registry_unlock();
-
-    for (int r = 0; r < recipient_count; r++)
-        server_send(recipients[r], &msg, sizeof(msg));
-}
+/* Chat lives in chat.c now.
+ *
+ * Recipient selection, whisper parsing and fan-out were written out here, in
+ * the generic packet handler -- and the global-channel fan-out ran inline on
+ * the network loop thread, taking the registry read lock and every online
+ * player's slot mutex in turn for one player's keystroke. See chat.h.
+ */
 
 /** Validate and deliver a party invitation by player name. */
 void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, ssize_t bytes) {
@@ -710,7 +647,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     PartyInvitePacket* pkt = (PartyInvitePacket*)buffer;
     char target_name[32];
     memset(target_name, 0, sizeof(target_name));
-    strncpy(target_name, pkt->target_name, 31);
+    STR_COPY_FIELD(target_name, pkt->target_name);
 
     // Acquire inviter, extract all needed fields, release immediately
     ActivePlayer* inviter = player_acquire(character_id);
@@ -721,25 +658,11 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     inviter_name[31] = '\0';
     player_release(inviter);
 
-    // Find target by name
-    extern ActivePlayer active_players[];
-
-    uint32_t target_id = 0;
-    player_registry_rdlock();
-    int online_count = 0;
-    const int* online = player_active_list_locked(&online_count);
-    for (int n = 0; n < online_count; n++) {
-        int i = online[n];
-        if (!active_players[i].is_loaded) continue;
-        pthread_mutex_lock(&active_players[i].lock);
-        if (strncmp(active_players[i].username, target_name, 31) == 0) {
-            target_id = active_players[i].character_id;
-            pthread_mutex_unlock(&active_players[i].lock);
-            break;
-        }
-        pthread_mutex_unlock(&active_players[i].lock);
-    }
-    player_registry_unlock();
+    /* Find the target by name.
+     *
+     * One index lookup, on a network loop thread, in place of a walk over
+     * every online player taking each one's mutex until the strings matched. */
+    uint32_t target_id = player_find_by_name(target_name);
 
     if (target_id == 0) {
         LOG_WARN_RL(5, 60, "[PARTY] Invite failed: player '%s' not found", target_name);
@@ -752,29 +675,26 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
         return;
     }
 
-    // Check if target is already in a party
-    Party* target_party = party_find_by_player(target_id);
-    if (target_party) {
+    /* Advisory: the invitation is only a hint that an accept may succeed, and
+     * party_add_member() re-decides membership atomically when it arrives. These
+     * checks exist so the inviter learns immediately that it will not work. */
+    if (party_id_of_player(target_id) != 0) {
         LOG_WARN_RL(5, 60, "[PARTY] Invite failed: '%s' already in a party", target_name);
         return;
     }
 
     if (inviter_party_id != 0) {
         // Already in a party — check if leader and if party is full
-        Party* p = party_find(inviter_party_id);
-        if (p) {
-            pthread_mutex_lock(&p->lock);
-            if (p->leader_id != character_id) {
-                pthread_mutex_unlock(&p->lock);
+        PartySnapshot inviter_party;
+        if (party_snapshot(inviter_party_id, &inviter_party)) {
+            if (inviter_party.leader_id != character_id) {
                 LOG_WARN_RL(5, 60, "[PARTY] Invite failed: not party leader");
                 return;
             }
-            if (p->member_count >= MAX_PARTY_SIZE) {
-                pthread_mutex_unlock(&p->lock);
+            if (inviter_party.member_count >= MAX_PARTY_SIZE) {
                 LOG_WARN_RL(5, 60, "[PARTY] Invite failed: party full");
                 return;
             }
-            pthread_mutex_unlock(&p->lock);
         }
     }
 
@@ -790,7 +710,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     notify.header.player_id = htonl(target_id);
     notify.header.payload_size = htons(sizeof(PartyInviteNotifyPacket) - sizeof(PacketHeader));
     notify.from_id = htonl(character_id);
-    strncpy(notify.from_name, inviter_name, 31);
+    STR_COPY_FIELD(notify.from_name, inviter_name);
 
     ActivePlayer* target = player_acquire(target_id);
     if (target) {
@@ -807,47 +727,49 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
 void handle_party_accept(int client_fd, uint32_t character_id) {
     (void)client_fd;
 
-    PendingInvite* inv = party_invite_find_for_player(character_id);
-    if (!inv) {
+    PendingInvite inv;
+    if (!party_invite_find_for_player(character_id, &inv)) {
         LOG_WARN_RL(5, 60, "[PARTY] Accept failed: no pending invite for player %u", character_id);
         return;
     }
 
-    uint32_t from_id = inv->from_id;
-    uint32_t existing_party = inv->party_id;
+    uint32_t from_id = inv.from_id;
+    uint32_t existing_party = inv.party_id;
 
     // Clear the invite
     party_invite_remove(character_id);
 
-    // Check if acceptor is already in a party
-    Party* already = party_find_by_player(character_id);
-    if (already) {
-        LOG_WARN_RL(5, 60, "[PARTY] Accept failed: player %u already in a party", character_id);
-        return;
-    }
-
+    /* No "is the acceptor already in a party" check here. It cannot be made to
+     * mean anything from outside the module -- the answer can change between the
+     * test and the insert -- so party_add_member() decides it under the pool
+     * lock and refuses there. */
     uint32_t party_id;
 
     if (existing_party != 0) {
         // Join existing party
-        Party* p = party_find(existing_party);
-        if (!p) {
+        PartySnapshot target;
+        if (!party_snapshot(existing_party, &target)) {
             LOG_WARN_RL(5, 60, "[PARTY] Accept failed: party %u no longer exists", existing_party);
             return;
         }
         party_id = existing_party;
     } else {
-        // reuse a party joined since the invitation
-        Party* inviter_party = party_find_by_player(from_id);
-        if (inviter_party) {
-            party_id = inviter_party->party_id;
-        } else {
+        // reuse a party the inviter joined since the invitation
+        party_id = party_id_of_player(from_id);
+        if (party_id == 0) {
             party_id = party_create(from_id);
+            if (party_id == 0) {
+                /* Lost a race, or the pool is full. Re-read rather than fail:
+                 * a concurrent accept may have just created the inviter's party. */
+                party_id = party_id_of_player(from_id);
+            } else {
+                party_broadcast_update(party_id);
+            }
+
             if (party_id == 0) {
                 LOG_WARN_RL(5, 60, "[PARTY] Accept failed: couldn't create party");
                 return;
             }
-            party_broadcast_update(party_id);
         }
     }
 
@@ -885,35 +807,109 @@ void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ss
     // Can't kick yourself (use leave)
     if (target_id == character_id) return;
 
-    // Find kicker's party
-    Party* p = party_find_by_player(character_id);
-    if (!p) return;
+    /* One snapshot answers both questions -- leadership and target membership --
+     * from a single consistent instant, instead of two unsynchronized reads of
+     * a pool slot that another thread may recycle in between. */
+    PartySnapshot party;
+    if (!party_snapshot_of_player(character_id, &party)) return;
 
-    pthread_mutex_lock(&p->lock);
     // Only leader can kick
-    if (p->leader_id != character_id) {
-        pthread_mutex_unlock(&p->lock);
-        return;
-    }
+    if (party.leader_id != character_id) return;
 
     // Verify target is in the same party
     int found = 0;
     for (int i = 0; i < MAX_PARTY_SIZE; i++) {
-        if (p->members[i] == target_id) {
+        if (party.members[i] == target_id) {
             found = 1;
             break;
         }
     }
-    pthread_mutex_unlock(&p->lock);
-
     if (!found) return;
 
     LOG_DEBUG("[PARTY] Player %u kicked player %u from party", character_id, target_id);
     party_remove_member(target_id);
 }
-/** Build and send one page of online player summaries. */
+/**
+ * Answer a name query: resolve as many character identifiers as are online.
+ *
+ * This is what replaced the client labelling nearby players "Player_<id>". The
+ * alternative was a name field in every nearby-player broadcast -- 32 bytes
+ * per player, thirty-two players, twenty times a second, to resend a constant.
+ * A name changes never; asking once and caching is the right shape.
+ *
+ * Deliberately narrower than the session roster this sits next to. It answers
+ * only identifiers the caller already named, so it tells a client nothing it
+ * could not already see, and it cannot be walked to enumerate the population:
+ * character ids are a dense serial range, but a client that guesses one learns
+ * only a name it could have learned by standing next to that player.
+ */
+void handle_name_query_request(int client_fd, uint8_t* buffer, ssize_t bytes) {
+    if (bytes < (ssize_t)sizeof(NameQueryRequestPacket)) return;
+
+    NameQueryRequestPacket* req = (NameQueryRequestPacket*)buffer;
+
+    uint8_t asked = req->count;
+    if (asked > MAX_NAME_QUERY) asked = MAX_NAME_QUERY;
+    if (asked == 0) return;
+
+    NameQueryResponsePacket resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.header.type = PACKET_NAME_QUERY_RESPONSE;
+
+    int found = 0;
+    for (uint8_t i = 0; i < asked; i++) {
+        uint32_t id = ntohl(req->character_ids[i]);
+        if (id == 0) continue;
+
+        ActivePlayer* p = player_acquire(id);
+        if (!p) continue;   /* offline: left out, not returned blank */
+
+        resp.entries[found].character_id = htonl(id);
+        STR_COPY_FIELD(resp.entries[found].name, p->username);
+        player_release(p);
+        found++;
+    }
+
+    if (found == 0) return;
+
+    resp.count = (uint8_t)found;
+
+    /* Only the entries that were filled. The packet's array is sized for the
+     * worst case; sending all of it would send 31 zeroed entries to answer one
+     * name. */
+    size_t send_size = offsetof(NameQueryResponsePacket, entries) +
+                       (size_t)found * sizeof(NameQueryEntry);
+    resp.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
+
+    server_send(client_fd, &resp, send_size);
+    LOG_DEBUG("[NAME] resolved %d of %u requested names", found, asked);
+}
+
+/**
+ * Build and send one page of online player summaries.
+ *
+ * Gated, because this is an enumeration surface.
+ *
+ * It returns a paginated roster of *every* online player -- id, name, level,
+ * race and ping -- to any authenticated client, with no scoping to who is
+ * nearby, who is in a party, or who is a friend. Whatever it was built for
+ * (a "who" list, a debug view), what it hands out is the population of the
+ * world on demand: a complete list of who is playing right now, refreshable,
+ * and correlating names with characters and activity times.
+ *
+ * The list itself is a reasonable feature to have, so it is disabled by
+ * default rather than deleted, and a deployment that wants it says so with
+ * `session_list = on` in the world's .conf. When it is off the request is
+ * ignored -- not answered with an error, because a distinguishable refusal
+ * still confirms the world is there and the client is authenticated.
+ */
 void handle_session_list_request(int client_fd, uint8_t* buffer, ssize_t bytes) {
     extern ActivePlayer active_players[];
+
+    if (!g_server.session_list_enabled) {
+        LOG_DEBUG("[SESSION] roster request refused: session_list is off");
+        return;
+    }
 
     if (bytes < (ssize_t)sizeof(SessionListRequestPacket)) return;
 

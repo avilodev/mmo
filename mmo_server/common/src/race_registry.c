@@ -9,6 +9,7 @@
  */
 
 #include "race_registry.h"
+#include "log.h"
 #include "json_util.h"
 
 #include <stdio.h>
@@ -73,8 +74,8 @@ static void parse_passive_modifiers(const JsonValue* obj, RacePassive* passive,
     int listed = json_count(arr);
 
     if (listed > MAX_PASSIVE_MODIFIERS) {
-        fprintf(stderr, "[RACES] %s passive: %d modifiers exceeds the %d supported; "
-                        "the extras are ignored\n", race_key, listed, MAX_PASSIVE_MODIFIERS);
+        LOG_ERROR("[RACES] %s passive: %d modifiers exceeds the %d supported; "
+                          "the extras are ignored", race_key, listed, MAX_PASSIVE_MODIFIERS);
         listed = MAX_PASSIVE_MODIFIERS;
     }
 
@@ -84,8 +85,8 @@ static void parse_passive_modifiers(const JsonValue* obj, RacePassive* passive,
 
         int kind = parse_passive_kind(kind_name);
         if (kind < 0) {
-            fprintf(stderr, "[RACES] %s passive: unknown modifier \"%s\" ignored\n",
-                    race_key, kind_name ? kind_name : "(missing)");
+            LOG_ERROR("[RACES] %s passive: unknown modifier \"%s\" ignored",
+                      race_key, kind_name ? kind_name : "(missing)");
             continue;
         }
 
@@ -130,8 +131,8 @@ static void parse_stat_block(const JsonValue* block, int* out, const char* race_
 
         int stat = stat_from_key(key);
         if (stat < 0) {
-            fprintf(stderr, "[RACES] %s.%s: unknown stat \"%s\" ignored\n",
-                    race_key, which, key);
+            LOG_ERROR("[RACES] %s.%s: unknown stat \"%s\" ignored",
+                      race_key, which, key);
             continue;
         }
         out[stat] = json_as_int(json_member_at(block, i), 0);
@@ -150,8 +151,8 @@ static int parse_spec(const JsonValue* obj, RaceSpec* spec, const char* race_key
 
     int role = parse_role(json_get_string(obj, "role", NULL));
     if (role < 0) {
-        fprintf(stderr, "[RACES] %s spec \"%s\": missing or unknown role\n",
-                race_key, spec->id);
+        LOG_ERROR("[RACES] %s spec \"%s\": missing or unknown role",
+                  race_key, spec->id);
         return 0;
     }
     spec->role         = (CombatRole)role;
@@ -161,9 +162,9 @@ static int parse_spec(const JsonValue* obj, RaceSpec* spec, const char* race_key
     const JsonValue* abilities = json_get(obj, "abilities");
     int listed = json_count(abilities);
     if (listed > MAX_ABILITY_SLOTS) {
-        fprintf(stderr, "[RACES] %s spec \"%s\": %d abilities exceeds the %d hotbar slots; "
-                        "the extras are ignored\n",
-                race_key, spec->id, listed, MAX_ABILITY_SLOTS);
+        LOG_ERROR("[RACES] %s spec \"%s\": %d abilities exceeds the %d hotbar slots; "
+                          "the extras are ignored",
+                  race_key, spec->id, listed, MAX_ABILITY_SLOTS);
         listed = MAX_ABILITY_SLOTS;
     }
     for (int i = 0; i < listed; i++) {
@@ -188,17 +189,17 @@ static int parse_race(const JsonValue* obj) {
     const char* key = json_get_string(obj, "key", NULL);
 
     if (id < 1 || id > MAX_RACES) {
-        fprintf(stderr, "[RACES] race \"%s\": id %d is outside 1..%d\n",
-                key ? key : "?", id, MAX_RACES);
+        LOG_ERROR("[RACES] race \"%s\": id %d is outside 1..%d",
+                  key ? key : "?", id, MAX_RACES);
         return 0;
     }
     if (!key || !*key) {
-        fprintf(stderr, "[RACES] race id %d: missing key\n", id);
+        LOG_ERROR("[RACES] race id %d: missing key", id);
         return 0;
     }
     if (g_races[id]) {
-        fprintf(stderr, "[RACES] race \"%s\": id %d already taken by \"%s\"\n",
-                key, id, g_races[id]->key);
+        LOG_ERROR("[RACES] race \"%s\": id %d already taken by \"%s\"",
+                  key, id, g_races[id]->key);
         return 0;
     }
 
@@ -220,8 +221,8 @@ static int parse_race(const JsonValue* obj) {
     const JsonValue* specs = json_get(obj, "specs");
     int listed = json_count(specs);
     if (listed > MAX_SPECS_PER_RACE) {
-        fprintf(stderr, "[RACES] %s: %d specs exceeds the %d supported; the extras are ignored\n",
-                race->key, listed, MAX_SPECS_PER_RACE);
+        LOG_ERROR("[RACES] %s: %d specs exceeds the %d supported; the extras are ignored",
+                  race->key, listed, MAX_SPECS_PER_RACE);
         listed = MAX_SPECS_PER_RACE;
     }
     for (int i = 0; i < listed; i++) {
@@ -260,8 +261,8 @@ int race_registry_init(const char* json_filepath) {
     const char* err = NULL;
     JsonValue* root = json_parse_file(json_filepath, &err);
     if (!root) {
-        fprintf(stderr, "[RACES] %s: %s\n", json_filepath ? json_filepath : "(no path)",
-                err ? err : "unreadable");
+        LOG_ERROR("[RACES] %s: %s", json_filepath ? json_filepath : "(no path)",
+                  err ? err : "unreadable");
         return 0;
     }
 
@@ -277,7 +278,7 @@ int race_registry_init(const char* json_filepath) {
     for (int i = 0; i < g_count; i++) {
         if (g_races[g_order[i]]->playable) playable++;
     }
-    printf("[RACES] Loaded %d races from %s (%d playable)\n", g_count, json_filepath, playable);
+    LOG_INFO("[RACES] Loaded %d races from %s (%d playable)", g_count, json_filepath, playable);
     return g_count;
 }
 

@@ -12,6 +12,9 @@
 #include "ability_def.h"
 #include "items_database.h"
 #include "player_data.h"
+#include "session.h"
+
+#include <stdatomic.h>
 #include "players_database.h"
 #include "class_stats.h"
 #include "player_effects.h"
@@ -85,6 +88,117 @@ static void index_reset(void) {
     g_index_tombstones = 0;
 }
 
+/* --- The name index ------------------------------------------------------ *
+ *
+ * The same open-addressed table, keyed by a hash of the character's name.
+ *
+ * Whispers and party invitations both start from a name typed by a player, and
+ * both used to answer it by walking every online player and taking each one's
+ * mutex in turn until the strings matched. That is O(online) mutex operations
+ * per whisper, on the chat dispatch thread, and per invitation on a network
+ * loop thread -- and it costs the most when the server is busiest, which is
+ * exactly when people are talking.
+ *
+ * The name is not unique in the type system, but it is unique in the database
+ * (UNIQUE(name, world_id)), so one name resolves to at most one live slot.
+ * Collisions in the *hash* are handled by comparing the stored name, so a
+ * collision costs a probe, never a wrong answer.
+ */
+
+#define NAME_INDEX_CAP  PLAYER_INDEX_CAP
+#define NAME_INDEX_MASK (NAME_INDEX_CAP - 1)
+
+typedef struct {
+    char    name[32];   /**< Empty means this bucket has never been used. */
+    int32_t slot;       /**< >= 0 live, IDX_EMPTY, or IDX_TOMBSTONE. */
+} NameIndexEntry;
+
+static NameIndexEntry g_name_index[NAME_INDEX_CAP];
+static int            g_name_tombstones = 0;
+
+/** FNV-1a over the name, case-folded so lookups match how players type. */
+static uint32_t name_hash(const char* name) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char* p = (const unsigned char*)name; *p; p++) {
+        unsigned char c = (unsigned char)((*p >= 'A' && *p <= 'Z') ? *p + 32 : *p);
+        h = (h ^ c) * 16777619u;
+    }
+    return h;
+}
+
+static int name_equal(const char* a, const char* b) {
+    for (;; a++, b++) {
+        unsigned char ca = (unsigned char)*a, cb = (unsigned char)*b;
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + 32);
+        if (ca != cb) return 0;
+        if (ca == 0) return 1;
+    }
+}
+
+static void name_index_reset(void) {
+    memset(g_name_index, 0, sizeof(g_name_index));
+    for (int i = 0; i < NAME_INDEX_CAP; i++) g_name_index[i].slot = IDX_EMPTY;
+    g_name_tombstones = 0;
+}
+
+/** Find a name's slot. Caller holds at least the registry read lock. */
+static int name_index_find(const char* name) {
+    if (!name || !*name) return -1;
+    uint32_t pos = name_hash(name) & NAME_INDEX_MASK;
+    for (int probe = 0; probe < NAME_INDEX_CAP; probe++) {
+        const NameIndexEntry* e = &g_name_index[pos];
+        if (e->slot == IDX_EMPTY) return -1;
+        if (e->slot >= 0 && name_equal(e->name, name)) return e->slot;
+        pos = (pos + 1) & NAME_INDEX_MASK;
+    }
+    return -1;
+}
+
+/** Bind a name to a slot. Caller holds the registry write lock. */
+static void name_index_insert(const char* name, int slot) {
+    if (!name || !*name) return;
+    uint32_t pos = name_hash(name) & NAME_INDEX_MASK;
+    int reuse = -1;
+    for (int probe = 0; probe < NAME_INDEX_CAP; probe++) {
+        NameIndexEntry* e = &g_name_index[pos];
+        if (e->slot == IDX_TOMBSTONE) {
+            if (reuse < 0) reuse = (int)pos;
+        } else if (e->slot == IDX_EMPTY) {
+            if (reuse >= 0) { g_name_tombstones--; pos = (uint32_t)reuse; }
+            snprintf(g_name_index[pos].name, sizeof(g_name_index[pos].name), "%s", name);
+            g_name_index[pos].slot = slot;
+            return;
+        } else if (name_equal(e->name, name)) {
+            e->slot = slot;   /* the same character reconnecting into a new slot */
+            return;
+        }
+        pos = (pos + 1) & NAME_INDEX_MASK;
+    }
+    LOG_ERROR("[INDEX] name table full inserting '%s'", name);
+}
+
+static void name_index_rebuild(void);
+
+/** Unbind a name. Caller holds the registry write lock. */
+static void name_index_remove(const char* name) {
+    if (!name || !*name) return;
+    uint32_t pos = name_hash(name) & NAME_INDEX_MASK;
+    for (int probe = 0; probe < NAME_INDEX_CAP; probe++) {
+        NameIndexEntry* e = &g_name_index[pos];
+        if (e->slot == IDX_EMPTY) return;
+        if (e->slot >= 0 && name_equal(e->name, name)) {
+            e->slot    = IDX_TOMBSTONE;
+            e->name[0] = '\0';
+            g_name_tombstones++;
+            break;
+        }
+        pos = (pos + 1) & NAME_INDEX_MASK;
+    }
+
+    if (g_name_tombstones > NAME_INDEX_CAP / 4) name_index_rebuild();
+}
+
 /**
  * Find a character in the open-addressed slot index.
  *
@@ -141,6 +255,22 @@ static void index_rebuild(void) {
     for (int i = 0; i < g_active_count; i++) {
         int slot = g_active_slots[i];
         index_insert(active_players[slot].character_id, slot);
+    }
+}
+
+/**
+ * Rebuild the name index from occupied slots.
+ *
+ * The caller must hold the registry write lock. A slot still reserved by an
+ * in-flight login has no name yet and contributes nothing; its name is added
+ * when the load publishes it.
+ */
+static void name_index_rebuild(void) {
+    name_index_reset();
+    for (int i = 0; i < g_active_count; i++) {
+        int slot = g_active_slots[i];
+        if (!active_players[slot].is_loaded) continue;
+        name_index_insert(active_players[slot].username, slot);
     }
 }
 
@@ -241,7 +371,13 @@ int player_active_count(void) {
 static pthread_t g_save_thread;
 static pthread_mutex_t g_save_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_save_cond = PTHREAD_COND_INITIALIZER;
-static volatile int g_save_thread_running = 0;
+/** Signal the periodic-save worker to keep running.
+ *
+ * Atomic, not merely volatile: volatile orders nothing between threads, and this
+ * is written by the save worker and read by main during shutdown. Every access
+ * outside g_save_mutex was a data race, which ThreadSanitizer reports.
+ */
+static _Atomic int g_save_thread_running = 0;
 
 /**
  * Clear a player slot without overwriting its trailing mutex.
@@ -254,6 +390,11 @@ static void player_slot_clear(int slot) {
     // remove from the rebuild source before tombstoning the index
     active_list_remove(slot);
     if (character_id != 0) index_remove(character_id);
+    name_index_remove(active_players[slot].username);
+
+    /* The quest log and history own heap storage, and the memset below would
+     * drop the pointers rather than free them. */
+    quest_state_release(&active_players[slot].quests);
 
     memset(&active_players[slot], 0, offsetof(ActivePlayer, lock));
 }
@@ -310,10 +451,21 @@ void player_snapshot_for_save(const ActivePlayer* player, PlayerSaveData* out) {
     memcpy(out->inventory, player->inventory, sizeof(out->inventory));
     memcpy(out->equipment, player->equipment, sizeof(out->equipment));
 
-    out->quest_count = player->quest_count;
-    if (out->quest_count > MAX_PLAYER_QUESTS) out->quest_count = MAX_PLAYER_QUESTS;
-    memcpy(out->quests, player->quests,
-           (size_t)out->quest_count * sizeof(out->quests[0]));
+    /* Copied rather than referenced: the save runs on another thread after this
+     * player's lock is released, and the tables can be grown or freed by then. */
+    out->quests_copied = quest_state_copy(&out->quests, &player->quests);
+    if (!out->quests_copied)
+        LOG_ERROR("[SAVE] out of memory copying character %u's quest state; "
+                  "its quests will not be written", player->character_id);
+}
+
+/**
+ * Free the heap a snapshot owns.
+ */
+void player_snapshot_release(PlayerSaveData* snapshot) {
+    if (!snapshot) return;
+    quest_state_release(&snapshot->quests);
+    snapshot->quests_copied = 0;
 }
 
 /**
@@ -329,20 +481,26 @@ int player_commit_save(const PlayerSaveData* snapshot) {
     uint32_t character_id = snapshot->scalars.character_id;
     int ok = 1;
 
-    if (!character_update_full_data(&snapshot->scalars)) {
+    /* Scalars, currency and items in one PostgreSQL transaction.
+     *
+     * These were two independent transactions, and a failure between them
+     * persisted currency without the items it bought (or the reverse) with
+     * nothing afterwards able to tell. They land together or not at all now. */
+    if (!character_save_all(&snapshot->scalars,
+                            snapshot->inventory, INVENTORY_SLOTS,
+                            snapshot->equipment, EQUIP_SLOTS)) {
         LOG_ERROR("Failed to save character %u", character_id);
         ok = 0;
     }
 
-    // scalar and item writes can fail independently
-    if (!character_items_save(character_id,
-                              snapshot->inventory, INVENTORY_SLOTS,
-                              snapshot->equipment, EQUIP_SLOTS)) {
-        LOG_ERROR("Failed to save items for character %u", character_id);
+    /* The snapshot's own copy, never the live player it was taken from. And
+     * only when it is a copy: an empty state would overwrite the file with
+     * "this character has done nothing", which is not recoverable. */
+    if (!snapshot->quests_copied) {
+        LOG_ERROR("Refusing to save quests for character %u from an incomplete "
+                  "snapshot; the existing file is left alone", character_id);
         ok = 0;
-    }
-
-    if (!quest_player_save(character_id, snapshot->quests, snapshot->quest_count)) {
+    } else if (!quest_player_save(character_id, &snapshot->quests)) {
         LOG_ERROR("Failed to save quests for character %u", character_id);
         ok = 0;
     }
@@ -375,6 +533,13 @@ int playerdata_init(const char* conn_str) {
     }
     g_active_count = 0;
     index_reset();
+    /* Both indexes, and both for the same reason: a zeroed bucket is not an
+     * empty one. `slot` zero is a perfectly valid slot number, so a table left
+     * at its static zero-initialisation reads as completely full of live
+     * entries -- every lookup walks the whole table and misses, and every
+     * insert reports the table full. IDX_EMPTY is what says "never used", and
+     * only these resets write it. */
+    name_index_reset();
 
     LOG_INFO("Player data system initialized successfully");
     return 1;
@@ -405,16 +570,22 @@ void playerdata_close(void) {
             player_snapshot_for_save(&active_players[i], &save_buf[save_count++]);
             pthread_mutex_unlock(&active_players[i].lock);
         }
+        /* The snapshot above holds its own copy, so the live storage can go
+         * now. Slots are not cleared individually on this path, so releasing
+         * here is the only place the quest heap is handed back. */
+        quest_state_release(&active_players[i].quests);
         pthread_mutex_destroy(&active_players[i].lock);
     }
     g_active_count = 0;
     index_reset();
+    name_index_reset();
     player_registry_unlock();
 
     for (int i = 0; i < save_count; i++) {
         if (!player_commit_save(&save_buf[i]))
             LOG_ERROR("Shutdown save failed for character %u",
                       save_buf[i].scalars.character_id);
+        player_snapshot_release(&save_buf[i]);
     }
     free(save_buf);
 
@@ -509,8 +680,8 @@ int playerdata_load(uint32_t character_id, ActivePlayer* player) {
     }
 
     // Load quest state from file
-    player->quest_count = quest_player_load(character_id, (PlayerQuestEntry*)player->quests,
-                                             MAX_PLAYER_QUESTS);
+    quest_state_release(&player->quests);
+    quest_player_load(character_id, &player->quests);
 
     // Now that equipment is loaded, recalculate stats with gear bonuses
     player_apply_equipment_bonuses(player);
@@ -546,7 +717,9 @@ int playerdata_save(ActivePlayer* player) {
     snprintf(snapshot.scalars.name, sizeof(snapshot.scalars.name), "%s",
              player->username);
 
-    if (!player_commit_save(&snapshot)) return 0;
+    int committed = player_commit_save(&snapshot);
+    player_snapshot_release(&snapshot);
+    if (!committed) return 0;
 
     player->is_dirty = 0;
     player->last_save = time(NULL);
@@ -569,17 +742,28 @@ int player_add_active(uint32_t character_id, int client_fd, int* out_slot) {
     // reserve a slot without performing I/O
     player_registry_wrlock();
 
-    // rebind reconnects to loaded or reserved slots
+    /* Rebind reconnects to loaded or reserved slots.
+     *
+     * A reserved slot is a login whose database read has not finished, and
+     * saying "yes, it is ready" for one was a lie the caller acted on: it went
+     * straight on to send character data, stats, abilities and quests for a
+     * player whose fields were all still zero, and the client got an empty
+     * session. The distinction is now in the return value -- see
+     * PLAYER_ADD_LOADING in player_data.h -- so the caller can bind the
+     * descriptor and let the in-flight login finish publishing. */
     int existing = index_find(character_id);
     if (existing >= 0) {
         pthread_mutex_lock(&active_players[existing].lock);
         active_players[existing].client_fd = client_fd;
         active_players[existing].is_ready = 0;
+        int loaded = active_players[existing].is_loaded;
         pthread_mutex_unlock(&active_players[existing].lock);
         player_registry_unlock();
         if (out_slot) *out_slot = existing;
-        LOG_DEBUG("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d", character_id, client_fd, existing);
-        return 1;
+        LOG_DEBUG("[PLAYER_ADD] char=%u rebound to fd=%d in slot=%d (%s)",
+                  character_id, client_fd, existing,
+                  loaded ? "loaded" : "still loading");
+        return loaded ? PLAYER_ADD_READY : PLAYER_ADD_LOADING;
     }
 
     // Find an empty slot — must skip slots reserved by an in-flight login.
@@ -643,12 +827,47 @@ int player_add_active(uint32_t character_id, int client_fd, int* out_slot) {
     active_players[slot].is_reserved = 0;
     active_players[slot].is_loaded   = 1;   // now visible to gameplay scans
 
+    /* The name only exists once the load has produced it, so this is the
+     * earliest point it can be published -- and it is published under the same
+     * write lock that makes the slot visible, so nothing can observe a loaded
+     * player whose name does not resolve. */
+    name_index_insert(active_players[slot].username, slot);
+
     pthread_mutex_unlock(&active_players[slot].lock);
     player_registry_unlock();
 
     if (out_slot) *out_slot = slot;
     LOG_INFO("[PLAYER_ADD] char=%u fd=%d: slot=%d loaded successfully", character_id, client_fd, slot);
     return 1;
+}
+
+uint32_t player_find_by_name(const char* name) {
+    if (!name || !*name) return 0;
+
+    player_registry_rdlock();
+    int slot = name_index_find(name);
+    uint32_t character_id = 0;
+    if (slot >= 0 && active_players[slot].is_loaded)
+        character_id = active_players[slot].character_id;
+    player_registry_unlock();
+
+    return character_id;
+}
+
+int player_fd_by_name(const char* name) {
+    if (!name || !*name) return -1;
+
+    player_registry_rdlock();
+    int slot = name_index_find(name);
+    int fd = -1;
+    if (slot >= 0 && active_players[slot].is_loaded) {
+        pthread_mutex_lock(&active_players[slot].lock);
+        fd = active_players[slot].client_fd;
+        pthread_mutex_unlock(&active_players[slot].lock);
+    }
+    player_registry_unlock();
+
+    return fd;
 }
 
 /**
@@ -770,6 +989,7 @@ void player_remove_active(uint32_t character_id) {
         LOG_DEBUG("[PLAYER_REMOVE] char=%u: writing to DB (lock-free)", character_id);
         if (!player_commit_save(&save_data))
             LOG_ERROR("[PLAYER_REMOVE] char=%u: save failed", character_id);
+        player_snapshot_release(&save_data);
     }
 
     LOG_DEBUG("[PLAYER_REMOVE] char=%u: done", character_id);
@@ -927,6 +1147,19 @@ void player_send_data_response(int client_fd, uint32_t character_id) {
  *
  * @return Always NULL when shutdown is requested.
  */
+/** This world's identifier, for the world-session marks the save pass renews.
+ *
+ * Held here rather than read from g_server so this file does not depend on the
+ * world server's configuration struct -- which is what lets the persistence
+ * tests link it without dragging in the whole server.
+ */
+static uint32_t g_world_id = 0;
+
+/** Tell the persistence layer which world it is saving for. */
+void playerdata_set_world_id(uint32_t world_id) {
+    g_world_id = world_id;
+}
+
 void* periodic_save_thread(void* arg) {
     (void)arg;
     g_save_thread_running = 1;
@@ -961,6 +1194,37 @@ void* periodic_save_thread(void* arg) {
 
         // If we were told to stop, exit immediately
         if (!g_save_thread_running) break;
+
+        /* Refresh every online character's world-session mark.
+         *
+         * Every online character, not just the dirty ones the drain below
+         * visits: the mark is what stops the realm deleting a character out
+         * from under a live session, and a character standing still is exactly
+         * as live as one that is moving. The marks carry a TTL, so a world that
+         * stops running stops renewing them and deletion becomes possible
+         * again on its own. */
+        {
+            uint32_t* live = malloc(sizeof(uint32_t) * MAX_PLAYERS);
+            int       live_count = 0;
+
+            if (live) {
+                player_registry_rdlock();
+                int online_count = 0;
+                const int* online = player_active_list_locked(&online_count);
+                for (int s_i = 0; s_i < online_count && live_count < MAX_PLAYERS; s_i++) {
+                    int i = online[s_i];
+                    if (!active_players[i].is_loaded) continue;
+                    live[live_count++] = active_players[i].character_id;
+                }
+                player_registry_unlock();
+
+                /* Redis outside the registry lock. */
+                for (int i = 0; i < live_count; i++)
+                    world_session_mark(live[i], g_world_id);
+
+                free(live);
+            }
+        }
 
         /* Drain in batches. is_dirty is cleared under the slot lock as each player is
          * snapshotted, so restarting the scan from the top never saves anyone twice. */
@@ -999,6 +1263,10 @@ void* periodic_save_thread(void* arg) {
                     }
                     LOG_ERROR("Periodic save failed for character %u; queued for retry", character_id);
                 }
+
+                /* Released here, not after the batch: the buffer is reused
+                 * every pass, so a snapshot left holding heap would leak it. */
+                player_snapshot_release(&save_queue[i]);
             }
 
             /* A short batch means the scan found nothing more waiting. Stopping here

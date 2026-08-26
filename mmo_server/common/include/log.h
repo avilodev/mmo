@@ -17,8 +17,20 @@ typedef enum {
     LOG_LEVEL_TRACE = 4
 } LogLevel;
 
-// initialize idempotently before starting worker threads
+/** Initialize logging from the environment, idempotently, before any thread starts.
+ *
+ * Reads:
+ *   MMO_LOG_LEVEL      error | warn | info | debug | trace   (default info)
+ *   MMO_LOG_SOURCE     0/off to omit file:line
+ *   MMO_LOG_FILE       path to a rolling log file; unset means console only
+ *   MMO_LOG_MAX_BYTES  rotate the file past this size   (default 33554432)
+ *   MMO_LOG_KEEP       rotated files to retain          (default 5)
+ *   MMO_LOG_CONSOLE    0/off to write only to the file
+ */
 void log_init(void);
+
+/** Close the log file, if one is open. Safe to call more than once. */
+void log_close(void);
 
 void     log_set_level(LogLevel level);
 LogLevel log_get_level(void);
@@ -29,6 +41,48 @@ int log_level_enabled(LogLevel level);
 // preserve printf format checking for direct emission
 void log_emit(LogLevel level, const char* file, int line, const char* fmt, ...)
     __attribute__((format(printf, 4, 5)));
+
+/* --- Correlation ---------------------------------------------------------
+ *
+ * A player's login crosses three processes -- login, realm, world -- and until
+ * this existed nothing tied their log lines together. account_id appeared in
+ * some lines and not others, character_id in different ones, and the only way
+ * to follow one player through a failed login was to line up timestamps across
+ * three files and hope no one else logged in that second.
+ *
+ * A trace id is minted once, by the login server, when a session is created.
+ * It travels with the session in Redis and with the world ticket, so the realm
+ * and the world adopt the same one. Every line a thread emits while handling
+ * that player's work carries it.
+ *
+ * Thread-local, because these services handle one player per thread at a time
+ * and a per-connection field would have to be threaded through every function
+ * that logs. Set it when a thread picks up work for a known player, clear it
+ * when it puts it down -- a stale id on a pooled thread is worse than none,
+ * because it attributes one player's lines to another.
+ */
+
+/** Characters in a trace id, plus the terminator. */
+#define TRACE_ID_LEN 17
+
+/** Adopt a trace id for this thread. NULL or empty clears it. */
+void log_set_trace(const char* trace_id);
+
+/** Stop attributing this thread's lines to any player. */
+void log_clear_trace(void);
+
+/** The trace id this thread is carrying; "" when none. Never NULL. */
+const char* log_get_trace(void);
+
+/** Generate a new trace id into `out`, which must hold TRACE_ID_LEN bytes.
+ *
+ * Random rather than sequential: an id that reveals how many logins have
+ * happened is a number worth not publishing, and these appear in logs that get
+ * pasted into tickets. Falls back to a clock- and counter-derived value when
+ * the system entropy source is unavailable -- a duplicate trace id is a
+ * confusing log, not a security problem, so this must not fail closed.
+ */
+void log_new_trace(char* out);
 
 /** Track one call site's current rate-limit window. */
 typedef struct {

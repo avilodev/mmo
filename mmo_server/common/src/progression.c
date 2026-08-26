@@ -9,6 +9,7 @@
  */
 
 #include "progression.h"
+#include "log.h"
 #include "json_util.h"
 
 #include <math.h>
@@ -103,8 +104,8 @@ int progression_init(const char* json_filepath) {
 
     if (!json_filepath) {
         rebuild_xp_tables();
-        printf("[PROGRESSION] No file given; using built-in defaults (max level %d)\n",
-               g_config.max_level);
+        LOG_INFO("[PROGRESSION] No file given; using built-in defaults (max level %d)",
+                 g_config.max_level);
         return 0;
     }
 
@@ -112,16 +113,16 @@ int progression_init(const char* json_filepath) {
     JsonValue* root = json_parse_file(json_filepath, &err);
     if (!root) {
         rebuild_xp_tables();
-        fprintf(stderr, "[PROGRESSION] %s: %s — using built-in defaults\n",
-                json_filepath, err ? err : "unreadable");
+        LOG_ERROR("[PROGRESSION] %s: %s — using built-in defaults",
+                  json_filepath, err ? err : "unreadable");
         return 0;
     }
 
     g_config.max_level = json_get_int(root, "max_level", k_defaults.max_level);
     if (g_config.max_level < 1) g_config.max_level = 1;
     if (g_config.max_level > PROGRESSION_MAX_LEVEL_CAP) {
-        fprintf(stderr, "[PROGRESSION] max_level %d exceeds the %d cap; clamping\n",
-                g_config.max_level, PROGRESSION_MAX_LEVEL_CAP);
+        LOG_ERROR("[PROGRESSION] max_level %d exceeds the %d cap; clamping",
+                  g_config.max_level, PROGRESSION_MAX_LEVEL_CAP);
         g_config.max_level = PROGRESSION_MAX_LEVEL_CAP;
     }
 
@@ -158,23 +159,23 @@ int progression_init(const char* json_filepath) {
     /* An uncapped reduction lets stacked sources reach immunity, which is a bug
      * class rather than a tuning choice. Refuse the value, do not honour it. */
     if (g_config.damage_taken_reduction_cap < 0.0 || g_config.damage_taken_reduction_cap > 0.99) {
-        fprintf(stderr, "[PROGRESSION] damage_taken_reduction_cap %.2f out of range; using %.2f\n",
-                g_config.damage_taken_reduction_cap, k_defaults.damage_taken_reduction_cap);
+        LOG_ERROR("[PROGRESSION] damage_taken_reduction_cap %.2f out of range; using %.2f",
+                  g_config.damage_taken_reduction_cap, k_defaults.damage_taken_reduction_cap);
         g_config.damage_taken_reduction_cap = k_defaults.damage_taken_reduction_cap;
     }
 
     json_free(root);
     rebuild_xp_tables();
 
-    printf("[PROGRESSION] Loaded %s: max level %d, XP base %.0f x%.2f\n",
-           json_filepath, g_config.max_level, g_config.xp_base, g_config.xp_growth);
-    printf("[PROGRESSION] XP steps: L2=%lu L10=%lu L20=%lu L%d=%lu (cumulative %lu)\n",
-           (unsigned long)progression_xp_step(2),
-           (unsigned long)progression_xp_step(10),
-           (unsigned long)progression_xp_step(20),
-           g_config.max_level,
-           (unsigned long)progression_xp_step(g_config.max_level),
-           (unsigned long)progression_xp_for_level(g_config.max_level));
+    LOG_INFO("[PROGRESSION] Loaded %s: max level %d, XP base %.0f x%.2f",
+             json_filepath, g_config.max_level, g_config.xp_base, g_config.xp_growth);
+    LOG_INFO("[PROGRESSION] XP steps: L2=%lu L10=%lu L20=%lu L%d=%lu (cumulative %lu)",
+             (unsigned long)progression_xp_step(2),
+             (unsigned long)progression_xp_step(10),
+             (unsigned long)progression_xp_step(20),
+             g_config.max_level,
+             (unsigned long)progression_xp_step(g_config.max_level),
+             (unsigned long)progression_xp_for_level(g_config.max_level));
     return 1;
 }
 

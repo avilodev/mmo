@@ -1,0 +1,135 @@
+{
+  "id": 30,
+  "name": "Keeper of the Ninth",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "You will have heard he died nine times.\n\nYou will have heard the ninth one stuck.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 110,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 110
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 110
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 110
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 110
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 110
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Good. Then I do not have to be tactful.\n\nHe was magnificent. I am not being cruel -- he was the best of us and he knew it, which\nis the whole trouble. Eight times something killed him, and eight times he came back\nand told the story better than it had happened.\n\nThe ninth time he went off the harbour wall to prove a point to a man who was not\nlooking.\n\nI keep his rooms. I keep his notes. I am not going to teach you one single thing he\ndid. I am going to teach you to notice the moment you stop checking whether you can.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "And if I do not notice?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "And if I do not notice?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Then somebody keeps your rooms. It is a living.\n\nGo on. Sentry, south gate. Try not to be interesting on the way.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "Nobody sent you and you walked in anyway. He used to do that.\n\nThe Warden, courtyard centre. Humour me.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Still checking? Good.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

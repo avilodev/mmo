@@ -3,10 +3,12 @@
  * Enforce realm packet budgets and dispatch authenticated character requests.
  */
 #include "routes.h"
+#include "log.h"
 #include "packet_limiter.h"
 #include "net_notify.h"
 
 #include <sys/socket.h>
+#include "tls.h"
 
 /** Send an inline rate-limit response on a realm client socket. */
 static void realm_send_rate_limited(int fd, uint8_t rejected_type) {
@@ -14,14 +16,14 @@ static void realm_send_rate_limited(int fd, uint8_t rejected_type) {
     size_t n = net_build_rate_limited(buf, sizeof(buf), rejected_type,
                                       (uint8_t)packet_limiter_class_of(rejected_type),
                                       packet_limiter_retry_after_ms(fd, rejected_type));
-    if (n) send(fd, buf, n, MSG_NOSIGNAL);
+    if (n) tls_send(fd, buf, n, MSG_NOSIGNAL);
 }
 
 /** Send an inline protocol disconnect on a realm client socket. */
 static void realm_send_disconnect(int fd, uint8_t reason) {
     uint8_t buf[sizeof(DisconnectPacket)];
     size_t n = net_build_disconnect(buf, sizeof(buf), reason, NULL);
-    if (n) send(fd, buf, n, MSG_NOSIGNAL);
+    if (n) tls_send(fd, buf, n, MSG_NOSIGNAL);
 }
 
 /**
@@ -32,18 +34,18 @@ static void realm_send_disconnect(int fd, uint8_t reason) {
  * @return      One after ordinary dispatch, zero for an ignored packet, or -1 when the caller must disconnect.
  */
 int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {
-    printf("Processing packet from account %u (fd: %d), %zd bytes\n",
-           account_id, client_fd, bytes);
+    LOG_INFO("Processing packet from account %u (fd: %d), %zd bytes",
+             account_id, client_fd, bytes);
 
     if (bytes < (ssize_t)sizeof(PacketHeader)) {
-        printf("Packet too small (got %zd bytes, need at least %zu)\n",
-               bytes, sizeof(PacketHeader));
+        LOG_INFO("Packet too small (got %zd bytes, need at least %zu)",
+                 bytes, sizeof(PacketHeader));
         return 0;
     }
 
     PacketHeader* header = (PacketHeader*)buffer;
 
-    printf("Packet type: %d (0x%02X)\n", header->type, header->type);
+    LOG_INFO("Packet type: %d (0x%02X)", header->type, header->type);
 
     // Spend the connection's budget before doing any real work. Every opcode
     // below is a database round trip, so a flood has to die here rather than in
@@ -69,8 +71,19 @@ int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t 
 
         case PACKET_CHARACTER_LIST_REQUEST: {
             if (bytes < (ssize_t)sizeof(CharacterListRequestPacket)) break;
-            uint32_t world_id = ntohl(*(uint32_t*)(buffer + sizeof(PacketHeader)));
-            handle_character_list_request(client_fd, account_id, world_id);
+            /* Read through the packet struct, like every other case here, and
+             * not as *(uint32_t*)(buffer + sizeof(PacketHeader)).
+             *
+             * PacketHeader is 7 bytes and protocol.h is #pragma pack(1), so
+             * that field sits at an odd offset. Reading it through the packed
+             * struct is fine -- the compiler knows the struct is packed and
+             * emits an access that tolerates it. Casting the raw buffer to a
+             * plain uint32_t* instead asserts 4-byte alignment that is never
+             * there: undefined behaviour on any target, a trap or a fixup on
+             * the AArch64 targets protocol.h says this ships to, and a
+             * sanitizer report on x86. Found by tests/realm_routes_fuzz_test.c. */
+            const CharacterListRequestPacket* req = (const CharacterListRequestPacket*)buffer;
+            handle_character_list_request(client_fd, account_id, ntohl(req->world_id));
             break;
         }
 
@@ -90,26 +103,26 @@ int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t 
         }
 
         case PACKET_WORLD_LIST_REQUEST: {
-            printf("World list request received\n");
+            LOG_INFO("World list request received");
             world_send_list(client_fd, account_id);
             break;
         }
 
         case PACKET_ENTER_WORLD: {
-            printf("Enter world request received\n");
+            LOG_INFO("Enter world request received");
             world_enter(client_fd, account_id, buffer, bytes);
             break;
         }
 
         case PACKET_PING:
-            printf("Ping received, echoing back\n");
+            LOG_INFO("Ping received, echoing back");
             // Echo exactly the framed packet.  Sending only the header while
             // retaining payload_size desynchronizes the client's TCP stream.
-            send(client_fd, buffer, (size_t)bytes, 0);
+            tls_send(client_fd, buffer, (size_t)bytes, 0);
             break;
 
         default:
-            printf("Unknown packet type: %d\n", header->type);
+            LOG_WARN("Unknown packet type: %d", header->type);
             break;
     }
 

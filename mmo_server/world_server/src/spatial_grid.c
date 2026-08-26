@@ -210,7 +210,9 @@ void spatial_grid_build(SpatialGrid* grid, const SpatialPoint* points, int count
  *
  * Results are ordered nearest-first with caller indices breaking distance ties.
  *
- * @param grid  Grid to query; its scratch storage is modified.
+ * @param grid  Grid to query; its own scratch storage is modified, so the grid
+ *              must not be queried concurrently. Use spatial_grid_query_into()
+ *              with caller-owned scratch when it must be.
  * @param x  Search center x-coordinate in world units.
  * @param y  Search center y-coordinate in world units.
  * @param radius  Non-negative search radius in world units.
@@ -220,10 +222,47 @@ void spatial_grid_build(SpatialGrid* grid, const SpatialPoint* points, int count
  */
 int spatial_grid_query(SpatialGrid* grid, float x, float y, float radius,
                        int* out_indices, int max_out) {
-    if (!grid || !out_indices || max_out <= 0) return 0;
+    if (!grid) return 0;
+    return spatial_grid_query_into(grid, x, y, radius, out_indices, max_out,
+                                   grid->scratch,
+                                   (size_t)grid->max_entities * sizeof(Candidate));
+}
+
+/**
+ * Bytes of scratch spatial_grid_query_into() needs for this grid.
+ */
+size_t spatial_grid_scratch_bytes(const SpatialGrid* grid) {
+    if (!grid) return 0;
+    return (size_t)grid->max_entities * sizeof(Candidate);
+}
+
+/**
+ * Query a grid using caller-owned scratch, leaving the grid untouched.
+ *
+ * Results are ordered nearest-first with caller indices breaking distance ties.
+ *
+ * @param grid  Grid to query; not modified.
+ * @param x  Search center x-coordinate in world units.
+ * @param y  Search center y-coordinate in world units.
+ * @param radius  Non-negative search radius in world units.
+ * @param out_indices  Buffer receiving caller-side entity indices.
+ * @param max_out  Positive capacity of out_indices.
+ * @param scratch  Buffer of at least spatial_grid_scratch_bytes().
+ * @param scratch_bytes  Its size.
+ * @return      Number of indices written, or 0 for invalid input or no matches.
+ */
+int spatial_grid_query_into(const SpatialGrid* grid, float x, float y, float radius,
+                            int* out_indices, int max_out,
+                            void* scratch, size_t scratch_bytes) {
+    if (!grid || !out_indices || max_out <= 0 || !scratch) return 0;
     if (!isfinite(x) || !isfinite(y) || !isfinite(radius) || radius < 0.0f) return 0;
     if (grid->count == 0) return 0;
 
+    /* A short buffer would be overrun by the candidate collection below, and
+     * silently returning nothing is the failure a caller can actually notice. */
+    if (scratch_bytes < (size_t)grid->max_entities * sizeof(Candidate)) return 0;
+
+    Candidate* candidates = scratch;
     const float radius_sq = radius * radius;
 
     // restrict scans to the circle's cell bounds
@@ -246,8 +285,8 @@ int spatial_grid_query(SpatialGrid* grid, float x, float y, float radius,
             const float dist_sq = dx * dx + dy * dy;
             if (dist_sq > radius_sq) continue;
 
-            grid->scratch[found].index   = grid->entry_index[k];
-            grid->scratch[found].dist_sq = dist_sq;
+            candidates[found].index   = grid->entry_index[k];
+            candidates[found].dist_sq = dist_sq;
             found++;
         }
     }
@@ -257,14 +296,14 @@ int spatial_grid_query(SpatialGrid* grid, float x, float y, float radius,
     const int written = (found < max_out) ? found : max_out;
 
     if (found <= max_out) {
-        qsort(grid->scratch, (size_t)found, sizeof(Candidate), candidate_compare);
+        qsort(candidates, (size_t)found, sizeof(Candidate), candidate_compare);
     } else {
         // bound ordering work to the output capacity
-        select_nearest(grid->scratch, found, max_out);
+        select_nearest(candidates, found, max_out);
     }
 
     for (int i = 0; i < written; i++) {
-        out_indices[i] = grid->scratch[i].index;
+        out_indices[i] = candidates[i].index;
     }
     return written;
 }

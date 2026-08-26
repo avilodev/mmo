@@ -3,8 +3,10 @@
  * Handle realm character listing, creation, and deletion requests.
  */
 #include "types.h"
+#include "log.h"
 #include "players_database.h"
 #include "character_connect.h"
+#include "session.h"
 #include "world_database_manager.h"
 #include "race_registry.h"
 
@@ -14,6 +16,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <stddef.h>
+#include "tls.h"
 
 extern PGconn* g_pg;
 
@@ -67,8 +70,8 @@ void handle_race_list_request(int client_fd, uint32_t account_id) {
                        (size_t)count * sizeof(RaceInfo);
     response.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
 
-    send(client_fd, &response, send_size, 0);
-    printf("Sent %d races to account %u\n", count, account_id);
+    tls_send(client_fd, &response, send_size, 0);
+    LOG_INFO("Sent %d races to account %u", count, account_id);
 }
 
 /**
@@ -102,8 +105,8 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
     size_t send_size = offsetof(CharacterListResponsePacket, characters) +
                        (size_t)response.count * sizeof(response.characters[0]);
     response.header.payload_size = htons((uint16_t)(send_size - sizeof(PacketHeader)));
-    send(client_fd, &response, send_size, 0);
-    printf("Sent %d characters to account %u for world %u\n", count, account_id, world_id);
+    tls_send(client_fd, &response, send_size, 0);
+    LOG_INFO("Sent %d characters to account %u for world %u", count, account_id, world_id);
 }
 
 /**
@@ -125,13 +128,13 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     if (current_count < 0) {
         response.success = 0;
         strncpy(response.message, "Character database unavailable", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
     if (current_count >= MAX_CHARACTERS_PER_WORLD) {
         response.success = 0;
         strncpy(response.message, "Character limit reached for this world", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
 
@@ -140,7 +143,7 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     if (name_len < 3 || name_len > 31) {
         response.success = 0;
         strncpy(response.message, "Name must be 3-31 characters", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
 
@@ -150,7 +153,7 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
               (name[i] >= 'A' && name[i] <= 'Z'))) {
             response.success = 0;
             strncpy(response.message, "Name must contain only letters", 127);
-            send(client_fd, &response, sizeof(response), 0);
+            tls_send(client_fd, &response, sizeof(response), 0);
             return;
         }
     }
@@ -162,7 +165,7 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     if (class_id != race_id) {
         response.success = 0;
         strncpy(response.message, "Race and class identifiers must match", 127);
-        send(client_fd, &response, sizeof(response), 0);
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
     if (!race_is_playable((uint32_t)class_id)) {
@@ -170,9 +173,9 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
         response.success = 0;
         strncpy(response.message,
                 race ? "That race is not yet playable" : "Unknown race", 127);
-        printf("Refused character create for account %u: race %d is %s\n",
-               account_id, class_id, race ? "not playable" : "unknown");
-        send(client_fd, &response, sizeof(response), 0);
+        LOG_ERROR("Refused character create for account %u: race %d is %s",
+                 account_id, class_id, race ? "not playable" : "unknown");
+        tls_send(client_fd, &response, sizeof(response), 0);
         return;
     }
 
@@ -186,14 +189,14 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
         response.character_id = htonl(character_id);
         strncpy(response.character_name, name, 31);
         strncpy(response.message, "Character created successfully", 127);
-        printf("Created character '%s' (ID:%u) for account %u in world %u\n",
-               name, character_id, account_id, world_id);
+        LOG_INFO("Created character '%s' (ID:%u) for account %u in world %u",
+                 name, character_id, account_id, world_id);
     } else {
         response.success = 0;
         strncpy(response.message, "Character creation failed (name may be taken)", 127);
     }
 
-    send(client_fd, &response, sizeof(response), 0);
+    tls_send(client_fd, &response, sizeof(response), 0);
 
     // If successful, send updated character list
     if (success) {
@@ -211,19 +214,47 @@ void handle_character_delete_request(int client_fd, uint32_t account_id,
     response.character_id = htonl(character_id);
     response.world_id = htonl(world_id);
 
+    /* Refuse while the character is live in a world.
+     *
+     * Deleting one mid-session did not stop the session: the world went on
+     * playing a character whose row was gone, its next save UPDATEd zero rows
+     * and reported success, and its item writes re-INSERTed rows for a
+     * character that no longer existed. The world records a mark with a TTL
+     * while a character is in play and renews it, so a world that stops
+     * running stops blocking deletion on its own.
+     *
+     * The check is not a lock -- a character could enter a world in the
+     * moment after it passes -- but the world's own writes fail closed now
+     * (a save that matches no row is reported as a failure), so the window
+     * costs a session rather than a corrupted database. */
+    uint32_t live_in = world_session_world(character_id);
+    if (live_in != 0) {
+        response.success = 0;
+        snprintf(response.message, sizeof(response.message),
+                 "Character is currently in a world. Log out and try again.");
+        LOG_ERROR("Refused deletion of character %u for account %u: live in world %u",
+                 character_id, account_id, live_in);
+        tls_send(client_fd, &response, sizeof(response), 0);
+        return;
+    }
+
+    /* character_items and character_currencies are removed with the character
+     * by ON DELETE CASCADE (see character_database_init), so this is the whole
+     * deletion rather than the part of it that used to leave orphans owning
+     * item-instance identifiers forever. */
     int success = world_character_delete(account_id, character_id, world_id);
 
     if (success) {
         response.success = 1;
         strncpy(response.message, "Character deleted", 127);
-        printf("Deleted character %u for account %u from world %u\n",
-               character_id, account_id, world_id);
+        LOG_INFO("Deleted character %u for account %u from world %u",
+                 character_id, account_id, world_id);
     } else {
         response.success = 0;
         strncpy(response.message, "Character deletion failed", 127);
     }
 
-    send(client_fd, &response, sizeof(response), 0);
+    tls_send(client_fd, &response, sizeof(response), 0);
 
     // If successful, send updated character list
     if (success) {

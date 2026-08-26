@@ -3,7 +3,7 @@
 #ifndef NPC_AI_H
 #define NPC_AI_H
 
-#include "combat_config.h"
+#include "npc_world.h"
 #include "tick_snapshot.h"
 #include <stdint.h>
 
@@ -83,7 +83,19 @@ int npc_ai_init(const char* json_path);
 
 void npc_ai_cleanup(void);
 
-/** Bound each NPC's nearest-first candidate search without changing reachability. */
+/** Bound each NPC's nearest-first candidate search without changing reachability.
+ *
+ * A truncating cap, and a safe one, for a reason worth stating rather than
+ * assuming: the query is nearest-first and the caller takes the first *living*
+ * candidate, so the only way 16 is too few is 16 corpses stacked closer to the
+ * NPC than any living player. Dead players do not stack -- they respawn on a
+ * timer and away from where they fell -- so this bound is physical rather than
+ * chosen, and truncation drops only candidates the search had already passed
+ * over.
+ *
+ * Raise it if the death model ever leaves bodies in place. An undocumented safe
+ * cap reads exactly like an unsafe one, which is how the unsafe ones got in.
+ */
 #define NPC_AGGRO_CANDIDATES 16
 
 // update targeting, movement, abilities, and telegraphs at 20 Hz

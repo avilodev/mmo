@@ -1,0 +1,135 @@
+{
+  "id": 25,
+  "name": "God of Patience",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "[She does not look at you. A full minute passes. Then, without turning:]\n\nYou moved four times while you waited. That is four times too many.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 105,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 105
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 105
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 105
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 105
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 105
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "I know. I watched you cross the courtyard.\n\nEverything I have to teach is inside the minute you just failed. You will be given\nexactly one opening in most fights worth having. Not two. The Blessed who die young\nare the ones who spend theirs early, on something that was never the throat.\n\nStand there. Do not move. When the market bell strikes, take one step forward.\nNot before it. Not after.\n\n[You wait. You wait past comfortable. The bell strikes. You step.]\n\nThat one was yours.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "How will I know the next one?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "How will I know the next one?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "You will not, and you will take it anyway. That is the whole difficulty.\n\nThe sentry at the south gate, when you are ready. She has been ready for some time.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "You came before you were sent. Early is its own kind of wrong.\n\nThe Warden. Courtyard centre. Come back when you have a reason.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "[She is watching the market bell. She does not turn.]",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

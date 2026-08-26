@@ -5,6 +5,7 @@
 
 #include "move_validator.h"
 #include "world_collision.h"
+#include "world_format.h"
 
 #include <assert.h>
 #include <math.h>
@@ -30,6 +31,16 @@ static const char* write_world_dat(void) {
     FILE* f = fopen(path, "wb");
     assert(f);
 
+    /* The versioned preamble, written the way the generator writes it. The
+     * fixture must be a real world file: the loader refuses anything without
+     * the magic, which is the whole point of the magic. */
+    assert(fwrite(WORLD_FORMAT_MAGIC, 1, WORLD_FORMAT_MAGIC_LEN, f)
+           == WORLD_FORMAT_MAGIC_LEN);
+    uint32_t version     = WORLD_FORMAT_VERSION;
+    uint32_t tile_layers = WORLD_FORMAT_TILE_LAYERS;
+    assert(fwrite(&version,     sizeof(uint32_t), 1, f) == 1);
+    assert(fwrite(&tile_layers, sizeof(uint32_t), 1, f) == 1);
+
     int32_t header[3] = { MAP_W, MAP_H, TILE_PX };
     assert(fwrite(header, sizeof(int32_t), 3, f) == 3);
 
@@ -37,10 +48,10 @@ static const char* write_world_dat(void) {
     assert(fwrite(&tileset_count, 1, 1, f) == 1);
 
     // Four tile layers, contents irrelevant to collision.
-    uint16_t* tiles = calloc((size_t)MAP_W * MAP_H * 4, sizeof(uint16_t));
+    uint16_t* tiles = calloc((size_t)MAP_W * MAP_H * WORLD_FORMAT_TILE_LAYERS, sizeof(uint16_t));
     assert(tiles);
-    assert(fwrite(tiles, sizeof(uint16_t), (size_t)MAP_W * MAP_H * 4, f)
-           == (size_t)MAP_W * MAP_H * 4);
+    assert(fwrite(tiles, sizeof(uint16_t), (size_t)MAP_W * MAP_H * WORLD_FORMAT_TILE_LAYERS, f)
+           == (size_t)MAP_W * MAP_H * WORLD_FORMAT_TILE_LAYERS);
     free(tiles);
 
     uint8_t* collision = calloc((size_t)MAP_W * MAP_H, 1);

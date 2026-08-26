@@ -146,6 +146,46 @@ int main(void) {
            profile.classes[LIMIT_CLASS_QUERY].capacity);
     assert(profile.classes[LIMIT_CLASS_QUERY].capacity >= profile.classes[LIMIT_CLASS_QUERY].rate);
 
+    printf("\nTEST 6: max_players above the compiled ceiling refuses to start\n");
+    {
+        /* The whole point of the check. A configured capacity larger than
+         * MAX_PLAYERS used to load, print itself in the startup banner, and then
+         * make every login past slot 1000 fail with a message naming neither
+         * number -- while the realm server, which is told this value, went on
+         * advertising the world as having room. */
+        char body[256];
+        snprintf(body, sizeof(body),
+                 "# Server Name\nTooBig\n# Region\nNorth America\n"
+                 "# IP:Port\n127.0.0.1:7781\n# Max Players\n%d\n# Hardcore\n0\n",
+                 MAX_PLAYERS + 1);
+        const char* too_big = write_conf("limits_toobig.conf", body);
+        printf("  (a max_players ceiling error is expected here)\n");
+        assert(set_config(too_big) == 0);
+
+        // Exactly at the ceiling is a valid deployment, not an off-by-one refusal.
+        snprintf(body, sizeof(body),
+                 "# Server Name\nAtCap\n# Region\nNorth America\n"
+                 "# IP:Port\n127.0.0.1:7782\n# Max Players\n%d\n# Hardcore\n0\n",
+                 MAX_PLAYERS);
+        const char* at_cap = write_conf("limits_atcap.conf", body);
+        assert(set_config(at_cap) == 1);
+        assert(g_server.max_players == MAX_PLAYERS);
+        printf("  max_players=%u at the ceiling loads\n", g_server.max_players);
+    }
+
+    printf("\nTEST 7: max_players is rejected rather than truncated to its field\n");
+    {
+        /* The field is uint16_t and the parse used to be atoi() into an int, so
+         * 70000 became 4464 with no diagnostic -- a silent ceiling inside the
+         * very setting that exists to declare one. */
+        const char* wrapped = write_conf("limits_wrapped.conf",
+            "# Server Name\nWrapped\n# Region\nNorth America\n"
+            "# IP:Port\n127.0.0.1:7783\n# Max Players\n70000\n# Hardcore\n0\n");
+        printf("  (a max_players ceiling error is expected here)\n");
+        assert(set_config(wrapped) == 0);
+        printf("  70000 is refused instead of becoming 4464\n");
+    }
+
     printf("\nALL ASSERTIONS PASSED\n");
     return 0;
 }

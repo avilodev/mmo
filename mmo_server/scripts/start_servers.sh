@@ -63,12 +63,24 @@ fail() {
     cleanup 1
 }
 
+# Where each server writes its rolling log.
+#
+# Logging used to go to stdout and nowhere else, and this script did not
+# redirect it, so a server's history lived only in whichever terminal happened
+# to start it -- and a player's disconnect left nothing to diagnose. Each
+# process now writes its own file; common/src/log.c rotates them.
+LOG_DIR=${MMO_LOG_DIR:-"$PROJECT_ROOT/logs"}
+mkdir -p -- "$LOG_DIR"
+
 start_server() {
     local name=$1
-    shift
+    local log_slug=$2
+    shift 2
 
-    echo "Starting $name..."
-    "$@" &
+    echo "Starting $name... (log: $LOG_DIR/$log_slug.log)"
+    # The console stays on so this script's own supervision output still shows
+    # startup failures; set MMO_LOG_CONSOLE=0 to send everything to the files.
+    MMO_LOG_FILE="$LOG_DIR/$log_slug.log" "$@" &
     local pid=$!
     SERVER_NAMES+=("$name")
     SERVER_PIDS+=("$pid")
@@ -101,43 +113,68 @@ required_files=(
     login_server/certs/server.key
     realm_server/bin/realm_server
     realm_server/realm_config/realm_1.conf
-    realm_server/worlds/worlds.txt
+    realm_server/bin/data/worlds.conf
     world_server/bin/world_server
     world_server/bin/data/world.dat
     world_server/bin/data/zones.json
 )
 for required in "${required_files[@]}"; do
-    [[ -f "$required" ]] || fail "Missing $required (run 'make' first)"
+    [[ -f "$required" ]] || fail "Missing $required
+       Run 'make setup' to create what setup owns, then 'make'.
+       'make setup-check' lists everything that is missing in one pass."
 done
 
-redis-cli PING 2>/dev/null | grep -qx PONG || fail "Redis is not reachable"
+# Redis credentials, if the deployment has any.
+#
+# REDISCLI_AUTH is what redis-cli reads on its own; passing -a puts the
+# password on a command line where /proc and the shell history can see it. The
+# servers read MMO_REDIS_PASSWORD themselves and are launched with it inherited
+# from this shell, the same as every other setting here.
+if [[ -n "${MMO_REDIS_PASSWORD:-}" ]]; then
+    export REDISCLI_AUTH="$MMO_REDIS_PASSWORD"
+fi
+
+redis-cli PING 2>/dev/null | grep -qx PONG || fail "Redis is not reachable
+       If Redis has a password, set MMO_REDIS_PASSWORD before running this."
 pg_isready -q || fail "PostgreSQL is not ready"
 
-if [[ -z "${PGPASSWORD:-}" ]]; then
+# Try to connect with what libpq can already find before asking for anything.
+#
+# setup/setup.sh writes a ~/.pgpass entry, and libpq reads it without being
+# told, so on a machine that ran 'make setup' this whole block is silent. The
+# prompt is the fallback for a machine that did not, and it is deliberately not
+# the first thing tried: exporting PGPASSWORD puts the password in the
+# environment of all twelve child processes, where /proc exposes it to anything
+# else running as this user.
+if [[ -z "${PGPASSWORD:-}" ]] &&
+   ! psql -w -h localhost -U postgres -d postgres -Atqc "SELECT 1" 2>/dev/null | grep -qx 1; then
+    echo "PostgreSQL needs a password and none was found in ~/.pgpass."
+    echo "Run 'make setup' to configure one, or enter it now."
     read -r -s -p "PostgreSQL password for user postgres: " PGPASSWORD
     echo
     export PGPASSWORD
 fi
 
-psql -h localhost -U postgres -d postgres -Atqc "SELECT 1" 2>/dev/null | grep -qx 1 ||
-    fail "PostgreSQL authentication failed for user postgres"
+psql -w -h localhost -U postgres -d postgres -Atqc "SELECT 1" 2>/dev/null | grep -qx 1 ||
+    fail "PostgreSQL authentication failed for user postgres.
+       Run 'make setup' to configure ~/.pgpass, or 'make setup-check' to see what is wrong."
 
 if [[ $(redis-cli EXISTS server_auth_key:global 2>/dev/null) != 1 ]]; then
     echo "Redis server keys are missing; generating them now..."
     bash common/server_keys/generate_daily_server_keys.sh || fail "Could not generate Redis server keys"
 fi
 
-start_server "login server" ./login_server/bin/login_server
+start_server "login server" login ./login_server/bin/login_server
 
 worlds=(Armeia Bosteuis Cardinal Derive Exodus Jatrus Karmel Longevity Nervow Prototype)
 for world in "${worlds[@]}"; do
     config="world_server/world_config/${world}.conf"
     [[ -f "$config" ]] || fail "Missing $config"
-    start_server "$world world server" ./world_server/bin/world_server "$config"
+    start_server "$world world server" "world-${world,,}" ./world_server/bin/world_server "$config"
 done
 
 # Start realm last so its first monitoring pass can reach every world.
-start_server "realm server" ./realm_server/bin/realm_server realm_server/realm_config/realm_1.conf
+start_server "realm server" realm ./realm_server/bin/realm_server realm_server/realm_config/realm_1.conf
 
 echo
 echo "MMO stack running (${#SERVER_PIDS[@]} processes). Press Ctrl+C to stop everything."

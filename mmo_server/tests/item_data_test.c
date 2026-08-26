@@ -118,12 +118,108 @@ int main(void) {
     assert(problems == 2);
     shop_cleanup();
 
-    printf("\nTEST 5: the shipped content files are clean\n");
+    printf("\nTEST 5: one shop's keys do not bleed into the shop before it\n");
+    /* The defect this pins down.
+     *
+     * The loader this replaced found a key with strstr() starting at the shop
+     * object it was reading. strstr() does not stop at that object's closing
+     * brace, so a shop that omitted a key silently picked up the *next*
+     * shop's value for it. The first shop below has no "items" and no
+     * "currency"; the second has both. Under the old scanner the first shop
+     * came out holding the second's entire stock, priced in the second's
+     * coin -- a merchant selling goods nobody put on its list, with no error
+     * anywhere.
+     *
+     * Shop 10 must therefore be empty and trade in Ennara's coin (the
+     * documented default for an absent "currency"), and shop 20 must keep its
+     * own two items and its own currency. */
+    write_file(shops_path,
+        "{\"shops\":["
+        "{\"shop_id\":10,\"name\":\"Empty\"},"
+        "{\"shop_id\":20,\"name\":\"Stocked\",\"currency\":1,\"items\":["
+        "{\"item_id\":11,\"buy_price\":500},"
+        "{\"item_id\":12,\"buy_price\":2000}"
+        "]}]}");
+    assert(shop_init(shops_path) == 1);
+    {
+        ShopDef* empty   = shop_find(10);
+        ShopDef* stocked = shop_find(20);
+        assert(empty && stocked);
+        printf("  shop 10 holds %u items (expect 0), currency %u (expect %u)\n",
+               empty->item_count, empty->currency_id, (unsigned)CURRENCY_ENNARA);
+        assert(empty->item_count == 0);
+        assert(empty->currency_id == (uint8_t)CURRENCY_ENNARA);
+        printf("  shop 20 holds %u items (expect 2), currency %u (expect 1)\n",
+               stocked->item_count, stocked->currency_id);
+        assert(stocked->item_count == 2);
+        assert(stocked->currency_id == 1);
+    }
+    shop_cleanup();
+
+    printf("\nTEST 6: the shipped content files are clean\n");
     assert(items_init("world_server/data/items.json") == 1);
     assert(shop_init("world_server/data/shops.json") == 1);
     problems = shop_validate();
     printf("  world_server/data problems: %d (expect 0)\n", problems);
     assert(problems == 0);
+
+    printf("\nTEST 7: the registry grows past its initial buckets and has no id ceiling\n");
+    {
+        /* The registry used to be a direct-indexed array of 100,000 pointers, so
+         * ids above that were dropped and the table never grew. Both properties
+         * are now the opposite, and neither was covered: the tests above load
+         * four items, which fits the initial bucket count with room to spare. */
+        const int    kCount = 1000;
+        const uint32_t kBase = 4000000000u;   // past the old MAX_ITEMS ceiling
+
+        size_t cap = (size_t)kCount * 96 + 64;
+        char* body = malloc(cap);
+        assert(body != NULL);
+        size_t len = (size_t)snprintf(body, cap, "{\"items\":[");
+
+        for (int i = 0; i < kCount; i++) {
+            len += (size_t)snprintf(body + len, cap - len,
+                                    "%s{\"id\":%u,\"name\":\"Bulk%d\",\"type\":\"item\"}",
+                                    i ? "," : "", kBase + (uint32_t)i * 7u, i);
+        }
+        snprintf(body + len, cap - len, "]}");
+
+        write_file(items_path, body);
+        free(body);
+
+        assert(items_init(items_path) == 1);
+        printf("  loaded %d items (initial bucket count is 256)\n", items_get_count());
+        assert(items_get_count() == kCount);
+
+        for (int i = 0; i < kCount; i++) {
+            const ItemDefinition* it = item_get(kBase + (uint32_t)i * 7u);
+            assert(it != NULL);
+            assert(it->id == kBase + (uint32_t)i * 7u);
+        }
+        printf("  every id round-trips, including ids above the old 100000 cap\n");
+
+        // Ids that were never inserted must miss rather than collide onto a neighbour.
+        assert(item_get(kBase + 1u) == NULL);
+        assert(item_get(0) == NULL);
+        assert(item_get(0xFFFFFFFFu) == NULL);
+        printf("  absent ids miss cleanly\n");
+    }
+
+    printf("\nTEST 8: a repeated id replaces rather than leaks, and is counted once\n");
+    write_file(items_path,
+        "{\"items\":["
+        "{\"id\":42,\"name\":\"First\",\"type\":\"item\"},"
+        "{\"id\":42,\"name\":\"Second\",\"type\":\"item\"}"
+        "]}");
+    assert(items_init(items_path) == 1);
+    {
+        const ItemDefinition* dup = item_get(42);
+        assert(dup != NULL);
+        assert(strcmp(dup->name, "Second") == 0);
+        printf("  id 42 resolves to '%s' and the registry holds %d item\n",
+               dup->name, items_get_count());
+        assert(items_get_count() == 1);
+    }
 
     printf("\nALL ASSERTIONS PASSED\n");
     items_cleanup();

@@ -202,6 +202,35 @@ static void test_file_loading(void) {
     }
 }
 
+/**
+ * Check the tail-counting helper the substring loaders use to report truncation.
+ */
+static void test_remaining_object_count(void) {
+    printf("TEST 9: counting the elements a capped loader refused\n");
+
+    check(json_count_remaining_objects(NULL) == 0, "NULL counts as nothing left");
+    check(json_count_remaining_objects("]") == 0, "a closed array has nothing left");
+    check(json_count_remaining_objects("  ]  ") == 0, "trailing space before ] is fine");
+
+    check(json_count_remaining_objects(", {\"a\":1}, {\"b\":2} ]") == 2,
+          "two remaining elements are counted");
+
+    check(json_count_remaining_objects("{\"a\":{\"n\":1}},{\"b\":2}]") == 2,
+          "nested objects count once, not once per brace");
+
+    check(json_count_remaining_objects("{\"a\":\"}{\"},{\"b\":2}]") == 2,
+          "braces inside strings are not elements");
+
+    check(json_count_remaining_objects("{\"a\":\"\\\"}\"}]") == 1,
+          "an escaped quote does not end the string early");
+
+    check(json_count_remaining_objects("]{\"x\":1}") == 0,
+          "counting stops at this array's closing bracket");
+
+    check(json_count_remaining_objects("{\"a\":1}") == 1,
+          "a missing closing bracket still counts what it saw");
+}
+
 int main(void) {
     printf("=== json_util test ===\n\n");
 
@@ -213,6 +242,7 @@ int main(void) {
     test_rejects_malformed();
     test_depth_cap();
     test_file_loading();
+    test_remaining_object_count();
 
     printf("\n");
     if (g_failures) {

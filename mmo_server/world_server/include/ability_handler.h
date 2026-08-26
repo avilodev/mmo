@@ -3,6 +3,9 @@
 #ifndef ABILITY_HANDLER_H
 #define ABILITY_HANDLER_H
 
+#include "npc_snapshot.h"
+#include "npc_world.h"
+#include "tick_snapshot.h"
 #include "ability_def.h"
 #include "combat_config.h"
 #include "types.h"
@@ -65,7 +68,20 @@ void ability_handle_cast_intent(NPCWorld* world,
 void ability_handle_cast_cancel(int client_fd, uint32_t caster_id);
 
 // update casts, effects, zones, projectiles, and mana at 20 Hz
-void ability_tick(NPCWorld* world, double delta_time);
+/** Resolve elapsed casts, zone ticks, and regeneration on the gameplay thread.
+ *
+ * @param world  NPC pool that owns the entities damage and effects are applied to.
+ * @param npcs  This tick's NPC snapshot, used to narrow targets before locking.
+ * @param delta_time  Elapsed tick time in seconds.
+ */
+/** Advance casts, effects, zones, and resource regeneration for one gameplay tick.
+ *
+ * @param players  The pass's player snapshot, used to find who is standing in a
+ *                 zone; may be NULL, in which case zones affect NPCs only.
+ * @param npcs     The pass's NPC snapshot, used for the same question about NPCs.
+ */
+void ability_tick(NPCWorld* world, TickSnapshot* players,
+                  NPCTickSnapshot* npcs, double delta_time);
 
 /** Rebuild both forms' hotbars from the race registry and the player's level.
  *

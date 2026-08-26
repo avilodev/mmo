@@ -1,0 +1,36 @@
+# The release this tree belongs to.
+#
+# mmo_server and mmo_client are two independent git repositories with no
+# submodule, no lockfile and no tag linking them. They share a wire format
+# (protocol.h), a world file format (world_format.h) and a set of content
+# checks -- and until this file existed, nothing recorded which server build a
+# given client build was ever meant to talk to.
+#
+# What went wrong without it: check_protocol_sync.sh only compares the two
+# copies of protocol.h when they happen to sit side by side in one directory.
+# Check out the two trees at unrelated commits and it prints "SKIPPED" and the
+# build passes. The mismatch then shows up as a client refused at the handshake
+# if PROTOCOL_VERSION happened to differ, or -- far worse -- as a packet
+# misread in silence if it did not.
+#
+# Both trees carry this file. tests/check_tree_pairing.sh compares them and
+# fails when they disagree, and `make test` runs it.
+#
+# ---------------------------------------------------------------------------
+# Changing this
+#
+# Bump `release` in BOTH trees, in the same change, whenever a change to any
+# shared surface means an old counterpart can no longer be trusted against a
+# new one:
+#
+#   * protocol.h in either tree (which also bumps PROTOCOL_VERSION)
+#   * common/world_format.h / the world.dat layout
+#   * anything the cross-tree check scripts compare
+#
+# The value is opaque. It is compared for equality and nothing else -- it is
+# not ordered, not parsed, and carries no meaning beyond "these two trees were
+# released together". A date plus a serial reads well in a log line and sorts
+# usefully for a human, which is the only reason for the format.
+# ---------------------------------------------------------------------------
+
+release = 2026.08.22-1

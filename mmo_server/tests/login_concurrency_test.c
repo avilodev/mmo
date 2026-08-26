@@ -45,6 +45,17 @@ int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
                          const ItemInstance* eq, int n_eq) {
     (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
+/** Stub the whole-character save that commits scalars, currency and items together. */
+int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq) {
+    (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
+}
+/** Stub recording that a character is live in a world. */
+int world_session_mark(uint32_t character_id, uint32_t world_id) {
+    (void)character_id; (void)world_id; return 1;
+}
+/** Stub clearing that record. */
+void world_session_clear(uint32_t character_id) { (void)character_id; }
 /** Stub an empty persisted instance-id range. */
 uint64_t character_items_max_instance_id(void) { return 0; }
 
@@ -75,9 +86,21 @@ void player_recompute_stats(ActivePlayer* p) { (void)p; }
 /** Stub an absent ability definition. */
 const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 /** Stub an empty persisted quest list. */
-int  quest_player_load(uint32_t c, PlayerQuestEntry* q, int max) { (void)c; (void)q; (void)max; return 0; }
+int  quest_player_load(uint32_t c, PlayerQuestState* s) {
+    (void)c; (void)s; return 0;
+}
 /** Stub successful quest persistence. */
-int  quest_player_save(uint32_t c, const PlayerQuestEntry* q, int n) { (void)c; (void)q; (void)n; return 1; }
+int  quest_player_save(uint32_t c, const PlayerQuestState* s) {
+    (void)c; (void)s; return 1;
+}
+/** Stub quest storage teardown; these tests never allocate any. */
+void quest_state_release(PlayerQuestState* s) { (void)s; }
+/** Stub the snapshot's deep copy; these tests hold no quest state to copy. */
+int  quest_state_copy(PlayerQuestState* out, const PlayerQuestState* src) {
+    (void)src; if (out) memset(out, 0, sizeof(*out)); return 1;
+}
+/** Stub the completion set; these tests never record one. */
+int  quest_history_add(QuestHistory* h, uint32_t id) { (void)h; (void)id; return 1; }
 /** Stub successful packet transmission. */
 ssize_t server_send(int fd, void* d, size_t n) { (void)fd; (void)d; (void)n; return (ssize_t)n; }
 

@@ -54,6 +54,47 @@ int main(void) {
     assert(item_instance_next_id() == 5001);
     printf("  seeding past existing ids works (%lu -> 5001)\n", (unsigned long)b);
 
+    /* A restart must never reissue an identifier a persisted row already owns.
+     *
+     * The allocator is process-local and starts at 1, so before world_server's
+     * startup seeded it from character_items_max_instance_id_checked(), every
+     * restart began handing out identifiers that live rows held. The save path
+     * upserts ON CONFLICT (instance_id) without updating character_id, so those
+     * writes landed on other characters' rows.
+     *
+     * This models the sequence: a world runs and issues identifiers, it stops,
+     * the highest surviving identifier is read back from the database, and the
+     * next process seeds from it. Nothing issued afterwards may fall inside the
+     * persisted range. */
+    printf("\n  simulated restart: seeding from the persisted maximum\n");
+    {
+        item_instance_seed(0);
+
+        /* First run: allocate a batch and keep the highest, as the rows that
+         * survive in character_items would. */
+        uint64_t persisted_max = 0;
+        for (int i = 0; i < 64; i++) persisted_max = item_instance_next_id();
+
+        /* Restart. The startup seed is the database's MAX(instance_id). */
+        item_instance_seed(persisted_max);
+
+        uint64_t previous = persisted_max;
+        for (int i = 0; i < 64; i++) {
+            uint64_t issued = item_instance_next_id();
+            assert(issued > persisted_max);   /* never reissues a persisted id */
+            assert(issued > previous);        /* still strictly increasing */
+            previous = issued;
+        }
+
+        /* And again, as a second restart would, seeding from the new maximum. */
+        uint64_t after_second_run = previous;
+        item_instance_seed(after_second_run);
+        assert(item_instance_next_id() == after_second_run + 1);
+
+        printf("  128 ids across two restarts, none at or below the "
+               "persisted maximum (%lu)\n", (unsigned long)persisted_max);
+    }
+
     printf("\nTEST 2: stackables merge before opening new slots\n");
     reset();
     assert(inventory_add(inv, 10, 30, STACK_100, 0) == 0);

@@ -8,6 +8,8 @@
 #include "item_instance.h"
 #include "log.h"
 
+#include <libpq-fe.h>
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +22,72 @@ static ItemInstance inv[INVENTORY_SLOTS];
 static ItemInstance equip[EQUIP_SLOTS];
 static ItemInstance loaded_inv[INVENTORY_SLOTS];
 static ItemInstance loaded_equip[EQUIP_SLOTS];
+
+/** The test's own connection, for the fixture rows the module has no API for.
+ *
+ * character_items rows now carry a foreign key to characters, so a bag cannot
+ * be saved for a character that does not exist -- which is the whole point of
+ * the constraint, and which means this test has to create one.
+ */
+static PGconn* g_fixture = NULL;
+
+/** Run one statement on the fixture connection.
+ *
+ * @return 1 when the command succeeded, otherwise 0.
+ */
+static int fixture_exec(const char* sql) {
+    PGresult* res = PQexec(g_fixture, sql);
+    int ok = (PQresultStatus(res) == PGRES_COMMAND_OK ||
+              PQresultStatus(res) == PGRES_TUPLES_OK);
+    if (!ok) fprintf(stderr, "fixture: %s\n  %s\n", sql, PQerrorMessage(g_fixture));
+    PQclear(res);
+    return ok;
+}
+
+/** Create the character these items belong to. */
+static void create_test_character(void) {
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO characters (character_id, account_id, world_id, name, "
+             "                        class_id, race_id) "
+             "VALUES (%u, 1, 1, 'db_test_character', 1, 1) "
+             "ON CONFLICT (character_id) DO NOTHING;",
+             TEST_CHARACTER_ID);
+    assert(fixture_exec(sql));
+}
+
+/** Remove the character, which removes its items with it.
+ *
+ * By name as well as by identifier: `characters` carries UNIQUE(name, world_id),
+ * so a row left behind by an interrupted run under a different identifier would
+ * make the insert below fail on a constraint the identifier clause cannot see.
+ */
+static void delete_test_character(void) {
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM characters WHERE character_id = %u "
+             "   OR (name = 'db_test_character' AND world_id = 1);",
+             TEST_CHARACTER_ID);
+    assert(fixture_exec(sql));
+}
+
+/** Count this character's persisted item rows.
+ *
+ * @return The row count, or -1 when the query fails.
+ */
+static int count_item_rows(void) {
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM character_items WHERE character_id = %u;",
+             TEST_CHARACTER_ID);
+
+    PGresult* res = PQexec(g_fixture, sql);
+    int count = -1;
+    if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
+        count = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+    return count;
+}
 
 static void clear_all(void) {
     memset(inv, 0, sizeof(inv));
@@ -86,6 +154,18 @@ int main(void) {
         fprintf(stderr, "FAILED: could not connect using MMO_TEST_PGCONN\n");
         return 1;
     }
+
+    /* A second connection of the test's own, for the fixture rows. Opened
+     * after character_database_init(), which is what creates the schema. */
+    g_fixture = PQconnectdb(conn);
+    if (PQstatus(g_fixture) != CONNECTION_OK) {
+        fprintf(stderr, "FAILED: fixture connection: %s\n", PQerrorMessage(g_fixture));
+        return 1;
+    }
+
+    /* Start from nothing, then create the character these items hang off. */
+    delete_test_character();
+    create_test_character();
 
     clear_all();
 
@@ -168,12 +248,83 @@ int main(void) {
     printf("  max saved id %llu, next allocated %llu\n",
            (unsigned long long)highest, (unsigned long long)fresh);
 
+    printf("\nTEST 7: deleting the character takes its items with it\n");
+    /* Give it something to lose, first. */
     clear_all();
+    assert(inventory_add(inv, 4000, 3, 50, 0) == 0);
+    equip[EQUIP_HELMET].instance_id = item_instance_next_id();
+    equip[EQUIP_HELMET].item_id     = 2000;
+    equip[EQUIP_HELMET].quantity    = 1;
+    assert(character_items_save(TEST_CHARACTER_ID, inv, INVENTORY_SLOTS,
+                                equip, EQUIP_SLOTS) == 1);
+
+    int rows_before = count_item_rows();
+    assert(rows_before > 0);
+    printf("  %d item row(s) before the delete\n", rows_before);
+
+    /* Before the foreign key existed, these rows outlived the character
+     * forever -- still owning their instance identifiers, still occupying
+     * UNIQUE(character_id, slot) for a character that no longer existed. */
+    delete_test_character();
+    assert(count_item_rows() == 0);
+    printf("  0 item rows after it, cascaded by the foreign key\n");
+
+    printf("\nTEST 8: items cannot be saved for a character that does not exist\n");
+    /* The other half of the same constraint: a save for a deleted character is
+     * refused rather than silently re-creating orphans. The world server used
+     * to do exactly that on its next periodic save after a mid-session
+     * deletion. */
+    assert(character_items_save(TEST_CHARACTER_ID, inv, INVENTORY_SLOTS,
+                                equip, EQUIP_SLOTS) == 0);
+    assert(count_item_rows() == 0);
+    printf("  the save was refused and left nothing behind\n");
+
+    /* Put the character back for the remaining cases. */
+    create_test_character();
+    clear_all();
+
+    printf("\nTEST 9: one instance in two slots at once is refused\n");
+    /* The save sends every retained row in one statement, which cannot write
+     * the same instance twice. Neither should it want to: an identifier in two
+     * slots at once is a duplicated item, and the per-row loop this replaced
+     * would have written the second row over the first and reported success --
+     * persisting the duplication as an ordinary move and losing one of the two
+     * stacks without a word. The refusal is what makes that visible.
+     *
+     * The forged state is built by hand because nothing in the inventory API
+     * can produce it; that is the point. */
+    memset(inv,   0, sizeof(ItemInstance) * INVENTORY_SLOTS);
+    memset(equip, 0, sizeof(ItemInstance) * EQUIP_SLOTS);
+    assert(inventory_add(inv, 4000, 5, 50, 0) == 0);
+    assert(inv[0].instance_id != 0);
+    inv[7] = inv[0];                       /* the same instance, twice */
+
+    assert(character_items_save(TEST_CHARACTER_ID, inv, INVENTORY_SLOTS,
+                                equip, EQUIP_SLOTS) == 0);
+    assert(count_item_rows() == 0);
+    printf("  the save was refused and wrote nothing\n");
+
+    /* And the same state minus the duplicate saves normally, so the refusal
+     * above is about the duplication and not about the fixture. */
+    inv[7] = (ItemInstance){0};
+    assert(character_items_save(TEST_CHARACTER_ID, inv, INVENTORY_SLOTS,
+                                equip, EQUIP_SLOTS) == 1);
+    assert(count_item_rows() == 1);
+    printf("  without the duplicate, the same bag saves\n");
+
+    clear_all();
+    memset(inv,   0, sizeof(ItemInstance) * INVENTORY_SLOTS);
+    memset(equip, 0, sizeof(ItemInstance) * EQUIP_SLOTS);
     assert(character_items_save(TEST_CHARACTER_ID, inv, INVENTORY_SLOTS,
                                 equip, EQUIP_SLOTS) == 1);
     assert(character_items_load(TEST_CHARACTER_ID, loaded_inv, INVENTORY_SLOTS,
                                 loaded_equip, EQUIP_SLOTS) == 1);
     assert(occupied(loaded_inv, INVENTORY_SLOTS) == 0);
+
+    /* Leave the database as this test found it. */
+    delete_test_character();
+    PQfinish(g_fixture);
+    g_fixture = NULL;
 
     character_database_close();
     printf("\nALL ASSERTIONS PASSED\n");

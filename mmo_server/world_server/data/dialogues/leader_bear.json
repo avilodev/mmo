@@ -1,0 +1,135 @@
+{
+  "id": 22,
+  "name": "God of Might",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "You will address me properly or you will not address me at all.\n\nTry again.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "God of Might. The Warden sent me.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 102,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 102
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "God of Might. The Warden sent me.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 102
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 102
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 102
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 102
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Better.\n\nTalk is worth nothing here. I have heard a hundred Blessed explain what they intend\nto become. Animal Form. Now. Set your feet and hit me.\n\n[You are put on the ground twice before you land anything at all. The third time,\nyou land something. It does not move him. He looks at it anyway.]\n\nHm. Recruits these days. That was almost worth standing up for.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Was that a compliment?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "Was that a compliment?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "It was the only one you will get from me this year.\n\nGo. The sentry at the south gate writes down the living. Be on her list.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "Nobody sent you and you came anyway. That is either nerve or ignorance.\n\nThe Warden. Middle of the courtyard. Do it properly.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "You are still standing. Noted.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

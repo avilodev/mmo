@@ -4,6 +4,8 @@
  */
 
 #include "zone_system.h"
+#include "json_util.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +78,7 @@ static const char* find_key(const char* obj_start, const char* key) {
 int zone_system_init(const char* json_path) {
     FILE* f = fopen(json_path, "r");
     if (!f) {
-        fprintf(stderr, "[ZONES] Cannot open %s\n", json_path);
+        LOG_ERROR("[ZONES] Cannot open %s", json_path);
         return -1;
     }
 
@@ -87,8 +89,8 @@ int zone_system_init(const char* json_path) {
     char* buf = malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return -1; }
 
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    buf[got] = '\0';
     fclose(f);
 
     g_zone_count = 0;
@@ -135,16 +137,28 @@ int zone_system_init(const char* json_path) {
         v = find_key(obj, "h"); if (v) parse_number(v, &z->h);
 
         if (z->id > 0 && z->name[0] != '\0') {
-            printf("[ZONES] Loaded zone %d '%s' type=%d rect=(%.0f,%.0f,%.0f,%.0f)\n",
-                   z->id, z->name, z->type, z->x, z->y, z->w, z->h);
+            LOG_INFO("[ZONES] Loaded zone %d '%s' type=%d rect=(%.0f,%.0f,%.0f,%.0f)",
+                     z->id, z->name, z->type, z->x, z->y, z->w, z->h);
             g_zone_count++;
         }
 
         p = obj_end;
     }
 
+    /* Stopping at MAX_WORLD_ZONES drops zones silently, and a zone that did not
+     * load is a region of the map with no name, no type, and no zone effects --
+     * which looks like a content bug anywhere but here. */
+    if (g_zone_count >= MAX_WORLD_ZONES) {
+        int dropped = json_count_remaining_objects(p);
+        if (dropped > 0) {
+            LOG_ERROR("[ZONES] %s: loaded %d zones and dropped %d more; "
+                      "MAX_WORLD_ZONES is %d in zone_system.h",
+                      json_path, g_zone_count, dropped, MAX_WORLD_ZONES);
+        }
+    }
+
     free(buf);
-    printf("[ZONES] %d zones loaded from %s\n", g_zone_count, json_path);
+    LOG_INFO("[ZONES] %d zones loaded from %s", g_zone_count, json_path);
     return g_zone_count;
 }
 

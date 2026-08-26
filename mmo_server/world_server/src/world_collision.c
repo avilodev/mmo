@@ -6,6 +6,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "world_collision.h"
+#include "world_format.h"
+#include "log.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -32,7 +34,48 @@ static int      g_loaded    = 0;
 int world_collision_init(const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "[COLLISION] Cannot open world.dat at '%s' — collision disabled\n", path);
+        LOG_ERROR("[COLLISION] Cannot open world.dat at '%s' — collision disabled", path);
+        return 0;
+    }
+
+    /* The file says what it is, and this refuses anything that does not.
+     *
+     * There used to be no magic and no version: the header was three int32s
+     * and the reader trusted them. Anything at all in that path -- a partial
+     * copy, a file from a different generator, a world.dat whose layer count
+     * had changed on the client -- was read as coordinates, and whatever
+     * followed was loaded as the collision map that every movement check is
+     * validated against. Failing here is the only safe answer. */
+    char magic[WORLD_FORMAT_MAGIC_LEN];
+    if (fread(magic, 1, sizeof(magic), f) != sizeof(magic) ||
+        memcmp(magic, WORLD_FORMAT_MAGIC, sizeof(magic)) != 0) {
+        LOG_ERROR("[COLLISION] '%s' is not a world file (bad magic). "
+                  "Regenerate it with `make world` in the client tree, or "
+                  "`make setup` here.", path);
+        fclose(f);
+        return 0;
+    }
+
+    uint32_t version = 0, tile_layers = 0;
+    if (fread(&version,     sizeof(version),     1, f) != 1 ||
+        fread(&tile_layers, sizeof(tile_layers), 1, f) != 1) {
+        LOG_ERROR("[COLLISION] '%s' ends inside its header", path);
+        fclose(f);
+        return 0;
+    }
+
+    if (version != WORLD_FORMAT_VERSION) {
+        LOG_ERROR("[COLLISION] '%s' is world format version %u; this server reads "
+                  "version %d. Regenerate the world.",
+                  path, version, WORLD_FORMAT_VERSION);
+        fclose(f);
+        return 0;
+    }
+
+    if (tile_layers == 0 || tile_layers > WORLD_FORMAT_MAX_TILE_LAYERS) {
+        LOG_ERROR("[COLLISION] '%s' declares %u tile layers, which is not usable",
+                  path, tile_layers);
+        fclose(f);
         return 0;
     }
 
@@ -41,7 +84,27 @@ int world_collision_init(const char* path) {
         fread(&h,  sizeof(int32_t), 1, f) != 1 ||
         fread(&ts, sizeof(int32_t), 1, f) != 1 ||
         w <= 0 || h <= 0) {
-        fprintf(stderr, "[COLLISION] world.dat header invalid\n");
+        LOG_ERROR("[COLLISION] world.dat header invalid");
+        fclose(f);
+        return 0;
+    }
+
+    /* The dimensions size an allocation, so an implausible header is a request
+     * to allocate an implausible amount of memory. */
+    if (w > WORLD_FORMAT_MAX_DIMENSION || h > WORLD_FORMAT_MAX_DIMENSION) {
+        LOG_ERROR("[COLLISION] '%s' declares %dx%d tiles, past the %d per-axis limit",
+                  path, w, h, WORLD_FORMAT_MAX_DIMENSION);
+        fclose(f);
+        return 0;
+    }
+
+    /* And the product, which is the number actually being allocated: two
+     * dimensions that each pass the check above can still multiply into
+     * something no machine will hand over. */
+    if ((uint64_t)w * (uint64_t)h > WORLD_FORMAT_MAX_TILES) {
+        LOG_ERROR("[COLLISION] '%s' declares %dx%d = %llu tiles, past the %llu limit",
+                  path, w, h, (unsigned long long)((uint64_t)w * (uint64_t)h),
+                  (unsigned long long)WORLD_FORMAT_MAX_TILES);
         fclose(f);
         return 0;
     }
@@ -51,29 +114,32 @@ int world_collision_init(const char* path) {
     // Skip tileset table (variable length)
     uint8_t ts_count = 0;
     if (fread(&ts_count, 1, 1, f) != 1) {
-        fprintf(stderr, "[COLLISION] Failed to read tileset count\n");
+        LOG_ERROR("[COLLISION] Failed to read tileset count");
         fclose(f);
         return 0;
     }
     for (int i = 0; i < ts_count; i++) {
         uint8_t path_len = 0;
         if (fread(&path_len, 1, 1, f) != 1) {
-            fprintf(stderr, "[COLLISION] Failed to read tileset path_len\n");
+            LOG_ERROR("[COLLISION] Failed to read tileset path_len");
             fclose(f);
             return 0;
         }
         // skip path + cols (uint16) + rows (uint16)
         if (fseek(f, path_len + 4, SEEK_CUR) != 0) {
-            fprintf(stderr, "[COLLISION] Failed to seek past tileset entry\n");
+            LOG_ERROR("[COLLISION] Failed to seek past tileset entry");
             fclose(f);
             return 0;
         }
     }
 
-    // Skip 4 tile layers: base, overlay_floor, overlay_interior, overlay_above
-    long tile_bytes = (long)w * h * (long)sizeof(uint16_t) * 4;
+    /* Skip the tile layers, by the count the FILE declares rather than by a
+     * constant compiled into this reader. That constant was the defect: the
+     * client could add a fifth layer and this seek would land inside the tile
+     * data, loading it as collision. */
+    long tile_bytes = (long)w * h * (long)sizeof(uint16_t) * (long)tile_layers;
     if (fseek(f, tile_bytes, SEEK_CUR) != 0) {
-        fprintf(stderr, "[COLLISION] Failed to seek past tile data\n");
+        LOG_ERROR("[COLLISION] Failed to seek past tile data");
         fclose(f);
         return 0;
     }
@@ -82,16 +148,30 @@ int world_collision_init(const char* path) {
     size_t total = (size_t)w * (size_t)h;
     g_collision = malloc(total);
     if (!g_collision) {
-        fprintf(stderr, "[COLLISION] Out of memory (%zu bytes)\n", total);
+        LOG_ERROR("[COLLISION] Out of memory (%zu bytes)", total);
         fclose(f);
         return 0;
     }
 
     size_t read = fread(g_collision, 1, total, f);
+
+    /* The collision layer is the last thing in the file. Bytes after it mean
+     * the reader and the writer disagree about the layout -- which is exactly
+     * the drift the version field exists to catch, in the case where the sizes
+     * happen to line up anyway. */
+    int trailing = (fgetc(f) != EOF);
     fclose(f);
 
     if (read != total) {
-        fprintf(stderr, "[COLLISION] Short read: expected %zu bytes, got %zu\n", total, read);
+        LOG_ERROR("[COLLISION] Short read: expected %zu bytes, got %zu", total, read);
+        free(g_collision);
+        g_collision = NULL;
+        return 0;
+    }
+
+    if (trailing) {
+        LOG_ERROR("[COLLISION] '%s' has data after its collision layer; the "
+                  "reader and the generator disagree about the layout", path);
         free(g_collision);
         g_collision = NULL;
         return 0;
@@ -101,8 +181,8 @@ int world_collision_init(const char* path) {
     g_height = h;
     g_loaded = 1;
 
-    printf("[COLLISION] Loaded %dx%d tile map (tile=%gpx) from %s\n",
-           g_width, g_height, g_tile_size, path);
+    LOG_INFO("[COLLISION] Loaded %dx%d tile map (tile=%gpx, %u tile layers) from %s",
+             g_width, g_height, g_tile_size, tile_layers, path);
     return 1;
 }
 

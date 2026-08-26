@@ -33,12 +33,24 @@ typedef struct {
 
 // load shop definitions from JSON
 int  shop_init(const char* json_path);
+
+/** Look up a loaded shop by identifier.
+ *
+ * @return The shop, or NULL when nothing carries that identifier.
+ */
+ShopDef* shop_find(uint32_t shop_id);
 // return unresolved or profitable-resale entry count
 int shop_validate(void);
 
 void shop_cleanup(void);
 
-void shop_open(uint32_t character_id, int client_fd, uint32_t shop_id);
+/** Send a shop's inventory and prices, and record it as the character's open shop.
+ *
+ * The merchant is passed in because buying and selling are gated on still
+ * being at it -- see shop_session.h.
+ */
+void shop_open(uint32_t character_id, int client_fd, uint32_t shop_id,
+               uint32_t npc_id, float npc_x, float npc_y);
 
 void shop_handle_buy (uint32_t character_id, int client_fd, uint8_t* buffer, int bytes);
 void shop_handle_sell(uint32_t character_id, int client_fd, uint8_t* buffer, int bytes);

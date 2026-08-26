@@ -68,9 +68,20 @@ static const PacketLimitProfile WORLD_PROFILE = {
         [PACKET_NPC_INTERACT_REQUEST]  = { LIMIT_CLASS_QUERY,    2 },
         [PACKET_DIALOGUE_OPTION_SELECT]= { LIMIT_CLASS_QUERY,    2 },
         [PACKET_DIALOGUE_CLOSE]        = { LIMIT_CLASS_QUERY,    1 },
+        /* The only quest opcode a client starts. Cheap to serve, but it drops
+         * a quest and marks the character dirty, so it is not free either. */
+        [PACKET_QUEST_ABANDON]         = { LIMIT_CLASS_QUERY,    3 },
         [PACKET_SHOP_BUY]              = { LIMIT_CLASS_QUERY,    5 },
         [PACKET_SHOP_SELL]             = { LIMIT_CLASS_QUERY,    5 },
         [PACKET_SESSION_LIST_REQUEST]  = { LIMIT_CLASS_QUERY,    5 },
+
+        /* Priced for its answer, like the race list. One query resolves up to
+         * 32 names and the client caches them for the session, so a client
+         * behaving normally sends this a handful of times an hour -- when it
+         * walks into a crowd it has not met. A client sending it continuously
+         * is asking the server to build 1.2 KB responses on demand, and should
+         * pay for it. */
+        [PACKET_NAME_QUERY_REQUEST]    = { LIMIT_CLASS_QUERY,    8 },
     },
 
     .violation_limit  = 200,
@@ -103,6 +114,16 @@ static const PacketLimitProfile REALM_PROFILE = {
         [PACKET_PING]                     = { LIMIT_CLASS_MOVEMENT,  1 },
 
         [PACKET_WORLD_LIST_REQUEST]       = { LIMIT_CLASS_QUERY,     3 },
+
+        /* Priced by what it sends back, not by what it costs to compute.
+         *
+         * The response is a RaceListResponsePacket -- around 10.7 KB of static
+         * registry data. With no entry here it fell through to the default
+         * cost, so a client could ask for it at the whole QUERY rate and pull
+         * roughly 86 KB/s out of the realm per connection for one small
+         * request each time. It is a list that changes when the server is
+         * redeployed; nobody needs it twice. */
+        [PACKET_RACE_LIST_REQUEST]        = { LIMIT_CLASS_QUERY,    10 },
         [PACKET_CHARACTER_LIST_REQUEST]   = { LIMIT_CLASS_QUERY,     5 },
         [PACKET_ENTER_WORLD]              = { LIMIT_CLASS_QUERY,    10 },
 
