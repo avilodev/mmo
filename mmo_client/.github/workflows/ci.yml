@@ -1,0 +1,68 @@
+# What of the client can be built and tested without Windows.
+#
+# All of it, now. The shipped client is a Win32 build under MSYS2 and that is
+# still where it is released from, but the Makefile resolves GLFW, OpenGL and
+# OpenSSL through pkg-config on Linux, the two files that were unconditionally
+# Win32 -- the audio backend and one mkdir -- are behind a platform split, and
+# the network sources build against the Winsock shim in Game/tests/hostcompat.
+#
+# That last one is what makes "the whole game tree" literal. network.h includes
+# <winsock2.h>, so until the Linux build was pointed at the shim this step
+# stopped at the first network source and everything after it -- network.c and
+# the four packet dispatchers, the only client code that parses bytes someone
+# else chose -- was never compiled here at all. A warning or a break in a
+# rendering, UI, state or network source is caught here now, rather than by
+# whoever next opens MSYS2.
+#
+# The Launcher is genuinely Win32 -- it calls the Windows API directly for its
+# window and controls -- and is not built here.
+#
+# The server repository runs the cross-tree checks (protocol.h and
+# world_format.h in both trees) because it is the one that owns the scripts.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libglfw3-dev libgl-dev libssl-dev
+
+      - name: Tests
+        run: make test
+
+      # The whole game tree, warnings fatal. This is the check that did not
+      # exist: before the Makefile grew platform detection, nothing outside
+      # Windows could compile a single rendering or UI source.
+      - name: Build the game with warnings as errors
+        run: make strict
+
+      - name: Packet dispatchers under ASan and UBSan
+        run: make net-sanitize
+
+      # A small world rather than the shipped one: what is being checked is
+      # that the generator writes the layout both readers expect, which does
+      # not depend on how big the world is.
+      - name: Generate a small world
+        run: |
+          make Game/data/bin/worldgen
+          ./Game/data/bin/worldgen /tmp/world.dat 256 256
+          test "$(head -c 8 /tmp/world.dat)" = "MMOWORLD"
+          echo "world.dat carries the format magic"

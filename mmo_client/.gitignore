@@ -33,7 +33,20 @@ mmo_server
 *.pfx
 *.crt
 *.cer
-certs/
+# Certificate directories: keys and certificates never, pin files always.
+#
+# A blanket `certs/` ignored the pin files too, so neither
+# Launcher/certs/login_pins.txt nor Game/certs/realm_pins.txt has ever been
+# committed -- and both the launcher and the game refuse every connection
+# without one, by design. A fresh clone therefore built a client that could not
+# reach any server, while the README said the pin files ship with the
+# repository. They do now.
+#
+# The negations re-include only .txt and .sh; *.key/*.crt/*.pem above still
+# exclude anything secret that lands in the same directory.
+**/certs/*
+!**/certs/*.txt
+!**/certs/*.sh
 
 # Local databases
 *.db
@@ -56,3 +69,6 @@ certs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Agent scratch directories. See the note in mmo_server/.gitignore: these were
+# held back by a local .git/info/exclude, which no other clone has.

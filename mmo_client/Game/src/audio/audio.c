@@ -1,13 +1,31 @@
 /**
  * @file
- * Control client sound effects and background music through Windows winmm.
+ * Client sound effects and background music.
+ *
+ * Two backends behind one interface. The real one is Windows winmm and MCI,
+ * which is what the game ships with and what everything below _WIN32 is.
+ *
+ * The other is silence, for every other platform. It exists because the
+ * alternative was that this one file -- including <windows.h> and
+ * <mmsystem.h> unconditionally -- made the entire game tree impossible to
+ * compile anywhere but MSYS2. That put every rendering, UI and state source
+ * beyond the reach of CI and of anyone not developing on Windows, to keep
+ * audio working on the one platform that has audio.
+ *
+ * The silent backend is not a port. It is what lets the other several thousand
+ * lines be built and checked; a real Linux backend (SDL_mixer, OpenAL,
+ * PulseAudio) would replace it here without touching audio.h.
  */
 
 #include "audio/audio.h"
-#include <windows.h>
-#include <mmsystem.h>
+
 #include <stdio.h>
 #include <string.h>
+
+#ifdef _WIN32
+
+#include <windows.h>
+#include <mmsystem.h>
 
 static float g_master = 1.0f;
 static float g_music  = 1.0f;
@@ -171,3 +189,49 @@ void audio_event_pickup(void)       { audio_play_sfx("Game/Sounds/pickup.wav"); 
  * Play the configured interface-click sound.
  */
 void audio_event_ui_click(void)     { audio_play_sfx("Game/Sounds/ui_click.wav"); }
+
+#else   /* not _WIN32 */
+
+/* The silent backend.
+ *
+ * Every entry point is present and does nothing audible. Volumes are still
+ * stored and clamped, so settings round-trip correctly and the settings panel
+ * behaves the same on every platform -- there is simply nothing listening. */
+
+static float g_master = 1.0f;
+static float g_music  = 1.0f;
+static float g_sfx    = 1.0f;
+
+static float clamp01(float v) {
+    return (v < 0.0f) ? 0.0f : (v > 1.0f) ? 1.0f : v;
+}
+
+void audio_init(void) {
+    printf("[AUDIO] Initialized (silent backend: no audio on this platform)\n");
+}
+
+void audio_cleanup(void) {}
+
+void audio_set_master_volume(float v) { g_master = clamp01(v); }
+void audio_set_music_volume(float v)  { g_music  = clamp01(v); }
+void audio_set_sfx_volume(float v)    { g_sfx    = clamp01(v); }
+
+void audio_play_sfx(const char* path) { (void)path; }
+
+void audio_play_music(const char* path, int loop) { (void)path; (void)loop; }
+void audio_stop_music(void) {}
+
+void audio_event_ability_cast(void) {}
+void audio_event_hit(void)          {}
+void audio_event_death(void)        {}
+void audio_event_level_up(void)     {}
+void audio_event_pickup(void)       {}
+void audio_event_ui_click(void)     {}
+
+/* Read so the compiler does not warn that the stored volumes go unused; they
+ * are kept because a real backend will want them and settings still store
+ * them. */
+float audio_debug_effective_volume(void);
+float audio_debug_effective_volume(void) { return g_master * g_music * g_sfx; }
+
+#endif  /* _WIN32 */

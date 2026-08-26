@@ -3,6 +3,7 @@
  * Render the in-game heads-up display and handle its panel controls.
  */
 #include "hud.h"
+#include "core/race_registry.h"
 #include "world_regions.h"
 #include "renderer.h"
 #include "core/game_types.h"
@@ -612,9 +613,17 @@ void hud_render_party_frames(const GameState* game) {
         if (mp_pct > 1.0f) mp_pct = 1.0f;
         if (mp_pct < 0.0f) mp_pct = 0.0f;
         renderer_draw_rect(fx + BAR_PAD, mp_y, BAR_W, MP_H, 0.05f, 0.05f, 0.2f, 1.0f);
-        // Ninja (class 2) gets yellow energy bar, others get blue mana
+        /* Blue for mana, yellow for everything else.
+         *
+         * This was `player_class == 2` -- one hardcoded race number -- so the
+         * second race to run on something other than mana would have drawn a
+         * mana bar for a resource that is not mana. The registry knows which
+         * role each race starts in; ask it. */
         float mr = 0.2f, mg = 0.3f, mb = 0.9f;
-        if (m->player_class == 2) { mr = 1.0f; mg = 0.9f; mb = 0.2f; }
+        /* PartyMember.player_class carries the fused race/class identifier --
+         * the server fills class and race from the same race_id -- so it is
+         * what the registry is keyed on. */
+        if (client_race_uses_energy(m->player_class)) { mr = 1.0f; mg = 0.9f; mb = 0.2f; }
         renderer_draw_rect(fx + BAR_PAD, mp_y, BAR_W * mp_pct, MP_H, mr, mg, mb, 0.9f);
     }
 }

@@ -1,97 +1,77 @@
 #ifndef NPC_DIALOGUE_H
 #define NPC_DIALOGUE_H
 
+/**
+ * @file
+ * Present the dialogue page the server sent.
+ *
+ * The client holds no dialogue data of its own. It used to: a copy of every
+ * conversation shipped in Game/data/dialogues, indexed by page number, and the
+ * server sent only the numbers. That made the text a second source of truth
+ * that could drift from the server's, and it meant an option the server had
+ * hidden could still be rendered from the local copy. Both packets now carry
+ * the page's text and the text of exactly the choices this player may take.
+ */
+
+#include "protocol.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MAX_DIALOGUE_OPTIONS 6
-#define MAX_PAGES_PER_DIALOGUE 32
-#define MAX_DIALOGUES 256
-#define MAX_DIALOGUE_TEXT_LENGTH 1024
-#define MAX_OPTION_TEXT_LENGTH 256
-#define MAX_NPC_NAME_LENGTH 64
-
-/** Define a selectable response loaded from a dialogue JSON file. */
+/** Track the dialogue page currently on screen. */
 typedef struct {
-    uint8_t option_id;
-    char text[MAX_OPTION_TEXT_LENGTH];
-    int8_t next_page;  /**< Next page index, or -1 to close the dialogue. */
-} DialogueOptionDef;
-
-/** Define one page of locally stored dialogue text and responses. */
-typedef struct {
-    uint8_t page_num;
-    char text[MAX_DIALOGUE_TEXT_LENGTH];
-    uint8_t option_count;
-    DialogueOptionDef options[MAX_DIALOGUE_OPTIONS];
-} DialoguePageDef;
-
-/** Define a complete per-NPC dialogue loaded from JSON. */
-typedef struct {
-    uint32_t dialogue_id;
-    char name[64];
-    uint8_t page_count;
-    DialoguePageDef pages[MAX_PAGES_PER_DIALOGUE];
-} DialogueDef;
-
-/** Track the dialogue page and window currently presented to the player. */
-typedef struct {
-    bool is_active;
+    bool     is_active;
     uint32_t npc_id;
     uint32_t dialogue_id;
-    uint8_t current_page;
-    char npc_name[MAX_NPC_NAME_LENGTH];
+    uint8_t  current_page;
+    char     npc_name[32];
 
-    /** Text resolved from the active dialogue and page identifiers. */
-    char displayed_text[MAX_DIALOGUE_TEXT_LENGTH];
-    uint8_t displayed_option_count;
-    char displayed_options[MAX_DIALOGUE_OPTIONS][MAX_OPTION_TEXT_LENGTH];
+    char    text[MAX_DIALOGUE_TEXT];
+    uint8_t option_count;
+    char    option_text[MAX_DIALOGUE_OPTIONS][MAX_OPTION_TEXT];
+    /** Identify each choice to the server. Never send a row number instead:
+     *  the server hides options this player fails, so rows are per player. */
     uint8_t option_ids[MAX_DIALOGUE_OPTIONS];
 
-    int selected_option;  /**< Highlighted option index, or -1 when none is selected. */
+    int selected_option;  /**< Hovered row, or -1. */
 
-    /** Screen-space dialogue window bounds. */
+    /** Screen-space window bounds, recomputed each frame from the viewport. */
     float window_x;
     float window_y;
     float window_width;
     float window_height;
 } DialogueState;
 
-// Initialize dialogue system and load dialogues.json
-int dialogue_system_init(const char* json_path);
+/** Reset the dialogue window. Call once at gameplay start. */
+void dialogue_ui_init(void);
 
-// Clean up dialogue system
-void dialogue_system_cleanup(void);
+/** Show a page opened by PACKET_NPC_INTERACT_RESPONSE. */
+void dialogue_show(const NPCInteractResponsePacket* packet);
 
-// Get dialogue definition by ID
-const DialogueDef* dialogue_get(uint32_t dialogue_id);
+/** Replace the page from PACKET_DIALOGUE_UPDATE. */
+void dialogue_update_page(const DialogueUpdatePacket* packet);
 
-// Show dialogue window with server data (looks up text locally)
-void dialogue_show(uint32_t npc_id, const char* npc_name, uint32_t dialogue_id,
-                  uint8_t page_num, uint8_t option_count, const uint8_t* option_ids);
-
-// Update dialogue to new page (from server update packet)
-void dialogue_update_page(uint32_t dialogue_id, uint8_t page_num,
-                         uint8_t option_count, const uint8_t* option_ids);
-
-// Close the dialogue window
+/** Close the dialogue window. */
 void dialogue_close(void);
 
-// Check if dialogue is currently active
+/** Report whether a dialogue window is open. */
 bool dialogue_is_active(void);
 
-// Update dialogue state (handle input, etc.)
-void dialogue_update_state(float delta_time);
+/** Draw the dialogue window inside a logical viewport. */
+void dialogue_render(int viewport_width, int viewport_height);
 
-// Render the dialogue window
-void dialogue_render(void);
+/** Resolve a click against the visible choices.
+ *
+ * @param out_option_id  Receives the identifier to send back to the server.
+ * @return               Nonzero when a choice was hit.
+ */
+int dialogue_handle_click(float mouse_x, float mouse_y, uint8_t* out_option_id);
 
-// Handle mouse click - returns selected option ID or -1 if no option clicked
-int dialogue_handle_click(float mouse_x, float mouse_y);
+/** Track which choice the pointer is over, for highlighting. */
+void dialogue_handle_hover(float mouse_x, float mouse_y);
 
-// Get the current dialogue state
 uint32_t dialogue_get_current_npc(void);
 uint32_t dialogue_get_current_dialogue_id(void);
-uint8_t dialogue_get_current_page(void);
+uint8_t  dialogue_get_current_page(void);
 
 #endif // NPC_DIALOGUE_H

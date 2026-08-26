@@ -58,6 +58,29 @@ void renderer_draw_text(float x, float y, const char* text);
 
 void renderer_draw_text_centered(float x, float y, float w, float h, const char* text);
 
+/** Measure text in the shared baked font, in pixels.
+ *
+ * Bytes outside printable ASCII contribute nothing, exactly as they draw nothing.
+ */
+float renderer_text_width(const char* text);
+
+/** Draw text broken to fit a width, honouring explicit newlines.
+ *
+ * Wrapping happens on whitespace; a single word longer than max_width is drawn
+ * over the edge rather than split, because splitting a word is worse than
+ * overrunning by a few pixels and this is prose, not a table.
+ *
+ * @param x, y        Baseline of the first line.
+ * @param max_width   Width to wrap within, in pixels.
+ * @param line_height Baseline-to-baseline spacing.
+ * @return            How many lines were drawn, so a caller can size a panel.
+ */
+int renderer_draw_text_wrapped(float x, float y, float max_width, float line_height,
+                               const char* text);
+
+/** Count the lines renderer_draw_text_wrapped() would draw, without drawing them. */
+int renderer_measure_text_wrapped(float max_width, const char* text);
+
 // Draw a filled circle (for telegraphs, zones)
 void renderer_draw_circle(float cx, float cy, float radius,
                           float r, float g, float b, float a, int segments);

@@ -9,6 +9,7 @@
 #include "renderer.h"
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 
 static int screen_width;
 static int screen_height;
@@ -230,8 +231,20 @@ void renderer_font_init(const char* path, float size) {
         free(temp_bitmap);
         return;
     }
-    fread(ttf_buffer, 1, 1<<20, f);
+    /* stbtt_BakeFontBitmap parses this buffer as a font, so how much of it is
+     * actually font matters: an unchecked read left the tail as uninitialised
+     * heap and handed it to the parser. A file that read as nothing is not a
+     * font at all, and the text is better missing than baked from rubbish. */
+    size_t ttf_bytes = fread(ttf_buffer, 1, 1 << 20, f);
     fclose(f);
+
+    if (ttf_bytes == 0) {
+        printf("Font %s could not be read\n", path);
+        free(ttf_buffer);
+        free(temp_bitmap);
+        return;
+    }
+    memset(ttf_buffer + ttf_bytes, 0, (1 << 20) - ttf_bytes);
 
     stbtt_BakeFontBitmap(ttf_buffer, 0, size, temp_bitmap, 512, 512, 32, 96, baked_chars);
 
@@ -338,4 +351,112 @@ void renderer_cleanup(void) {
         font_texture = 0;
     }
     printf("Renderer cleaned up\n");
+}
+
+/**
+ * Measure text in the shared baked font.
+ *
+ * @return      Advance width in pixels.
+ */
+float renderer_text_width(const char* text) {
+    float width = 0.0f;
+    for (int i = 0; text && text[i]; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c >= 32 && c < 128) width += baked_chars[c - 32].xadvance;
+    }
+    return width;
+}
+
+/**
+ * Lay text out into lines that fit a width, optionally drawing them.
+ *
+ * Shared by the drawing and measuring entry points so a panel sized from the
+ * measurement can never disagree with what is drawn into it.
+ *
+ * @param draw  Nonzero to draw; zero to measure only.
+ * @return      The number of lines produced.
+ */
+static int layout_text_wrapped(float x, float y, float max_width, float line_height,
+                               const char* text, int draw) {
+    if (!text || !*text) return 0;
+
+    char line[512];
+    int  line_len = 0;
+    int  lines    = 0;
+
+    const char* word = text;
+
+    for (;;) {
+        /* Find the end of the next word and the separator that follows it. */
+        const char* cursor = word;
+        while (*cursor && *cursor != ' ' && *cursor != '\n' && *cursor != '\t') cursor++;
+
+        int word_len = (int)(cursor - word);
+        char candidate[512];
+        int  candidate_len = 0;
+
+        if (line_len > 0) {
+            memcpy(candidate, line, (size_t)line_len);
+            candidate_len = line_len;
+            candidate[candidate_len++] = ' ';
+        }
+        if (word_len > 0) {
+            if (candidate_len + word_len >= (int)sizeof(candidate))
+                word_len = (int)sizeof(candidate) - candidate_len - 1;
+            memcpy(candidate + candidate_len, word, (size_t)word_len);
+            candidate_len += word_len;
+        }
+        candidate[candidate_len] = '\0';
+
+        int overflows = (line_len > 0 && renderer_text_width(candidate) > max_width);
+
+        if (overflows) {
+            /* Emit the line as it stood and start the next one with this word. */
+            line[line_len] = '\0';
+            if (draw) renderer_draw_text(x, y + lines * line_height, line);
+            lines++;
+
+            line_len = word_len;
+            if (line_len >= (int)sizeof(line)) line_len = (int)sizeof(line) - 1;
+            memcpy(line, word, (size_t)line_len);
+        } else {
+            memcpy(line, candidate, (size_t)candidate_len);
+            line_len = candidate_len;
+        }
+
+        if (*cursor == '\n') {
+            line[line_len] = '\0';
+            if (draw) renderer_draw_text(x, y + lines * line_height, line);
+            lines++;
+            line_len = 0;
+        }
+
+        if (!*cursor) break;
+        word = cursor + 1;
+    }
+
+    if (line_len > 0) {
+        line[line_len] = '\0';
+        if (draw) renderer_draw_text(x, y + lines * line_height, line);
+        lines++;
+    }
+
+    return lines;
+}
+
+/**
+ * Draw text broken to fit a width, honouring explicit newlines.
+ *
+ * @return      The number of lines drawn.
+ */
+int renderer_draw_text_wrapped(float x, float y, float max_width, float line_height,
+                               const char* text) {
+    return layout_text_wrapped(x, y, max_width, line_height, text, 1);
+}
+
+/**
+ * Count the lines renderer_draw_text_wrapped() would draw.
+ */
+int renderer_measure_text_wrapped(float max_width, const char* text) {
+    return layout_text_wrapped(0.0f, 0.0f, max_width, 0.0f, text, 0);
 }

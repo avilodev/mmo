@@ -4,6 +4,8 @@
  */
 
 #include "state_handler.h"
+#include "network/net_connect.h"
+#include "network/net_reconnect.h"
 #include "game.h"
 #include "renderer.h"
 #include "input/input.h"
@@ -225,20 +227,60 @@ static void char_select_update(GameState* game, float delta_time) {
                             game->char_select.list.characters[game->char_select.selected_index].character_id
                         );
 
-                        if (network_connect_to_world(world_ip, world_port,
-                                                    response.game_ticket, char_id)) {
-                            game->network_connected = 1;
-                            game->player.info_loaded = 0;
-                            game_change_state(game, GAME_MODE_PLAYING);
-
-                            uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
-                            network_request_character_data(char_id, world_id);
-                            network_set_character_id(char_id);
+                        /* Started, not waited on. The frame below advances it.
+                         * The blocking form froze the window for the connect
+                         * plus up to five seconds of acknowledgement polling. */
+                        if (network_begin_world_connect(world_ip, world_port,
+                                                        response.game_ticket, char_id)) {
+                            game->pending_character_id = char_id;
+                            game->pending_world_id = ntohl(
+                                game->server_list.list.worlds[game->server_list.selected_index].world_id);
+                            game->net_state = NET_STATE_CONNECTING_TO_WORLD;
+                            game->net_wait_seconds = 0.0f;
+                        } else {
+                            printf("[CHAR_SELECT] Could not start the world connection: %s\n",
+                                   network_connect_message());
                         }
                     } else {
                         printf("[CHAR_SELECT] Enter world denied: %s\n", response.message);
                     }
                 }
+            }
+            break;
+
+        case NET_STATE_CONNECTING_TO_WORLD:
+            switch (network_connect_poll()) {
+                case NET_CONNECT_SUCCEEDED: {
+                    game->net_state          = NET_STATE_IDLE;
+                    game->network_connected  = 1;
+                    game->player.info_loaded = 0;
+                    game_change_state(game, GAME_MODE_PLAYING);
+
+                    network_set_character_id(game->pending_character_id);
+                    network_request_character_data(game->pending_character_id,
+                                                   game->pending_world_id);
+
+                    /* Everything a recovery needs, recorded at the one moment
+                     * all of it is known together. Without this a dropped
+                     * world connection ended the session. */
+                    net_reconnect_remember_world(game->realm_ip,
+                                                 (uint16_t)game->realm_port,
+                                                 game->account_id,
+                                                 game->session_key,
+                                                 game->pending_world_id,
+                                                 game->pending_character_id);
+                    break;
+                }
+                case NET_CONNECT_FAILED:
+                    game->net_state = NET_STATE_IDLE;
+                    game->network_connected = 0;
+                    strncpy(game->char_select.error_message, network_connect_message(), 127);
+                    game->char_select.error_message[127] = '\0';
+                    printf("[CHAR_SELECT] World connection failed: %s\n",
+                           network_connect_message());
+                    break;
+                default:
+                    break;
             }
             break;
 
@@ -337,7 +379,14 @@ static void char_select_render_creation(GameState* game) {
             renderer_draw_text(panel_x + 60, y + 17, label);
 
             if (race->passive_name[0]) {
-                char passive[200];
+                /* Sized from the two fields it concatenates rather than
+                 * guessed at: passive_name is 32 and passive_desc is 192 (see
+                 * RaceInfo in protocol.h), plus the two-space indent, the
+                 * ": " and a terminator. At 200 this was a truncation the
+                 * compiler could prove and nobody could see, and it would have
+                 * cut the end off the longest passive descriptions the server
+                 * is allowed to send. */
+                char passive[sizeof(race->passive_name) + sizeof(race->passive_desc) + 8];
                 snprintf(passive, sizeof(passive), "  %s: %s",
                          race->passive_name, race->passive_desc);
                 renderer_draw_text(panel_x + 60, y + 33, passive);

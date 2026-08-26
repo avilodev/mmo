@@ -108,8 +108,14 @@ void npc_types_init(const char* path) {
 
     char* json = malloc((size_t)fsize + 1);
     if (!json) { fclose(f); return; }
-    fread(json, 1, (size_t)fsize, f);
-    json[fsize] = '\0';
+
+    /* Terminate at what was actually read, not at the size ftell reported.
+     * The file is opened in text mode, so on a platform that translates line
+     * endings the read is legitimately shorter than the file -- and the
+     * scanner below walks to a NUL, so terminating past the data walks it
+     * through uninitialised heap. */
+    size_t got = fread(json, 1, (size_t)fsize, f);
+    json[got] = '\0';
     fclose(f);
 
     int count = 0;

@@ -3,20 +3,82 @@
  * Manage launcher TLS sessions and framed packet transfers.
  */
 #include "tls_client.h"
+#include "cert_pin.h"
+#include "cert_spki.h"
+
+#include <openssl/evp.h>
+#include <openssl/opensslv.h>
+#include <openssl/x509.h>
+
+#include <windows.h>
 #include <stdio.h>
 #include <string.h>
 
-static SSL_CTX* g_ssl_ctx = NULL;
+static SSL_CTX*   g_ssl_ctx = NULL;
+static CertPinSet g_pins;
+
+/** Relative to Launcher.exe: the public-key fingerprints this build accepts. */
+#define TLS_PIN_FILE "certs\\login_pins.txt"
+
+/**
+ * Build a path to a file shipped beside Launcher.exe.
+ *
+ * Resolved from the module path rather than the working directory: the launcher
+ * is routinely started from a shortcut, and reading verification material from
+ * whatever directory happens to be current is its own vulnerability.
+ *
+ * @return TRUE when the path was produced.
+ */
+static BOOL path_beside_exe(const char* relative, char* out, size_t out_size) {
+    char exe_path[MAX_PATH];
+    DWORD length = GetModuleFileNameA(NULL, exe_path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return FALSE;
+
+    char* slash = strrchr(exe_path, '\\');
+    if (!slash) return FALSE;
+    *slash = '\0';
+
+    return snprintf(out, out_size, "%s\\%s", exe_path, relative) > 0;
+}
 
 /**
  * Initialize the process-wide launcher TLS context.
  *
- * Server certificate verification is disabled and TLS 1.2 is the minimum protocol version.
+ * Requires TLS 1.2 and loads the public-key pin set. Initialization fails when
+ * no usable pin file is present.
+ *
+ * Failing closed is the point. This context carries the account password and
+ * the 32-byte session key that the realm link then accepts as a credential, and
+ * it previously ran with SSL_VERIFY_NONE and no hostname check -- so any peer
+ * that could answer on the login port, including one that got there by ARP or
+ * DNS, received both in full and could relay the session onward undetected.
+ * Chain verification alone cannot fix that: the login certificate is not issued
+ * by a public CA, so there is nothing to chain to. A fingerprint of the
+ * server's own public key, shipped with the launcher, is what identifies it.
  *
  * @return      TRUE when the context is available, otherwise FALSE.
  */
 BOOL tls_client_init(void) {
     if (g_ssl_ctx) return TRUE;
+
+    char pin_path[MAX_PATH * 2];
+    if (!path_beside_exe(TLS_PIN_FILE, pin_path, sizeof(pin_path))) {
+        fprintf(stderr, "[TLS] Cannot locate the launcher directory\n");
+        return FALSE;
+    }
+
+    char reason[256];
+    if (!cert_pin_load_file(&g_pins, pin_path, reason, sizeof(reason))) {
+        fprintf(stderr,
+                "[TLS] No usable public-key pins: %s\n"
+                "[TLS] The launcher will not connect without them. Generate the file with:\n"
+                "[TLS]   openssl x509 -in server.crt -pubkey -noout \\\n"
+                "[TLS]     | openssl pkey -pubin -outform der \\\n"
+                "[TLS]     | openssl dgst -sha256 -binary | openssl base64\n"
+                "[TLS] and write the result as 'sha256/<base64>' into %s\n",
+                reason, pin_path);
+        return FALSE;
+    }
 
     // No-ops in OpenSSL 1.1+; kept for 1.0.x compatibility.
     SSL_library_init();
@@ -31,13 +93,18 @@ BOOL tls_client_init(void) {
         return FALSE;
     }
 
-    // certificate verification is disabled for this client
+    /* Chain verification stays off because there is no chain: the login
+     * certificate is self-signed. Identity is decided by the pin check in
+     * tls_client_connect(), which runs on every handshake and refuses the
+     * connection on a mismatch. Turning SSL_VERIFY_PEER on here without a CA
+     * would only fail every connection. */
     SSL_CTX_set_verify(g_ssl_ctx, SSL_VERIFY_NONE, NULL);
 
     // Require TLS 1.2 minimum.
     SSL_CTX_set_min_proto_version(g_ssl_ctx, TLS1_2_VERSION);
 
-    printf("[TLS] Client context ready\n");
+    printf("[TLS] Client context ready (%d pinned key%s)\n",
+           g_pins.count, g_pins.count == 1 ? "" : "s");
     return TRUE;
 }
 
@@ -47,7 +114,59 @@ void tls_client_cleanup(void) {
         SSL_CTX_free(g_ssl_ctx);
         g_ssl_ctx = NULL;
     }
+    cert_pin_reset(&g_pins);
     EVP_cleanup();
+}
+
+/* spki_digest() lived here and did not compute an SPKI digest.
+ *
+ * It called X509_pubkey_digest(), which hashes the public key BIT STRING
+ * without the AlgorithmIdentifier around it -- a different 32 bytes from the
+ * SubjectPublicKeyInfo digest that Launcher/certs/login_pins.txt holds and that
+ * the openssl pipeline in this file's own error message produces. Every
+ * handshake therefore compared one thing against a pin file naming another and
+ * was refused, meaning this launcher could not connect to the login server at
+ * all. cert_spki.c has the correct computation, shared with the game and both
+ * halves of the server tree so there is one of it. */
+
+/**
+ * Check a completed handshake against the pin set.
+ *
+ * @return TRUE when the peer presented a pinned public key.
+ */
+static BOOL verify_pinned_peer(SSL* ssl) {
+    /* Renamed in OpenSSL 3.0; the 1.1 spelling still works there but is
+     * deprecated, and the launcher is built against whichever MSYS2 ships. */
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    X509* cert = SSL_get1_peer_certificate(ssl);
+#else
+    X509* cert = SSL_get_peer_certificate(ssl);
+#endif
+    if (!cert) {
+        fprintf(stderr, "[TLS] Peer presented no certificate\n");
+        return FALSE;
+    }
+
+    unsigned char digest[CERT_PIN_DIGEST_LEN];
+    BOOL ok = cert_spki_digest(cert, digest) ? TRUE : FALSE;
+    X509_free(cert);
+
+    if (!ok) {
+        fprintf(stderr, "[TLS] Could not fingerprint the peer public key\n");
+        return FALSE;
+    }
+
+    if (!cert_pin_matches(&g_pins, digest)) {
+        char text[CERT_PIN_DIGEST_LEN * 2 + 1];
+        cert_pin_format(digest, text, sizeof(text));
+        fprintf(stderr,
+                "[TLS] Peer public key %s is not pinned — refusing the connection.\n"
+                "[TLS] Either this is not the login server, or its key changed and "
+                "the launcher needs an updated pin file.\n", text);
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 /**
@@ -81,7 +200,16 @@ SSL* tls_client_connect(SOCKET sock) {
         return NULL;
     }
 
-    printf("[TLS] Connected — cipher: %s\n", SSL_get_cipher(ssl));
+    /* Identity is decided here, before the caller can send anything. A
+     * handshake that completed proves only that the peer holds the private key
+     * for whatever certificate it offered -- which any interposer also does. */
+    if (!verify_pinned_peer(ssl)) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        return NULL;
+    }
+
+    printf("[TLS] Connected — cipher: %s (key pinned)\n", SSL_get_cipher(ssl));
     return ssl;
 }
 

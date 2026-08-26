@@ -1,0 +1,21 @@
+# Public-key pins for the login server.
+#
+# The launcher accepts a TLS connection to the login server only when the
+# server's public key fingerprints to one of the lines below. Nothing else
+# identifies that server: its certificate is self-signed, so there is no chain
+# to verify and no CA to trust.
+#
+# Format: sha256/<base64 of SHA-256 over the DER SubjectPublicKeyInfo>
+# Produce one with:
+#
+#   Launcher/certs/make_pin.sh <path to server.crt>
+#
+# More than one line may be listed. That is how a key is rotated: publish a
+# launcher carrying both the current and the next pin, roll the server to the
+# new key, then drop the old line in a later launcher build.
+#
+# A malformed line is a startup failure, not a skipped line -- a pin file the
+# operator got wrong must never quietly shrink to fewer pins than intended.
+
+# Development certificate: mmo_server/login_server/certs/server.crt
+sha256/WMNNAStws+GKVUd05oEbdY2LMvFf8E+GQYhGFOARikQ=

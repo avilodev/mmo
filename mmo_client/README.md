@@ -78,6 +78,61 @@ game_port=7777
 
 Replace the addresses and ports with those exposed by your server. If the file is absent, the launcher uses the values shown above.
 
+### Public-key pins
+
+Two of the client's three server connections are TLS, and neither will open
+unless the server's public key matches a fingerprint the client ships with.
+
+| Connection | Encrypted | Pin file |
+| --- | --- | --- |
+| launcher → login | yes | `Launcher/certs/login_pins.txt` |
+| game → realm | yes | `Game/certs/realm_pins.txt` |
+| game → world | no | — |
+
+The login connection carries the account password and the session key. The realm
+connection repeats that session key on every connect and then carries the whole
+character roster — creates, deletes, and world entry. Both certificates are
+self-signed, so there is no chain to verify and no CA to trust; a fingerprint of
+the server's public key is what identifies it.
+
+The world connection is plaintext on purpose. It carries positions, damage
+numbers and chat — roughly what standing next to the player would show — and it
+is the one link running at 20Hz for every player at once.
+
+`mingw32-make launcher` installs `Launcher/certs/login_pins.txt` into
+`Launcher/bin/certs/`. The game reads `Game/certs/realm_pins.txt` relative to
+the working directory; `$MMO_REALM_PINS` overrides the path, which is what to
+use when the server runs on another machine.
+
+The files that ship with the repository pin the development certificates in
+`mmo_server/*/certs/server.crt`. The server's `make setup` regenerates them and
+writes both files here directly — point it at this tree with `MMO_CLIENT_ROOT`
+if it is not checked out beside the server.
+
+**Pointing the client at a different server means regenerating the pins.**
+From a shell with OpenSSL:
+
+```sh
+Launcher/certs/make_pin.sh /path/to/login/server.crt   # -> login_pins.txt
+Launcher/certs/make_pin.sh /path/to/realm/server.crt   # -> Game/certs/realm_pins.txt
+```
+
+Append the printed `sha256/…` line to the right file and rebuild. To rotate a
+server key without stranding players, ship a client carrying both the current
+and the next pin, roll the server, then drop the old line in a later build.
+
+A client with no readable pin file, or with a malformed line in it, refuses
+every connection and says so — it does not fall back to plaintext. That is
+deliberate twice over: the alternative to refusing is trusting whichever host
+answers on the port, and the alternative to saying so is a session key going out
+in the clear while the screen reports a healthy connection.
+
+A pin must be a digest of the certificate's DER **SubjectPublicKeyInfo**, which
+is what `make_pin.sh` and the pipeline in the server README produce. It is not
+what OpenSSL's `X509_pubkey_digest()` returns — that hashes the key bit string
+alone. `Game/tests/cert_pin_digest_test.c` holds a fixed certificate and the pin
+`openssl` computes for it, so the two cannot drift apart again.
+
 ## Run
 
 Start the required server services first. Then run the client from the repository root:

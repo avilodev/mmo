@@ -3,6 +3,7 @@
  * Generate the Hana to Taiga continent as a flat-colour world file.
  */
 #include "world/worldgen.h"
+#include "world_format.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,12 @@ int main(int argc, char* argv[]) {
     printf("Size:   %d x %d tiles (%d px tiles)\n",
            width, height, WORLDGEN_TILE_PX);
 
-    double bytes = (double)width * height * 9.0 + 13.0;
+    /* Per tile: one uint16 per tile layer plus one collision byte. Plus the
+     * fixed header. Computed from the format constants rather than from
+     * literals, which is how the old estimate came to be wrong. */
+    double per_tile = (double)WORLD_FORMAT_TILE_LAYERS * (double)sizeof(uint16_t) + 1.0;
+    double bytes = (double)width * height * per_tile
+                 + (double)WORLD_FORMAT_PREAMBLE_BYTES + 12.0 + 1.0;
     printf("Expect: %.2f GB\n", bytes / (1024.0 * 1024.0 * 1024.0));
 
     if (!worldgen_write(output, width, height)) {

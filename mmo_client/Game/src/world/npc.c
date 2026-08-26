@@ -4,6 +4,7 @@
  */
 #include "npc.h"
 #include "renderer.h"
+#include "ui/quest_tracker.h"
 
 #include <stdio.h>
 #include <math.h>
@@ -11,7 +12,7 @@
 /**
  * Render one living NPC with its category styling and health display.
  */
-void npc_render(const VisibleNPC* npc, int tile_size) {
+void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type) {
     if (!npc->is_alive) return;
 
     int npc_size = tile_size * 2;
@@ -52,6 +53,8 @@ void npc_render(const VisibleNPC* npc, int tile_size) {
         if (npc->name[0] != '\0') {
             renderer_draw_text(x - 24.0f, bar_y - 2.0f, npc->name);
         }
+        if (tracked_npc_type != 0 && npc->npc_type_id == tracked_npc_type)
+            quest_tracker_render_world_badge(x, bar_y - 20.0f);
         return;
     }
 
@@ -94,19 +97,23 @@ void npc_render(const VisibleNPC* npc, int tile_size) {
         renderer_draw_text(x - 20.0f, bar_y - 2.0f, npc->name);
     }
 
-    // Interactable indicator: small "!" badge above the name for quest givers
-    if (npc->is_interactable && npc->category == 2) {
-        renderer_draw_rect(x - 5.0f, bar_y - 20.0f, 10.0f, 16.0f, 0.9f, 0.75f, 0.1f, 0.9f);
-        renderer_draw_text(x - 2.5f, bar_y - 6.0f, "!");
+    /* The tracked objective's target gets the loud badge; any other quest giver
+     * gets the quiet one, so "somebody here has work" and "this is your next
+     * step" do not look the same. */
+    if (tracked_npc_type != 0 && npc->npc_type_id == tracked_npc_type) {
+        quest_tracker_render_world_badge(x, bar_y - 12.0f);
+    } else if (npc->is_interactable && npc->category == 2) {
+        renderer_draw_rect(x - 4.0f, bar_y - 18.0f, 8.0f, 13.0f, 0.62f, 0.55f, 0.20f, 0.75f);
     }
 }
 
 /**
  * Render every NPC in a visible-NPC array.
  */
-void npc_render_all(const VisibleNPC* npcs, int count, int tile_size) {
+void npc_render_all(const VisibleNPC* npcs, int count, int tile_size,
+                    uint32_t tracked_npc_type) {
     for (int i = 0; i < count; i++) {
-        npc_render(&npcs[i], tile_size);
+        npc_render(&npcs[i], tile_size, tracked_npc_type);
     }
 }
 

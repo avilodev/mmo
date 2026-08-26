@@ -1,10 +1,13 @@
 /**
  * @file
- * Maintain and render the client's active and completed quest log.
+ * Maintain and render the client's quest log, and decide what is tracked.
  */
 
 #include "ui/quest_log.h"
 #include "renderer.h"
+
+#include <winsock2.h>   /* ntohl for the counters the accept packet carries */
+
 #include <string.h>
 #include <stdio.h>
 
@@ -12,6 +15,8 @@
 #define QL_PH        420.0f   // Panel height
 #define QL_ROW_H     36.0f    // Height per collapsed quest row
 #define QL_OBJ_H     20.0f    // Height per objective line when expanded
+#define QL_BTN_H     24.0f    // Height of the abandon button on an expanded row
+#define QL_BTN_W     92.0f    // Width of the same
 
 /**
  * Initialize an empty, closed quest log.
@@ -22,50 +27,50 @@ void quest_log_init(QuestLogState* ql) {
 }
 
 /**
- * Add a quest or refresh the metadata of an existing entry.
+ * Copy one objective's definition, leaving its progress counter alone.
  *
- * Existing objective progress is preserved when an entry is refreshed.
- *
- * @param descriptions  Array containing obj_count objective descriptions.
- * @param required  Array containing obj_count target counts.
+ * Progress arrives in its own packet and is authoritative there, so a refresh
+ * of the definition must never reset it -- that is what would make a reconnect
+ * look like a rolled-back quest.
  */
-void quest_log_add(QuestLogState* ql, uint32_t id,
-                   const char* title,
-                   uint8_t obj_count,
-                   const char descriptions[][64],
-                   const int32_t required[]) {
+static void adopt_objective(QuestObjEntry* out, const QuestObjectiveInfo* in) {
+    memcpy(out->description, in->description, sizeof(out->description) - 1);
+    out->description[sizeof(out->description) - 1] = '\0';
+
+    out->required       = (int32_t)ntohl((uint32_t)in->required);
+    out->objective_type = in->objective_type;
+    out->has_marker     = in->has_marker;
+    out->target_id      = ntohl(in->target_id);
+    out->marker_x       = in->marker_x;
+    out->marker_y       = in->marker_y;
+}
+
+/**
+ * Add a quest or refresh the definition of an existing entry.
+ */
+void quest_log_add(QuestLogState* ql, uint32_t id, const char* title,
+                   uint8_t obj_count, const QuestObjectiveInfo* objectives) {
     if (obj_count > MAX_QUEST_OBJ) obj_count = MAX_QUEST_OBJ;
 
-    // Refresh existing entry
+    QuestEntry* e = NULL;
     for (int i = 0; i < ql->count; i++) {
-        if (ql->entries[i].id == id) {
-            strncpy(ql->entries[i].title, title, 47);
-            ql->entries[i].title[47] = '\0';
-            ql->entries[i].obj_count = obj_count;
-            for (int j = 0; j < obj_count; j++) {
-                strncpy(ql->entries[i].objectives[j].description, descriptions[j], 63);
-                ql->entries[i].objectives[j].description[63] = '\0';
-                ql->entries[i].objectives[j].required = required[j];
-                // Preserve current progress — don't reset it
-            }
-            ql->entries[i].active = 1;
-            return;
-        }
+        if (ql->entries[i].id == id) { e = &ql->entries[i]; break; }
     }
 
-    if (ql->count >= MAX_QUESTS) return;
-    QuestEntry* e = &ql->entries[ql->count++];
-    e->id = id;
-    strncpy(e->title, title, 47); e->title[47] = '\0';
-    e->obj_count  = obj_count;
-    e->active     = 1;
-    e->completed  = 0;
-    for (int j = 0; j < obj_count; j++) {
-        strncpy(e->objectives[j].description, descriptions[j], 63);
-        e->objectives[j].description[63] = '\0';
-        e->objectives[j].current  = 0;
-        e->objectives[j].required = required[j];
+    if (!e) {
+        if (ql->count >= MAX_QUESTS) return;
+        e = &ql->entries[ql->count++];
+        memset(e, 0, sizeof(*e));
+        e->id = id;
     }
+
+    snprintf(e->title, sizeof(e->title), "%s", title);
+    e->obj_count = obj_count;
+    e->active    = 1;
+    e->completed = 0;
+
+    for (int j = 0; j < obj_count; j++)
+        adopt_objective(&e->objectives[j], &objectives[j]);
 }
 
 /**
@@ -114,6 +119,76 @@ void quest_log_remove(QuestLogState* ql, uint32_t id) {
     }
 }
 
+/**
+ * Find the entry the player is currently being pointed at.
+ *
+ * The expanded entry wins. With nothing expanded, the first active quest is
+ * used, so a player who never opens the log is still shown a next step.
+ *
+ * @return The entry, or NULL when there is no active quest.
+ */
+static const QuestEntry* tracked_entry(const QuestLogState* ql) {
+    if (ql->selected >= 0 && ql->selected < ql->count &&
+        ql->entries[ql->selected].active)
+        return &ql->entries[ql->selected];
+
+    for (int i = 0; i < ql->count; i++)
+        if (ql->entries[i].active) return &ql->entries[i];
+
+    return NULL;
+}
+
+/**
+ * Report the outstanding objective of the tracked quest.
+ */
+QuestTrackedStep quest_log_tracked_step(const QuestLogState* ql) {
+    QuestTrackedStep step;
+    memset(&step, 0, sizeof(step));
+
+    const QuestEntry* e = tracked_entry(ql);
+    if (!e) return step;
+
+    for (int j = 0; j < e->obj_count; j++) {
+        const QuestObjEntry* obj = &e->objectives[j];
+        if (obj->current >= obj->required) continue;
+
+        step.valid          = 1;
+        step.quest_id       = e->id;
+        step.quest_title    = e->title;
+        step.description    = obj->description;
+        step.current        = obj->current;
+        step.required       = obj->required;
+        step.objective_type = obj->objective_type;
+        step.target_id      = obj->target_id;
+        step.has_marker     = obj->has_marker;
+        step.marker_x       = obj->marker_x;
+        step.marker_y       = obj->marker_y;
+        return step;
+    }
+
+    /* Every objective met: the step is now "go and hand it in", which has no
+     * separate objective record. Point at the quest itself so the tracker can
+     * still say something useful. */
+    step.valid       = 1;
+    step.quest_id    = e->id;
+    step.quest_title = e->title;
+    step.description = "Ready to turn in";
+    step.current     = 1;
+    step.required    = 1;
+    return step;
+}
+
+/**
+ * Report whether an NPC type is the target of the tracked step.
+ */
+int quest_log_npc_is_tracked(const QuestLogState* ql, uint8_t npc_type_id) {
+    QuestTrackedStep step = quest_log_tracked_step(ql);
+    if (!step.valid || step.target_id == 0) return 0;
+    if (step.objective_type != QUEST_OBJECTIVE_TALK &&
+        step.objective_type != QUEST_OBJECTIVE_KILL) return 0;
+    return step.target_id == (uint32_t)npc_type_id;
+}
+
 static void draw_panel_border(float px, float py, float pw, float ph) {
     renderer_draw_rect(px,        py,         pw, 2.0f, 0.45f, 0.55f, 0.75f, 1.0f);
     renderer_draw_rect(px,        py+ph-2.0f, pw, 2.0f, 0.45f, 0.55f, 0.75f, 1.0f);
@@ -121,10 +196,24 @@ static void draw_panel_border(float px, float py, float pw, float ph) {
     renderer_draw_rect(px+pw-2.0f,py,         2.0f, ph, 0.45f, 0.55f, 0.75f, 1.0f);
 }
 
-// Returns the expanded height for a selected entry (objective lines + padding)
+// Returns the expanded height for a selected entry (objective lines, the
+// abandon button, and padding)
 static float expanded_height(const QuestEntry* e) {
     int obj = e->obj_count > 0 ? e->obj_count : 1;
-    return 12.0f + obj * QL_OBJ_H + 8.0f;
+    return 12.0f + obj * QL_OBJ_H + QL_BTN_H + 12.0f;
+}
+
+/** Place the abandon button inside an expanded row. */
+static void abandon_button_rect(float px, float row_top, float exp_h,
+                                float* out_x, float* out_y) {
+    *out_x = px + QL_PW - QL_BTN_W - 20.0f;
+    *out_y = row_top + QL_ROW_H + exp_h - QL_BTN_H - 6.0f;
+}
+
+uint32_t quest_log_take_abandon_request(QuestLogState* ql) {
+    uint32_t quest_id = ql->pending_abandon;
+    ql->pending_abandon = 0;
+    return quest_id;
 }
 
 /**
@@ -158,11 +247,15 @@ void quest_log_render(const QuestLogState* ql, int vw, int vh) {
         if (ql->entries[i].completed) done_count++;
     }
 
+    /* Selecting a quest is what tracks it, so the row says so rather than
+     * leaving the player to infer it from the panel in the corner. */
+    const QuestEntry* tracked = tracked_entry(ql);
+
     float list_y = py + 56.0f;
 
     if (ql->count == 0) {
-        renderer_draw_text(px + QL_PW*0.5f - 70.0f, list_y + 30.0f,
-                           "No quests yet. Talk to an NPC!");
+        renderer_draw_text(px + QL_PW*0.5f - 92.0f, list_y + 30.0f,
+                           "No quests yet. Speak to the Courtyard Warden.");
         return;
     }
 
@@ -189,8 +282,12 @@ void quest_log_render(const QuestLogState* ql, int vw, int vh) {
             renderer_draw_rect(px+12.0f, list_y+13.0f, 8.0f, 8.0f,
                                0.90f, 0.75f, 0.10f, 1.0f);
 
-            // Title
+            // Title, marked when this is the quest being tracked on screen
             renderer_draw_text(px + 28.0f, list_y + QL_ROW_H - 10.0f, e->title);
+            if (e == tracked) {
+                renderer_draw_text(px + QL_PW - 118.0f, list_y + QL_ROW_H - 10.0f,
+                                   "tracking");
+            }
 
             // Expand arrow
             renderer_draw_text(px + QL_PW - 22.0f, list_y + QL_ROW_H - 10.0f,
@@ -221,6 +318,15 @@ void quest_log_render(const QuestLogState* ql, int vw, int vh) {
                         renderer_draw_text(px+16.0f, oy + j * QL_OBJ_H, buf);
                     }
                 }
+
+                /* Only on the expanded row, so a quest cannot be dropped by a
+                 * stray click on a collapsed one. */
+                float bx, by;
+                abandon_button_rect(px, list_y, this_exp_h, &bx, &by);
+                renderer_draw_rect(bx, by, QL_BTN_W, QL_BTN_H,
+                                   0.34f, 0.12f, 0.12f, 0.9f);
+                renderer_draw_rect(bx, by, QL_BTN_W, 1.0f, 0.70f, 0.30f, 0.30f, 0.8f);
+                renderer_draw_text(bx + 12.0f, by + QL_BTN_H - 7.0f, "Abandon");
             }
 
             // Row separator
@@ -299,6 +405,17 @@ void quest_log_handle_input_full(QuestLogState* ql,
             float this_exp_h = is_sel ? expanded_height(&ql->entries[i]) : 0.0f;
             float row_h = QL_ROW_H + this_exp_h;
             if (my >= list_y && my < list_y + row_h) {
+                /* The button first: it sits inside the row it belongs to, so
+                 * the row's own toggle must not swallow the click. */
+                if (is_sel) {
+                    float bx, by;
+                    abandon_button_rect(px, list_y, this_exp_h, &bx, &by);
+                    if (mx >= bx && mx <= bx + QL_BTN_W &&
+                        my >= by && my <= by + QL_BTN_H) {
+                        ql->pending_abandon = ql->entries[i].id;
+                        return;
+                    }
+                }
                 ql->selected = is_sel ? -1 : i;
                 return;
             }

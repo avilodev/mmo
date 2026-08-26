@@ -7,10 +7,12 @@
 #include "renderer.h"
 #include "texture/texture.h"
 #include "world/world_overview.h"
+#include "world_format.h"
 #include <GLFW/glfw3.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 /**
  * Open a world file, read its layer metadata, and load tileset textures.
@@ -30,12 +32,86 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         return 0;
     }
 
-    // Read header: width, height, tile_size
-    fread(&world->world_width,  sizeof(int), 1, world->world_file);
-    fread(&world->world_height, sizeof(int), 1, world->world_file);
-    int file_tile_size;
-    fread(&file_tile_size, sizeof(int), 1, world->world_file);
+    /* The file says what it is before it says anything about its contents.
+     *
+     * There was no magic and no version: the header was three int32s and this
+     * reader trusted them. A truncated download, a file from a different
+     * generator, or a layout the writer had changed all read as a world of some
+     * shape, and the game drew whatever came next. */
+    char magic[WORLD_FORMAT_MAGIC_LEN];
+    if (fread(magic, 1, sizeof(magic), world->world_file) != sizeof(magic) ||
+        memcmp(magic, WORLD_FORMAT_MAGIC, sizeof(magic)) != 0) {
+        fprintf(stderr, "[WORLD] %s is not a world file (bad magic). "
+                        "Regenerate it with 'make world'.\n", world_file_path);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
+
+    uint32_t file_version = 0, tile_layers = 0;
+    if (fread(&file_version, sizeof(uint32_t), 1, world->world_file) != 1 ||
+        fread(&tile_layers,  sizeof(uint32_t), 1, world->world_file) != 1) {
+        fprintf(stderr, "[WORLD] %s ends inside its header\n", world_file_path);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
+
+    if (file_version != WORLD_FORMAT_VERSION) {
+        fprintf(stderr, "[WORLD] %s is world format version %u; this build reads "
+                        "version %d. Regenerate it with 'make world'.\n",
+                world_file_path, file_version, WORLD_FORMAT_VERSION);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
+
+    if (tile_layers != WORLD_FORMAT_TILE_LAYERS) {
+        /* This reader keeps one named offset per layer, so unlike the server's
+         * collision reader it cannot simply seek past an unknown number of
+         * them. Saying so is better than reading the wrong bytes. */
+        fprintf(stderr, "[WORLD] %s holds %u tile layers; this build draws %d. "
+                        "Regenerate it with 'make world'.\n",
+                world_file_path, tile_layers, WORLD_FORMAT_TILE_LAYERS);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
+
+    /* Read header: width, height, tile_size.
+     *
+     * Checked, like the magic and the version above. These three were read
+     * without looking at whether the read succeeded, which on a truncated or
+     * unreadable file leaves the dimensions holding whatever was in the
+     * struct -- and the struct is calloc'd, so that is zero, which the
+     * validation below happens to reject. "Happens to" is the problem: the
+     * safety came from the allocator rather than from the check, and a future
+     * field that is not zero-initialised would not be so lucky. */
+    int file_tile_size = 0;
+    if (fread(&world->world_width,  sizeof(int), 1, world->world_file) != 1 ||
+        fread(&world->world_height, sizeof(int), 1, world->world_file) != 1 ||
+        fread(&file_tile_size,      sizeof(int), 1, world->world_file) != 1) {
+        fprintf(stderr, "[WORLD] %s ends inside its header\n", world_file_path);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
     (void)file_tile_size;
+
+    /* The dimensions size every per-tile allocation below, so both the axes
+     * and their product are bounded. The per-axis limit alone lets a header
+     * declare two individually plausible numbers that multiply into a
+     * request no machine will satisfy. */
+    if (world->world_width <= 0 || world->world_height <= 0 ||
+        world->world_width  > WORLD_FORMAT_MAX_DIMENSION ||
+        world->world_height > WORLD_FORMAT_MAX_DIMENSION ||
+        (uint64_t)world->world_width * (uint64_t)world->world_height > WORLD_FORMAT_MAX_TILES) {
+        fprintf(stderr, "[WORLD] %s declares %dx%d tiles, which is not usable\n",
+                world_file_path, world->world_width, world->world_height);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
 
     world->tile_size           = tile_size;
     world->world_width_chunks  = (world->world_width  + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -43,7 +119,12 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
 
     // Read tileset table
     uint8_t ts_count = 0;
-    fread(&ts_count, sizeof(uint8_t), 1, world->world_file);
+    if (fread(&ts_count, sizeof(uint8_t), 1, world->world_file) != 1) {
+        fprintf(stderr, "[WORLD] %s ends before its tileset table\n", world_file_path);
+        fclose(world->world_file);
+        world->world_file = NULL;
+        return 0;
+    }
     world->tileset_count = ts_count;
 
     // A world that declares no tilesets stores palette indices directly and
@@ -54,11 +135,22 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         int slot = i + 1;  // slot 0 is reserved for "empty"
 
         uint8_t path_len = 0;
-        fread(&path_len, sizeof(uint8_t), 1, world->world_file);
+        if (fread(&path_len, sizeof(uint8_t), 1, world->world_file) != 1) {
+            fprintf(stderr, "[WORLD] %s ends inside tileset entry %d\n", world_file_path, i);
+            fclose(world->world_file);
+            world->world_file = NULL;
+            return 0;
+        }
 
         char path[128] = {0};
         if (path_len > 0 && path_len < 128) {
-            fread(path, 1, path_len, world->world_file);
+            if (fread(path, 1, path_len, world->world_file) != path_len) {
+                fprintf(stderr, "[WORLD] %s ends inside tileset %d's path\n",
+                        world_file_path, i);
+                fclose(world->world_file);
+                world->world_file = NULL;
+                return 0;
+            }
         } else {
             fseek(world->world_file, path_len, SEEK_CUR);
         }
@@ -67,8 +159,14 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         world->tilesets[slot].path[path_len] = '\0';
 
         uint16_t cols = 1, rows = 1;
-        fread(&cols, sizeof(uint16_t), 1, world->world_file);
-        fread(&rows, sizeof(uint16_t), 1, world->world_file);
+        if (fread(&cols, sizeof(uint16_t), 1, world->world_file) != 1 ||
+            fread(&rows, sizeof(uint16_t), 1, world->world_file) != 1) {
+            fprintf(stderr, "[WORLD] %s ends inside tileset %d's dimensions\n",
+                    world_file_path, i);
+            fclose(world->world_file);
+            world->world_file = NULL;
+            return 0;
+        }
         world->tilesets[slot].cols = cols;
         world->tilesets[slot].rows = rows;
 
@@ -215,8 +313,15 @@ static void load_layer_rows(WorldState* world, long layer_offset, int tile_start
         int n = CHUNK_SIZE;
         if (tile_start_x + CHUNK_SIZE > world->world_width)
             n = world->world_width - tile_start_x;
-        fread(&dst[ly * CHUNK_SIZE], sizeof(uint16_t), n, world->world_file);
-        for (int lx = n; lx < CHUNK_SIZE; lx++)
+
+        /* A short read fills the row rather than leaving it as whatever the
+         * cache slot held last. Chunk slots are reused, so an unchecked read
+         * near the end of a truncated file draws the previous occupant's
+         * tiles at these coordinates -- a piece of another part of the map,
+         * with no error anywhere. */
+        size_t got = fread(&dst[ly * CHUNK_SIZE], sizeof(uint16_t), (size_t)n,
+                           world->world_file);
+        for (size_t lx = got; lx < (size_t)CHUNK_SIZE; lx++)
             dst[ly * CHUNK_SIZE + lx] = fill_val;
     }
 }
@@ -291,8 +396,14 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
         int n = CHUNK_SIZE;
         if (tx0 + CHUNK_SIZE > world->world_width)
             n = world->world_width - tx0;
-        fread(&target->collision[ly * CHUNK_SIZE], sizeof(uint8_t), n, world->world_file);
-        memset(&target->collision[ly * CHUNK_SIZE + n], 1, CHUNK_SIZE - n);
+
+        /* Whatever was not read is solid. For collision that is the safe
+         * direction to fail: a row that could not be loaded becomes wall
+         * rather than becoming whatever the last chunk in this slot had
+         * there, which could be open ground. */
+        size_t got = fread(&target->collision[ly * CHUNK_SIZE], sizeof(uint8_t),
+                           (size_t)n, world->world_file);
+        memset(&target->collision[ly * CHUNK_SIZE + got], 1, (size_t)CHUNK_SIZE - got);
     }
 
     return target;

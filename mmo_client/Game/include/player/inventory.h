@@ -32,6 +32,23 @@ void inventory_use_item(InventoryState* inv, int slot_index);
 uint32_t inventory_get_item_count(const InventoryState* inv, uint32_t item_id);
 int inventory_slot_is_empty(const InventoryState* inv, int slot_index);
 
+/** Undo an optimistic slot swap the server refused.
+ *
+ * A click swaps the two slots locally and sends MOVE_ITEM, so the bag responds
+ * to the player at once rather than after a round trip. That is right, but it
+ * used to be the whole story: a refusal was logged and nothing else, and the
+ * only thing that put the bag back was whichever INVENTORY_UPDATE the server
+ * happened to send next. If none arrived -- and the refusal path is exactly
+ * where one might not -- the player kept looking at a bag the server did not
+ * agree with, until something else forced a refresh.
+ *
+ * Safe to call with slots that no longer hold what was moved: the swap is its
+ * own inverse, so replaying it restores the arrangement either way.
+ *
+ * @return Nonzero when the slots were swapped back.
+ */
+int inventory_revert_move(InventoryState* inv, int from_slot, int to_slot);
+
 int inventory_check_close_button(const InventoryState* inv, float mouse_x, float mouse_y);
 
 #endif // INVENTORY_H

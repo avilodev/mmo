@@ -59,6 +59,13 @@ typedef enum {
     NET_STATE_CREATING_CHARACTER,
     NET_STATE_DELETING_CHARACTER,
     NET_STATE_WAITING_FOR_ENTER_WORLD,
+    /** A non-blocking world handshake is in flight.
+     *
+     * The world connect used to be a blocking call made from inside the
+     * character-select update: a blocking connect() plus five seconds of
+     * Sleep(10) polling, on the render thread, with the window frozen for all
+     * of it. It is a state now, advanced one frame at a time. */
+    NET_STATE_CONNECTING_TO_WORLD,
     NET_STATE_WAITING_FOR_CHARACTER_DATA
 } NetworkState;
 
@@ -295,10 +302,27 @@ typedef struct {
     float currency_spacing;
 } HUDLayout;
 
+/** How fast a nearby player walks from its previous position to the new one.
+ *
+ * The reciprocal of the player broadcast interval: positions arrive at 20Hz,
+ * so 20.0 completes the walk in exactly the 50ms before the next one lands. */
+#define PLAYER_INTERP_RATE 20.0f
+
 /** Track one nearby player received from interest broadcasts. */
 typedef struct {
     uint32_t player_id;
-    float pos_x, pos_y;
+    float pos_x, pos_y;      /**< Drawn position; interpolated toward target. */
+
+    /* Interpolation, exactly as VisibleNPC does it.
+     *
+     * Player positions arrive at 20Hz and were drawn at whatever they last
+     * arrived as, so every other player in the world moved in 50ms jumps
+     * regardless of how smoothly the frame was rendering -- while the NPCs
+     * standing next to them glided, because they had this. */
+    float target_x, target_y;  /**< Where the last broadcast put them. */
+    float prev_x, prev_y;      /**< Where they were drawn when it arrived. */
+    float interp_t;            /**< Progress from prev to target, 0 to 1. */
+
     int32_t health, max_health;
     uint8_t player_class;
     uint8_t player_race;
@@ -425,7 +449,31 @@ typedef struct {
     int   show_fps;
     int   fullscreen;
     float ui_scale;        /**< Range 0.75 to 1.5. */
+
+    /** Wait for the display's refresh before presenting a frame.
+     *
+     * On by default. The client used to call glfwSwapInterval(0) and then
+     * limit nothing: TARGET_FPS existed only to size the FPS counter's
+     * averaging window, so the render loop ran as fast as the GPU could go.
+     * On a menu screen that is several hundred frames a second of identical
+     * pixels -- a laptop's fans, its battery, and a desktop's power bill,
+     * spent to draw the same image over and over.
+     */
+    int   vsync;
+
+    /** Frames per second to cap at when VSync is off; 0 means uncapped.
+     *
+     * The escape hatch for the two cases VSync is wrong for: a display whose
+     * refresh rate is not what the player wants to render at, and a
+     * measurement where an artificial ceiling would hide the thing being
+     * measured. Uncapped is available, but it is a choice now rather than the
+     * only behaviour.
+     */
+    int   fps_limit;
 } GameSettings;
+
+/** Frame rate the client caps at when VSync is off and no limit is configured. */
+#define DEFAULT_FPS_LIMIT 120
 
 /** Track one timed experience and coin notification. */
 typedef struct {
@@ -510,6 +558,27 @@ typedef struct {
     char              current_zone_name[48];
     char              zone_banner_name[48];
     float             zone_banner_timer;     /**< Remaining banner time, or 0 when hidden. */
+
+    /** What the client has last told the server about where it is.
+     *
+     * These lived as file-scope statics in state_playing.c, which made them
+     * process state rather than session state: they survived leaving the world
+     * and re-entering it, so the first movement check of a new session was
+     * made against the last position of the previous one. `initialized` was
+     * reset on enter to paper over that, which is the tell -- a static that
+     * has to be reset is a field in the wrong place. Here they are created and
+     * destroyed with the session they describe.
+     */
+    struct {
+        double last_move_send;   /**< Monotonic seconds of the last position sent. */
+        double last_any_send;    /**< ...of the last packet of any kind, for the heartbeat. */
+        float  last_sent_x;
+        float  last_sent_y;
+        int    initialized;      /**< Zero until the first position has been sent. */
+    } move_sync;
+
+    /** Buff icon the cursor is over, or -1. Set by input, read by the tooltip. */
+    int               hovered_effect;
 } PlayingState;
 
 /** Own the client lifecycle, screen state, network identity, and gameplay allocation. */
@@ -543,6 +612,15 @@ struct GameState {
 
     GameSettings settings;
     int          show_settings;
+
+    /** The character and world a world handshake is in flight for.
+     *
+     * The connect is no longer a blocking call inside the character-select
+     * update, so the answer arrives in a later frame -- by which time the
+     * selection indices it was derived from may have moved. Recorded when the
+     * attempt starts. */
+    uint32_t pending_character_id;
+    uint32_t pending_world_id;
 
     PlayingState* playing;       /**< Heap allocation owned while playing, or NULL. */
 };

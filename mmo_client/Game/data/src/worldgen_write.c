@@ -3,13 +3,19 @@
  * Stream generated tiles into the client's five-section world file.
  */
 #include "world/worldgen.h"
+#include "world_format.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/** Number of layer streams written before the collision layer. */
-#define TILE_LAYERS 4
+/** Number of layer streams written before the collision layer.
+ *
+ * Recorded in the file header, so a reader seeks past the tile data by what the
+ * file says rather than by a constant it was compiled with. Adding a layer here
+ * used to make the server's seek land mid-data and load garbage as its
+ * collision map; now it is one number that travels with the file. */
+#define TILE_LAYERS WORLD_FORMAT_TILE_LAYERS
 
 /**
  * Write the world file.
@@ -79,6 +85,15 @@ int worldgen_write(const char* path, int width, int height) {
     out = fopen(path, "wb");
     if (!out) goto cleanup;
     out_opened = 1;  // past this point the old file is already truncated
+
+    /* Say what the file is before saying anything about its contents. */
+    if (fwrite(WORLD_FORMAT_MAGIC, 1, WORLD_FORMAT_MAGIC_LEN, out)
+        != WORLD_FORMAT_MAGIC_LEN) goto cleanup;
+
+    uint32_t version     = WORLD_FORMAT_VERSION;
+    uint32_t tile_layers = TILE_LAYERS;
+    if (fwrite(&version,     sizeof(uint32_t), 1, out) != 1) goto cleanup;
+    if (fwrite(&tile_layers, sizeof(uint32_t), 1, out) != 1) goto cleanup;
 
     int32_t header[3] = { width, height, WORLDGEN_TILE_PX };
     if (fwrite(header, sizeof(int32_t), 3, out) != 3) goto cleanup;

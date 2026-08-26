@@ -23,7 +23,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <direct.h>   // _mkdir
+
+/* mkdir, which is spelled differently on each platform.
+ *
+ * <direct.h> and _mkdir are Win32-only, and including them unconditionally is
+ * what stopped this file compiling anywhere else -- so the one line below was
+ * enough to keep the whole game tree unbuildable outside MSYS2, and with it
+ * every rendering and UI source unverifiable by CI. */
+#ifdef _WIN32
+  #include <direct.h>
+  #define client_mkdir(path) _mkdir(path)
+#else
+  #include <sys/stat.h>
+  #include <sys/types.h>
+  #define client_mkdir(path) mkdir((path), 0755)
+#endif
 
 /**
  * Initialize the game state and its shared client subsystems.
@@ -48,6 +62,8 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     game->settings.show_fps      = 0;
     game->settings.fullscreen    = 0;
     game->settings.ui_scale      = 1.0f;
+    game->settings.vsync         = 1;
+    game->settings.fps_limit     = DEFAULT_FPS_LIMIT;
 
     // Initialize subsystems
     input_init(&game->input);
@@ -75,7 +91,7 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     }
 
     // Ensure data directory exists before any file reads/writes
-    _mkdir("Game/data");
+    client_mkdir("Game/data");
 
     // Load NPC type name table
     npc_types_init("Game/data/npc_types.json");
@@ -288,6 +304,8 @@ void game_settings_save(const GameSettings* s, const char* path) {
     fprintf(f, "show_fps=%d\n",        s->show_fps);
     fprintf(f, "fullscreen=%d\n",      s->fullscreen);
     fprintf(f, "ui_scale=%.4f\n",      s->ui_scale);
+    fprintf(f, "vsync=%d\n",           s->vsync);
+    fprintf(f, "fps_limit=%d\n",       s->fps_limit);
     fclose(f);
     printf("[GAME] Settings saved to %s\n", path);
 }
@@ -318,6 +336,16 @@ void game_settings_load(GameSettings* s, const char* path) {
             s->fullscreen = ival ? 1 : 0;
         } else if (sscanf(line, "ui_scale=%f", &fval) == 1) {
             s->ui_scale = (fval < 0.75f) ? 0.75f : (fval > 1.5f) ? 1.5f : fval;
+        } else if (sscanf(line, "vsync=%d", &ival) == 1) {
+            s->vsync = ival ? 1 : 0;
+        } else if (sscanf(line, "fps_limit=%d", &ival) == 1) {
+            /* 0 is a valid value and means uncapped. Anything below 20 is
+             * almost certainly a typo, and honouring it would make the client
+             * appear broken; anything above 1000 caps nothing in practice. */
+            if (ival <= 0)        s->fps_limit = 0;
+            else if (ival < 20)   s->fps_limit = 20;
+            else if (ival > 1000) s->fps_limit = 1000;
+            else                  s->fps_limit = ival;
         }
         (void)key;
     }
@@ -342,6 +370,13 @@ void game_settings_apply(const GameSettings* s) {
     audio_set_master_volume(s->master_volume);
     audio_set_music_volume(s->music_volume);
     audio_set_sfx_volume(s->sfx_volume);
+
+    if (g_window) {
+        /* Applied on every call rather than only on change: a fullscreen
+         * transition recreates the drawable on some drivers and the swap
+         * interval does not always survive it. */
+        glfwSwapInterval(s->vsync ? 1 : 0);
+    }
 
     if (g_window) {
         static int prev_fullscreen = -1;

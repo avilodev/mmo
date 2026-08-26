@@ -29,8 +29,11 @@ void network_clear_disconnect_reason(void);
 void network_update(void);
 void network_update_with_ping(int game_mode);
 
-int network_connect_to_realm(const char* ip, uint16_t port,
-                             const char* session_key, uint32_t account_id);
+/* Connecting is asynchronous; see net_connect.h.
+ *
+ * network_connect_to_realm() and network_connect_to_world() used to live here
+ * and blocked the caller for the connect plus up to ten seconds of
+ * acknowledgement polling -- on the render thread, from the frame loop. */
 
 int network_request_world_list(void);
 int network_get_world_list(WorldListResponsePacket* out);
@@ -56,8 +59,6 @@ int network_get_character_delete_response(CharacterDeleteResponsePacket* out);
 int network_request_enter_world(uint32_t character_id, uint32_t world_id);
 int network_get_enter_world_response(EnterWorldResponsePacket* out);
 
-int network_connect_to_world(const char* ip, uint16_t port,
-                            const char* game_ticket, uint32_t character_id);
 
 int network_request_character_data(uint32_t character_id, uint32_t world_id);
 int network_get_character_data(CharacterInfo* out);
@@ -81,7 +82,10 @@ void network_request_player_data_refresh(void);
 
 void network_send_npc_interact_request(uint32_t npc_id);
 
-void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, uint8_t current_page, uint8_t option_selected);
+void network_send_dialogue_option_select(uint32_t npc_id, uint32_t dialogue_id, uint8_t current_page, uint8_t option_id);
+
+/** Ask the server to drop a quest. The log entry goes when the server confirms. */
+void network_send_quest_abandon(uint32_t quest_id);
 
 int network_get_npc_interact_response(NPCInteractResponsePacket* out);
 

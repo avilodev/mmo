@@ -541,6 +541,10 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
                     inv->selected_slot = -1;
                     printf("[INV] Put item back in same slot\n");
                 } else {
+                    /* Swapped locally first so the bag answers the click
+                     * immediately, then asked of the server. A refusal is
+                     * undone by inventory_revert_move() from the
+                     * MOVE_ITEM_RESPONSE handler. */
                     ItemSlot temp = inv->slots[slot];
                     inv->slots[slot] = inv->slots[inv->selected_slot];
                     inv->slots[inv->selected_slot] = temp;
@@ -561,6 +565,24 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
             inventory_use_item(inv, slot);
         }
     }
+}
+
+int inventory_revert_move(InventoryState* inv, int from_slot, int to_slot) {
+    if (!inv) return 0;
+    if (from_slot < 0 || from_slot >= INVENTORY_SIZE) return 0;
+    if (to_slot   < 0 || to_slot   >= INVENTORY_SIZE) return 0;
+    if (from_slot == to_slot) return 0;
+
+    ItemSlot temp       = inv->slots[to_slot];
+    inv->slots[to_slot] = inv->slots[from_slot];
+    inv->slots[from_slot] = temp;
+
+    /* A held item referring to either slot is no longer meaningful once the
+     * arrangement has moved under it. */
+    if (inv->selected_slot == from_slot || inv->selected_slot == to_slot)
+        inv->selected_slot = -1;
+
+    return 1;
 }
 
 static void get_rarity_color(ItemRarity rarity, float* r, float* g, float* b) {

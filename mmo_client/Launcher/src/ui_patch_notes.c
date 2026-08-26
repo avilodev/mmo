@@ -281,7 +281,12 @@ void ShowPatchNotes(HWND hwndParent) {
         }
         processed[j] = '\0';
         
-        strcpy(g_patchNotesContent, processed);
+        /* processed[] and g_patchNotesContent are the same size, and the
+         * loop above stops two short of the end, so this cannot overrun
+         * today. It is written as a bounded copy anyway: the safety is a
+         * property of a loop bound twenty lines away, and the next person to
+         * change either buffer's size should not have to rediscover that. */
+        snprintf(g_patchNotesContent, sizeof(g_patchNotesContent), "%s", processed);
         g_patchNotesFetched = TRUE;
     } else {
         snprintf(g_patchNotesContent, sizeof(g_patchNotesContent), 

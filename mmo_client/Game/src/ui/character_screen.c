@@ -4,6 +4,7 @@
  */
 
 #include "character_screen.h"
+#include "core/race_registry.h"
 #include "renderer.h"
 #include "inventory.h"
 #include <string.h>
@@ -441,36 +442,21 @@ static void doll_rarity_color(uint32_t item_id, float* r, float* g, float* b) {
     }
 }
 
-/** Hold one colour per race identifier, for the character doll. */
-static const struct { float r, g, b; } k_race_colors[] = {
-    { 0.28f, 0.28f, 0.32f },  /*  0 unused           */
-    { 0.55f, 0.55f, 0.62f },  /*  1 wolf   - grey    */
-    { 0.45f, 0.30f, 0.16f },  /*  2 bear   - brown   */
-    { 0.82f, 0.42f, 0.14f },  /*  3 fox    - russet  */
-    { 0.18f, 0.18f, 0.24f },  /*  4 crow   - black   */
-    { 0.60f, 0.48f, 0.28f },  /*  5 hawk   - tawny   */
-    { 0.72f, 0.60f, 0.42f },  /*  6 deer   - fawn    */
-    { 0.30f, 0.55f, 0.28f },  /*  7 snake  - green   */
-    { 0.85f, 0.82f, 0.78f },  /*  8 rabbit - white   */
-    { 0.62f, 0.55f, 0.34f },  /*  9 hyena  - sand    */
-    { 0.32f, 0.30f, 0.36f },  /* 10 cat    - slate   */
-};
-
 /**
  * Pick the doll's base colour for a race.
  *
- * Presentation only, so a race this table does not cover falls back to a neutral
- * grey rather than needing an entry here before it can be played.
+ * From the race registry the server sent, the same source the nearby-player
+ * markers and the party frames use, so one race is one colour everywhere the
+ * client draws it.
+ *
+ * This was an eleven-entry table keyed by race id, with the ids of the shipped
+ * races written into the comments. It was a second copy of a list the server
+ * already sends: adding a race to races.json meant editing this file too, and
+ * forgetting to meant the twelfth race drew in the "unused" grey. Reordering
+ * races.json would have silently recoloured all of them.
  */
 static void race_base_color(uint32_t race_id, float* r, float* g, float* b) {
-    size_t known = sizeof(k_race_colors) / sizeof(k_race_colors[0]);
-    if (race_id == 0 || race_id >= known) {
-        *r = k_race_colors[0].r; *g = k_race_colors[0].g; *b = k_race_colors[0].b;
-        return;
-    }
-    *r = k_race_colors[race_id].r;
-    *g = k_race_colors[race_id].g;
-    *b = k_race_colors[race_id].b;
+    client_race_color(race_id, r, g, b);
 }
 
 // Draw a region rect with a 1px dark outline

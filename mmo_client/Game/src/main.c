@@ -7,13 +7,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "game.h"
 #include "renderer.h"
 #include "fps.h"
 #include "network/network.h"
+#include "network/net_connect.h"
+#include "network/net_reconnect.h"
+#include "network/name_cache.h"
 #include "game_types.h"
+#include "core/client_log.h"
 
+/** Window the FPS counter averages over. Not a limit; see GameSettings. */
 #define TARGET_FPS       60
 #define GAME_VIEW_WIDTH  1920
 #define GAME_VIEW_HEIGHT 1080
@@ -152,24 +158,53 @@ static void hex_to_binary(const char* hex, char* bin, size_t bin_size) {
  *
  * @param game  Game state containing the session key, account, and realm endpoint.
  */
-static void connect_to_realm(GameState* game) {
+/** Start connecting to the realm. Returns immediately; the frame loop finishes it.
+ *
+ * This used to be the blocking form: a blocking connect() followed by up to ten
+ * seconds of Sleep(10) polling, called from inside the frame loop on a five
+ * second timer. With the realm down, the window stopped answering the operating
+ * system for the whole of that, every five seconds.
+ *
+ * @return 1 when an attempt is in flight, otherwise 0.
+ */
+static int connect_to_realm(GameState* game) {
     if (game->session_key[0] == '\0' || game->account_id == 0 || game->realm_ip[0] == '\0') {
         printf("[NETWORK] Missing connection parameters\n");
         snprintf(game->network_status, sizeof(game->network_status), "Missing parameters");
-        return;
+        return 0;
     }
-    
+
     char binary_key[32] = {0};
     hex_to_binary(game->session_key, binary_key, 32);
-    
-    if (network_connect_to_realm(game->realm_ip, (uint16_t)game->realm_port, 
-                                 binary_key, game->account_id)) {
-        game->network_connected = 1;
-        snprintf(game->network_status, sizeof(game->network_status),
-                "Connected to %s:%d", game->realm_ip, game->realm_port);
-    } else {
+
+    if (!network_begin_realm_connect(game->realm_ip, (uint16_t)game->realm_port,
+                                     binary_key, game->account_id)) {
         game->network_connected = 0;
-        snprintf(game->network_status, sizeof(game->network_status), "Connection failed");
+        snprintf(game->network_status, sizeof(game->network_status),
+                 "Connection failed: %s", network_connect_message());
+        return 0;
+    }
+
+    snprintf(game->network_status, sizeof(game->network_status),
+             "Connecting to %s:%d...", game->realm_ip, game->realm_port);
+    return 1;
+}
+
+/** Finish whatever connection attempt is in flight, without waiting on it. */
+static void poll_realm_connect(GameState* game) {
+    switch (network_connect_poll()) {
+        case NET_CONNECT_SUCCEEDED:
+            game->network_connected = 1;
+            snprintf(game->network_status, sizeof(game->network_status),
+                     "Connected to %s:%d", game->realm_ip, game->realm_port);
+            break;
+        case NET_CONNECT_FAILED:
+            game->network_connected = 0;
+            snprintf(game->network_status, sizeof(game->network_status),
+                     "%s", network_connect_message());
+            break;
+        default:
+            break;
     }
 }
 
@@ -180,7 +215,13 @@ static void connect_to_realm(GameState* game) {
  * @return      Zero after normal shutdown, or -1 when GLFW or window creation fails.
  */
 int main(int argc, char* argv[]) {
+    /* Before anything that might have something to say. A released client has
+     * no console, so until this existed a player's disconnect left nothing at
+     * all to diagnose. */
+    client_log_init();
+
     printf("=== MMO Client Starting ===\n");
+    CLOG_INFO("=== MMO Client starting ===");
     
     // Initialize GLFW
     if (!glfwInit()) {
@@ -221,8 +262,12 @@ int main(int argc, char* argv[]) {
                     monitor_y + (mode->height - window_height) / 2);
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(0);  // Disable VSync
     g_window = window;
+
+    /* VSync and the frame cap are settings now, applied by
+     * game_settings_apply() below once the loaded settings exist. This used to
+     * be an unconditional glfwSwapInterval(0) with nothing limiting the loop
+     * afterwards. */
     
     // Initialize renderer with CONSTANT viewport (1920x1080)
     renderer_init(GAME_VIEW_WIDTH, GAME_VIEW_HEIGHT);
@@ -255,11 +300,21 @@ int main(int argc, char* argv[]) {
     glfwSetCharCallback(window, char_callback);
     
     printf("\n=== Entering Main Loop ===\n");
-    printf("Target FPS: %d\n", TARGET_FPS);
+    if (game.settings.vsync) {
+        printf("Frame pacing: VSync (display refresh)\n");
+    } else if (game.settings.fps_limit > 0) {
+        printf("Frame pacing: capped at %d FPS\n", game.settings.fps_limit);
+    } else {
+        printf("Frame pacing: uncapped\n");
+    }
     printf("Game viewport: %dx%d\n", window_width, window_height);
     printf("Network: %s\n\n", game.network_status);
     
     while (!glfwWindowShouldClose(window) && game.is_running) {
+        /* Taken before any work, so the cap below measures a whole frame
+         * rather than only the part after the last swap. */
+        const double frame_start = glfwGetTime();
+
         // Get framebuffer size
         int fb_width, fb_height;
         glfwGetFramebufferSize(window, &fb_width, &fb_height);
@@ -269,24 +324,56 @@ int main(int argc, char* argv[]) {
         fps_update(&fps);
         float delta_time = (float)fps_get_delta_time(&fps);
         
-        // Update network
-        if (game.network_connected) {
+        /* Network: never more than a frame's worth of work.
+         *
+         * Every branch here returns immediately. A connection attempt in
+         * flight is advanced by one non-blocking step; a dropped in-world
+         * session is handed to the reconnect supervisor, which walks the
+         * realm -> ticket -> world sequence across frames with its own
+         * backoff. Nothing in this loop waits on the network. */
+        double frame_now = glfwGetTime();
+
+        if (network_connect_in_flight() && net_reconnect_phase() == RECONNECT_IDLE) {
+            poll_realm_connect(&game);
+        } else if (game.network_connected) {
             network_update_with_ping(game.mode);
-            
+
             if (!network_is_connected()) {
                 game.network_connected = 0;
                 snprintf(game.network_status, sizeof(game.network_status), "Disconnected");
                 printf("[NETWORK] Lost connection\n");
+
+                /* In world, a drop is recoverable: the supervisor goes back to
+                 * the realm for a fresh ticket and rejoins. It used to end the
+                 * session outright, and the player's only recourse was to
+                 * restart the client. */
+                if (game.mode == GAME_MODE_PLAYING) net_reconnect_begin(frame_now);
             }
-        } else if (game.mode == GAME_MODE_MAIN_MENU || 
-                   game.mode == GAME_MODE_SERVER_LIST ||
-                   game.mode == GAME_MODE_CHARACTER_SELECT) {
-            // Try to reconnect on menu screens
-            static double last_reconnect = 0.0;
-            double now = glfwGetTime();
-            if (now - last_reconnect > 5.0) {
-                connect_to_realm(&game);
-                last_reconnect = now;
+        }
+
+        if (game.mode == GAME_MODE_PLAYING) {
+            if (net_reconnect_phase() != RECONNECT_IDLE) {
+                net_reconnect_update(frame_now);
+                snprintf(game.network_status, sizeof(game.network_status),
+                         "%s", net_reconnect_status());
+                game.network_connected = network_is_connected();
+            }
+        } else if (!game.network_connected && !network_connect_in_flight() &&
+                   (game.mode == GAME_MODE_MAIN_MENU ||
+                    game.mode == GAME_MODE_SERVER_LIST ||
+                    game.mode == GAME_MODE_CHARACTER_SELECT)) {
+            /* Retry on the menu screens, backing off rather than retrying on a
+             * flat five-second timer against a realm that is down. */
+            static double next_retry = 0.0;
+            static double retry_backoff = 0.0;
+
+            if (frame_now >= next_retry) {
+                if (retry_backoff <= 0.0) retry_backoff = 1.0;
+                else                      retry_backoff *= 2.0;
+                if (retry_backoff > 30.0) retry_backoff = 30.0;
+
+                next_retry = frame_now + retry_backoff;
+                if (connect_to_realm(&game)) retry_backoff = 0.0;
             }
         }
         
@@ -308,21 +395,65 @@ int main(int argc, char* argv[]) {
         }
         prev_f11 = cur_f11;
 
+        /* Send any names the render pass asked about, as one packet.
+         *
+         * Batched here rather than sent from the lookup: walking into a crowd
+         * of thirty strangers asks thirty questions in one frame, and thirty
+         * packets to answer them would be worse than the field in the
+         * broadcast this replaces. */
+        if (game.network_connected) name_cache_flush_requests();
+
         game_handle_input(&game, window, delta_time);
         game_update(&game, delta_time);
         game_render(&game);
         
-        // Update window title
-        char title[128];
-        snprintf(title, sizeof(title), "Multiverse MMO - %s",
-                game.network_connected ? "Online" : "Offline");
-        glfwSetWindowTitle(window, title);
+        /* Update the window title, on change only.
+         *
+         * This used to rebuild the string with snprintf and call
+         * glfwSetWindowTitle every frame -- a window-manager round trip per
+         * frame -- for a value with exactly two states that changes a handful
+         * of times in a session. The initial -1 makes the first pass write it
+         * whichever state it starts in. */
+        static int shown_connected = -1;
+        if (game.network_connected != shown_connected) {
+            shown_connected = game.network_connected;
+            glfwSetWindowTitle(window, shown_connected ? "Multiverse MMO - Online"
+                                                       : "Multiverse MMO - Offline");
+        }
         
         glfwSwapBuffers(window);
         glfwPollEvents();
+
+        /* The frame limiter, for when VSync is off.
+         *
+         * With VSync on, glfwSwapBuffers() has already blocked until the
+         * display was ready and there is nothing to do here. With it off, and
+         * with no limit configured, the loop runs as fast as the GPU allows --
+         * which on a menu screen is several hundred redraws a second of the
+         * same image, for nothing but heat.
+         *
+         * Sleeping for the whole remainder would overshoot: a sleep is a
+         * minimum, not an exact duration. So it sleeps for all but the last
+         * millisecond and spins out the rest, which holds the cap within a
+         * frame without burning a core waiting for it. */
+        if (!game.settings.vsync && game.settings.fps_limit > 0) {
+            const double frame_seconds = 1.0 / (double)game.settings.fps_limit;
+            double deadline = frame_start + frame_seconds;
+            double remaining = deadline - glfwGetTime();
+
+            if (remaining > 0.001) {
+                struct timespec nap = {
+                    .tv_sec  = 0,
+                    .tv_nsec = (long)((remaining - 0.001) * 1e9),
+                };
+                nanosleep(&nap, NULL);
+            }
+            while (glfwGetTime() < deadline) { /* the last fraction of a ms */ }
+        }
     }
     
     printf("\n=== Shutting Down ===\n");
+    CLOG_INFO("=== Shutting down ===");
     fflush(stdout);
 
     // Drain pending window messages before teardown.
@@ -353,6 +484,9 @@ int main(int argc, char* argv[]) {
     g_current_game = NULL;
     printf("Goodbye!\n");
     fflush(stdout);
-    
+
+    /* Last, so anything the teardown above had to say is in the file. */
+    client_log_close();
+
     return 0;
 }
