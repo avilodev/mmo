@@ -12,6 +12,7 @@
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "core/client_log.h"
 
 
 /**
@@ -29,12 +30,12 @@ unsigned int texture_load(const char* filepath) {
     unsigned char* data = stbi_load(filepath, &width, &height, &channels, 0);
     
     if (!data) {
-        fprintf(stderr, "Failed to load texture: %s\n", filepath);
-        fprintf(stderr, "STB Error: %s\n", stbi_failure_reason());
+        CLOG_ERROR("Failed to load texture: %s", filepath);
+        CLOG_ERROR("STB Error: %s", stbi_failure_reason());
         return 0;
     }
     
-    printf("Loaded texture: %s (%dx%d, %d channels)\n", 
+    CLOG_DEBUG("Loaded texture: %s (%dx%d, %d channels)", 
            filepath, width, height, channels);
     
     glGenTextures(1, &texture_id);
@@ -71,7 +72,7 @@ unsigned int texture_load(const char* filepath) {
 void texture_unload(unsigned int texture_id) {
     if (texture_id != 0) {
         glDeleteTextures(1, &texture_id);
-        printf("Unloaded texture ID: %u\n", texture_id);
+        CLOG_DEBUG("Unloaded texture ID: %u", texture_id);
     }
 }
 

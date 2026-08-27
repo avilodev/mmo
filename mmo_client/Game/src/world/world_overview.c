@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "core/client_log.h"
 
 /** Refuse absurd headers so a corrupt file cannot drive a huge allocation. */
 #define OVERVIEW_MAX_DIM 8192
@@ -37,13 +38,13 @@ int world_overview_load(const char* world_file_path) {
     char path[512];
     int n = snprintf(path, sizeof(path), "%s.overview", world_file_path);
     if (n < 0 || (size_t)n >= sizeof(path)) {
-        printf("[OVERVIEW] World path too long; map overview disabled\n");
+        CLOG_WARN("[OVERVIEW] World path too long; map overview disabled");
         return 0;
     }
 
     FILE* f = fopen(path, "rb");
     if (!f) {
-        printf("[OVERVIEW] No overview at %s; map shows grid only\n", path);
+        CLOG_INFO("[OVERVIEW] No overview at %s; map shows grid only", path);
         return 0;
     }
 
@@ -51,14 +52,14 @@ int world_overview_load(const char* world_file_path) {
     if (fread(&ow, sizeof(int32_t), 1, f) != 1 ||
         fread(&oh, sizeof(int32_t), 1, f) != 1 ||
         fread(&scale, sizeof(int32_t), 1, f) != 1) {
-        printf("[OVERVIEW] %s is truncated; map shows grid only\n", path);
+        CLOG_WARN("[OVERVIEW] %s is truncated; map shows grid only", path);
         fclose(f);
         return 0;
     }
 
     if (ow <= 0 || oh <= 0 || scale <= 0 ||
         ow > OVERVIEW_MAX_DIM || oh > OVERVIEW_MAX_DIM) {
-        printf("[OVERVIEW] %s has invalid header %dx%d scale %d\n",
+        CLOG_WARN("[OVERVIEW] %s has invalid header %dx%d scale %d",
                path, ow, oh, scale);
         fclose(f);
         return 0;
@@ -69,7 +70,7 @@ int world_overview_load(const char* world_file_path) {
     if (!indices) { fclose(f); return 0; }
 
     if (fread(indices, 1, cells, f) != cells) {
-        printf("[OVERVIEW] %s payload is short; map shows grid only\n", path);
+        CLOG_WARN("[OVERVIEW] %s payload is short; map shows grid only", path);
         free(indices);
         fclose(f);
         return 0;
@@ -116,7 +117,7 @@ int world_overview_load(const char* world_file_path) {
     g_overview.height  = oh;
     g_overview.scale   = scale;
 
-    printf("[OVERVIEW] Loaded %dx%d cells at 1/%d scale from %s\n",
+    CLOG_INFO("[OVERVIEW] Loaded %dx%d cells at 1/%d scale from %s",
            ow, oh, scale, path);
     return 1;
 }

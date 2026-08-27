@@ -259,7 +259,7 @@ $(LAUNCHER_TARGET): $(LAUNCHER_OBJECTS) $(COMMON_LAUNCHER_OBJECTS)
 	$(CC) $^ -o $@ $(OPENSSL_LIB) $(LAUNCHER_LDFLAGS)
 	@mkdir -p $(LAUNCHER_BIN_DIR)/certs
 	@cp Launcher/certs/login_pins.txt $(LAUNCHER_BIN_DIR)/certs/login_pins.txt
-	@echo Installed login pins -> $(LAUNCHER_BIN_DIR)/certs/login_pins.txt
+	@echo "Installed login pins -> $(LAUNCHER_BIN_DIR)/certs/login_pins.txt"
 	@echo Launcher build complete: $(LAUNCHER_TARGET)
 
 # Link Game (include common objects)
@@ -438,7 +438,9 @@ TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/net_connect_test \
         $(TEST_BIN)/race_registry_test \
         $(TEST_BIN)/name_cache_test \
-        $(TEST_BIN)/client_log_test
+        $(TEST_BIN)/client_log_test \
+        $(TEST_BIN)/player_reconcile_test \
+        $(TEST_BIN)/paperdoll_test
 
 # ---------------------------------------------------------------------------
 # Host builds of the network sources
@@ -494,6 +496,28 @@ $(TEST_BIN)/name_cache_test: $(TEST_DIR)/name_cache_test.c Game/src/network/name
 $(TEST_BIN)/race_registry_test: $(TEST_DIR)/race_registry_test.c Game/src/core/race_registry.c | $(TEST_BIN)
 	$(CC) -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR) -I$(GAME_INCLUDE_DIR)/core -I$(COMMON_DIR) -o $@ $^ -lm
 
+# Client-side reconciliation: which position a correction lands on, and that
+# one the client would have agreed with lands on the one it is already at.
+# player.c mixes the movement model with the code that draws it, so rendering
+# is stubbed the way the dispatcher tests stub Winsock. GLFW_INCLUDE_NONE keeps
+# glfw3.h (reached through game_types.h) from pulling in <GL/gl.h>, which a
+# headless build does not have and this does not need.
+$(TEST_BIN)/player_reconcile_test: $(TEST_DIR)/player_reconcile_test.c \
+                                   Game/src/player/player.c \
+                                   Game/src/player/paperdoll.c \
+                                   Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
+
+# The character layer stack. Checks the asset contract the scheme depends on --
+# every layer the same untrimmed square -- by reading PNG headers directly, so
+# it needs neither OpenGL nor an image decoder. The test supplies the texture
+# and renderer stubs paperdoll.c links against.
+$(TEST_BIN)/paperdoll_test: $(TEST_DIR)/paperdoll_test.c \
+                            Game/src/player/paperdoll.c \
+                            Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=c11 -g -DGLFW_INCLUDE_NONE $(GAME_INCLUDES) -o $@ $^
+
 $(TEST_BIN)/net_dispatch_test: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c | $(TEST_BIN)
 	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm -pthread
 
@@ -515,6 +539,8 @@ $(TEST_BIN)/%: $(TEST_DIR)/%.c $(WORLDGEN_SRC) | $(TEST_BIN)
 test: $(TESTS)
 	@echo "=== Checking the wire format against PROTOCOL_VERSION ==="
 	@./Game/tests/check_protocol_version.sh
+	@echo "=== Checking client diagnostics go to the log, not a console ==="
+	@./Game/tests/check_client_logging.sh
 	@for t in $(TESTS); do echo "=== $$t ==="; ./$$t || exit 1; done
 
 # ---------------------------------------------------------------------------

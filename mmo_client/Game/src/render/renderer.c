@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include "core/client_log.h"
 
 static int screen_width;
 static int screen_height;
@@ -44,7 +45,7 @@ void renderer_init(int window_width, int window_height) {
     // Enable 2D textures
     glEnable(GL_TEXTURE_2D);
     
-    printf("Renderer initialized: %dx%d\n", window_width, window_height);
+    CLOG_INFO("Renderer initialized: %dx%d", window_width, window_height);
 }
 
 /**
@@ -218,7 +219,7 @@ void renderer_font_init(const char* path, float size) {
     unsigned char* temp_bitmap = malloc(512*512);
 
     if (!ttf_buffer || !temp_bitmap) {
-        printf("Font allocation failed\n");
+        CLOG_ERROR("Font allocation failed");
         free(ttf_buffer);
         free(temp_bitmap);
         return;
@@ -226,7 +227,7 @@ void renderer_font_init(const char* path, float size) {
 
     FILE* f = fopen(path, "rb");
     if (!f) {
-        printf("Font not found: %s\n", path);
+        CLOG_ERROR("Font not found: %s", path);
         free(ttf_buffer);
         free(temp_bitmap);
         return;
@@ -239,7 +240,7 @@ void renderer_font_init(const char* path, float size) {
     fclose(f);
 
     if (ttf_bytes == 0) {
-        printf("Font %s could not be read\n", path);
+        CLOG_ERROR("Font %s could not be read", path);
         free(ttf_buffer);
         free(temp_bitmap);
         return;
@@ -350,7 +351,7 @@ void renderer_cleanup(void) {
         glDeleteTextures(1, &font_texture);
         font_texture = 0;
     }
-    printf("Renderer cleaned up\n");
+    CLOG_INFO("Renderer cleaned up");
 }
 
 /**

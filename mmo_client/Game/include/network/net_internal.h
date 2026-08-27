@@ -115,7 +115,22 @@ typedef struct {
     struct { BOOL ready; DialogueClosePacket           data; } dialogue_close;
     struct { BOOL ready; WorldConnectAckPacket         data; } world_connect_ack;
     struct { BOOL ready; RealmConnectAckPacket         data; } realm_connect_ack;
-    struct { BOOL ready; float x; float y;                  } correction;
+    /** Numbers each PlayerMovePacket, so a correction can name one.
+     *
+     * Monotonic for the life of the session and never reset: a stale
+     * correction naming a sequence from before a reconnect then simply names
+     * something the ring no longer holds, and is discarded, which is the
+     * behaviour wanted. */
+    uint32_t move_sequence;
+
+    /** The most recent refused move, and which proposal it refused.
+     *
+     * `sequence` is what makes the correction reconcilable rather than a
+     * teleport: it names the PlayerMovePacket the server rejected, so the
+     * client can rewind to (x, y) and replay only what it sent afterwards.
+     * Only the newest correction is kept -- an older one describes a position
+     * this one has already superseded. */
+    struct { BOOL ready; float x; float y; uint32_t sequence; } correction;
 
     // Last rate-limit rejection from the server. Consumed by the UI so a
     // request that was dropped stops a spinner instead of hanging on a
@@ -159,10 +174,34 @@ extern GameState* g_current_game;
 
 /** Send one packet on whichever transport the current link uses.
  *
- * @return The number of bytes written, or a negative value on failure. Callers
- *         that compare against the packet size keep working unchanged.
+ * Both transports queue rather than truncate. A packet the socket will not take
+ * in full is held and finished by the next flush, and reported to the caller as
+ * sent -- it is queued, not lost, and no caller here has a queue of its own to
+ * put it back into. The plaintext world link used to hand the caller a short
+ * count from send(2) and leave the tail unwritten, which is not a dropped
+ * packet but a truncated one: the world reads the next packet's bytes as this
+ * one's payload and the framing never recovers.
+ *
+ * @return The number of bytes accepted, or a negative value when the link is
+ *         finished. Callers that compare against the packet size keep working.
  */
 int net_send(const void* buf, int len);
+
+/** Push whatever the plaintext link could not write last time.
+ *
+ * A no-op on the TLS link, which has its own queue in net_tls.c.
+ *
+ * @return 1 while the link is healthy, 0 once it can carry nothing more.
+ */
+int net_send_flush(void);
+
+/** Drop the plaintext send queue and clear its failure latch.
+ *
+ * Called when a descriptor is replaced or closed: the queued bytes belong to
+ * the session that is going away, and writing them into the next socket would
+ * prepend a fragment of one session to another.
+ */
+void net_send_queue_reset(void);
 
 /** Read available bytes on whichever transport the current link uses.
  *

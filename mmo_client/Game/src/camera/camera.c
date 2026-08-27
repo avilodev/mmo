@@ -7,6 +7,7 @@
 #include <GLFW/glfw3.h>
 #include <math.h>
 #include <stdio.h>
+#include "core/client_log.h"
 
 /**
  * Initialize a camera for a logical viewport.
@@ -25,7 +26,7 @@ void camera_init(Camera* camera, int viewport_width, int viewport_height) {
 
     camera->zoom = 1.0f;
     
-    printf("Camera initialized: viewport %dx%d\n", viewport_width, viewport_height);
+    CLOG_INFO("Camera initialized: viewport %dx%d", viewport_width, viewport_height);
 }
 
 /**

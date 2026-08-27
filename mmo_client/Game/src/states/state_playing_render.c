@@ -17,6 +17,7 @@
 #include "combat_render.h"
 #include "hud.h"
 #include "inventory.h"
+#include "player/paperdoll.h"
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
 #include "ui/quest_tracker.h"
@@ -25,7 +26,7 @@
 #include <math.h>
 
 /**
- * Draw nearby players with class colors, health, and identity labels.
+ * Draw nearby players as character stacks, with health and identity labels.
  */
 void playing_render_nearby_players(GameState* game) {
     int size = game->world.tile_size * 2;
@@ -33,17 +34,24 @@ void playing_render_nearby_players(GameState* game) {
         NearbyPlayer* p = &game->playing->nearby_players[i];
         if (p->is_dead) continue;
 
-        /* Colour from the race registry the server sent, not from a table.
-         *
-         * This was a switch over classes 1-4, so the fifth race drew in the
-         * default green alongside whoever else the table did not cover -- and
-         * the table had to be edited, in the client, to add a race the server
-         * already knew about. */
-        float r, g, b;
-        client_race_color(p->player_race, &r, &g, &b);
-
-        renderer_draw_rect(p->pos_x - size/2, p->pos_y - size/2,
-                          (float)size, (float)size, r, g, b, 1.0f);
+        /* Everyone wears the one character stack there is art for, so a
+         * player's race does not change how they look yet -- only the label
+         * and the registry know it. */
+        const Paperdoll* doll = paperdoll_shared();
+        if (doll->loaded > 0) {
+            paperdoll_render(doll, p->pos_x, p->pos_y, (float)size);
+        } else {
+            /* Fallback when no layer loaded: a coloured box, so a player is
+             * still visible and still identifiable. Colour comes from the race
+             * registry the server sent, not from a table -- this was a switch
+             * over classes 1-4, so the fifth race drew in the default green
+             * and the client had to be edited to add a race the server
+             * already knew about. */
+            float r, g, b;
+            client_race_color(p->player_race, &r, &g, &b);
+            renderer_draw_rect(p->pos_x - size/2, p->pos_y - size/2,
+                              (float)size, (float)size, r, g, b, 1.0f);
+        }
 
         // Health bar
         float bar_w = 40.0f, bar_h = 4.0f;
@@ -235,7 +243,7 @@ void playing_render(GameState* game) {
     playing_render_projectiles(game);
     combat_render_indicator(&game->playing->combat);
     combat_render_damage_numbers(&game->playing->combat);
-    player_render(&game->player, game->textures.player, game->world.tile_size);
+    player_render(&game->player, paperdoll_shared(), game->world.tile_size);
 
     if (player_inside)
         world_render_overlay_above(&game->world, &game->camera);

@@ -173,6 +173,25 @@ typedef struct {
     int keys_just_pressed[GLFW_KEY_LAST + 1];
 } InputState;
 
+/** Moves the client has sent and the server has not answered.
+ *
+ * Sized to cover far more than a correction can be late by. Moves go out at
+ * MOVE_INTERVAL, which is 0.05s, so 32 of them is 1.6 seconds of history
+ * against a refusal that arrives in one round trip. An entry that ages out is
+ * not a failure: a correction naming a sequence this ring no longer holds is
+ * one the client cannot reconcile, and it falls back to taking the server's
+ * position as-is -- which is what it did for every correction before this
+ * existed, and is still right, because the server is authoritative either way.
+ */
+#define PLAYER_MOVE_HISTORY 32
+
+/** One position proposal, kept until the server has had time to refuse it. */
+typedef struct {
+    uint32_t sequence;   /**< Zero for an unused slot; sequences start at 1. */
+    float    x;          /**< The position this proposal claimed... */
+    float    y;          /**< ...which is the base a replay measures from. */
+} PlayerMoveRecord;
+
 /** Track local player movement and server character data. */
 typedef struct {
     float x;
@@ -183,6 +202,22 @@ typedef struct {
     int needs_position_reset;
     CharacterInfo info;
     int info_loaded;
+
+    /** Recent position proposals, newest at (head - 1).
+     *
+     * The client predicts locally and keeps moving; a refusal describes where
+     * the player was several frames ago. Without this the corrected position
+     * could only be assigned to *now*, discarding every step taken since --
+     * which is a visible jerk even when the server agreed with the direction
+     * of travel, and at 20Hz that is most latency spikes.
+     *
+     * With it, the correction names a proposal, this ring says where the
+     * client thought it was at that proposal, and the difference between then
+     * and now is the tail to replay from the server's position. See
+     * player_apply_correction().
+     */
+    PlayerMoveRecord move_history[PLAYER_MOVE_HISTORY];
+    int              move_history_head;   /**< Next slot to write. */
 } PlayerState;
 
 /** Track one server-visible NPC and its interpolation state. */
@@ -252,7 +287,8 @@ typedef struct {
 
 /** Own persistent OpenGL textures shared across client screens. */
 typedef struct {
-    unsigned int player;
+    /* No player texture here: characters are drawn from a layer stack owned by
+     * player/paperdoll.h, not from one flat sprite. */
     unsigned int background;
     unsigned int session_panel_bg;
     unsigned int session_entry_bg;

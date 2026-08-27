@@ -18,6 +18,7 @@
 #include "ui/npc_dialogue.h"
 
 #include <math.h>
+#include "core/client_log.h"
 
 /**
  * Advance gameplay state and publish throttled movement updates.
@@ -46,7 +47,7 @@ void playing_update(GameState* game, float delta_time) {
 
             if (game->inventory) {
                 inventory_load_from_server(game->inventory, info.inventory);
-                printf("[GAME] Inventory loaded from server\n");
+                CLOG_INFO("[GAME] Inventory loaded from server");
             }
         }
     }
@@ -61,10 +62,23 @@ void playing_update(GameState* game, float delta_time) {
         game->player.needs_position_reset = 0;
     }
 
-    // Check for server corrections
+    /* Check for server corrections.
+     *
+     * The correction names the proposal it refuses, so the player is rewound
+     * to the server's position and the moves sent after that one are replayed
+     * from it -- see player_apply_correction(). A correction the client would
+     * have agreed with therefore lands where the player already is and is
+     * never seen, which is what most of them are.
+     *
+     * last_sent tracks what the *server* has been told, not where the player
+     * now is, so it takes the corrected position rather than the replayed one.
+     * The gap between them is the replayed tail, which is exactly the thing
+     * that should go out in the next move. */
     float correction_x, correction_y;
-    if (network_get_server_correction(&correction_x, &correction_y)) {
-        player_apply_correction(&game->player, correction_x, correction_y);
+    uint32_t correction_seq = 0;
+    if (network_get_server_correction(&correction_x, &correction_y, &correction_seq)) {
+        player_apply_correction(&game->player, &game->world,
+                                correction_seq, correction_x, correction_y);
         game->playing->move_sync.last_sent_x = correction_x;
         game->playing->move_sync.last_sent_y = correction_y;
         game->playing->move_sync.last_move_send = now;
@@ -267,10 +281,18 @@ void playing_update(GameState* game, float delta_time) {
     float dist = sqrtf(dx * dx + dy * dy);
 
     if (dist > MOVE_THRESHOLD && (now - game->playing->move_sync.last_move_send) >= MOVE_INTERVAL) {
+        /* Numbered and remembered before it goes out. The record is what a
+         * refusal is reconciled against, so it has to exist by the time the
+         * refusal can arrive -- which is any time after this line. */
+        uint32_t sequence = network_next_move_sequence();
+        player_record_sent_move(&game->player, sequence,
+                                game->player.x, game->player.y);
+
         network_send_player_move(
             game->player.x, game->player.y,
             game->player.speed,
-            game->player.vel_x, game->player.vel_y
+            game->player.vel_x, game->player.vel_y,
+            sequence
         );
 
         game->playing->move_sync.last_sent_x = game->player.x;

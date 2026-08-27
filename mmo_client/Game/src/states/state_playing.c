@@ -12,6 +12,7 @@
  */
 #include "states/state_playing_internal.h"
 #include "texture/texture.h"
+#include "player/paperdoll.h"
 #include "state_handler.h"
 #include "network.h"
 #include "combat_system.h"
@@ -19,6 +20,7 @@
 #include "ui/npc_dialogue.h"
 
 #include <stdlib.h>
+#include "core/client_log.h"
 
 /**
  * Allocate gameplay state and initialize gameplay-only resources.
@@ -26,11 +28,11 @@
  * The allocated PlayingState and textures are released by playing_exit.
  */
 void playing_enter(GameState* game) {
-    printf("[STATE] Entering gameplay\n");
+    CLOG_INFO("[STATE] Entering gameplay");
 
     game->playing = calloc(1, sizeof(PlayingState));
     if (!game->playing) {
-        fprintf(stderr, "[STATE] FATAL: Failed to allocate PlayingState\n");
+        CLOG_ERROR("[STATE] FATAL: Failed to allocate PlayingState");
         game->is_running = 0;
         return;
     }
@@ -47,12 +49,15 @@ void playing_enter(GameState* game) {
     combat_init(&game->playing->combat);
 
     // Load gameplay-only textures
-    game->textures.player            = texture_load("Game/Sprites/Player/player.png");
     game->textures.session_panel_bg  = texture_load("Game/Sprites/UI/session_panel_bg.png");
     game->textures.session_entry_bg  = texture_load("Game/Sprites/UI/session_entry_bg.png");
 
-    if (!game->textures.player)
-        fprintf(stderr, "[GAME] Warning: failed to load player texture\n");
+    /* Characters are drawn from a layer stack rather than one flat sprite, and
+     * there is one set of that art so far -- so every race and class wears it.
+     * Loaded once here and shared by the local player and everyone nearby;
+     * nothing about a character selects its appearance yet. */
+    if (paperdoll_load_shared() == 0)
+        CLOG_ERROR("[GAME] Warning: no character layers loaded");
 
     ability_bar_init(&game->playing->ability_bar,
                      game->camera.viewport_width,
@@ -74,7 +79,7 @@ void playing_enter(GameState* game) {
  * Disconnect gameplay and release gameplay-only resources.
  */
 void playing_exit(GameState* game) {
-    printf("[STATE] Exiting gameplay\n");
+    CLOG_INFO("[STATE] Exiting gameplay");
 
     if (game->network_connected) {
         network_disconnect();
@@ -82,7 +87,7 @@ void playing_exit(GameState* game) {
     }
 
     // Unload gameplay-only textures
-    if (game->textures.player)           { texture_unload(game->textures.player);           game->textures.player           = 0; }
+    paperdoll_unload_shared();
     if (game->textures.session_panel_bg) { texture_unload(game->textures.session_panel_bg); game->textures.session_panel_bg = 0; }
     if (game->textures.session_entry_bg) { texture_unload(game->textures.session_entry_bg); game->textures.session_entry_bg = 0; }
     // World tileset textures are unloaded by world_cleanup

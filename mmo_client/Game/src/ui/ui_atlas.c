@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "core/client_log.h"
 
 /**
  * Load an atlas texture and its whitespace-delimited sprite definition file.
@@ -20,13 +21,13 @@ int ui_atlas_load(UIAtlas* atlas, const char* texture_path, const char* atlas_pa
 
     atlas->texture_id = texture_load(texture_path);
     if (!atlas->texture_id) {
-        fprintf(stderr, "[ATLAS] Failed to load texture: %s\n", texture_path);
+        CLOG_ERROR("[ATLAS] Failed to load texture: %s", texture_path);
         return 0;
     }
 
     FILE* f = fopen(atlas_path, "r");
     if (!f) {
-        fprintf(stderr, "[ATLAS] Failed to open atlas definition: %s\n", atlas_path);
+        CLOG_ERROR("[ATLAS] Failed to open atlas definition: %s", atlas_path);
         texture_unload(atlas->texture_id);
         atlas->texture_id = 0;
         return 0;
@@ -51,7 +52,7 @@ int ui_atlas_load(UIAtlas* atlas, const char* texture_path, const char* atlas_pa
         }
 
         if (atlas->count >= UI_ATLAS_MAX_SPRITES) {
-            fprintf(stderr, "[ATLAS] Too many sprites (max %d), ignoring rest\n",
+            CLOG_WARN("[ATLAS] Too many sprites (max %d), ignoring rest",
                     UI_ATLAS_MAX_SPRITES);
             break;
         }
@@ -72,7 +73,7 @@ int ui_atlas_load(UIAtlas* atlas, const char* texture_path, const char* atlas_pa
     }
 
     fclose(f);
-    printf("[ATLAS] Loaded %d sprites from '%s'\n", atlas->count, atlas_path);
+    CLOG_INFO("[ATLAS] Loaded %d sprites from '%s'", atlas->count, atlas_path);
     return 1;
 }
 
@@ -95,7 +96,7 @@ const AtlasSprite* ui_atlas_get(const UIAtlas* atlas, const char* name) {
         if (strcmp(atlas->sprites[i].name, name) == 0)
             return &atlas->sprites[i];
     }
-    fprintf(stderr, "[ATLAS] Sprite not found: '%s'\n", name);
+    CLOG_WARN("[ATLAS] Sprite not found: '%s'", name);
     return NULL;
 }
 

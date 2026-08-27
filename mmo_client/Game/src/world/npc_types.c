@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "core/client_log.h"
 
 #define MAX_NPC_TYPE_ID 256
 
@@ -98,7 +99,7 @@ void npc_types_init(const char* path) {
 
     FILE* f = fopen(path, "r");
     if (!f) {
-        printf("[NPC_TYPES] %s not found — NPC names will be generic\n", path);
+        CLOG_INFO("[NPC_TYPES] %s not found — NPC names will be generic", path);
         return;
     }
 
@@ -165,7 +166,7 @@ void npc_types_init(const char* path) {
     }
 
     free(json);
-    printf("[NPC_TYPES] Loaded %d NPC types\n", count);
+    CLOG_INFO("[NPC_TYPES] Loaded %d NPC types", count);
 }
 
 /**

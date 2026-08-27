@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <GLFW/glfw3.h>
+#include "core/client_log.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -173,7 +174,7 @@ void ability_bar_set_form_abilities(AbilityBarState* bar,
         memset(&target->slots[i], 0, sizeof(AbilitySlot));
     }
 
-    printf("[ABILITY_BAR] Set %d abilities for %s form\n",
+    CLOG_INFO("[ABILITY_BAR] Set %d abilities for %s form",
            target->slot_count, form == FORM_ANIMAL ? "animal" : "human");
 }
 
@@ -275,17 +276,17 @@ uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
             if (!keys_just_pressed[key_map[i]]) continue;
 
             AbilitySlot* slot = &active->slots[i];
-            printf("[ABILITY_BAR] Key %d pressed -> slot %d (id=%u, cd=%.1f, cost=%d, resource=%d)\n",
+            CLOG_DEBUG("[ABILITY_BAR] Key %d pressed -> slot %d (id=%u, cd=%.1f, cost=%d, resource=%d)",
                    i + 1, i, slot->id, slot->cooldown_remaining,
                    slot->resource_cost, bar->resource);
 
             if (slot->id == 0) {
-                printf("[ABILITY_BAR] Slot %d has no ability assigned!\n", i);
+                CLOG_DEBUG("[ABILITY_BAR] Slot %d has no ability assigned!", i);
                 continue;
             }
 
             if (slot->cooldown_remaining > 0.0f) {
-                printf("[ABILITY_BAR] Slot %d on cooldown (%.1fs)\n",
+                CLOG_DEBUG("[ABILITY_BAR] Slot %d on cooldown (%.1fs)",
                        i, slot->cooldown_remaining);
                 continue;
             }
@@ -293,13 +294,13 @@ uint16_t ability_bar_update(AbilityBarState* bar, float delta_time,
             /* Human Form abilities cost nothing, so this check is naturally inert
              * there rather than needing to be skipped. */
             if (slot->resource_cost > 0 && slot->resource_cost > bar->resource) {
-                printf("[ABILITY_BAR] Not enough resource for '%s' (%d/%d)\n",
+                CLOG_DEBUG("[ABILITY_BAR] Not enough resource for '%s' (%d/%d)",
                        slot->name, bar->resource, slot->resource_cost);
                 bar->reject_flash[i] = 0.3f;
                 continue;
             }
 
-            printf("[ABILITY_BAR] Casting ability '%s' (id=%u)!\n", slot->name, slot->id);
+            CLOG_DEBUG("[ABILITY_BAR] Casting ability '%s' (id=%u)!", slot->name, slot->id);
             return slot->id;
         }
     }

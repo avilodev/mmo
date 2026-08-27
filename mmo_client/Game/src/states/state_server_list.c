@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <winsock2.h>
 #include <GLFW/glfw3.h>
+#include "core/client_log.h"
 
 /** Refresh interval for a loaded world list, in seconds. */
 #define SERVER_LIST_REFRESH_INTERVAL 10.0
@@ -19,7 +20,7 @@ static double s_last_refresh = 0.0;
 static int    s_refreshing   = 0;   // 1 while a background re-fetch is in flight
 
 static void server_list_enter(GameState* game) {
-    printf("[STATE] Entering server list\n");
+    CLOG_INFO("[STATE] Entering server list");
     game->server_list.loaded = 0;
     game->server_list.selected_index = -1;
     game->net_state = NET_STATE_IDLE;
@@ -29,7 +30,7 @@ static void server_list_enter(GameState* game) {
 
 static void server_list_exit(GameState* game) {
     (void)game;
-    printf("[STATE] Exiting server list\n");
+    CLOG_INFO("[STATE] Exiting server list");
 }
 
 /**
@@ -50,7 +51,7 @@ static void server_list_update(GameState* game, float delta_time) {
         int rejected = network_get_rate_limit_notice(&rejected_type, &retry_ms);
 
         if (rejected || game->net_wait_seconds > NET_REQUEST_TIMEOUT_SECONDS) {
-            printf("[SERVER_LIST] World list request abandoned (%s)\n",
+            CLOG_WARN("[SERVER_LIST] World list request abandoned (%s)",
                    rejected ? "rate limited" : "timed out");
             game->net_state        = NET_STATE_IDLE;
             game->net_wait_seconds = 0.0f;
@@ -59,16 +60,26 @@ static void server_list_update(GameState* game, float delta_time) {
         }
     }
 
-    // Trigger a refresh if: never loaded, or interval elapsed and not mid-fetch
-    int needs_refresh = !game->server_list.loaded ||
-                        (!s_refreshing && (now - s_last_refresh) >= SERVER_LIST_REFRESH_INTERVAL);
+    /* Due immediately on entry, then once per interval -- and after a failure
+     * of any kind, once the interval has passed again.
+     *
+     * "Never loaded" used to force a request on its own, and only a successful
+     * send moved s_last_refresh, so a request that could not be sent was
+     * retried on the very next frame and every frame after it. s_last_refresh
+     * of zero is what makes the first attempt immediate; every other path
+     * through here sets it. */
+    int needs_refresh = !s_refreshing &&
+                        (s_last_refresh == 0.0 ||
+                         (now - s_last_refresh) >= SERVER_LIST_REFRESH_INTERVAL);
 
     if (needs_refresh && game->net_state == NET_STATE_IDLE) {
-        printf("[SERVER_LIST] Requesting world list...\n");
+        CLOG_INFO("[SERVER_LIST] Requesting world list...");
         if (network_request_world_list()) {
             game->net_state = NET_STATE_WAITING_FOR_WORLDS;
             game->net_wait_seconds = 0.0f;
             s_refreshing = 1;
+        } else {
+            s_last_refresh = now;   // wait a full interval before trying again
         }
     }
 
@@ -78,7 +89,7 @@ static void server_list_update(GameState* game, float delta_time) {
             game->net_state = NET_STATE_IDLE;
             s_last_refresh = now;
             s_refreshing   = 0;
-            printf("[SERVER_LIST] Received %d worlds\n", game->server_list.list.count);
+            CLOG_INFO("[SERVER_LIST] Received %d worlds", game->server_list.list.count);
         }
     }
 }
@@ -165,12 +176,19 @@ static void server_list_render(GameState* game) {
 
             // Handle click
             if (hovered && game->input.mouse_left_clicked) {
+                /* Status 2 is full, and only status 0 was refused here -- so a
+                 * player could pick a world the list had just drawn as full,
+                 * walk the whole character screen, and be turned away at the
+                 * far end of a world entry. The realm refuses these now too;
+                 * this is the half of it that does not cost a round trip. */
                 if (world->status == 0) {
-                    printf("[SERVER_LIST] Cannot select offline server\n");
+                    CLOG_DEBUG("[SERVER_LIST] Cannot select offline server");
+                } else if (world->status == 2) {
+                    CLOG_DEBUG("[SERVER_LIST] Cannot select a full server");
                 } else {
                     game->server_list.selected_index = i;
                     game_change_state(game, GAME_MODE_CHARACTER_SELECT);
-                    printf("[SERVER_LIST] Selected: %s\n", world->name);
+                    CLOG_INFO("[SERVER_LIST] Selected: %s", world->name);
                 }
             }
         }
@@ -191,9 +209,13 @@ static void server_list_render(GameState* game) {
 }
 
 static void server_list_input(GameState* game, GLFWwindow* window, float delta_time) {
+    (void)window;
     (void)delta_time;
 
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    /* The edge, not the level: a keypress spans many frames, and testing the
+     * level here meant one press could carry through a state change and be
+     * seen again by whatever screen it landed on. */
+    if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
         game_change_state(game, GAME_MODE_MAIN_MENU);
     }
 }

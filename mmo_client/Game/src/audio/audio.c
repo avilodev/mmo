@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "core/client_log.h"
+
 #ifdef _WIN32
 
 #include <windows.h>
@@ -60,7 +62,7 @@ static void push_music_volume(void) {
  * Initialize the client audio backend.
  */
 void audio_init(void) {
-    printf("[AUDIO] Initialized (winmm backend)\n");
+    CLOG_INFO("[AUDIO] Initialized (winmm backend)");
 }
 
 /**
@@ -79,8 +81,7 @@ void audio_cleanup(void) {
     // must not depend on g_music_open being an accurate record.
     mciSendStringA("close all", NULL, 0, NULL);
 
-    printf("[AUDIO] Cleaned up\n");
-    fflush(stdout);
+    CLOG_INFO("[AUDIO] Cleaned up");
 }
 
 /**
@@ -139,7 +140,7 @@ void audio_play_music(const char* path, int loop) {
     snprintf(cmd, sizeof(cmd), "open \"%s\" alias bgm", path);
     MCIERROR err = mciSendStringA(cmd, NULL, 0, NULL);
     if (err != 0) {
-        printf("[AUDIO] Could not open music: %s (err %lu)\n", path, (unsigned long)err);
+        CLOG_WARN("[AUDIO] Could not open music: %s (err %lu)", path, (unsigned long)err);
         return;
     }
     g_music_open = 1;
@@ -150,7 +151,7 @@ void audio_play_music(const char* path, int loop) {
     } else {
         mciSendStringA("play bgm", NULL, 0, NULL);
     }
-    printf("[AUDIO] Playing music: %s\n", path);
+    CLOG_INFO("[AUDIO] Playing music: %s", path);
 }
 
 /**
@@ -207,7 +208,7 @@ static float clamp01(float v) {
 }
 
 void audio_init(void) {
-    printf("[AUDIO] Initialized (silent backend: no audio on this platform)\n");
+    CLOG_INFO("[AUDIO] Initialized (silent backend: no audio on this platform)");
 }
 
 void audio_cleanup(void) {}

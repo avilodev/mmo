@@ -35,7 +35,7 @@ typedef enum {
  * @return 1 when the attempt started, or 0 when it could not be (no socket,
  *         unusable address). A 0 leaves no attempt in flight.
  */
-int network_begin_realm_connect(const char* ip, uint16_t port,
+int network_begin_realm_connect(const char* host, uint16_t port,
                                 const char* session_key, uint32_t account_id);
 
 /** Start connecting to a world server, replacing any current connection.
@@ -43,7 +43,7 @@ int network_begin_realm_connect(const char* ip, uint16_t port,
  * @param game_ticket  The 64-byte world ticket the realm issued.
  * @return 1 when the attempt started, otherwise 0.
  */
-int network_begin_world_connect(const char* ip, uint16_t port,
+int network_begin_world_connect(const char* host, uint16_t port,
                                 const char* game_ticket, uint32_t character_id);
 
 /** Advance the current attempt. Call once per frame; never blocks.
@@ -52,6 +52,17 @@ int network_begin_world_connect(const char* ip, uint16_t port,
  * a caller polling every frame cannot miss the result or act on it twice.
  */
 NetConnectPhase network_connect_poll(void);
+
+/** Report whether the attempt in flight is the realm handshake.
+ *
+ * The one-shot contract above means only the caller that started an attempt may
+ * poll it. There are three: the frame loop drives the realm, character select
+ * drives a world entry, and the reconnect supervisor drives both halves of a
+ * recovery. The frame loop cannot tell them apart from
+ * network_connect_in_flight() alone, and polling a world handshake there
+ * consumed the result character select was waiting for.
+ */
+int network_realm_connect_in_flight(void);
 
 /** Describe the outcome of the last attempt, for the status line. */
 const char* network_connect_message(void);

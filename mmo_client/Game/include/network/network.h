@@ -63,8 +63,24 @@ int network_get_enter_world_response(EnterWorldResponsePacket* out);
 int network_request_character_data(uint32_t character_id, uint32_t world_id);
 int network_get_character_data(CharacterInfo* out);
 
-int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y);
-int network_get_server_correction(float* out_x, float* out_y);
+/** Take the next movement sequence number. Monotonic within a session. */
+uint32_t network_next_move_sequence(void);
+
+/** Send one position proposal, numbered so a refusal can name it.
+ *
+ * @param sequence  From network_next_move_sequence(). The caller keeps it
+ *                  alongside the position sent, so a correction naming it can
+ *                  be reconciled rather than applied as a teleport.
+ */
+int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y,
+                             uint32_t sequence);
+
+/** Consume the most recent position correction, if any.
+ *
+ * @param out_sequence  Receives the move the server refused; may be NULL.
+ * @return Nonzero when a correction was copied out.
+ */
+int network_get_server_correction(float* out_x, float* out_y, uint32_t* out_sequence);
 
 void network_send_ping(void);
 /** Return the most recently measured round-trip time in milliseconds. */

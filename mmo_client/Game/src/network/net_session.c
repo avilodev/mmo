@@ -20,6 +20,26 @@
 #include <stddef.h>
 #include <math.h>
 
+/* Open the packet gate the moment an acknowledgement says the session exists.
+ *
+ * process_packet() drops everything but the acks and the two control opcodes
+ * while g_net.handshaking is set, and the flag was cleared by
+ * finish_succeeded() -- which runs in network_connect_poll() AFTER
+ * network_update() has already drained the whole receive buffer. The world
+ * queues the ack and the session payload into one outbound buffer and they
+ * arrive in a single read, so everything behind the ack was dispatched into a
+ * still-closed gate and discarded: character data and stats are re-requested
+ * later and recovered, but PACKET_ABILITY_DATA and the quest packets have no
+ * request opcode at all, and the player spent the session with an empty
+ * ability bar and an empty quest log.
+ *
+ * Cleared here, mid-drain, so the rest of that same read is admitted. A
+ * refused ack leaves the gate shut, which is what it is for.
+ */
+static void session_gate_open_on_ack(int accepted) {
+    if (accepted) g_net.handshaking = FALSE;
+}
+
 /**
  * Dispatch one session packet.
  *
@@ -35,10 +55,19 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
         case PACKET_PING:
             // Server echoed our ping back — measure RTT
             if (g_net.pending_pings > 0) {
+                /* Only a single outstanding ping can be attributed to a send
+                 * time. ping_send_time holds one instant and pings are not
+                 * numbered, so with two in flight the echo being answered is
+                 * the older one while the recorded time is the newer -- which
+                 * reported a latency far below the real one, on exactly the
+                 * struggling link where the number matters. */
+                int attributable = (g_net.pending_pings == 1);
                 g_net.pending_pings--;
-                double rtt = (net_now() - g_net.ping_send_time) * 1000.0;
-                if (rtt > 0.0 && rtt < 60000.0)
-                    g_net.ping_ms = (int)rtt;
+                if (attributable) {
+                    double rtt = (net_now() - g_net.ping_send_time) * 1000.0;
+                    if (rtt > 0.0 && rtt < 60000.0)
+                        g_net.ping_ms = (int)rtt;
+                }
             }
             break;
 
@@ -76,18 +105,19 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
             memcpy(&g_net.world_list.data, data, copy_size);
             g_net.world_list.data.count = claimed_count;
 
+            /* Terminate from the field sizes rather than from literals: these
+             * strings are rendered straight into the world list, and the two
+             * that carry an address and a region were widened when the wire
+             * layout stopped truncating them. */
             for (int i = 0; i < claimed_count; i++) {
-                g_net.world_list.data.worlds[i].name[63] = '\0';
-                g_net.world_list.data.worlds[i].ip[15] = '\0';
-                g_net.world_list.data.worlds[i].region[31] = '\0';
+                WorldInfo* w = &g_net.world_list.data.worlds[i];
+                w->name[sizeof(w->name) - 1]     = '\0';
+                w->host[sizeof(w->host) - 1]     = '\0';
+                w->region[sizeof(w->region) - 1] = '\0';
 
                 // Debug: Print each world
                 NET_LOG("[NET]   World %d: '%s' at %s:%d (status=%d)\n",
-                       i,
-                       g_net.world_list.data.worlds[i].name,
-                       g_net.world_list.data.worlds[i].ip,
-                       ntohs(g_net.world_list.data.worlds[i].port),
-                       g_net.world_list.data.worlds[i].status);
+                       i, w->name, w->host, ntohs(w->port), w->status);
             }
 
             g_net.world_list.ready = TRUE;
@@ -219,9 +249,12 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
             if (length >= (int)sizeof(EnterWorldResponsePacket)) {
                 EnterCriticalSection(&g_net.response_lock);
                 memcpy(&g_net.enter_world.data, data, sizeof(EnterWorldResponsePacket));
-                g_net.enter_world.data.game_ticket[63] = '\0';
-                g_net.enter_world.data.world_ip[15] = '\0';
-                g_net.enter_world.data.message[127] = '\0';
+                g_net.enter_world.data.game_ticket[
+                    sizeof(g_net.enter_world.data.game_ticket) - 1] = '\0';
+                g_net.enter_world.data.world_host[
+                    sizeof(g_net.enter_world.data.world_host) - 1] = '\0';
+                g_net.enter_world.data.message[
+                    sizeof(g_net.enter_world.data.message) - 1] = '\0';
                 g_net.enter_world.ready = TRUE;
                 LeaveCriticalSection(&g_net.response_lock);
             }
@@ -229,22 +262,30 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
 
         case PACKET_REALM_CONNECT_ACK:
             if (length >= (int)sizeof(RealmConnectAckPacket)) {
+                int accepted;
                 EnterCriticalSection(&g_net.response_lock);
                 memcpy(&g_net.realm_connect_ack.data, data, sizeof(RealmConnectAckPacket));
-                g_net.realm_connect_ack.data.message[127] = '\0';
+                g_net.realm_connect_ack.data.message[
+                    sizeof(g_net.realm_connect_ack.data.message) - 1] = '\0';
                 g_net.realm_connect_ack.ready = TRUE;
+                accepted = g_net.realm_connect_ack.data.success != 0;
                 LeaveCriticalSection(&g_net.response_lock);
-                NET_LOG("[NET] Realm connect ACK received: success=%d\n", g_net.realm_connect_ack.data.success);
+                session_gate_open_on_ack(accepted);
+                NET_LOG("[NET] Realm connect ACK received: success=%d\n", accepted);
             }
             break;
 
         case PACKET_WORLD_CONNECT_ACK:
             if (length >= (int)sizeof(WorldConnectAckPacket)) {
+                int accepted;
                 EnterCriticalSection(&g_net.response_lock);
                 memcpy(&g_net.world_connect_ack.data, data, sizeof(WorldConnectAckPacket));
-                g_net.world_connect_ack.data.welcome_message[127] = '\0';
+                g_net.world_connect_ack.data.welcome_message[
+                    sizeof(g_net.world_connect_ack.data.welcome_message) - 1] = '\0';
                 g_net.world_connect_ack.ready = TRUE;
+                accepted = g_net.world_connect_ack.data.success != 0;
                 LeaveCriticalSection(&g_net.response_lock);
+                session_gate_open_on_ack(accepted);
                 NET_LOG("[NET] World connect ACK received\n");
             }
             break;

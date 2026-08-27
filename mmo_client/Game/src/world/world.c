@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include "core/client_log.h"
 
 /**
  * Open a world file, read its layer metadata, and load tileset textures.
@@ -28,7 +29,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
 
     world->world_file = fopen(world_file_path, "rb");
     if (!world->world_file) {
-        fprintf(stderr, "[WORLD] Failed to open %s\n", world_file_path);
+        CLOG_ERROR("[WORLD] Failed to open %s", world_file_path);
         return 0;
     }
 
@@ -41,8 +42,8 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     char magic[WORLD_FORMAT_MAGIC_LEN];
     if (fread(magic, 1, sizeof(magic), world->world_file) != sizeof(magic) ||
         memcmp(magic, WORLD_FORMAT_MAGIC, sizeof(magic)) != 0) {
-        fprintf(stderr, "[WORLD] %s is not a world file (bad magic). "
-                        "Regenerate it with 'make world'.\n", world_file_path);
+        CLOG_WARN("[WORLD] %s is not a world file (bad magic). "
+                        "Regenerate it with 'make world'.", world_file_path);
         fclose(world->world_file);
         world->world_file = NULL;
         return 0;
@@ -51,15 +52,15 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     uint32_t file_version = 0, tile_layers = 0;
     if (fread(&file_version, sizeof(uint32_t), 1, world->world_file) != 1 ||
         fread(&tile_layers,  sizeof(uint32_t), 1, world->world_file) != 1) {
-        fprintf(stderr, "[WORLD] %s ends inside its header\n", world_file_path);
+        CLOG_WARN("[WORLD] %s ends inside its header", world_file_path);
         fclose(world->world_file);
         world->world_file = NULL;
         return 0;
     }
 
     if (file_version != WORLD_FORMAT_VERSION) {
-        fprintf(stderr, "[WORLD] %s is world format version %u; this build reads "
-                        "version %d. Regenerate it with 'make world'.\n",
+        CLOG_WARN("[WORLD] %s is world format version %u; this build reads "
+                        "version %d. Regenerate it with 'make world'.",
                 world_file_path, file_version, WORLD_FORMAT_VERSION);
         fclose(world->world_file);
         world->world_file = NULL;
@@ -70,8 +71,8 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         /* This reader keeps one named offset per layer, so unlike the server's
          * collision reader it cannot simply seek past an unknown number of
          * them. Saying so is better than reading the wrong bytes. */
-        fprintf(stderr, "[WORLD] %s holds %u tile layers; this build draws %d. "
-                        "Regenerate it with 'make world'.\n",
+        CLOG_WARN("[WORLD] %s holds %u tile layers; this build draws %d. "
+                        "Regenerate it with 'make world'.",
                 world_file_path, tile_layers, WORLD_FORMAT_TILE_LAYERS);
         fclose(world->world_file);
         world->world_file = NULL;
@@ -91,7 +92,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     if (fread(&world->world_width,  sizeof(int), 1, world->world_file) != 1 ||
         fread(&world->world_height, sizeof(int), 1, world->world_file) != 1 ||
         fread(&file_tile_size,      sizeof(int), 1, world->world_file) != 1) {
-        fprintf(stderr, "[WORLD] %s ends inside its header\n", world_file_path);
+        CLOG_WARN("[WORLD] %s ends inside its header", world_file_path);
         fclose(world->world_file);
         world->world_file = NULL;
         return 0;
@@ -106,7 +107,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         world->world_width  > WORLD_FORMAT_MAX_DIMENSION ||
         world->world_height > WORLD_FORMAT_MAX_DIMENSION ||
         (uint64_t)world->world_width * (uint64_t)world->world_height > WORLD_FORMAT_MAX_TILES) {
-        fprintf(stderr, "[WORLD] %s declares %dx%d tiles, which is not usable\n",
+        CLOG_WARN("[WORLD] %s declares %dx%d tiles, which is not usable",
                 world_file_path, world->world_width, world->world_height);
         fclose(world->world_file);
         world->world_file = NULL;
@@ -120,7 +121,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     // Read tileset table
     uint8_t ts_count = 0;
     if (fread(&ts_count, sizeof(uint8_t), 1, world->world_file) != 1) {
-        fprintf(stderr, "[WORLD] %s ends before its tileset table\n", world_file_path);
+        CLOG_WARN("[WORLD] %s ends before its tileset table", world_file_path);
         fclose(world->world_file);
         world->world_file = NULL;
         return 0;
@@ -136,7 +137,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
 
         uint8_t path_len = 0;
         if (fread(&path_len, sizeof(uint8_t), 1, world->world_file) != 1) {
-            fprintf(stderr, "[WORLD] %s ends inside tileset entry %d\n", world_file_path, i);
+            CLOG_WARN("[WORLD] %s ends inside tileset entry %d", world_file_path, i);
             fclose(world->world_file);
             world->world_file = NULL;
             return 0;
@@ -145,7 +146,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         char path[128] = {0};
         if (path_len > 0 && path_len < 128) {
             if (fread(path, 1, path_len, world->world_file) != path_len) {
-                fprintf(stderr, "[WORLD] %s ends inside tileset %d's path\n",
+                CLOG_WARN("[WORLD] %s ends inside tileset %d's path",
                         world_file_path, i);
                 fclose(world->world_file);
                 world->world_file = NULL;
@@ -161,7 +162,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         uint16_t cols = 1, rows = 1;
         if (fread(&cols, sizeof(uint16_t), 1, world->world_file) != 1 ||
             fread(&rows, sizeof(uint16_t), 1, world->world_file) != 1) {
-            fprintf(stderr, "[WORLD] %s ends inside tileset %d's dimensions\n",
+            CLOG_WARN("[WORLD] %s ends inside tileset %d's dimensions",
                     world_file_path, i);
             fclose(world->world_file);
             world->world_file = NULL;
@@ -172,9 +173,9 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
 
         world->tileset_textures[slot] = texture_load(path);
         if (!world->tileset_textures[slot])
-            fprintf(stderr, "[WORLD] Warning: failed to load tileset %s\n", path);
+            CLOG_ERROR("[WORLD] Warning: failed to load tileset %s", path);
         else
-            printf("[WORLD] Tileset [%d] loaded: %s (%dx%d tiles)\n", slot, path, cols, rows);
+            CLOG_INFO("[WORLD] Tileset [%d] loaded: %s (%dx%d tiles)", slot, path, cols, rows);
     }
 
     // Record file offsets for the five data layers
@@ -191,7 +192,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
     // Companion overview for the full map screen; absence is not fatal.
     world_overview_load(world_file_path);
 
-    printf("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets%s\n",
+    CLOG_INFO("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets%s",
            world->world_width, world->world_height,
            world->world_width_chunks, world->world_height_chunks,
            world->tileset_count,
@@ -266,7 +267,7 @@ void world_cleanup(WorldState* world) {
     world_overview_unload();
     world->loaded_chunk_count = 0;
     world->modification_count = 0;
-    printf("[WORLD] Cleaned up\n");
+    CLOG_INFO("[WORLD] Cleaned up");
 }
 
 /**
@@ -354,7 +355,7 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
         if (target) chunk_free_display_lists(target);  // evict old display lists
     }
     if (!target) {
-        fprintf(stderr, "[WORLD] No chunk slot available!\n");
+        CLOG_WARN("[WORLD] No chunk slot available!");
         return NULL;
     }
 
@@ -514,7 +515,7 @@ static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
 int world_add_modification(WorldState* world, int tile_x, int tile_y,
                             uint16_t tile_type, uint8_t collision, float duration) {
     if (world->modification_count >= MAX_MODIFICATIONS) {
-        fprintf(stderr, "[WORLD] Max modifications reached!\n");
+        CLOG_WARN("[WORLD] Max modifications reached!");
         return 0;
     }
     for (int i = 0; i < world->modification_count; i++) {

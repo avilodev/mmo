@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <GLFW/glfw3.h>
+#include "core/client_log.h"
 
 KeyBinds g_keybinds;
 
@@ -105,7 +106,7 @@ void keybinds_load(const char* path) {
 
     FILE* f = fopen(path, "r");
     if (!f) {
-        printf("[KEYBINDS] %s not found, using defaults\n", path);
+        CLOG_INFO("[KEYBINDS] %s not found, using defaults", path);
         return;
     }
 
@@ -126,7 +127,7 @@ void keybinds_load(const char* path) {
 
         int key = key_from_name(val_str);
         if (key == GLFW_KEY_UNKNOWN) {
-            printf("[KEYBINDS] Unknown key name '%s' for binding '%s'\n", val_str, key_str);
+            CLOG_WARN("[KEYBINDS] Unknown key name '%s' for binding '%s'", val_str, key_str);
             continue;
         }
 
@@ -149,7 +150,7 @@ void keybinds_load(const char* path) {
     }
 
     fclose(f);
-    printf("[KEYBINDS] Loaded from %s\n", path);
+    CLOG_INFO("[KEYBINDS] Loaded from %s", path);
 }
 
 /**
@@ -160,7 +161,7 @@ void keybinds_load(const char* path) {
 void keybinds_save(const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
-        printf("[KEYBINDS] Could not write %s\n", path);
+        CLOG_WARN("[KEYBINDS] Could not write %s", path);
         return;
     }
 
@@ -185,5 +186,5 @@ void keybinds_save(const char* path) {
     fprintf(f, "ability_5=%s\n",        name_from_key(g_keybinds.ability[4]));
 
     fclose(f);
-    printf("[KEYBINDS] Saved to %s\n", path);
+    CLOG_INFO("[KEYBINDS] Saved to %s", path);
 }

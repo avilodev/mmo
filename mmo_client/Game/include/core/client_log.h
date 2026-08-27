@@ -16,6 +16,27 @@
  * two halves of one story.
  *
  * Writes are serialised, so any thread may log. Nothing here allocates.
+ *
+ * Every diagnostic in Game/src goes through this. It did not always: the
+ * network layer logged properly through NET_LOG/NET_WARN, and everything else
+ * -- the state machine, the game loop, asset loading, the player -- printed to
+ * a console a released client does not have, which is to say a player's crash
+ * report contained a fraction of what happened to them.
+ * Game/tests/check_client_logging.sh fails the build if a printf comes back;
+ * client_log.c itself is the one exemption, because a log file that would not
+ * open cannot report that through itself.
+ *
+ * Levels, as used across the tree:
+ *
+ *   ERROR  something the player noticed, or an asset that would not load
+ *   WARN   a refusal or a malformed file the game worked around
+ *   INFO   the shape of the session: startup, state changes, connections
+ *   DEBUG  per-action chatter -- clicks, casts, drags, texture loads
+ *   TRACE  per-packet detail
+ *
+ * INFO is the default, so a shipped client's log is the session's story with
+ * the per-frame noise left out. Warnings and errors also reach the console for
+ * anyone running from a terminal.
  */
 
 #include <stdarg.h>

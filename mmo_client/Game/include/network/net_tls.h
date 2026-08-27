@@ -72,8 +72,30 @@ const char* net_tls_message(void);
 /** Release the session. Safe when none is attached. */
 void net_tls_close(void);
 
-/** Write through the session. Follows send(2)'s return convention. */
+/** Write through the session. Follows send(2)'s return convention.
+ *
+ * A write the socket cannot take right now is queued rather than dropped. See
+ * net_tls_flush() for why it cannot simply be reported as a failed request the
+ * way a short send(2) was.
+ */
 int net_tls_send(const void* buf, int len);
+
+/** Push any queued bytes toward the realm. Call once per frame.
+ *
+ * OpenSSL requires an SSL_write() that asked for another event to be retried
+ * with the same bytes and the same length. Reporting it as a failed request --
+ * which is what a short send(2) meant, and what this used to do -- leaves a
+ * half-written record in the session, and the next write of anything else
+ * returns SSL_ERROR_SSL, "bad write retry". That is not a dropped request; it
+ * is a dead realm link, arriving one packet after the one that stalled.
+ *
+ * So a stalled write is held here instead and re-issued unchanged until it
+ * lands. Anything sent behind it queues up in order rather than overtaking it.
+ *
+ * @return 1 when the queue is empty or draining, 0 when the session is broken
+ *         and the connection should be torn down.
+ */
+int net_tls_flush(void);
 
 /** Nothing to read right now. The common case, every frame. */
 #define NET_TLS_AGAIN  (-1)

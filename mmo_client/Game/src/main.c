@@ -88,7 +88,7 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
         game->session_key[64] = '\0';
     }
 
-    printf("[ARGS] Parsing %d arguments\n", argc);
+    CLOG_INFO("[ARGS] Parsing %d arguments", argc);
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--playerid=", 11) == 0) {
@@ -98,16 +98,22 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
         }
         else if (strncmp(argv[i], "--username=", 11) == 0) {
             const char* start = argv[i] + 11;
-            if (start[0] == '"') {
+            size_t len = strlen(start);
+
+            /* Strip a surrounding pair of quotes, then bound the copy.
+             *
+             * The quoted branch used to copy `len` bytes into a 32-byte field
+             * and write a terminator at index len, with nothing capping len at
+             * all -- so --username="<33 or more characters>" wrote over
+             * realm_ip and realm_port, which sit immediately after it in
+             * GameState. The unquoted branch was capped; this one was not. */
+            if (len >= 2 && start[0] == '"' && start[len - 1] == '"') {
                 start++;
-                size_t len = strlen(start);
-                if (len > 0 && start[len - 1] == '"') len--;
-                strncpy(game->username, start, len);
-                game->username[len] = '\0';
-            } else {
-                strncpy(game->username, start, 31);
-                game->username[31] = '\0';
+                len -= 2;
             }
+            if (len > sizeof(game->username) - 1) len = sizeof(game->username) - 1;
+            memcpy(game->username, start, len);
+            game->username[len] = '\0';
         }
         else if (strncmp(argv[i], "--server=", 9) == 0) {
             char server[32];
@@ -129,10 +135,10 @@ static void parse_arguments(int argc, char* argv[], GameState* game) {
         }
     }
     
-    printf("[ARGS] Session: %s\n", game->session_key[0] ? "provided" : "(none)");
-    printf("[ARGS] Account: %u\n", game->account_id);
-    printf("[ARGS] Username: %s\n", game->username[0] ? game->username : "(none)");
-    printf("[ARGS] Server: %s:%d\n", game->realm_ip[0] ? game->realm_ip : "(none)", game->realm_port);
+    CLOG_INFO("[ARGS] Session: %s", game->session_key[0] ? "provided" : "(none)");
+    CLOG_INFO("[ARGS] Account: %u", game->account_id);
+    CLOG_INFO("[ARGS] Username: %s", game->username[0] ? game->username : "(none)");
+    CLOG_INFO("[ARGS] Server: %s:%d", game->realm_ip[0] ? game->realm_ip : "(none)", game->realm_port);
 }
 
 /**
@@ -169,7 +175,7 @@ static void hex_to_binary(const char* hex, char* bin, size_t bin_size) {
  */
 static int connect_to_realm(GameState* game) {
     if (game->session_key[0] == '\0' || game->account_id == 0 || game->realm_ip[0] == '\0') {
-        printf("[NETWORK] Missing connection parameters\n");
+        CLOG_WARN("[NETWORK] Missing connection parameters");
         snprintf(game->network_status, sizeof(game->network_status), "Missing parameters");
         return 0;
     }
@@ -220,12 +226,11 @@ int main(int argc, char* argv[]) {
      * all to diagnose. */
     client_log_init();
 
-    printf("=== MMO Client Starting ===\n");
     CLOG_INFO("=== MMO Client starting ===");
     
     // Initialize GLFW
     if (!glfwInit()) {
-        fprintf(stderr, "Failed to initialize GLFW\n");
+        CLOG_ERROR("Failed to initialize GLFW");
         return -1;
     }
     
@@ -233,7 +238,7 @@ int main(int argc, char* argv[]) {
     GLFWmonitor* monitor = glfwGetPrimaryMonitor();
     const GLFWvidmode* mode = glfwGetVideoMode(monitor);
 
-    printf("Monitor: %dx%d @ %dHz\n", mode->width, mode->height, mode->refreshRate);
+    CLOG_INFO("Monitor: %dx%d @ %dHz", mode->width, mode->height, mode->refreshRate);
 
     // Create window hints
     glfwWindowHint(GLFW_RED_BITS, mode->redBits);
@@ -245,11 +250,11 @@ int main(int argc, char* argv[]) {
     int window_width = (int)(mode->width * 0.9f);
     int window_height = (int)(mode->height * 0.9f);
 
-    printf("Window size: %dx%d\n", window_width, window_height);
+    CLOG_INFO("Window size: %dx%d", window_width, window_height);
 
     GLFWwindow* window = glfwCreateWindow(window_width, window_height, "MMO Game", NULL, NULL);
     if (!window) {
-        fprintf(stderr, "Failed to create window\n");
+        CLOG_ERROR("Failed to create window");
         glfwTerminate();
         return -1;
     }
@@ -286,9 +291,9 @@ int main(int argc, char* argv[]) {
     parse_arguments(argc, argv, &game);
     
     // Initialize network
-    printf("[NETWORK] Initializing...\n");
+    CLOG_INFO("[NETWORK] Initializing...");
     if (!network_init(game.account_id)) {
-        fprintf(stderr, "[NETWORK] Init failed\n");
+        CLOG_ERROR("[NETWORK] Init failed");
         snprintf(game.network_status, sizeof(game.network_status), "Network init failed");
     } else {
         connect_to_realm(&game);
@@ -299,16 +304,16 @@ int main(int argc, char* argv[]) {
     glfwSetScrollCallback(window, scroll_callback);
     glfwSetCharCallback(window, char_callback);
     
-    printf("\n=== Entering Main Loop ===\n");
+    CLOG_INFO("=== Entering Main Loop ===");
     if (game.settings.vsync) {
-        printf("Frame pacing: VSync (display refresh)\n");
+        CLOG_INFO("Frame pacing: VSync (display refresh)");
     } else if (game.settings.fps_limit > 0) {
-        printf("Frame pacing: capped at %d FPS\n", game.settings.fps_limit);
+        CLOG_INFO("Frame pacing: capped at %d FPS", game.settings.fps_limit);
     } else {
-        printf("Frame pacing: uncapped\n");
+        CLOG_INFO("Frame pacing: uncapped");
     }
-    printf("Game viewport: %dx%d\n", window_width, window_height);
-    printf("Network: %s\n\n", game.network_status);
+    CLOG_INFO("Game viewport: %dx%d", window_width, window_height);
+    CLOG_INFO("Network: %s\n", game.network_status);
     
     while (!glfwWindowShouldClose(window) && game.is_running) {
         /* Taken before any work, so the cap below measures a whole frame
@@ -333,15 +338,29 @@ int main(int argc, char* argv[]) {
          * backoff. Nothing in this loop waits on the network. */
         double frame_now = glfwGetTime();
 
-        if (network_connect_in_flight() && net_reconnect_phase() == RECONNECT_IDLE) {
-            poll_realm_connect(&game);
+        /* Only the realm handshake is the frame loop's to finish.
+         *
+         * network_connect_poll() reports SUCCEEDED and FAILED exactly once, so
+         * whoever started an attempt has to be the one that polls it. The test
+         * here was network_connect_in_flight(), which is equally true of a
+         * world handshake character select had started -- and this block runs
+         * before game_update(), so it took that result every time: the frame
+         * loop marked the client "Connected to <realm>" while character select,
+         * polling second, saw NET_CONNECT_IDLE and sat in "Entering world..."
+         * until its own timeout gave up. World entry could not complete at all.
+         *
+         * The outer test stays network_connect_in_flight(): while ANY attempt
+         * is in flight there is no live session to read or ping through. */
+        if (network_connect_in_flight()) {
+            if (network_realm_connect_in_flight() && net_reconnect_phase() == RECONNECT_IDLE)
+                poll_realm_connect(&game);
         } else if (game.network_connected) {
             network_update_with_ping(game.mode);
 
             if (!network_is_connected()) {
                 game.network_connected = 0;
                 snprintf(game.network_status, sizeof(game.network_status), "Disconnected");
-                printf("[NETWORK] Lost connection\n");
+                CLOG_WARN("[NETWORK] Lost connection");
 
                 /* In world, a drop is recoverable: the supervisor goes back to
                  * the realm for a fresh ticket and rejoins. It used to end the
@@ -380,7 +399,7 @@ int main(int argc, char* argv[]) {
         // FPS display
         static double last_fps_print = 0.0;
         if (glfwGetTime() - last_fps_print >= 1.0) {
-            printf("FPS: %.1f | %s\n", fps_get_current(&fps),
+            CLOG_DEBUG("FPS: %.1f | %s", fps_get_current(&fps),
                    game.network_connected ? "Online" : "Offline");
             last_fps_print = glfwGetTime();
         }
@@ -452,9 +471,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    printf("\n=== Shutting Down ===\n");
     CLOG_INFO("=== Shutting down ===");
-    fflush(stdout);
 
     // Drain pending window messages before teardown.
     //
@@ -466,24 +483,23 @@ int main(int argc, char* argv[]) {
 
     // Each step announces itself and flushes, so a hang names the step it is in
     // instead of leaving a silent frozen window.
-    printf("[SHUTDOWN] network...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN] network...");
     if (game.network_connected) {
         network_disconnect();
     }
     network_cleanup();
 
-    printf("[SHUTDOWN] game...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN] game...");
     game_cleanup(&game);
 
-    printf("[SHUTDOWN] renderer...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN] renderer...");
     renderer_cleanup();
 
-    printf("[SHUTDOWN] glfw...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN] glfw...");
     glfwTerminate();
 
     g_current_game = NULL;
-    printf("Goodbye!\n");
-    fflush(stdout);
+    CLOG_INFO("Goodbye!");
 
     /* Last, so anything the teardown above had to say is in the file. */
     client_log_close();

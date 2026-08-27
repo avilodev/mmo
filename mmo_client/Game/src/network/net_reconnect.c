@@ -38,6 +38,7 @@ static struct {
 
     /* What a live session was, remembered while it was live. */
     int      have_session;
+    /** Sized from GameState.realm_ip, which is what fills it. */
     char     realm_ip[16];
     uint16_t realm_port;
     uint32_t account_id;
@@ -204,11 +205,16 @@ ReconnectPhase net_reconnect_update(double now) {
                     return g_rc.phase;
                 }
 
-                char world_ip[16];
-                snprintf(world_ip, sizeof(world_ip), "%.15s", response.world_ip);
+                /* Copied at the wire field's own width. It was declared 16
+                 * bytes and truncated with "%.15s", which was correct only
+                 * while the field itself was 16 -- and it is the address a
+                 * recovery dials, so a world named rather than numbered was
+                 * one this path could never get back to. */
+                char world_host[sizeof(response.world_host)];
+                snprintf(world_host, sizeof(world_host), "%s", response.world_host);
 
                 snprintf(g_rc.status, sizeof(g_rc.status), "Rejoining the world...");
-                if (!network_begin_world_connect(world_ip, ntohs(response.world_port),
+                if (!network_begin_world_connect(world_host, ntohs(response.world_port),
                                                  response.game_ticket, g_rc.character_id)) {
                     schedule_retry(now);
                     return g_rc.phase;

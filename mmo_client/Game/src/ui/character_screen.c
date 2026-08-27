@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include "core/client_log.h"
 
 // Equipment slot indices for hovered_slot
 #define SLOT_MAIN_HAND  0
@@ -104,7 +105,7 @@ void character_screen_init(CharacterScreenState* char_screen, float screen_width
     char_screen->hovered_slot = -1;
     char_screen->is_open = 0;
 
-    printf("[CHAR_SCREEN] Initialized %.0fx%.0f window with blessing slot\n",
+    CLOG_INFO("[CHAR_SCREEN] Initialized %.0fx%.0f window with blessing slot",
            char_screen->window_width, char_screen->window_height);
 }
 

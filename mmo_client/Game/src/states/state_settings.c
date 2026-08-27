@@ -9,15 +9,16 @@
 #include "input/input.h"
 
 #include <stdio.h>
+#include "core/client_log.h"
 
 static void settings_enter(GameState* game) {
     (void)game;
-    printf("[STATE] Entering settings\n");
+    CLOG_INFO("[STATE] Entering settings");
 }
 
 static void settings_exit(GameState* game) {
     (void)game;
-    printf("[STATE] Exiting settings\n");
+    CLOG_INFO("[STATE] Exiting settings");
 }
 
 static void settings_update(GameState* game, float delta_time) {

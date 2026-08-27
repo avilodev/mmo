@@ -22,6 +22,7 @@
 #include "core/keybinds.h"
 
 #include <string.h>
+#include "core/client_log.h"
 
 /**
  * Route gameplay, panel, chat, targeting, movement, and combat input.
@@ -263,14 +264,14 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
                 if (npc->category == 1) {
                     // Hostile NPC: target + basic attack
                     game->playing->target_npc_id = npc->npc_id;
-                    printf("[INPUT] Attacking NPC %u at (%.1f, %.1f)\n",
+                    CLOG_DEBUG("[INPUT] Attacking NPC %u at (%.1f, %.1f)",
                            npc->npc_id, npc->pos_x, npc->pos_y);
                     network_update_facing_direction(npc->pos_x - game->player.x,
                                                    npc->pos_y - game->player.y);
                     network_send_attack_intent(npc->pos_x, npc->pos_y);
                 } else if (npc->is_interactable) {
                     // Quest/passive NPC: interact as before
-                    printf("[INPUT] Clicked on NPC %u at (%.1f, %.1f)\n",
+                    CLOG_DEBUG("[INPUT] Clicked on NPC %u at (%.1f, %.1f)",
                            npc->npc_id, npc->pos_x, npc->pos_y);
                     network_send_npc_interact_request(npc->npc_id);
                 }
@@ -539,7 +540,7 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
                                  swap_ack.ability_ready_in);
             game->playing->player_form          = swap_ack.form;
             game->playing->player_resource_type = swap_ack.resource_type;
-            printf("[FORM] Now in %s form\n",
+            CLOG_DEBUG("[FORM] Now in %s form",
                    swap_ack.form == FORM_ANIMAL ? "animal" : "human");
         } else {
             /* A refusal still carries the truth: keep the client in step with it. */

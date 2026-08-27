@@ -24,11 +24,36 @@
  */
 #define REALM_PIN_PATH_DEFAULT "Game/certs/realm_pins.txt"
 
+/** Bytes that may wait for a socket that is not taking writes right now.
+ *
+ * The realm link is a control channel: a connect, a roster, a create, a
+ * delete, a world list. The largest packet on it is a few hundred bytes, so
+ * this holds several outstanding requests and still fits in a cache line's
+ * worth of pages. A link that manages to fill it is not busy, it is stuck --
+ * which is why overflowing is treated as a broken session rather than grown.
+ */
+#define PENDING_CAP 4096
+
 static SSL_CTX*   g_ctx = NULL;
 static CertPinSet g_pins;
 static SSL*       g_ssl = NULL;
 static int        g_established = 0;
 static char       g_message[192] = "";
+
+/** Queued bytes, oldest first. See net_tls_flush(). */
+static unsigned char g_pending[PENDING_CAP];
+static int           g_pending_len = 0;
+
+/** Bytes of g_pending currently inside an SSL_write that asked to be retried.
+ *
+ * The retry has to repeat that exact length, so it is recorded separately from
+ * how much is queued: bytes appended behind an in-flight write must not change
+ * the write being retried.
+ */
+static int g_inflight = 0;
+
+/** Set once the record stream is half-written and nothing more can be sent. */
+static int g_write_broken = 0;
 
 /** Record a failure reason and log it once. */
 static void fail(const char* fmt, ...) {
@@ -84,6 +109,17 @@ int net_tls_init(void) {
     SSL_CTX_set_verify(g_ctx, SSL_VERIFY_NONE, NULL);
     SSL_CTX_set_min_proto_version(g_ctx, TLS1_2_VERSION);
 
+    /* A stalled write is retried out of g_pending, which is not where the
+     * caller's packet was when the write first stalled. OpenSSL rejects a
+     * retry from a different address unless it has been told the buffer may
+     * move; the bytes and the length still have to be identical, and they are.
+     *
+     * Partial writes stay OFF. With them enabled SSL_write may report having
+     * taken part of a packet, and every caller here treats a positive return
+     * as the whole thing -- a truncated packet does not fail, it desynchronizes
+     * the realm's framing. */
+    SSL_CTX_set_mode(g_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
     NET_LOG("[TLS] Realm client ready (%d pinned key%s)\n",
             g_pins.count, g_pins.count == 1 ? "" : "s");
     return 1;
@@ -113,7 +149,10 @@ int net_tls_begin(SOCKET sock) {
      * OpenSSL wants the int. The cast is safe for any descriptor a client
      * process actually holds. */
     SSL_set_fd(g_ssl, (int)sock);
-    g_established = 0;
+    g_established  = 0;
+    g_pending_len  = 0;
+    g_inflight     = 0;
+    g_write_broken = 0;
     return 1;
 }
 
@@ -166,22 +205,93 @@ void net_tls_close(void) {
      * be gone would block the frame. */
     SSL_free(g_ssl);
     g_ssl = NULL;
-    g_established = 0;
+    g_established  = 0;
+    g_pending_len  = 0;
+    g_inflight     = 0;
+    g_write_broken = 0;
+}
+
+/** Queue bytes behind whatever is already waiting.
+ *
+ * @return 1 when they fit, 0 when the queue is full and the link is finished.
+ */
+static int enqueue(const void* buf, int len) {
+    if (len < 0 || len > PENDING_CAP - g_pending_len) {
+        fail("The realm link stopped accepting writes");
+        g_write_broken = 1;
+        return 0;
+    }
+    memcpy(g_pending + g_pending_len, buf, (size_t)len);
+    g_pending_len += len;
+    return 1;
+}
+
+int net_tls_flush(void) {
+    if (g_write_broken) return 0;
+    if (!g_ssl || !g_established) return 1;
+
+    while (g_pending_len > 0) {
+        /* A write OpenSSL asked to have retried must be repeated at its
+         * original length. Anything queued behind it waits for the next pass. */
+        int n = g_inflight > 0 ? g_inflight : g_pending_len;
+
+        int ret = SSL_write(g_ssl, g_pending, n);
+        if (ret > 0) {
+            /* Partial writes are disabled, so a positive return is all of n. */
+            g_pending_len -= n;
+            if (g_pending_len > 0)
+                memmove(g_pending, g_pending + n, (size_t)g_pending_len);
+            g_inflight = 0;
+            continue;
+        }
+
+        int err = SSL_get_error(g_ssl, ret);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            g_inflight = n;      /* repeat exactly this much next time */
+            return 1;
+        }
+
+        NET_WARN("[TLS] write failed (SSL error %d)\n", err);
+        fail("The realm link failed while sending");
+        g_write_broken = 1;
+        return 0;
+    }
+
+    g_inflight = 0;
+    return 1;
 }
 
 int net_tls_send(const void* buf, int len) {
+    if (g_write_broken) return -1;
     if (!g_ssl || !g_established) return -1;
+
+    /* Drain first, so ordinary traffic goes straight out and only a link that
+     * is actually stalled ever touches the queue. */
+    if (!net_tls_flush()) return -1;
+
+    /* Still something waiting means the socket is not taking writes. Going
+     * around the queue here would put this packet on the wire ahead of one the
+     * realm is already half-way through reading. */
+    if (g_pending_len > 0)
+        return enqueue(buf, len) ? len : -1;
 
     int ret = SSL_write(g_ssl, buf, len);
     if (ret > 0) return ret;
 
     int err = SSL_get_error(g_ssl, ret);
-    /* The socket is non-blocking, so a full send buffer surfaces here. The
-     * callers all send small fixed packets and treat a short write as a failed
-     * request, which is what they did against send() too. */
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return -1;
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        /* OpenSSL is holding a record built from these bytes and will accept
+         * nothing else until it has been retried with them. Copy them in and
+         * report the packet as sent: it is queued, not lost, and the caller
+         * has no queue of its own to put it back into. */
+        if (!enqueue(buf, len)) return -1;
+        g_inflight = len;
+        return len;
+    }
 
     NET_WARN("[TLS] write failed (SSL error %d)\n", err);
+    fail("The realm link failed while sending");
+    g_write_broken = 1;
     return -1;
 }
 

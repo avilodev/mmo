@@ -12,12 +12,13 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include "core/client_log.h"
 
 /**
  * Initialize HUD element positions for the current viewport.
  */
 void hud_init(HUDLayout* hud, int screen_width, int screen_height) {
-    printf("[HUD] Initializing %dx%d\n", screen_width, screen_height);
+    CLOG_INFO("[HUD] Initializing %dx%d", screen_width, screen_height);
     hud->screen_width = screen_width;
     hud->screen_height = screen_height;
 

@@ -22,7 +22,7 @@
  * enum that travels on the wire changes. tests/check_protocol_version.sh (and
  * the client's equivalent) fails the build when this file changes without it.
  */
-#define PROTOCOL_VERSION 5
+#define PROTOCOL_VERSION 7
 
 /* Byte order: every multi-byte INTEGER on the wire is in network order
  * (htonl/htons); every FLOAT is native-endian and memcpy'd as-is, which is
@@ -438,18 +438,24 @@ typedef struct {
     PacketHeader header;
 } WorldListRequestPacket;
 
-/** Describe one world endpoint with explicit cross-platform padding. */
+/** Describe one world endpoint with explicit cross-platform padding.
+ *
+ * `host` and `region` are as wide as the realm's own WorldServer record. They
+ * were 16 and 32 bytes against a 64-byte source, so a world configured by
+ * hostname reached clients truncated and unreachable. */
 typedef struct {
     char name[64];
     uint32_t world_id;
     uint16_t population;
-    int16_t capacity;
+    /** Unsigned, like `population`; the value behind it is a uint32_t. */
+    uint16_t capacity;
     uint8_t status; // 0=offline, 1=online, 2=full
     uint8_t padding1[3];    // EXPLICIT PADDING ADDED
-    char ip[16];
+    /** Hostname or address literal; the client resolves it. */
+    char host[64];
     uint16_t port;
     uint8_t padding2[2];    // EXPLICIT PADDING ADDED
-    char region[32];
+    char region[64];
 } WorldInfo;
 
 /** Return up to MAX_WORLDS world descriptions. */
@@ -527,7 +533,11 @@ typedef struct {
     PacketHeader header;
     uint8_t success;
     char game_ticket[64];     // Short-lived token for world server
-    char world_ip[16];
+    /** Hostname or address literal the client dials; resolved client-side.
+     *  Sized from the realm's WorldServer.host -- this is the field a world
+     *  entry connects to, so a truncation here was a world nobody could
+     *  reach. */
+    char world_host[64];
     uint16_t world_port;
     char message[128];
 } EnterWorldResponsePacket;
@@ -683,20 +693,34 @@ _Static_assert(sizeof(WorldConnectPacket) == 77,
 
 
 
-/** Submit a player's position, velocity, and movement speed. */
+/** Submit a player's position and velocity.
+ *
+ * `sequence` numbers the proposal so a correction can name the one it answers.
+ * See the client's player_apply_correction(): the client rewinds to the
+ * corrected position and replays the moves it sent after that sequence, which
+ * is what makes a correction it would have agreed with invisible instead of a
+ * jerk. Network order.
+ */
 typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
     float vel_x;
     float vel_y;
+    uint32_t sequence;
 } PlayerMovePacket;
 
-/** Acknowledge an accepted player position. */
+/** Correct a player's position, naming the proposal it rejects.
+ *
+ * Sent only on refusal; an accepted move is acknowledged by silence. Moves
+ * after `sequence` are unresolved and are replayed from (pos_x, pos_y); the
+ * move carrying `sequence` is the refused one and is dropped.
+ */
 typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
+    uint32_t sequence;
 } PlayerMoveAckPacket;
 
 /** Identify supported attack-area shapes. */

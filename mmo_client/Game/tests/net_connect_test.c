@@ -572,6 +572,126 @@ static void test_an_unpinned_realm_is_refused(void) {
     closesocket(ls);
 }
 
+/**
+ * The session payload arriving in the same read as the ack is acted on.
+ *
+ * The companion to the case above, and the one that was wrong. A server does
+ * not send an acknowledgement and then wait to be asked: the world queues the
+ * ack, the character record, the stats, the ability bar and the quest log into
+ * one outbound buffer and they arrive together. The gate that refuses
+ * pre-session traffic was cleared by finish_succeeded(), which runs in
+ * network_connect_poll() *after* network_update() has already drained the whole
+ * buffer -- so everything behind the ack in that same read was dropped.
+ *
+ * Character data and stats survived it, because the client re-requests them
+ * once it is in the world. PACKET_ABILITY_DATA and the quest packets have no
+ * request opcode at all: they are sent once, here, and a player who lost them
+ * played the session with an empty ability bar and an empty quest log.
+ *
+ * The check is that ONE write carrying both is fully acted on. Writing them
+ * separately, as the case above does, passes either way.
+ */
+static void test_payload_behind_the_ack_is_delivered(void) {
+    printf("\nthe session payload sent with the ack\n");
+
+    uint16_t port = 0;
+    int ls = open_listener(&port);
+    CHECK(ls >= 0, "a loopback listener came up");
+    if (ls < 0) return;
+
+    RealmSide realm = {.listen_fd = ls, .ctx = g_realm_ctx, .fd = -1, .ssl = NULL};
+    pthread_t t;
+    pthread_create(&t, NULL, realm_thread, &realm);
+
+    int started = network_begin_realm_connect("127.0.0.1", port, k_session_key, 1234);
+    CHECK(started, "the connect attempt began");
+
+    double deadline = seconds_now() + 5.0;
+    while (!g_net.handshaking && seconds_now() < deadline) network_connect_poll();
+    pthread_join(t, NULL);
+
+    CHECK(realm.ssl != NULL, "the realm completed a TLS handshake with the client");
+    if (!realm.ssl) { closesocket(ls); return; }
+
+    RealmConnectPacket got;
+    memset(&got, 0, sizeof(got));
+    SSL_read(realm.ssl, &got, sizeof(got));
+    CHECK(got.header.type == PACKET_REALM_CONNECT, "the connect packet arrived");
+
+    /* One buffer, one write: the ack and a gameplay packet behind it. */
+    uint8_t burst[sizeof(RealmConnectAckPacket) + sizeof(FormSwapAckPacket)];
+    memset(burst, 0, sizeof(burst));
+
+    RealmConnectAckPacket* ack = (RealmConnectAckPacket*)burst;
+    ack->header.type         = PACKET_REALM_CONNECT_ACK;
+    ack->header.payload_size = htons(sizeof(*ack) - sizeof(PacketHeader));
+    ack->success             = 1;
+    snprintf(ack->message, sizeof(ack->message), "welcome");
+
+    FormSwapAckPacket* swap =
+        (FormSwapAckPacket*)(burst + sizeof(RealmConnectAckPacket));
+    swap->header.type         = PACKET_FORM_SWAP_ACK;
+    swap->header.payload_size = htons(sizeof(*swap) - sizeof(PacketHeader));
+
+    g_net.form_swap.ready = FALSE;
+    SSL_write(realm.ssl, burst, sizeof(burst));
+
+    NetConnectPhase r = poll_until_settled(2.0);
+    CHECK(r == NET_CONNECT_SUCCEEDED, "the acknowledgement completed the handshake");
+    CHECK(!g_net.handshaking, "and the handshake window closed");
+    CHECK(g_net.form_swap.ready,
+          "the packet behind the ack, in the same read, was acted on");
+
+    network_connect_abort();
+    SSL_free(realm.ssl);
+    closesocket(realm.fd);
+    closesocket(ls);
+}
+
+/**
+ * A world handshake is not reported as a realm handshake.
+ *
+ * network_connect_poll() reports SUCCEEDED and FAILED exactly once, so only the
+ * caller that started an attempt may poll it -- and there are three callers:
+ * the frame loop drives the realm, character select drives a world entry, and
+ * the reconnect supervisor drives both halves of a recovery.
+ *
+ * The frame loop used to decide with network_connect_in_flight(), which is
+ * equally true of a world handshake somebody else started. Because it runs
+ * before game_update(), it took that result every frame: the frame loop marked
+ * the client connected to the realm while character select, polling second,
+ * saw NET_CONNECT_IDLE and sat in "Entering world..." until it gave up. World
+ * entry could not complete at all. This is the test that separates them.
+ */
+static void test_world_attempt_is_not_a_realm_attempt(void) {
+    printf("\ntelling a world handshake from a realm one\n");
+
+    network_connect_abort();
+    CHECK(!network_connect_in_flight(), "nothing is in flight to begin with");
+    CHECK(!network_realm_connect_in_flight(), "and so no realm attempt either");
+
+    char ticket[64];
+    memset(ticket, 0, sizeof(ticket));
+    snprintf(ticket, sizeof(ticket), "deadbeef");
+
+    /* The blackhole address: the connect stays pending, which is the state
+     * under test. Whether it would ever succeed does not matter here. */
+    int started = network_begin_world_connect(BLACKHOLE_IP, 7000, ticket, 42);
+    CHECK(started, "a world attempt began");
+    CHECK(network_connect_in_flight(), "and is in flight");
+    CHECK(!network_realm_connect_in_flight(),
+          "but is NOT reported as a realm attempt");
+
+    network_connect_abort();
+
+    started = network_begin_realm_connect(BLACKHOLE_IP, 7000, k_session_key, 1234);
+    CHECK(started, "a realm attempt began");
+    CHECK(network_connect_in_flight(), "and is in flight");
+    CHECK(network_realm_connect_in_flight(), "and IS reported as a realm attempt");
+
+    network_connect_abort();
+}
+
 int main(void) {
     printf("=== client connection state machine ===\n");
 
@@ -597,6 +717,8 @@ int main(void) {
     test_reconnect_without_a_session();
     test_reconnect_cancel();
     test_traffic_before_the_ack_is_ignored();
+    test_payload_behind_the_ack_is_delivered();
+    test_world_attempt_is_not_a_realm_attempt();
     test_an_unpinned_realm_is_refused();
 
     network_connect_abort();

@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "core/client_log.h"
 
 /* mkdir, which is spelled differently on each platform.
  *
@@ -79,7 +80,7 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     if (game->inventory) {
         inventory_init(game->inventory, viewport_width, viewport_height);
     } else {
-        fprintf(stderr, "[GAME] Failed to allocate inventory!\n");
+        CLOG_ERROR("[GAME] Failed to allocate inventory!");
     }
 
     // Allocate and initialize character screen
@@ -87,7 +88,7 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
     if (game->character_screen) {
         character_screen_init(game->character_screen, viewport_width, viewport_height);
     } else {
-        fprintf(stderr, "[GAME] Failed to allocate character screen!\n");
+        CLOG_ERROR("[GAME] Failed to allocate character screen!");
     }
 
     // Ensure data directory exists before any file reads/writes
@@ -108,9 +109,9 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
 
     // Initialize world with CHUNKED LOADING from binary file
     if (!world_init(&game->world, "Game/bin/world.dat", 16)) {
-        fprintf(stderr, "[GAME] FATAL: Failed to initialize world!\n");
-        fprintf(stderr, "[GAME] Make sure world.dat exists in the game directory!\n");
-        fprintf(stderr, "[GAME] Run world_generator to create it.\n");
+        CLOG_ERROR("[GAME] FATAL: Failed to initialize world!");
+        CLOG_WARN("[GAME] Make sure world.dat exists in the game directory!");
+        CLOG_WARN("[GAME] Run world_generator to create it.");
         game->is_running = 0;
         return;
     }
@@ -146,10 +147,10 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
         handler->enter(game);
     }
 
-    printf("[GAME] Initialized\n");
-    printf("[GAME] World: %dx%d tiles (chunked loading)\n",
+    CLOG_INFO("[GAME] Initialized");
+    CLOG_INFO("[GAME] World: %dx%d tiles (chunked loading)",
            game->world.world_width, game->world.world_height);
-    printf("[GAME] Viewport: %dx%d\n", viewport_width, viewport_height);
+    CLOG_INFO("[GAME] Viewport: %dx%d", viewport_width, viewport_height);
 }
 
 /**
@@ -159,16 +160,16 @@ void game_init(GameState* game, int viewport_width, int viewport_height) {
  */
 void game_change_state(GameState* game, GameMode new_mode) {
     if (game->mode == new_mode) {
-        printf("[GAME] Already in mode %d, skipping\n", new_mode);
+        CLOG_DEBUG("[GAME] Already in mode %d, skipping", new_mode);
         return;
     }
 
-    printf("[GAME] Changing state: %d -> %d\n", game->mode, new_mode);
+    CLOG_INFO("[GAME] Changing state: %d -> %d", game->mode, new_mode);
 
     // Exit current state
     const StateHandler* old_handler = state_handler_get(game->mode);
     if (old_handler && old_handler->exit) {
-        printf("[GAME] Calling exit for mode %d\n", game->mode);
+        CLOG_DEBUG("[GAME] Calling exit for mode %d", game->mode);
         old_handler->exit(game);
     }
 
@@ -182,7 +183,7 @@ void game_change_state(GameState* game, GameMode new_mode) {
     // Enter new state
     const StateHandler* new_handler = state_handler_get(new_mode);
     if (new_handler && new_handler->enter) {
-        printf("[GAME] Calling enter for mode %d\n", new_mode);
+        CLOG_DEBUG("[GAME] Calling enter for mode %d", new_mode);
         new_handler->enter(game);
     }
 }
@@ -247,7 +248,7 @@ void game_render(GameState* game) {
  * Release game-owned resources and persist current settings.
  */
 void game_cleanup(GameState* game) {
-    printf("[SHUTDOWN]   state exit...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN]   state exit...");
     // Exit current state
     const StateHandler* handler = state_handler_get(game->mode);
     if (handler && handler->exit) {
@@ -269,7 +270,7 @@ void game_cleanup(GameState* game) {
     // Free NPC type table
     npc_types_cleanup();
 
-    printf("[SHUTDOWN]   world...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN]   world...");
     // Free world (closes file, frees chunks)
     world_cleanup(&game->world);
 
@@ -277,13 +278,12 @@ void game_cleanup(GameState* game) {
     // (gameplay textures are already unloaded by playing_exit)
     if (game->textures.background) texture_unload(game->textures.background);
 
-    printf("[SHUTDOWN]   settings + audio...\n"); fflush(stdout);
+    CLOG_INFO("[SHUTDOWN]   settings + audio...");
     // Save settings and shut down audio
     game_settings_save(&game->settings, SETTINGS_PATH);
     audio_cleanup();
 
-    printf("[GAME] Cleaned up\n");
-    fflush(stdout);
+    CLOG_INFO("[GAME] Cleaned up");
 }
 
 /**
@@ -295,7 +295,7 @@ void game_cleanup(GameState* game) {
 void game_settings_save(const GameSettings* s, const char* path) {
     FILE* f = fopen(path, "w");
     if (!f) {
-        printf("[GAME] Warning: could not save settings to %s\n", path);
+        CLOG_WARN("[GAME] Warning: could not save settings to %s", path);
         return;
     }
     fprintf(f, "master_volume=%.4f\n", s->master_volume);
@@ -307,7 +307,7 @@ void game_settings_save(const GameSettings* s, const char* path) {
     fprintf(f, "vsync=%d\n",           s->vsync);
     fprintf(f, "fps_limit=%d\n",       s->fps_limit);
     fclose(f);
-    printf("[GAME] Settings saved to %s\n", path);
+    CLOG_INFO("[GAME] Settings saved to %s", path);
 }
 
 /**
@@ -350,7 +350,7 @@ void game_settings_load(GameSettings* s, const char* path) {
         (void)key;
     }
     fclose(f);
-    printf("[GAME] Settings loaded from %s\n", path);
+    CLOG_INFO("[GAME] Settings loaded from %s", path);
 }
 
 // Global window handle — defined here, declared extern in game.h

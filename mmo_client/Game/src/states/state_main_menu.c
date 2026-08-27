@@ -8,16 +8,17 @@
 #include "renderer.h"
 #include "input/input.h"
 #include <stdio.h>
+#include "core/client_log.h"
 
 static void main_menu_enter(GameState* game) {
-    printf("[STATE] Entering main menu\n");
+    CLOG_INFO("[STATE] Entering main menu");
     game->main_menu.selected_button = -1;
     game->main_menu.hovered_button = -1;
 }
 
 static void main_menu_exit(GameState* game) {
     (void)game;
-    printf("[STATE] Exiting main menu\n");
+    CLOG_INFO("[STATE] Exiting main menu");
 }
 
 static void main_menu_update(GameState* game, float delta_time) {

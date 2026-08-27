@@ -36,9 +36,10 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
             if (length >= (int)sizeof(PlayerMoveAckPacket)) {
                 PlayerMoveAckPacket* ack = (PlayerMoveAckPacket*)data;
                 EnterCriticalSection(&g_net.response_lock);
-                g_net.correction.x = ack->pos_x;
-                g_net.correction.y = ack->pos_y;
-                g_net.correction.ready = TRUE;
+                g_net.correction.x        = ack->pos_x;
+                g_net.correction.y        = ack->pos_y;
+                g_net.correction.sequence = ntohl(ack->sequence);
+                g_net.correction.ready    = TRUE;
                 LeaveCriticalSection(&g_net.response_lock);
             }
             break;
@@ -503,7 +504,20 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
  *
  * @return      Nonzero when the complete packet is sent; otherwise zero.
  */
-int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y) {
+uint32_t network_next_move_sequence(void) {
+    /* Read under the response lock for the same reason the correction is
+     * written under it: the two are compared against each other, and the
+     * counter is touched from the frame that sends and read by nothing else.
+     * Starts at 1, so zero can mean "no move has been sent yet" in the ring
+     * the caller keeps. */
+    EnterCriticalSection(&g_net.response_lock);
+    uint32_t next = ++g_net.move_sequence;
+    LeaveCriticalSection(&g_net.response_lock);
+    return next;
+}
+
+int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y,
+                             uint32_t sequence) {
     if (!g_net.connected) return 0;
 
     /* `speed` is accepted and not sent. PlayerMovePacket used to carry it and
@@ -522,6 +536,7 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
     pkt.pos_y = y;
     pkt.vel_x = vel_x;
     pkt.vel_y = vel_y;
+    pkt.sequence = htonl(sequence);
 
     return net_send((char*)&pkt, sizeof(pkt)) == sizeof(pkt);
 }
@@ -531,7 +546,7 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
  *
  * @return      Nonzero when a correction is copied; otherwise zero.
  */
-int network_get_server_correction(float* out_x, float* out_y) {
+int network_get_server_correction(float* out_x, float* out_y, uint32_t* out_sequence) {
     EnterCriticalSection(&g_net.response_lock);
     if (!g_net.correction.ready) {
         LeaveCriticalSection(&g_net.response_lock);
@@ -539,6 +554,7 @@ int network_get_server_correction(float* out_x, float* out_y) {
     }
     *out_x = g_net.correction.x;
     *out_y = g_net.correction.y;
+    if (out_sequence) *out_sequence = g_net.correction.sequence;
     g_net.correction.ready = FALSE;
     LeaveCriticalSection(&g_net.response_lock);
     return 1;

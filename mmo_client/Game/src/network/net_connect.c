@@ -81,6 +81,68 @@ static void finish_succeeded(const char* what) {
 }
 
 /**
+ * Resolve an endpoint that may be an address literal or a hostname.
+ *
+ * inet_pton() alone was what stood here, so the client could dial nothing but
+ * a dotted quad -- while the realm publishes whatever worlds.conf holds and
+ * resolves hostnames itself, with getaddrinfo(), for its own link. A world
+ * configured by name was unreachable from every client, and the wire field
+ * carrying the address was too narrow to hold one in the first place.
+ *
+ * getaddrinfo() blocks, and it is the only call on this path that does. It is
+ * paid once per attempt and only for a name that is not already a literal,
+ * which is why the literal is tried first; the alternative is a world nobody
+ * can enter. Everything after it is the non-blocking state machine this file
+ * exists to be.
+ *
+ * @return 1 when `out` holds a usable endpoint, otherwise 0.
+ */
+static int resolve_endpoint(const char* host, uint16_t port,
+                            struct sockaddr_storage* out, socklen_t* out_len) {
+    memset(out, 0, sizeof(*out));
+
+    struct sockaddr_in* v4 = (struct sockaddr_in*)out;
+    if (inet_pton(AF_INET, host, &v4->sin_addr) == 1) {
+        v4->sin_family = AF_INET;
+        v4->sin_port   = htons(port);
+        *out_len = (socklen_t)sizeof(*v4);
+        return 1;
+    }
+
+    char service[8];
+    snprintf(service, sizeof(service), "%u", (unsigned)port);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags    = AI_NUMERICSERV;   /* never consult /etc/services */
+
+    struct addrinfo* results = NULL;
+    if (getaddrinfo(host, service, &hints, &results) != 0 || !results) return 0;
+
+    /* IPv4 first. Every listener in this system binds AF_INET, so an AAAA
+     * record on a dual-stacked name would be tried and refused, and the player
+     * would be told the world was down. */
+    const struct addrinfo* chosen = NULL;
+    for (const struct addrinfo* c = results; c; c = c->ai_next) {
+        if (c->ai_family == AF_INET) { chosen = c; break; }
+        if (!chosen) chosen = c;
+    }
+
+    int resolved = 0;
+    if (chosen && chosen->ai_addrlen <= sizeof(*out)) {
+        memcpy(out, chosen->ai_addr, chosen->ai_addrlen);
+        *out_len = (socklen_t)chosen->ai_addrlen;
+        resolved = 1;
+    }
+
+    freeaddrinfo(results);
+    return resolved;
+}
+
+/**
  * Open a non-blocking socket and start connecting.
  *
  * Non-blocking is set BEFORE connect, not after: setting it afterwards is what
@@ -89,7 +151,7 @@ static void finish_succeeded(const char* what) {
  *
  * @return 1 when the connect is in flight or already complete, otherwise 0.
  */
-static int start_socket(const char* ip, uint16_t port) {
+static int start_socket(const char* host, uint16_t port) {
     /* Any TLS session belongs to the descriptor being replaced, so it goes
      * first. network_connect_abort() cannot be relied on for this: it returns
      * early when no attempt is in flight, which is exactly the state a live
@@ -98,12 +160,34 @@ static int start_socket(const char* ip, uint16_t port) {
      * that no longer exists. */
     net_tls_close();
 
+    /* Same argument for the plaintext queue: whatever the previous world link
+     * had not managed to write belongs to a descriptor that is about to go
+     * away, and flushing it into the next one would prepend a fragment of the
+     * old session to the new one's first packet. */
+    net_send_queue_reset();
+
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
         g_net.socket = INVALID_SOCKET;
     }
 
-    g_net.socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    /* The flags that describe a session go with the descriptor that carried
+     * it. They were left set here, so between picking a world and the world's
+     * acknowledgement the client believed it was connected to a socket it had
+     * just closed -- and network_update() would read and ping through it. */
+    g_net.connected   = FALSE;
+    g_net.handshaking = FALSE;
+
+    struct sockaddr_storage addr;
+    socklen_t addr_len = 0;
+    if (!resolve_endpoint(host, port, &addr, &addr_len)) {
+        char why[128];
+        snprintf(why, sizeof(why), "Could not resolve %.60s", host);
+        finish_failed(why);
+        return 0;
+    }
+
+    g_net.socket = socket(addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
     if (g_net.socket == INVALID_SOCKET) {
         finish_failed("Could not create a socket");
         return 0;
@@ -112,19 +196,7 @@ static int start_socket(const char* ip, uint16_t port) {
     u_long nonblocking = 1;
     ioctlsocket(g_net.socket, FIONBIO, &nonblocking);
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-
-    if (inet_pton(AF_INET, ip, &addr.sin_addr) <= 0) {
-        char why[128];
-        snprintf(why, sizeof(why), "Invalid address: %.60s", ip);
-        finish_failed(why);
-        return 0;
-    }
-
-    if (connect(g_net.socket, (struct sockaddr*)&addr, sizeof(addr)) == 0)
+    if (connect(g_net.socket, (struct sockaddr*)&addr, addr_len) == 0)
         return 1;   // connected immediately, which loopback often does
 
 #ifdef _WIN32
@@ -143,7 +215,7 @@ static int start_socket(const char* ip, uint16_t port) {
  *
  * @return 1 when the attempt started, otherwise 0.
  */
-int network_begin_realm_connect(const char* ip, uint16_t port,
+int network_begin_realm_connect(const char* host, uint16_t port,
                                 const char* session_key, uint32_t account_id) {
     if (!g_net.initialized) return 0;
 
@@ -167,9 +239,9 @@ int network_begin_realm_connect(const char* ip, uint16_t port,
     pkt->protocol_version = htons(PROTOCOL_VERSION);
     g_attempt.packet_size = (int)sizeof(*pkt);
 
-    NET_LOG("[NET] Connecting to realm %s:%u...\n", ip, port);
+    NET_LOG("[NET] Connecting to realm %s:%u...\n", host, port);
 
-    if (!start_socket(ip, port)) return 0;
+    if (!start_socket(host, port)) return 0;
 
     g_attempt.stage    = STAGE_CONNECTING;
     g_attempt.deadline = net_now() + CONNECT_TIMEOUT_SECONDS;
@@ -181,7 +253,7 @@ int network_begin_realm_connect(const char* ip, uint16_t port,
  *
  * @return 1 when the attempt started, otherwise 0.
  */
-int network_begin_world_connect(const char* ip, uint16_t port,
+int network_begin_world_connect(const char* host, uint16_t port,
                                 const char* game_ticket, uint32_t character_id) {
     if (!g_net.initialized) return 0;
 
@@ -205,9 +277,9 @@ int network_begin_world_connect(const char* ip, uint16_t port,
     pkt->protocol_version = htons(PROTOCOL_VERSION);
     g_attempt.packet_size = (int)sizeof(*pkt);
 
-    NET_LOG("[NET] Connecting to world %s:%u...\n", ip, port);
+    NET_LOG("[NET] Connecting to world %s:%u...\n", host, port);
 
-    if (!start_socket(ip, port)) return 0;
+    if (!start_socket(host, port)) return 0;
 
     g_attempt.stage    = STAGE_CONNECTING;
     g_attempt.deadline = net_now() + CONNECT_TIMEOUT_SECONDS;
@@ -410,4 +482,17 @@ void network_connect_abort(void) {
 /** Report whether an attempt is currently in flight. */
 int network_connect_in_flight(void) {
     return g_attempt.stage != STAGE_IDLE;
+}
+
+/** Report whether the attempt in flight is the realm handshake.
+ *
+ * network_connect_poll() reports SUCCEEDED and FAILED exactly once and then
+ * goes idle, so only the caller that started an attempt may poll it. The frame
+ * loop polled on network_connect_in_flight() alone, which is also true of a
+ * world handshake character select had started -- and because the frame loop
+ * runs first, it consumed the one result character select was waiting for
+ * every single time. This is what tells the two apart.
+ */
+int network_realm_connect_in_flight(void) {
+    return g_attempt.stage != STAGE_IDLE && g_attempt.target == TARGET_REALM;
 }

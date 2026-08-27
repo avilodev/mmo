@@ -13,9 +13,27 @@
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
+#include "core/client_log.h"
+
+/** The identifier of the world the player picked, or 0 when none is valid.
+ *
+ * Every use of server_list.selected_index goes through this. Two of the three
+ * read it straight out of the worlds array with no check at all, while the
+ * third tested it for >= 0 -- so the file already knew the index could be -1
+ * and disagreed with itself about whether that mattered. It is also the one
+ * place a world_id is decided now: character creation used to take it from the
+ * selection while deletion took it from the character list's echo of the same
+ * request, which is two sources of truth for one value.
+ */
+static uint32_t char_select_world_id(const GameState* game) {
+    int index = game->server_list.selected_index;
+    if (index < 0 || index >= MAX_WORLDS) return 0;
+    if (index >= game->server_list.list.count) return 0;
+    return ntohl(game->server_list.list.worlds[index].world_id);
+}
 
 static void char_select_enter(GameState* game) {
-    printf("[STATE] Entering character select\n");
+    CLOG_INFO("[STATE] Entering character select");
     game->char_select.loaded = 0;
     game->char_select.selected_index = -1;
     game->char_select.show_creation = 0;
@@ -34,7 +52,7 @@ static void char_select_enter(GameState* game) {
 
 static void char_select_exit(GameState* game) {
     (void)game;
-    printf("[STATE] Exiting character select\n");
+    CLOG_INFO("[STATE] Exiting character select");
 }
 
 /**
@@ -47,6 +65,14 @@ static void char_select_exit(GameState* game) {
 static void resolve_stalled_request(GameState* game, float delta_time,
                                     char* error_out, size_t error_size) {
     if (game->net_state == NET_STATE_IDLE) return;
+
+    /* The world handshake keeps its own deadlines -- five seconds for the
+     * connect, five more for the acknowledgement -- and reports
+     * NET_CONNECT_FAILED when either expires. Timing it here as well raced
+     * those at exactly their sum: at ten seconds this abandoned the request
+     * and returned to the list, while leaving the attempt in flight with a
+     * live socket and no owner. The handshake reports its own failures. */
+    if (game->net_state == NET_STATE_CONNECTING_TO_WORLD) return;
 
     game->net_wait_seconds += delta_time;
 
@@ -87,12 +113,15 @@ static void char_select_update(GameState* game, float delta_time) {
         } else if (game->char_select.selected_race == 0) {
             snprintf(game->char_select.error_message, sizeof(game->char_select.error_message),
                      "Choose a race");
+        } else if (char_select_world_id(game) == 0) {
+            snprintf(game->char_select.error_message,
+                     sizeof(game->char_select.error_message),
+                     "No world selected");
         } else if (game->net_state == NET_STATE_IDLE) {
-            uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
-
             /* Both wire fields carry the same fused identifier; the realm server
              * rejects a mismatch, and rejects a race that is not playable. */
-            if (network_create_character(world_id, game->char_select.new_name,
+            if (network_create_character(char_select_world_id(game),
+                                         game->char_select.new_name,
                                          game->char_select.selected_race,
                                          game->char_select.selected_race)) {
                 game->net_state = NET_STATE_CREATING_CHARACTER;
@@ -106,8 +135,9 @@ static void char_select_update(GameState* game, float delta_time) {
     if (game->char_select.pending_delete) {
         game->char_select.pending_delete = 0;
         int idx = game->char_select.pending_delete_index;
-        if (idx >= 0 && idx < game->char_select.list.count && game->net_state == NET_STATE_IDLE) {
-            uint32_t world_id = ntohl(game->char_select.list.world_id);
+        uint32_t world_id = char_select_world_id(game);
+        if (world_id != 0 && idx >= 0 && idx < game->char_select.list.count &&
+            game->net_state == NET_STATE_IDLE) {
             uint32_t char_id  = ntohl(game->char_select.list.characters[idx].character_id);
             if (network_delete_character(world_id, char_id)) {
                 game->net_state = NET_STATE_DELETING_CHARACTER;
@@ -125,7 +155,7 @@ static void char_select_update(GameState* game, float delta_time) {
             game->char_select.races_requested = network_request_race_list();
         } else if (network_get_race_list(&game->char_select.races)) {
             game->char_select.races_loaded = 1;
-            printf("[CHAR_SELECT] Received %d races\n", game->char_select.races.count);
+            CLOG_INFO("[CHAR_SELECT] Received %d races", game->char_select.races.count);
 
             /* Preselect the first playable race so the panel opens on a valid choice. */
             for (int i = 0; i < game->char_select.races.count; i++) {
@@ -138,21 +168,22 @@ static void char_select_update(GameState* game, float delta_time) {
 
     // State machine
     switch (game->net_state) {
-        case NET_STATE_IDLE:
-            if (!game->char_select.loaded && game->server_list.selected_index >= 0) {
-                uint32_t world_id = ntohl(game->server_list.list.worlds[game->server_list.selected_index].world_id);
+        case NET_STATE_IDLE: {
+            uint32_t world_id = char_select_world_id(game);
+            if (!game->char_select.loaded && world_id != 0) {
                 if (network_request_character_list(world_id)) {
                     game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
                     game->net_wait_seconds = 0.0f;
                 }
             }
             break;
+        }
 
         case NET_STATE_WAITING_FOR_CHARACTERS:
             if (network_get_character_list(&game->char_select.list)) {
                 game->char_select.loaded = 1;
                 game->net_state = NET_STATE_IDLE;
-                printf("[CHAR_SELECT] Received %d characters\n", game->char_select.list.count);
+                CLOG_INFO("[CHAR_SELECT] Received %d characters", game->char_select.list.count);
             }
             break;
 
@@ -218,31 +249,32 @@ static void char_select_update(GameState* game, float delta_time) {
                     game->net_state = NET_STATE_IDLE;
 
                     if (response.success) {
-                        char world_ip[16];
-                        strncpy(world_ip, response.world_ip, 15);
-                        world_ip[15] = '\0';
+                        /* Copied at the field's own width. It is a hostname or
+                         * an address literal now and the client resolves it;
+                         * the fixed 16 here truncated anything longer than a
+                         * dotted quad into an address that does not exist. */
+                        char world_host[sizeof(response.world_host)];
+                        snprintf(world_host, sizeof(world_host), "%s",
+                                 response.world_host);
                         uint16_t world_port = ntohs(response.world_port);
 
-                        uint32_t char_id = ntohl(
-                            game->char_select.list.characters[game->char_select.selected_index].character_id
-                        );
+                        /* The character this ticket was minted for, recorded
+                         * when the request went out. */
+                        uint32_t char_id = game->pending_character_id;
 
                         /* Started, not waited on. The frame below advances it.
                          * The blocking form froze the window for the connect
                          * plus up to five seconds of acknowledgement polling. */
-                        if (network_begin_world_connect(world_ip, world_port,
+                        if (network_begin_world_connect(world_host, world_port,
                                                         response.game_ticket, char_id)) {
-                            game->pending_character_id = char_id;
-                            game->pending_world_id = ntohl(
-                                game->server_list.list.worlds[game->server_list.selected_index].world_id);
                             game->net_state = NET_STATE_CONNECTING_TO_WORLD;
                             game->net_wait_seconds = 0.0f;
                         } else {
-                            printf("[CHAR_SELECT] Could not start the world connection: %s\n",
+                            CLOG_WARN("[CHAR_SELECT] Could not start the world connection: %s",
                                    network_connect_message());
                         }
                     } else {
-                        printf("[CHAR_SELECT] Enter world denied: %s\n", response.message);
+                        CLOG_WARN("[CHAR_SELECT] Enter world denied: %s", response.message);
                     }
                 }
             }
@@ -276,10 +308,30 @@ static void char_select_update(GameState* game, float delta_time) {
                     game->network_connected = 0;
                     strncpy(game->char_select.error_message, network_connect_message(), 127);
                     game->char_select.error_message[127] = '\0';
-                    printf("[CHAR_SELECT] World connection failed: %s\n",
+                    CLOG_WARN("[CHAR_SELECT] World connection failed: %s",
                            network_connect_message());
                     break;
-                default:
+                case NET_CONNECT_IDLE:
+                    /* No attempt in flight while this state is waiting on one.
+                     *
+                     * This state has no timeout of its own -- the handshake
+                     * keeps those, which is why resolve_stalled_request() steps
+                     * over it -- so an attempt that vanished without reporting
+                     * would leave the screen on "Entering world..." with
+                     * nothing left to advance it. That is precisely what
+                     * happened while the frame loop was polling world
+                     * handshakes and consuming their one-shot result. It cannot
+                     * now, and if it ever does again this says so instead of
+                     * hanging. */
+                    game->net_state = NET_STATE_IDLE;
+                    game->network_connected = 0;
+                    snprintf(game->char_select.error_message,
+                             sizeof(game->char_select.error_message),
+                             "The world connection was lost - please try again");
+                    CLOG_WARN("[CHAR_SELECT] World connect attempt went idle unpolled");
+                    break;
+
+                case NET_CONNECT_PENDING:
                     break;
             }
             break;
@@ -505,10 +557,22 @@ static void char_select_render(GameState* game) {
             if (row_hovered && game->input.mouse_left_clicked && !is_busy) {
                 game->char_select.selected_index = i;
 
-                uint32_t char_id = ntohl(game->char_select.list.characters[i].character_id);
-                uint32_t world_id = ntohl(game->char_select.list.world_id);
+                uint32_t char_id  = ntohl(game->char_select.list.characters[i].character_id);
+                uint32_t world_id = char_select_world_id(game);
 
-                if (network_request_enter_world(char_id, world_id)) {
+                /* Recorded with the request, not re-derived from the selection
+                 * when the answer comes back.
+                 *
+                 * The ticket the realm mints names one character, and the world
+                 * ignores the identifier in the connect packet and trusts the
+                 * ticket -- so if the list moved under selected_index between
+                 * the request and the response, the player entered the world as
+                 * one character while the client spent the session addressing
+                 * another, silently. The request is the only moment both halves
+                 * are known to agree. */
+                if (world_id != 0 && network_request_enter_world(char_id, world_id)) {
+                    game->pending_character_id = char_id;
+                    game->pending_world_id     = world_id;
                     game->net_state = NET_STATE_WAITING_FOR_ENTER_WORLD;
                     game->net_wait_seconds = 0.0f;
                     is_busy = 1;
@@ -572,7 +636,13 @@ static void char_select_render(GameState* game) {
 static void char_select_input(GameState* game, GLFWwindow* window, float delta_time) {
     (void)delta_time;
 
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    /* One press, one screen.
+     *
+     * This tested the key's level rather than its edge, and a keypress spans
+     * many frames at any frame rate: the frame that closed the creation panel
+     * was followed by another with the key still down, which left character
+     * select as well. Escape always went back two screens. */
+    if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
         if (game->char_select.show_creation) {
             game->char_select.show_creation = 0;
         } else {

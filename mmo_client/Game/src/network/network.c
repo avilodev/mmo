@@ -171,6 +171,7 @@ void network_cleanup(void) {
     /* Releases the context and the pin set as well as any live session: this
      * is the process going away, not one connection ending. */
     net_tls_shutdown();
+    net_send_queue_reset();
 
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
@@ -204,6 +205,7 @@ void network_disconnect(void) {
         /* After the logout, so it goes out encrypted on a realm link, and
          * before the close, so the session never outlives its descriptor. */
         net_tls_close();
+        net_send_queue_reset();
         closesocket(g_net.socket);
         g_net.socket = INVALID_SOCKET;
     }
@@ -309,16 +311,147 @@ void network_set_character_id(uint32_t character_id) {
 
 /* --- The transport ------------------------------------------------------- */
 
+/* --- The plaintext send queue -------------------------------------------
+ *
+ * The world link is not encrypted and so has none of net_tls.c's machinery
+ * behind it, and net_send() was a bare send(2) on a non-blocking socket whose
+ * return every caller compared against the packet size. Neither of the two
+ * things that can go wrong there was handled: a short write left the tail of a
+ * packet unsent, and EWOULDBLOCK dropped the packet outright. The first is the
+ * serious one -- the world reads the next packet's leading bytes as this one's
+ * payload, and the framing is wrong for the rest of the session.
+ *
+ * So the plaintext link gets the same contract as the encrypted one: bytes the
+ * socket will not take are queued and finished by the next flush, and the
+ * caller is told the packet was accepted, because it was.
+ */
+
+/** Bytes that may wait for a socket that is not taking writes right now.
+ *
+ * Larger than net_tls.c's queue, because this link carries gameplay rather
+ * than a control channel: movement at 20Hz, ability casts, chat. It is sized
+ * to hold a short burst of whole packets rather than a fragment of one, and a
+ * link that manages to fill it is not busy but stuck -- which is why
+ * overflowing is treated as a broken session rather than grown.
+ */
+#define RAW_PENDING_CAP 32768
+
+static unsigned char g_raw_pending[RAW_PENDING_CAP];
+static int           g_raw_pending_len = 0;
+/** Set once the byte stream is half-written and nothing more can be sent. */
+static int           g_raw_write_broken = 0;
+
+void net_send_queue_reset(void) {
+    g_raw_pending_len  = 0;
+    g_raw_write_broken = 0;
+}
+
+/** Report whether the last socket error was the ordinary "try again". */
+static int raw_would_block(void) {
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+}
+
+/** Append bytes behind whatever is already waiting.
+ *
+ * @return 1 when they fit, 0 when the queue is full and the link is finished.
+ */
+static int raw_enqueue(const void* buf, int len) {
+    if (len < 0 || len > RAW_PENDING_CAP - g_raw_pending_len) {
+        NET_WARN("[NET] The world link stopped accepting writes\n");
+        g_raw_write_broken = 1;
+        return 0;
+    }
+    memcpy(g_raw_pending + g_raw_pending_len, buf, (size_t)len);
+    g_raw_pending_len += len;
+    return 1;
+}
+
+/** Drain the queue as far as the socket allows. */
+static int raw_flush(void) {
+    if (g_raw_write_broken) return 0;
+    if (g_net.socket == INVALID_SOCKET) return 1;
+
+    while (g_raw_pending_len > 0) {
+        int written = (int)send(g_net.socket, (const char*)g_raw_pending,
+                                g_raw_pending_len, 0);
+        if (written > 0) {
+            g_raw_pending_len -= written;
+            if (g_raw_pending_len > 0)
+                memmove(g_raw_pending, g_raw_pending + written,
+                        (size_t)g_raw_pending_len);
+            continue;
+        }
+        if (written < 0 && raw_would_block()) return 1;   /* still queued */
+
+        NET_WARN("[NET] World link write failed\n");
+        g_raw_write_broken = 1;
+        return 0;
+    }
+    return 1;
+}
+
+/** Send one packet on the plaintext link, queueing whatever will not go now. */
+static int raw_send(const void* buf, int len) {
+    if (g_raw_write_broken) return -1;
+    if (!raw_flush()) return -1;
+
+    /* Anything still queued means the socket is not taking writes. Going around
+     * the queue here would put this packet on the wire ahead of one the world
+     * is already half-way through reading. */
+    if (g_raw_pending_len > 0)
+        return raw_enqueue(buf, len) ? len : -1;
+
+    int written = (int)send(g_net.socket, (const char*)buf, len, 0);
+    if (written == len) return len;
+
+    /* A short write. The tail has to be queued rather than reported as a
+     * failure: the head is already on the wire, and a packet the world has
+     * begun reading cannot be un-sent. */
+    if (written > 0)
+        return raw_enqueue((const char*)buf + written, len - written) ? len : -1;
+
+    if (written < 0 && raw_would_block())
+        return raw_enqueue(buf, len) ? len : -1;
+
+    NET_WARN("[NET] World link write failed\n");
+    g_raw_write_broken = 1;
+    return -1;
+}
+
+int net_send_flush(void) {
+    if (net_tls_active()) return net_tls_flush();
+    return raw_flush();
+}
+
 int net_send(const void* buf, int len) {
     if (g_net.socket == INVALID_SOCKET) return -1;
     if (net_tls_active()) return net_tls_send(buf, len);
-    return (int)send(g_net.socket, (const char*)buf, len, 0);
+    return raw_send(buf, len);
 }
 
 int net_recv(void* buf, int len) {
     if (g_net.socket == INVALID_SOCKET) return -1;
     if (net_tls_active()) return net_tls_recv(buf, len);
     return (int)recv(g_net.socket, (char*)buf, len, 0);
+}
+
+/** Tear the link down and say why.
+ *
+ * Four paths below end the connection and every one of them has to release the
+ * session before the descriptor, clear the reassembly buffer, and mark the
+ * client offline. They were four copies of those four steps, and the socket
+ * error path had already lost one of them.
+ */
+static void drop_link(const char* why) {
+    NET_WARN("[NET] %s\n", why);
+    net_tls_close();
+    net_send_queue_reset();
+    if (g_net.socket != INVALID_SOCKET) {
+        closesocket(g_net.socket);
+        g_net.socket = INVALID_SOCKET;
+    }
+    g_net.connected = FALSE;
+    g_net.recv_len = 0;
 }
 
 /**
@@ -328,6 +461,16 @@ int net_recv(void* buf, int len) {
  */
 void network_update(void) {
     if (g_net.socket == INVALID_SOCKET || !g_net.connected) return;
+
+    /* Anything the link could not take last frame goes out before we read: a
+     * queued request that never leaves is a character screen that never fills
+     * in, and on the world link it is a movement packet whose tail the server
+     * is still waiting for. Both transports queue now; see net_send(). */
+    if (!net_send_flush()) {
+        drop_link(net_tls_active() ? "TLS session failed while sending"
+                                   : "World link failed while sending");
+        return;
+    }
 
     // Read as much as we can into the reassembly buffer
     while (1) {
@@ -340,12 +483,7 @@ void network_update(void) {
             g_net.recv_len += bytes;
             NET_LOG("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_net.recv_len);
         } else if (bytes == 0) {
-            NET_WARN("[NET] Server closed connection\n");
-            net_tls_close();
-            g_net.connected = FALSE;
-            closesocket(g_net.socket);
-            g_net.socket = INVALID_SOCKET;
-            g_net.recv_len = 0;
+            drop_link("Server closed connection");
             return;
         } else {
             /* On the TLS link the two negative cases have to be told apart
@@ -357,22 +495,15 @@ void network_update(void) {
              * believing it was connected. */
             if (net_tls_active()) {
                 if (bytes == NET_TLS_AGAIN) break;
-                NET_WARN("[NET] TLS session failed\n");
-                net_tls_close();
-                g_net.connected = FALSE;
-                closesocket(g_net.socket);
-                g_net.socket = INVALID_SOCKET;
-                g_net.recv_len = 0;
+                drop_link("TLS session failed");
                 return;
             }
 
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK) break;
-            NET_WARN("[NET] Socket error: %d\n", err);
-            g_net.connected = FALSE;
-            closesocket(g_net.socket);
-            g_net.socket = INVALID_SOCKET;
-            g_net.recv_len = 0;
+            char reason[64];
+            snprintf(reason, sizeof(reason), "Socket error: %d", err);
+            drop_link(reason);
             return;
         }
     }
@@ -495,10 +626,16 @@ void network_send_ping(void) {
     uint16_t pm_net   = htons((uint16_t)g_net.ping_ms);
     memcpy(buf + sizeof(PacketHeader), &pm_net, sizeof(uint16_t));
 
-    if (net_send(buf, (int)sizeof(buf)) == (int)sizeof(buf)) {
-        g_net.pending_pings++;
+    /* Counted as outstanding whether or not the transport took it.
+     *
+     * pending_pings used to advance only on a successful send, while the caller
+     * moved last_ping_time regardless -- so a link that had stopped accepting
+     * writes never reached PING_MAX_MISSED, and the one timeout built to catch
+     * exactly that case could not fire. A ping that could not be sent is the
+     * strongest evidence there is that the connection is gone. */
+    g_net.pending_pings++;
+    if (net_send(buf, (int)sizeof(buf)) == (int)sizeof(buf))
         g_net.ping_send_time = net_now();
-    }
 }
 
 /**

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include "core/client_log.h"
 
 /** Maximum number of item templates retained by the client. */
 #define MAX_ITEM_TEMPLATES 1000
@@ -31,12 +32,12 @@ void item_db_init(void) {
     g_item_db_count = 0;
     memset(g_item_db, 0, sizeof(g_item_db));
     
-    printf("[ITEM_DB] Loading items from: Game/Data/items.json\n");
+    CLOG_INFO("[ITEM_DB] Loading items from: Game/Data/items.json");
     
     // Read JSON file
     char* json_content = read_file("Game/Data/items.json"); 
     if (!json_content) {
-        fprintf(stderr, "[ITEM_DB] ERROR: Could not read Game/Data/items.json\n");
+        CLOG_ERROR("[ITEM_DB] ERROR: Could not read Game/Data/items.json");
         return;
     }
     
@@ -45,9 +46,9 @@ void item_db_init(void) {
     free(json_content);
     
     if (result) {
-        printf("[ITEM_DB] Successfully loaded %d items\n", g_item_db_count);
+        CLOG_INFO("[ITEM_DB] Successfully loaded %d items", g_item_db_count);
     } else {
-        fprintf(stderr, "[ITEM_DB] Failed to parse items JSON\n");
+        CLOG_ERROR("[ITEM_DB] Failed to parse items JSON");
     }
 }
 
@@ -165,7 +166,7 @@ static ItemRarity parse_rarity(const char* rarity_str) {
 static int parse_items_json(const char* json_content) {
     const char* items_start = strstr(json_content, "\"items\"");
     if (!items_start) {
-        fprintf(stderr, "[ITEM_DB] No 'items' array found in JSON\n");
+        CLOG_WARN("[ITEM_DB] No 'items' array found in JSON");
         return 0;
     }
     
@@ -201,14 +202,14 @@ static int parse_items_json(const char* json_content) {
         size_t obj_len = obj_end - obj_start + 1;
         char* obj_json = (char*)malloc(obj_len + 1);
         if (!obj_json) {
-            fprintf(stderr, "[ITEM_DB] Out of memory parsing items\n");
+            CLOG_ERROR("[ITEM_DB] Out of memory parsing items");
             break;
         }
         memcpy(obj_json, obj_start, obj_len);
         obj_json[obj_len] = '\0';
         
         if (g_item_db_count >= MAX_ITEM_TEMPLATES) {
-            fprintf(stderr, "[ITEM_DB] Max items reached (%d)\n", MAX_ITEM_TEMPLATES);
+            CLOG_WARN("[ITEM_DB] Max items reached (%d)", MAX_ITEM_TEMPLATES);
             free(obj_json);
             break;
         }
@@ -300,7 +301,7 @@ static int parse_items_json(const char* json_content) {
         item->vendor_price = (item->rarity + 1) * 10;
         
         g_item_db_count++;
-        printf("[ITEM_DB]   Loaded: [%u] %s\n", item->id, item->name);
+        CLOG_DEBUG("[ITEM_DB]   Loaded: [%u] %s", item->id, item->name);
         
         free(obj_json);
         
@@ -343,7 +344,7 @@ void inventory_init(InventoryState* inv, float screen_width, float screen_height
     inv->close_button_x = inv->window_x + inv->window_width - inv->close_button_size - 5.0f;
     inv->close_button_y = inv->window_y + 5.0f;
     
-    printf("[INVENTORY] Initialized %dx%d grid\n", INVENTORY_COLS, INVENTORY_ROWS);
+    CLOG_INFO("[INVENTORY] Initialized %dx%d grid", INVENTORY_COLS, INVENTORY_ROWS);
 }
 
 /**
@@ -374,7 +375,7 @@ void inventory_load_from_server(InventoryState* inv, const InventorySlotData* se
         inv->slots[i].quantity = src->quantity ? src->quantity : 1;
     }
 
-    printf("[INVENTORY] Loaded from server data\n");
+    CLOG_INFO("[INVENTORY] Loaded from server data");
 }
 
 /**
@@ -481,7 +482,7 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
                 inv->is_dragging_window = 1;
                 inv->drag_offset_x = mouse_x - inv->window_x;
                 inv->drag_offset_y = mouse_y - inv->window_y;
-                printf("[INV] Started dragging window\n");
+                CLOG_DEBUG("[INV] Started dragging window");
             }
         } else {
             // Continue dragging
@@ -510,7 +511,7 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
     } else {
         // Mouse released - stop dragging
         if (inv->is_dragging_window) {
-            printf("[INV] Stopped dragging window\n");
+            CLOG_DEBUG("[INV] Stopped dragging window");
         }
         inv->is_dragging_window = 0;
     }
@@ -533,13 +534,13 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
                 // Pick up item
                 if (inv->slots[slot].template_id > 0) {
                     inv->selected_slot = slot;
-                    printf("[INV] Picked up item from slot %d\n", slot);
+                    CLOG_DEBUG("[INV] Picked up item from slot %d", slot);
                 }
             } else {
                 // Place item
                 if (slot == inv->selected_slot) {
                     inv->selected_slot = -1;
-                    printf("[INV] Put item back in same slot\n");
+                    CLOG_DEBUG("[INV] Put item back in same slot");
                 } else {
                     /* Swapped locally first so the bag answers the click
                      * immediately, then asked of the server. A refusal is
@@ -550,7 +551,7 @@ void inventory_update(InventoryState* inv, float mouse_x, float mouse_y,
                     inv->slots[inv->selected_slot] = temp;
                     network_send_move_item((uint8_t)inv->selected_slot, (uint8_t)slot);
                     inv->selected_slot = -1;
-                    printf("[INV] Swapped items\n");
+                    CLOG_DEBUG("[INV] Swapped items");
                 }
             }
         } else {
@@ -852,7 +853,7 @@ void inventory_use_item(InventoryState* inv, int si) {
     const ItemTemplate* item = item_db_get(s->template_id);
     if (!item) return;
     if (item->type == ITEM_TYPE_CONSUMABLE) {
-        printf("[INVENTORY] Using %s (sending to server)\n", item->name);
+        CLOG_INFO("[INVENTORY] Using %s (sending to server)", item->name);
         network_send_use_item((uint8_t)si);
         // Server will confirm via USE_ITEM_RESPONSE; removal handled there
     } else if (item->type == ITEM_TYPE_EQUIPMENT && item->equip_slot != EQUIP_SLOT_NONE) {
@@ -869,7 +870,7 @@ void inventory_use_item(InventoryState* inv, int si) {
             default: break;
         }
         if (server_slot > 0) {
-            printf("[INVENTORY] Equipping %s to slot %u\n", item->name, server_slot);
+            CLOG_INFO("[INVENTORY] Equipping %s to slot %u", item->name, server_slot);
             network_send_equip_item(s->template_id, (uint8_t)si, server_slot);
         }
     }
