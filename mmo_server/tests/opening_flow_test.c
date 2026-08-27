@@ -430,6 +430,12 @@ static void walk_to(int fd, uint32_t character_id, float x, float y) {
     pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
     pkt.pos_x        = x;
     pkt.pos_y        = y;
+    /* Numbered the way the client numbers them. The server does not act on it
+     * -- it hands it back on a refusal so the client knows which proposal was
+     * refused -- but sending zero for every move would leave this flow
+     * exercising a shape no real client produces. */
+    static uint32_t sequence = 0;
+    pkt.sequence     = htonl(++sequence);
     /* No speed field: the client used to declare one here and the server
      * correctly ignored it, using its own record of the character's speed.
      * It was removed at the PROTOCOL_VERSION 5 bump. WALK_SPEED_PX_S is still
@@ -746,7 +752,7 @@ int main(int argc, char** argv) {
     }
 
     char game_ticket[64];
-    char world_ip[16];
+    char world_host[64];
     uint16_t world_port = 0;
     {
         EnterWorldPacket req;
@@ -764,16 +770,16 @@ int main(int argc, char** argv) {
         check(resp.success, "the realm admitted us: %s", resp.message);
 
         memcpy(game_ticket, resp.game_ticket, 64);
-        snprintf(world_ip, sizeof(world_ip), "%s", resp.world_ip);
+        snprintf(world_host, sizeof(world_host), "%s", resp.world_host);
         world_port = ntohs(resp.world_port);
-        printf("  world at %s:%u\n", world_ip, world_port);
+        printf("  world at %s:%u\n", world_host, world_port);
     }
     close(realm_fd);
 
     /* --- World --- */
     step("world");
-    int world_fd = tcp_connect(world_ip, world_port);
-    if (world_fd < 0) fail("cannot reach the world server at %s:%u", world_ip, world_port);
+    int world_fd = tcp_connect(world_host, world_port);
+    if (world_fd < 0) fail("cannot reach the world server at %s:%u", world_host, world_port);
 
     {
         WorldConnectPacket pkt;

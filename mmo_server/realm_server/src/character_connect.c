@@ -85,6 +85,23 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
     int count = world_character_get_list(account_id, world_id,
                                               characters, MAX_CHARACTERS_PER_WORLD);
 
+    /* A database that could not be reached is not an account with no
+     * characters, and answering with an empty list says it is -- the player
+     * reads that as "my characters are gone" and the obvious next move is to
+     * create a replacement. Say nothing instead: the client's own request
+     * timeout reports "Server did not respond", which is what happened.
+     *
+     * The clamp below is not reachable from world_character_get_list(), which
+     * bounds its own writes; it is here because `count` becomes a uint8_t and
+     * send_size is computed from it, so a negative or oversized value would
+     * be a read past the end of a stack packet rather than a wrong number. */
+    if (count < 0) {
+        LOG_ERROR("Character list for account %u on world %u is unavailable; "
+                  "sending nothing rather than an empty list", account_id, world_id);
+        return;
+    }
+    if (count > MAX_CHARACTERS_PER_WORLD) count = MAX_CHARACTERS_PER_WORLD;
+
     // Build response packet
     CharacterListResponsePacket response = {0};
     response.header.type = PACKET_CHARACTER_LIST_RESPONSE;

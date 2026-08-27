@@ -792,7 +792,16 @@ void loot_handle_pickup_request(uint32_t character_id, int client_fd,
                                       def ? def->max_stack : 1,
                                       def ? def->bind_on_pickup : 0);
         stored = (uint16_t)(want - left);
-        if (stored > 0) player->is_dirty = 1;
+        if (stored > 0) {
+            /* Rarity is the line. Every kill drops something, and marking each
+             * of them critical would turn the milestone pass into a second full
+             * sweep running 24x as often -- which is the ordinary sweep with
+             * extra steps. An uncommon-or-better drop is rare enough to be
+             * worth a write of its own and rare enough that doing so costs
+             * nothing. */
+            if (def && def->rarity >= RARITY_UNCOMMON) player_mark_critical(player);
+            else                                       player->is_dirty = 1;
+        }
     }
     if (player) player_release(player);
 

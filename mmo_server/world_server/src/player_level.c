@@ -11,6 +11,7 @@
 #include "ability_handler.h"
 #include "ability_def.h"
 #include "items_database.h"
+#include "player_data.h"
 #include "combat_stats.h"
 #include "utils.h"
 
@@ -68,6 +69,11 @@ void player_award_xp_locked(ActivePlayer* player, uint64_t xp_amount) {
 
     int new_level = class_stats_check_level(player->level, player->experience);
     if (new_level <= old_level) return;
+
+    /* The level, not the experience. XP creeps up all day and the ordinary
+     * sweep is the right cadence for it; crossing into a new level is the thing
+     * a player would notice losing, so it goes out on the short pass. */
+    player_mark_critical(player);
 
     player->level = new_level;
     player_recompute_stats(player);

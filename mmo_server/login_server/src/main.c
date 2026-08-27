@@ -263,8 +263,11 @@ int main(int argc, char** argv) {
     while (g_server.running) {
         sleep(1);
     }
-    
-    LOG_INFO("\nShutting down...");
+
+    /* Reported here, not in the handler: logging from a signal handler is what
+     * used to deadlock this process on shutdown. */
+    LOG_INFO("\nReceived shutdown signal (%d)", (int)g_shutdown_signal);
+    LOG_INFO("Shutting down...");
     metrics_server_stop();
     close(g_server.tcp_sockfd);
     pthread_join(g_server.accept_thread, NULL);

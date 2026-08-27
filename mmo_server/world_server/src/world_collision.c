@@ -14,14 +14,124 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // collision bytes follow four uint16 tile layers
 
-static uint8_t* g_collision = NULL;   // flat [world_height * world_width] array
+/** The collision layer, flat [world_height * world_width].
+ *
+ * Mapped, not copied. It is read-only for the process's whole life and
+ * byte-identical across every world server on the host, so ten worlds used to
+ * hold ten private copies of it and pay ten cold reads at startup -- at the
+ * shipped world size, roughly a ninth of a gigabyte, ten times over. A shared
+ * read-only mapping is one physical copy behind all of them, backed by the page
+ * cache, and startup stops reading it at all.
+ *
+ * const because that is now enforced by the kernel: the mapping is PROT_READ
+ * and a write would fault rather than silently diverge one world's idea of the
+ * map from the rest.
+ */
+static const uint8_t* g_collision = NULL;
+
+/** The mapping to release, page-aligned and therefore usually not g_collision. */
+static void*  g_map     = NULL;
+static size_t g_map_len = 0;
+
+/** Set instead of g_map when the mapping failed and the layer was read. */
+static uint8_t* g_heap  = NULL;
+
 static int      g_width     = 0;
 static int      g_height    = 0;
 static float    g_tile_size = 16.0f;  // pixels per tile
 static int      g_loaded    = 0;
+
+/** Map the collision layer, or fall back to reading it.
+ *
+ * @param fd      The open world file. Not consumed: mmap keeps its own
+ *                reference, so the caller still closes it.
+ * @param offset  Byte offset of the collision layer within the file.
+ * @param total   Its length in bytes.
+ * @return 1 when g_collision points at the layer, otherwise 0.
+ */
+static int map_collision_layer(int fd, long offset, size_t total) {
+    /* mmap takes a page-aligned offset, and the collision layer starts wherever
+     * the tileset table and the tile layers happen to end. So the mapping
+     * starts at the page below it and the layer is found at the remainder. */
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) page = 4096;
+
+    off_t  aligned = (off_t)(offset - (offset % page));
+    size_t slack   = (size_t)(offset - aligned);
+    size_t length  = total + slack;
+
+    /* An escape hatch, and the only way to reach the fallback deliberately.
+     * A path that runs only when mmap fails is a path that runs only in
+     * production, on somebody else's filesystem, the first time it matters --
+     * so it is reachable here, and world_collision_test uses it. */
+    const char* no_mmap = getenv("MMO_COLLISION_NO_MMAP");
+    int forced_copy = no_mmap && no_mmap[0] && no_mmap[0] != '0';
+
+    void* base = forced_copy ? MAP_FAILED
+                             : mmap(NULL, length, PROT_READ, MAP_SHARED, fd, aligned);
+    if (base != MAP_FAILED) {
+        g_map       = base;
+        g_map_len   = length;
+        g_collision = (const uint8_t*)base + slack;
+
+        /* Read once, in tile order, and never in a hot path again. Without it
+         * the first player to walk into an untouched region pays a page fault
+         * inside the movement check, on the simulation thread. The page cache
+         * is shared, so only the first world server on the host pays even this,
+         * and it does so during startup where the cost is invisible. */
+        posix_madvise(base, length, POSIX_MADV_WILLNEED);
+        return 1;
+    }
+
+    /* Not fatal. A filesystem that will not map (some network mounts, some
+     * container layers) should still run a world, just with the private copy
+     * this whole path exists to avoid. */
+    if (forced_copy)
+        LOG_WARN("[COLLISION] MMO_COLLISION_NO_MMAP is set; reading a private "
+                 "%zu-byte copy of the collision layer", total);
+    else
+        LOG_WARN("[COLLISION] Cannot map the collision layer (%s); falling back "
+                 "to a private %zu-byte copy. Ten worlds on this host will hold "
+                 "ten of them.", strerror(errno), total);
+
+    g_heap = malloc(total);
+    if (!g_heap) {
+        LOG_ERROR("[COLLISION] Out of memory (%zu bytes)", total);
+        return 0;
+    }
+
+    if (lseek(fd, (off_t)offset, SEEK_SET) != (off_t)offset) {
+        LOG_ERROR("[COLLISION] Cannot seek to the collision layer: %s", strerror(errno));
+        free(g_heap);
+        g_heap = NULL;
+        return 0;
+    }
+
+    size_t got = 0;
+    while (got < total) {
+        ssize_t n = read(fd, g_heap + got, total - got);
+        if (n > 0)                       { got += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR)     continue;
+        break;
+    }
+
+    if (got != total) {
+        LOG_ERROR("[COLLISION] Short read: expected %zu bytes, got %zu", total, got);
+        free(g_heap);
+        g_heap = NULL;
+        return 0;
+    }
+
+    g_collision = g_heap;
+    return 1;
+}
 
 /**
  * Load the collision layer from a client-format world.dat file.
@@ -144,45 +254,64 @@ int world_collision_init(const char* path) {
         return 0;
     }
 
-    // Read collision layer
-    size_t total = (size_t)w * (size_t)h;
-    g_collision = malloc(total);
-    if (!g_collision) {
-        LOG_ERROR("[COLLISION] Out of memory (%zu bytes)", total);
+    /* Where the collision layer begins. The header walk above is what
+     * establishes it -- the tileset table is variable length -- so it is read
+     * off the stream rather than computed a second time here. */
+    long offset = ftell(f);
+    if (offset < 0) {
+        LOG_ERROR("[COLLISION] Cannot locate the collision layer in '%s'", path);
         fclose(f);
         return 0;
     }
 
-    size_t read = fread(g_collision, 1, total, f);
+    size_t total = (size_t)w * (size_t)h;
 
-    /* The collision layer is the last thing in the file. Bytes after it mean
-     * the reader and the writer disagree about the layout -- which is exactly
-     * the drift the version field exists to catch, in the case where the sizes
-     * happen to line up anyway. */
-    int trailing = (fgetc(f) != EOF);
+    /* The collision layer is the last thing in the file, so the file is exactly
+     * as long as the header says it should be. Bytes missing means a truncated
+     * copy; bytes left over mean the reader and the generator disagree about
+     * the layout -- the drift the version field exists to catch, in the case
+     * where the sizes happen to line up anyway.
+     *
+     * This replaces reading to EOF and checking for one more byte. It has to:
+     * a mapping past the end of a file is not a short read, it is a SIGBUS on
+     * the simulation thread the first time somebody walks there. The size is
+     * checked here so that cannot arise. */
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) {
+        LOG_ERROR("[COLLISION] Cannot stat '%s': %s", path, strerror(errno));
+        fclose(f);
+        return 0;
+    }
+
+    if ((uint64_t)st.st_size != (uint64_t)offset + (uint64_t)total) {
+        LOG_ERROR("[COLLISION] '%s' is %llu bytes; its header describes %llu. "
+                  "The file is truncated, or the reader and the generator "
+                  "disagree about the layout.",
+                  path, (unsigned long long)st.st_size,
+                  (unsigned long long)((uint64_t)offset + (uint64_t)total));
+        fclose(f);
+        return 0;
+    }
+
+    if (!map_collision_layer(fileno(f), offset, total)) {
+        fclose(f);
+        return 0;
+    }
+
+    /* The mapping holds its own reference to the file, so the descriptor has
+     * done its job. Unlinking or replacing world.dat from here on leaves this
+     * process reading the bytes it mapped, which is what a running world
+     * wants. */
     fclose(f);
-
-    if (read != total) {
-        LOG_ERROR("[COLLISION] Short read: expected %zu bytes, got %zu", total, read);
-        free(g_collision);
-        g_collision = NULL;
-        return 0;
-    }
-
-    if (trailing) {
-        LOG_ERROR("[COLLISION] '%s' has data after its collision layer; the "
-                  "reader and the generator disagree about the layout", path);
-        free(g_collision);
-        g_collision = NULL;
-        return 0;
-    }
 
     g_width  = w;
     g_height = h;
     g_loaded = 1;
 
-    LOG_INFO("[COLLISION] Loaded %dx%d tile map (tile=%gpx, %u tile layers) from %s",
-             g_width, g_height, g_tile_size, tile_layers, path);
+    LOG_INFO("[COLLISION] %s %dx%d tile map (tile=%gpx, %u tile layers, %zu "
+             "collision bytes) from %s",
+             g_map ? "Mapped" : "Read", g_width, g_height, g_tile_size,
+             tile_layers, total, path);
     return 1;
 }
 
@@ -295,11 +424,20 @@ int world_collision_check_box_path(float x0, float y0,
     return 0;
 }
 
+int world_collision_is_mapped(void) {
+    return g_loaded && g_map != NULL;
+}
+
 /**
  * Release the loaded collision layer.
  */
 void world_collision_shutdown(void) {
-    free(g_collision);
+    if (g_map) munmap(g_map, g_map_len);
+    free(g_heap);
+
+    g_map       = NULL;
+    g_map_len   = 0;
+    g_heap      = NULL;
     g_collision = NULL;
-    g_loaded = 0;
+    g_loaded    = 0;
 }

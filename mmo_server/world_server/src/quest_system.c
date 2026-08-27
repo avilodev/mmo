@@ -226,7 +226,10 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
                   quest_id, character_id);
         return 0;
     }
-    p->is_dirty = 1;
+    /* A turn-in is the shape of loss a player writes in about: the quest is
+     * gone from the log, the rewards are paid, and a crash before the next
+     * sweep takes both while the NPC considers it done. */
+    player_mark_critical(p);
 
     if (q->xp_reward > 0) p->experience += q->xp_reward;
     if (q->currency_reward > 0)
@@ -386,9 +389,14 @@ static int advance_objectives(uint32_t character_id, QuestObjectiveType type,
         for (int k = 0; k < q->obj_count && k < MAX_QUEST_OBJECTIVES; k++) {
             if (pq->progress[k] < q->objectives[k].required_count) { all_done = 0; break; }
         }
+        int just_completed = all_done && !pq->is_complete;
         if (all_done) pq->is_complete = 1;
 
-        p->is_dirty = 1;
+        /* Ordinary progress rides the sweep -- losing "3 of 10 wolves" costs a
+         * few minutes. The step that finishes the quest does not: the player
+         * has walked the whole thing and is on their way to the NPC. */
+        if (just_completed) player_mark_critical(p);
+        else                p->is_dirty = 1;
     }
 
     player_release(p);

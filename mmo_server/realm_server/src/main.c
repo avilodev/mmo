@@ -264,6 +264,29 @@ static void probe_all_worlds(ProbeBatch* batch, int worker_limit) {
  *
  * @return Always NULL after the realm stops.
  */
+/** Sleep in short steps, giving up early once shutdown has been requested.
+ *
+ * The monitor's waits used to be plain sleep() calls. A signal handler sets
+ * g_server.running to 0, but a thread asleep in sleep(10) cannot see that --
+ * the signal is delivered to whichever thread is not blocking it, usually the
+ * main one, so the sleeper simply runs to term. Shutdown then waits on
+ * pthread_join(world_monitor_thread) for the rest of that interval before it
+ * can close the listening socket and exit, and the port stays bound for as
+ * long as it takes.
+ *
+ * Stepping means the flag is observed within MONITOR_SLEEP_STEP_MS instead.
+ */
+static void monitor_sleep(int seconds) {
+    const int step_ms = 250;
+    long remaining_ms = (long)seconds * 1000;
+
+    while (remaining_ms > 0 && g_server.running) {
+        long chunk = remaining_ms < step_ms ? remaining_ms : step_ms;
+        usleep((useconds_t)chunk * 1000);
+        remaining_ms -= chunk;
+    }
+}
+
 void* world_monitor_thread_func(void* arg) {
     (void)arg;
 
@@ -299,7 +322,7 @@ void* world_monitor_thread_func(void* arg) {
         if (!server_key) {
             LOG_WARN("WARNING: No server auth key in Redis, retrying in %ds",
                      WORLD_QUERY_TIMEOUT);
-            sleep(WORLD_QUERY_TIMEOUT);
+            monitor_sleep(WORLD_QUERY_TIMEOUT);
             continue;
         }
 
@@ -344,18 +367,48 @@ void* world_monitor_thread_func(void* arg) {
 
         free(server_key);
 
-        // Sleep 10 seconds between heartbeat cycles
-        sleep(10);
+        // Sleep 10 seconds between heartbeat cycles, in steps so that a
+        // shutdown request is noticed promptly rather than up to 10s later.
+        monitor_sleep(10);
     }
 
     free(probe);
 
-    // Cleanup connections
+    /* Detach every world link under the lock, then close the detached copies
+     * with the lock released.
+     *
+     * tls_close() is bounded now, but it still performs network I/O, and this
+     * ran with world_servers_lock held across all ten of them -- so every
+     * client asking for the world list waited behind a teardown talking to
+     * servers that were themselves shutting down. It is the same reason the
+     * probe loop copies a snapshot instead of probing in place. */
+    struct { int fd; void* tls; } *links =
+        calloc((size_t)world_count, sizeof(*links));
+
     pthread_mutex_lock(&g_server.world_servers_lock);
-    for (int i = 0; i < g_server.num_world_servers; i++) {
-        world_link_drop(&g_server.world_servers[i]);
+    int detached = g_server.num_world_servers;
+    if (detached > world_count) detached = world_count;
+    for (int i = 0; i < detached; i++) {
+        if (!links) {
+            /* No memory for the snapshot: closing in place under the lock is
+             * worse, but losing the descriptors entirely is worse still. */
+            world_link_drop(&g_server.world_servers[i]);
+            continue;
+        }
+        links[i].fd  = g_server.world_servers[i].fd;
+        links[i].tls = g_server.world_servers[i].tls;
+        g_server.world_servers[i].fd  = -1;
+        g_server.world_servers[i].tls = NULL;
     }
     pthread_mutex_unlock(&g_server.world_servers_lock);
+
+    if (links) {
+        for (int i = 0; i < detached; i++) {
+            if (links[i].tls) tls_close((SSL*)links[i].tls);
+            if (links[i].fd >= 0) close(links[i].fd);
+        }
+        free(links);
+    }
 
     LOG_INFO("World monitor thread exiting");
     return NULL;
@@ -583,7 +636,31 @@ int main(int argc, char** argv) {
      * Startup fails without a certificate rather than falling back to
      * plaintext. A silent downgrade is the worst of both: the operator believes
      * the link is encrypted, and nothing in a running system says otherwise. */
-    g_tls_ctx = tls_server_init("./certs/server.crt", "./certs/server.key");
+    /* Resolved from the executable, not from the working directory.
+     *
+     * These were opened through a bare "./certs/...", so which files they meant
+     * depended on where the process was started. scripts/start_servers.sh
+     * starts every server from the project root, so that spelling named a
+     * stale top-level certs/ directory that setup no longer writes -- while
+     * setup/check.sh verifies the per-server one. The check passed and the
+     * servers would not start, which is the confusing half of this bug.
+     *
+     * One level up from bin/ because certs are deployed per server rather than
+     * beside the binary: a private key should exist in one place on disk. */
+    char cert_path[512], key_path[512], world_pins_path[512];
+    if (!data_path_resolve(cert_path, sizeof(cert_path), "/../certs/server.crt") ||
+        !data_path_resolve(key_path, sizeof(key_path), "/../certs/server.key") ||
+        !data_path_resolve(world_pins_path, sizeof(world_pins_path),
+                           "/../certs/world_pins.txt")) {
+        LOG_ERROR("Certificate paths do not fit in the buffer; install root is too deep.");
+        close(g_server.tcp_sockfd);
+        character_database_close();
+        session_close();
+        return 1;
+    }
+    LOG_INFO("[PATHS] Certificate directory resolved from the executable");
+
+    g_tls_ctx = tls_server_init(cert_path, key_path);
     if (!g_tls_ctx) {
         LOG_ERROR("Failed to initialize the realm TLS context.");
         LOG_INFO("Run setup/setup.sh, which generates this certificate and");
@@ -601,8 +678,7 @@ int main(int argc, char** argv) {
      * per service: this process is "the realm" to a client and to a world
      * alike, and giving it two would mean two things to rotate and two chances
      * to rotate only one. */
-    if (!world_connect_tls_init("./certs/server.crt", "./certs/server.key",
-                                "./certs/world_pins.txt")) {
+    if (!world_connect_tls_init(cert_path, key_path, world_pins_path)) {
         LOG_ERROR("Realm↔world TLS could not be initialized.");
         LOG_INFO("Run setup/setup.sh, which generates every certificate in this");
         LOG_INFO("system and cross-installs the pins.");
@@ -654,7 +730,10 @@ int main(int argc, char** argv) {
         sleep(1);
     }
 
-    LOG_INFO("\nShutting down...");
+    /* Reported here, not in the handler: logging from a signal handler is what
+     * used to deadlock this process on shutdown. */
+    LOG_INFO("\nReceived shutdown signal (%d)", (int)g_shutdown_signal);
+    LOG_INFO("Shutting down...");
     metrics_server_stop();
     close(g_server.tcp_sockfd);
     pthread_join(g_server.accept_thread, NULL);

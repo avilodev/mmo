@@ -209,6 +209,18 @@ static NetReactorVerdict world_on_work(NetReactorConn* conn) {
         return NET_REACTOR_CLOSE;
     }
 
+    /* Wire-supplied and not necessarily terminated.
+     *
+     * game_ticket is a fixed char[64] with no guarantee of a NUL anywhere in
+     * it, and validate_game_ticket() builds a Redis key from it with "%s".
+     * snprintf reads its source to the terminator regardless of the output
+     * bound, so a client that filled the field walked the read past it, on
+     * through character_id and protocol_version and into the rest of the
+     * reactor's buffer -- before authentication, by anyone who could open the
+     * port. Every other wire string on this path is terminated before use
+     * (see the RealmAuthPacket fields in main.c); this one was missed. */
+    pkt->game_ticket[sizeof(pkt->game_ticket) - 1] = '\0';
+
     /* The ticket is bound to the address the realm issued it to. It crosses the
      * network in cleartext, so without this check a captured ticket is a working
      * credential for whoever redeems it first. */
@@ -383,8 +395,12 @@ static void world_on_retire(NetReactorConn* conn) {
                     player_snapshot_for_save(player, &save_data);
                     do_save = 1;
                     /* Clear dirty so player_remove_active will not repeat the
-                     * write while holding the registry lock. */
+                     * write while holding the registry lock. Both bits: the
+                     * snapshot above carries the milestone state too, so
+                     * leaving is_dirty_critical set would have the milestone
+                     * pass write it a second time. */
                     player->is_dirty = 0;
+                    player->is_dirty_critical = 0;
                 }
                 player_release(player);
                 if (player_remove_active_if_fd(character_id, client_fd)) {

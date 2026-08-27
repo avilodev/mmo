@@ -248,7 +248,10 @@ static NetReactorVerdict realm_on_work(NetReactorConn* conn) {
 
     if (!rc->authenticated) {
         if (len < sizeof(RealmConnectPacket)) return NET_REACTOR_CLOSE;
-        return authenticate(conn, rc, (const RealmConnectPacket*)buf);
+        NetReactorVerdict verdict = authenticate(conn, rc, (const RealmConnectPacket*)buf);
+        /* An ack that could not be written leaves the session unwritable. Keeping
+         * the connection would hand the player a realm that answers nothing. */
+        return tls_write_broken(rc->ssl) ? NET_REACTOR_CLOSE : verdict;
     }
 
     if (len < sizeof(PacketHeader)) return NET_REACTOR_KEEP;
@@ -271,7 +274,21 @@ static NetReactorVerdict realm_on_work(NetReactorConn* conn) {
     tls_set_conn(NULL);
     net_reactor_conn_consume(conn, packet_size);
 
-    return result < 0 ? NET_REACTOR_CLOSE : NET_REACTOR_KEEP;
+    if (result < 0) return NET_REACTOR_CLOSE;
+
+    /* Route handlers do not check what their replies returned -- they were
+     * written against send(2) and kept that shape. So the one place that can
+     * see a reply having failed is here, after dispatch: a session whose write
+     * was abandoned mid-record can carry nothing more, and the next request on
+     * it would be answered into a void. Close it while there is still a reason
+     * to put in the log. */
+    if (tls_write_broken(rc->ssl)) {
+        LOG_WARN("[REALM] fd %d: reply could not be written — closing",
+                 net_reactor_conn_fd(conn));
+        return NET_REACTOR_CLOSE;
+    }
+
+    return NET_REACTOR_KEEP;
 }
 
 /* --- Leaving ------------------------------------------------------------- */

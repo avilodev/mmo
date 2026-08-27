@@ -20,15 +20,32 @@
  * Plus the conservation properties either side of the gate: currency debits
  * refuse rather than underflow, credits saturate rather than wrap, and the
  * slot a purchase reports is the slot it actually landed in.
+ *
+ * The last two cases run the real shop_handle_buy() and shop_handle_sell()
+ * concurrently. Everything above them is a rule tested in isolation; those are
+ * the handler, and the handler is where money and items change hands at the
+ * same moment. A trade that debited without delivering, delivered without
+ * debiting, or did either twice is a defect no sequential test can see -- and
+ * these are the two functions `make sanitize` did not cover, which is what
+ * shop-sanitize now runs this file under.
  */
 
+#include "shop.h"
 #include "shop_session.h"
 #include "item_instance.h"
+#include "items_database.h"
+#include "npc_world.h"
+#include "player_data.h"
 #include "world_regions.h"
+#include "utils.h"
 #include "log.h"
 
+#include <arpa/inet.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_failures = 0;
@@ -43,13 +60,235 @@ static int g_failures = 0;
         }                                                                   \
     } while (0)
 
+/* --- The world the trading handlers run against -------------------------
+ *
+ * shop.c, items_database.c, npc_world.c and player_data.c are stubbed rather
+ * than linked. What is under test is what shop_trade.c does to a player's coin
+ * and bag under contention, and every one of those modules is either a lookup
+ * table or has a sanitizer suite of its own.
+ */
+
+#define TRADE_PLAYERS   8      /**< Threads, and characters, in the races. */
+#define TRADE_SHOP_ID   4242
+#define TRADE_ITEM_ID   808
+#define TRADE_PRICE     10
+#define TRADE_MAX_STACK 20
+#define TRADE_CURRENCY  CURRENCY_ENNARA
+#define TRADE_FIRST_CID 6000
+#define TRADE_FIRST_FD  700
+
+/** The players the trading races drive. One lock each, as in the real registry. */
+static ActivePlayer g_traders[TRADE_PLAYERS];
+
+static uint32_t trader_cid(int slot) { return TRADE_FIRST_CID + (uint32_t)slot; }
+static int      trader_fd(int slot)  { return TRADE_FIRST_FD + slot; }
+
+/** The one shop these cases trade with. */
+static ShopDef g_shop;
+
+ShopDef* shop_find(uint32_t shop_id) {
+    return shop_id == TRADE_SHOP_ID ? &g_shop : NULL;
+}
+
+/** One stackable definition, which is all the trading paths read.
+ *
+ * Built once and never written again. Filling a function static on each call
+ * and handing back its address is a data race the moment two threads trade at
+ * once, and the real item_get() does not do it either: it returns a pointer
+ * into a table loaded before any thread starts.
+ */
+static ItemDefinition g_trade_item;
+
+static void trade_item_init(void) {
+    memset(&g_trade_item, 0, sizeof(g_trade_item));
+    g_trade_item.id             = TRADE_ITEM_ID;
+    g_trade_item.stackable      = 1;
+    g_trade_item.max_stack      = TRADE_MAX_STACK;
+    g_trade_item.value          = TRADE_PRICE / 2;   /* what the shop buys it back for */
+    g_trade_item.bind_on_pickup = 0;
+}
+
+const ItemDefinition* item_get(uint32_t item_id) {
+    return item_id == TRADE_ITEM_ID ? &g_trade_item : NULL;
+}
+
+/** Hand back a trader, locked, exactly as the real registry does. */
+ActivePlayer* player_acquire(uint32_t character_id) {
+    if (character_id < TRADE_FIRST_CID) return NULL;
+    uint32_t slot = character_id - TRADE_FIRST_CID;
+    if (slot >= TRADE_PLAYERS) return NULL;
+    pthread_mutex_lock(&g_traders[slot].lock);
+    return &g_traders[slot];
+}
+
+void player_release(ActivePlayer* p) {
+    if (p) pthread_mutex_unlock(&p->lock);
+}
+
+/** Packets the handlers tried to send, counted rather than delivered. */
+static _Atomic int g_sends = 0;
+
+ssize_t server_send(int fd, void* buf, size_t len) {
+    (void)fd; (void)buf;
+    atomic_fetch_add(&g_sends, 1);
+    return (ssize_t)len;
+}
+
+void player_send_slot_updates(int client_fd, uint32_t character_id,
+                              const uint16_t* slots, int count) {
+    (void)client_fd; (void)character_id; (void)slots; (void)count;
+    atomic_fetch_add(&g_sends, 1);
+}
+
+/* The merchant. Sessions in these cases are opened with npc_id 0, which is the
+ * "no live merchant to re-check" case, so these are never reached -- they exist
+ * because shop_trade.c references them. */
+NPCWorld g_npc_world;
+NPCEntity* npc_world_acquire(NPCWorld* w, uint32_t npc_id) {
+    (void)w; (void)npc_id; return NULL;
+}
+void npc_world_release(NPCWorld* w, NPCEntity* n) { (void)w; (void)n; }
+
+/* --- Trading fixture ---------------------------------------------------- */
+
+/** Put every trader at the merchant with a purse and an empty bag. */
+static void reset_traders(uint32_t starting_coin) {
+    for (int i = 0; i < TRADE_PLAYERS; i++) {
+        memset(&g_traders[i], 0, sizeof(g_traders[i]));
+        pthread_mutex_init(&g_traders[i].lock, NULL);
+        g_traders[i].character_id = trader_cid(i);
+        g_traders[i].client_fd    = trader_fd(i);
+        g_traders[i].is_loaded    = 1;
+        g_traders[i].currency[TRADE_CURRENCY] = starting_coin;
+    }
+}
+
+/** Stock the fixture shop and open it for every trader. */
+static void open_shop_for_everyone(void) {
+    memset(&g_shop, 0, sizeof(g_shop));
+    g_shop.shop_id     = TRADE_SHOP_ID;
+    g_shop.currency_id = TRADE_CURRENCY;
+    g_shop.item_count  = 1;
+    g_shop.items[0].item_id   = TRADE_ITEM_ID;
+    g_shop.items[0].buy_price = TRADE_PRICE;
+    snprintf(g_shop.name, sizeof(g_shop.name), "The Counter");
+
+    shop_session_shutdown();
+    for (int i = 0; i < TRADE_PLAYERS; i++)
+        /* npc_id 0: the session records no live merchant, so the range
+         * re-check falls back to the position recorded at open. The traders
+         * stand on it. */
+        shop_session_open(trader_cid(i), TRADE_SHOP_ID, 0, 0.0f, 0.0f);
+}
+
+/** Total of one item across every trader's bag. */
+static int traders_hold(uint32_t item_id) {
+    int total = 0;
+    for (int i = 0; i < TRADE_PLAYERS; i++)
+        for (int j = 0; j < INVENTORY_SLOTS; j++)
+            if (g_traders[i].inventory[j].item_id == item_id)
+                total += g_traders[i].inventory[j].quantity;
+    return total;
+}
+
+/** Total coin across every trader's purse. */
+static uint64_t traders_coin(void) {
+    uint64_t total = 0;
+    for (int i = 0; i < TRADE_PLAYERS; i++)
+        total += g_traders[i].currency[TRADE_CURRENCY];
+    return total;
+}
+
 static float dist(float ax, float ay, float bx, float by) {
     float dx = ax - bx, dy = ay - by;
     return (float)sqrt((double)(dx * dx + dy * dy));
 }
 
+/* --- The trading races -------------------------------------------------- */
+
+/** One thread in the purchase race, and the character it trades as.
+ *
+ * The two are separate because both arrangements matter. Eight threads on
+ * eight characters is what the server does: a connection is owned by one
+ * worker at a time, so two packets from one player are never dispatched at
+ * once. Eight threads on *one* character is the arrangement that would arise
+ * from a duplicate login before the registry kicks the stale session, and it
+ * is the only one that can catch a balance read outside the lock that spends
+ * it -- which is why both are run.
+ */
+typedef struct {
+    int                character_slot;
+    int                attempts;
+    pthread_barrier_t* start;
+} BuyArgs;
+
+/** Buy until the purse runs out, then keep asking. */
+static void* buy_worker(void* arg) {
+    BuyArgs* a = arg;
+    uint32_t cid = trader_cid(a->character_slot);
+    int      fd  = trader_fd(a->character_slot);
+
+    ShopBuyPacket req;
+    memset(&req, 0, sizeof(req));
+    req.header.type         = PACKET_SHOP_BUY;
+    req.header.player_id    = htonl(cid);
+    req.header.payload_size = htons(sizeof(req) - sizeof(PacketHeader));
+    req.shop_id             = htonl(TRADE_SHOP_ID);
+    req.item_id             = htonl(TRADE_ITEM_ID);
+
+    pthread_barrier_wait(a->start);
+
+    /* Deliberately asks more times than the purse can pay for: the refusals
+     * are half the test. A refusal that still debited, or a debit that still
+     * refused, shows up in the ledger afterwards. */
+    for (int i = 0; i < a->attempts; i++)
+        shop_handle_buy(cid, fd, (uint8_t*)&req, (int)sizeof(req));
+    return NULL;
+}
+
+/** One trader's thread in the mixed race: buying or selling, not both. */
+typedef struct {
+    int                slot;
+    int                selling;
+    int                attempts;
+    pthread_barrier_t* start;
+} TradeArgs;
+
+static void* trade_worker(void* arg) {
+    TradeArgs* a = arg;
+
+    ShopBuyPacket buy;
+    memset(&buy, 0, sizeof(buy));
+    buy.header.type         = PACKET_SHOP_BUY;
+    buy.header.player_id    = htonl(trader_cid(a->slot));
+    buy.header.payload_size = htons(sizeof(buy) - sizeof(PacketHeader));
+    buy.shop_id             = htonl(TRADE_SHOP_ID);
+    buy.item_id             = htonl(TRADE_ITEM_ID);
+
+    ShopSellPacket sell;
+    memset(&sell, 0, sizeof(sell));
+    sell.header.type         = PACKET_SHOP_SELL;
+    sell.header.player_id    = htonl(trader_cid(a->slot));
+    sell.header.payload_size = htons(sizeof(sell) - sizeof(PacketHeader));
+    sell.shop_id             = htonl(TRADE_SHOP_ID);
+    sell.inventory_slot      = 0;
+
+    pthread_barrier_wait(a->start);
+
+    for (int i = 0; i < a->attempts; i++) {
+        if (a->selling)
+            shop_handle_sell(trader_cid(a->slot), trader_fd(a->slot),
+                             (uint8_t*)&sell, (int)sizeof(sell));
+        else
+            shop_handle_buy(trader_cid(a->slot), trader_fd(a->slot),
+                            (uint8_t*)&buy, (int)sizeof(buy));
+    }
+    return NULL;
+}
+
 int main(void) {
     log_init();
+    trade_item_init();   /* before any thread exists; see item_get() */
     printf("=== shop trading ===\n");
 
     printf("\nTEST 1: a shop is not open until it is opened\n");
@@ -278,6 +517,176 @@ int main(void) {
         CHECK(changed == 1, "the diff names the partial stack, not the full one");
         CHECK(inv[1].quantity == 6, "which is the one that grew");
         CHECK(inv[0].quantity == max_stack, "the full stack is unchanged");
+    }
+
+    printf("\nTEST 11: concurrent purchases spend exactly what they deliver\n");
+    {
+        /* The handler, not the rule. Eight threads buy from one counter at
+         * once, each for its own character, and the ledger has to close:
+         * coin spent == items delivered * price, exactly.
+         *
+         * Every way this can go wrong is a live exploit or a live loss. A
+         * debit that happens twice for one item charges a player double. An
+         * insert that happens twice for one debit is item duplication. A debit
+         * skipped because the balance was read outside the lock that spends it
+         * is free goods. shop_handle_buy() holds the player lock across check,
+         * insert and debit precisely so none of those can interleave -- and
+         * until now nothing tested that it does. */
+        item_instance_seed(90000);
+        open_shop_for_everyone();
+
+        const uint32_t purse    = 200;   /* twenty purchases each */
+        const int      attempts = 60;    /* deliberately more than they can afford */
+        reset_traders(purse);
+
+        uint64_t coin_before = traders_coin();
+
+        pthread_t t[TRADE_PLAYERS];
+        BuyArgs   args[TRADE_PLAYERS];
+        pthread_barrier_t start;
+        pthread_barrier_init(&start, NULL, TRADE_PLAYERS);
+        for (int i = 0; i < TRADE_PLAYERS; i++) {
+            args[i] = (BuyArgs){ .character_slot = i, .attempts = attempts,
+                                 .start = &start };
+            pthread_create(&t[i], NULL, buy_worker, &args[i]);
+        }
+        for (int i = 0; i < TRADE_PLAYERS; i++) pthread_join(t[i], NULL);
+        pthread_barrier_destroy(&start);
+
+        uint64_t coin_after = traders_coin();
+        uint64_t spent      = coin_before - coin_after;
+        int      delivered  = traders_hold(TRADE_ITEM_ID);
+
+        CHECK(spent == (uint64_t)delivered * TRADE_PRICE,
+              "every coin spent bought one item, and every item cost one price");
+        CHECK(delivered == (int)(purse / TRADE_PRICE) * TRADE_PLAYERS,
+              "and each trader bought exactly what their purse allowed");
+        CHECK(coin_after == 0, "which is to say they spent all of it and no more");
+
+        /* Nobody may go negative, which an unguarded debit under contention
+         * would do by wrapping through four billion. */
+        int overdrawn = 0;
+        for (int i = 0; i < TRADE_PLAYERS; i++)
+            if (g_traders[i].currency[TRADE_CURRENCY] > purse) overdrawn++;
+        CHECK(overdrawn == 0, "and no purse wrapped past zero into a fortune");
+    }
+
+    printf("\nTEST 12: buying and selling at once conserves the ledger\n");
+    {
+        /* Half the threads buy while the other half sell the same item back to
+         * the same counter. Both handlers take the player lock and both move
+         * coin and items in opposite directions, which is the interleaving
+         * that would let a sale credit for an item a purchase had not finished
+         * placing -- or a purchase place an item a sale had already removed.
+         *
+         * The invariant that survives either direction: a trader's coin plus
+         * what their items would fetch cannot rise. The shop buys back below
+         * what it sells for, so it is a sink and never a source. The total may
+         * fall; growth is duplication. */
+        item_instance_seed(95000);
+        open_shop_for_everyone();
+
+        const uint32_t purse  = 300;
+        const uint16_t seeded = 10;
+        reset_traders(purse);
+
+        /* Seed every bag, so the sellers have something to sell. */
+        for (int i = 0; i < TRADE_PLAYERS; i++)
+            inventory_add(g_traders[i].inventory, TRADE_ITEM_ID, seeded,
+                          TRADE_MAX_STACK, 0);
+
+        const ItemDefinition* def = item_get(TRADE_ITEM_ID);
+        const uint32_t sell_price = def->value;
+
+        uint64_t worth_before = traders_coin() +
+                                (uint64_t)traders_hold(TRADE_ITEM_ID) * sell_price;
+
+        pthread_t  t[TRADE_PLAYERS];
+        TradeArgs  args[TRADE_PLAYERS];
+        pthread_barrier_t start;
+        pthread_barrier_init(&start, NULL, TRADE_PLAYERS);
+        for (int i = 0; i < TRADE_PLAYERS; i++) {
+            args[i] = (TradeArgs){ .slot = i, .selling = i % 2,
+                                   .attempts = 40, .start = &start };
+            pthread_create(&t[i], NULL, trade_worker, &args[i]);
+        }
+        for (int i = 0; i < TRADE_PLAYERS; i++) pthread_join(t[i], NULL);
+        pthread_barrier_destroy(&start);
+
+        uint64_t worth_after = traders_coin() +
+                               (uint64_t)traders_hold(TRADE_ITEM_ID) * sell_price;
+
+        CHECK(worth_after <= worth_before,
+              "trading against the counter never created value out of nothing");
+
+        int too_rich = 0, oversized = 0;
+        for (int i = 0; i < TRADE_PLAYERS; i++) {
+            if (g_traders[i].currency[TRADE_CURRENCY] > purse + seeded * sell_price)
+                too_rich++;
+            for (int j = 0; j < INVENTORY_SLOTS; j++)
+                if (g_traders[i].inventory[j].quantity > TRADE_MAX_STACK)
+                    oversized++;
+        }
+        CHECK(too_rich == 0, "no purse holds more than every sale could have paid");
+        CHECK(oversized == 0, "and no stack grew past the item's maximum");
+    }
+
+    printf("\nTEST 13: one character bought by eight threads at once\n");
+    {
+        /* The arrangement TEST 11 cannot produce. There, each thread has its
+         * own character and its own lock, which is faithful to the server --
+         * the reactor hands a connection to one worker at a time, so two
+         * packets from one player never run together. It also means TEST 11
+         * would pass against a handler that read the balance, released the
+         * lock, and re-acquired it to spend: with one thread per character
+         * there is nobody to interleave with.
+         *
+         * Eight threads on one character is that missing case. It is not
+         * hypothetical -- a duplicate login has a window before the session
+         * registry kicks the stale connection, and both are dispatchable in
+         * it. The purse is exact, so a single lost update shows: twenty items
+         * at ten coin from a purse of two hundred leaves nothing, and any
+         * other answer is a debit that went missing or happened twice. */
+        item_instance_seed(99000);
+        open_shop_for_everyone();
+
+        /* Repeated, because a lost update is a timing accident and one round
+         * can miss it. Under ThreadSanitizer -- which is what shop-sanitize
+         * runs -- the interleavings widen and a single round is usually
+         * enough; in a plain build it is not, and a case that only fails under
+         * a sanitizer is a case that will be believed to pass. */
+        const uint32_t purse = 200;
+        int wrong_rounds = 0, short_rounds = 0, over_rounds = 0;
+
+        for (int round = 0; round < 40; round++) {
+            reset_traders(purse);
+
+            pthread_t t[TRADE_PLAYERS];
+            BuyArgs   args[TRADE_PLAYERS];
+            pthread_barrier_t start;
+            pthread_barrier_init(&start, NULL, TRADE_PLAYERS);
+            for (int i = 0; i < TRADE_PLAYERS; i++) {
+                args[i] = (BuyArgs){ .character_slot = 0, .attempts = 40,
+                                     .start = &start };
+                pthread_create(&t[i], NULL, buy_worker, &args[i]);
+            }
+            for (int i = 0; i < TRADE_PLAYERS; i++) pthread_join(t[i], NULL);
+            pthread_barrier_destroy(&start);
+
+            int      bought = traders_hold(TRADE_ITEM_ID);
+            uint32_t left   = g_traders[0].currency[TRADE_CURRENCY];
+
+            if ((uint64_t)bought * TRADE_PRICE + left != purse) wrong_rounds++;
+            if (bought > (int)(purse / TRADE_PRICE)) over_rounds++;
+            if (bought < (int)(purse / TRADE_PRICE)) short_rounds++;
+        }
+
+        CHECK(over_rounds == 0,
+              "no round bought more than one purse pays for");
+        CHECK(short_rounds == 0,
+              "and none bought less, so no purchase was refused for coin still held");
+        CHECK(wrong_rounds == 0,
+              "40 rounds and the ledger closed every time: no debit lost, none twice");
     }
 
     shop_session_shutdown();

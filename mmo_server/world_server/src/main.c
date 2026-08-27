@@ -74,6 +74,17 @@ static char QUEST_SAVE_DIR[512];
 static char WORLD_DAT_PATH[512];
 static char ZONES_PATH[512];
 
+/* TLS material for the realm link. Resolved beside the data paths and for the
+ * same reason: these were the last runtime files still opened through a bare
+ * "./certs/...", so they came from wherever the process happened to be started
+ * rather than from the deployment. The supervisor starts every server from the
+ * project root, so that spelling read a stale top-level certs/ directory that
+ * setup no longer writes -- while setup/check.sh verified the per-server one,
+ * which is why the check passed and the world would not start. */
+static char SERVER_CERT_PATH[512];
+static char SERVER_KEY_PATH[512];
+static char REALM_PINS_PATH[512];
+
 /** Build one bounded runtime asset path or terminate startup on overflow. */
 static void set_data_path(char* destination, size_t destination_size,
                           const char* directory, const char* relative_path) {
@@ -121,7 +132,13 @@ static void init_data_paths(void) {
     set_data_path(QUEST_SAVE_DIR,       sizeof(QUEST_SAVE_DIR),       exe, "/data/quests");
     // Runtime assets are packaged beside the binary by the Makefile.
     set_data_path(WORLD_DAT_PATH,       sizeof(WORLD_DAT_PATH),       exe, "/data/world.dat");
+    /* One level up from bin/: certs are deployed per server, not beside the
+     * binary, and a private key should exist in exactly one place on disk. */
+    set_data_path(SERVER_CERT_PATH,     sizeof(SERVER_CERT_PATH),     exe, "/../certs/server.crt");
+    set_data_path(SERVER_KEY_PATH,      sizeof(SERVER_KEY_PATH),      exe, "/../certs/server.key");
+    set_data_path(REALM_PINS_PATH,      sizeof(REALM_PINS_PATH),      exe, "/../certs/realm_pins.txt");
     LOG_INFO("[PATHS] Data directory: %s/data/", exe);
+    LOG_INFO("[PATHS] Certificate directory: %s/../certs/", exe);
 }
 
 static pthread_t g_combat_thread;
@@ -1549,8 +1566,8 @@ int main(int argc, char** argv) {
      * listener opens: a world that accepted realm connections while it had no
      * certificate would be accepting them in plaintext, which is the one
      * outcome worse than refusing them. */
-    if (!realm_link_tls_init("./certs/server.crt", "./certs/server.key",
-                             "./certs/realm_pins.txt")) {
+    if (!realm_link_tls_init(SERVER_CERT_PATH, SERVER_KEY_PATH,
+                             REALM_PINS_PATH)) {
         LOG_ERROR("FAILED - the realm link's TLS identity could not be loaded");
         close(g_server.tcp_sockfd);
         playerdata_close();

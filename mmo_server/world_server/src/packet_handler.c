@@ -72,13 +72,23 @@ void handle_request_player_data(int client_fd, uint32_t character_id) {
     player_send_data_response(client_fd, character_id);
 }
 
-static void send_move_correction(int client_fd, float pos_x, float pos_y) {
+/** Refuse one proposal and say where the player actually is.
+ *
+ * @param sequence  The PlayerMovePacket being refused, in host order. Echoing
+ *                  it is what lets the client rewind to (pos_x, pos_y) and
+ *                  replay only the moves it sent after this one, rather than
+ *                  assigning the corrected position to wherever it has got to
+ *                  by the time this arrives.
+ */
+static void send_move_correction(int client_fd, uint32_t sequence,
+                                 float pos_x, float pos_y) {
     PlayerMoveAckPacket correction;
     memset(&correction, 0, sizeof(correction));
     correction.header.type = PACKET_PLAYER_MOVE_ACK;
     correction.header.payload_size = htons(sizeof(PlayerMoveAckPacket) - sizeof(PacketHeader));
     correction.pos_x = pos_x;
     correction.pos_y = pos_y;
+    correction.sequence = htonl(sequence);
     server_send(client_fd, &correction, sizeof(correction));
 }
 
@@ -90,6 +100,13 @@ void handle_player_move(int client_fd, uint32_t character_id, int player_slot, P
 
     float client_x = pkt->pos_x;
     float client_y = pkt->pos_y;
+
+    /* Carried through untouched but for the byte order: the server never acts
+     * on it, it only hands it back so the client knows which of its proposals
+     * a refusal answers. Nothing here trusts it, and it cannot be wrong in a
+     * way that matters -- a client that echoes nonsense corrects itself
+     * badly and affects nobody else. */
+    uint32_t sequence = ntohl(pkt->sequence);
 
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -109,7 +126,7 @@ void handle_player_move(int client_fd, uint32_t character_id, int player_slot, P
         float server_x = player->pos_x;
         float server_y = player->pos_y;
         player_release(player);
-        send_move_correction(client_fd, server_x, server_y);
+        send_move_correction(client_fd, sequence, server_x, server_y);
         return;
     }
 

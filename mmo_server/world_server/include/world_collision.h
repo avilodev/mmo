@@ -27,6 +27,20 @@ int world_collision_check_box_path(float x0, float y0,
                                    float x1, float y1,
                                    float half_size);
 
+/** Report whether the collision layer is mapped rather than copied.
+ *
+ * The layer is read-only for the process's whole life and byte-identical
+ * across every world on the host, so it is mapped shared: one physical copy
+ * behind all of them, page-cache backed, and no per-process read at startup.
+ * A filesystem that will not map it falls back to a private copy, which is
+ * correct but is the thing worth knowing about on a host running ten worlds.
+ * Setting MMO_COLLISION_NO_MMAP to anything but 0 forces that fallback, which
+ * is how it is tested and how a deployment that has to avoid mapping says so.
+ *
+ * @return 1 when mapped, 0 when copied or not loaded.
+ */
+int world_collision_is_mapped(void);
+
 void world_collision_shutdown(void);
 
 #endif // WORLD_COLLISION_H

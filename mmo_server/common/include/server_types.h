@@ -157,6 +157,19 @@ typedef struct {
     int is_reserved; /**< Marks a slot claimed by an in-progress database load. */
     int is_ready;
     int is_dirty;
+    /** Mark state whose loss a player would notice and report.
+     *
+     * is_dirty says "this character differs from the row on disk", which is
+     * true after a step sideways; the ordinary sweep at SAVE_INTERVAL_SECONDS
+     * is the right cadence for that. This says the difference is a level gained,
+     * a quest turned in, coin spent or earned, or a rare item picked up -- the
+     * things a crash between sweeps turns into a support ticket.
+     *
+     * Setting it implies is_dirty. Set both through player_mark_critical()
+     * rather than by hand, and note that the critical pass clears both: a
+     * milestone written to the database is no longer pending in either sense.
+     */
+    int is_dirty_critical;
     time_t last_save;
     time_t last_activity;
     MoveBudget move_budget;

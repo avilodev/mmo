@@ -17,6 +17,7 @@
 #include <time.h>
 #include <hiredis/hiredis.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "tls.h"
 
 /** Bytes of entropy behind one world-entry ticket. */
@@ -72,6 +73,11 @@ static int generate_secure_ticket(char* ticket_out, size_t size) {
     return 1;
 }
 
+/** Narrow a 32-bit count to the 16-bit wire field without wrapping. */
+static uint16_t clamp_u16(uint32_t value) {
+    return value > UINT16_MAX ? UINT16_MAX : (uint16_t)value;
+}
+
 /**
  * Snapshot monitored world status and send it to an authenticated realm client.
  *
@@ -112,8 +118,12 @@ void world_send_list(int client_fd, uint32_t account_id) {
         strncpy(world->name, ws->name, sizeof(world->name) - 1);
         world->name[sizeof(world->name) - 1] = '\0';
         
-        world->population = htons(ws->player_count);
-        world->capacity = htons(ws->max_players);
+        /* Clamped, not truncated. Both wire fields are 16 bits and both
+         * sources are 32, so a world configured above 65535 used to publish
+         * the low half of its number -- a capacity of 100000 arrived as 34464,
+         * which reads as a plausible answer rather than as a wrong one. */
+        world->population = htons(clamp_u16(ws->player_count));
+        world->capacity   = htons(clamp_u16(ws->max_players));
 
         /* Determine status based on player count vs max.
          *
@@ -128,8 +138,9 @@ void world_send_list(int client_fd, uint32_t account_id) {
             world->status = 1; // online
         }
         
-        strncpy(world->ip, ws->host, sizeof(world->ip) - 1);
-        world->ip[sizeof(world->ip) - 1] = '\0';
+        /* Both fields are now as wide as their source; see WorldInfo. */
+        strncpy(world->host, ws->host, sizeof(world->host) - 1);
+        world->host[sizeof(world->host) - 1] = '\0';
         
         world->port = htons(ws->port);
         
@@ -189,6 +200,7 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     // client's world list or world entry behind this one player's Redis latency.
     int      world_found  = 0;
     int      world_online = 0;
+    int      world_full   = 0;
     char     world_name[64];
     char     world_host[64];
     uint16_t world_port   = 0;
@@ -204,6 +216,14 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
         world_found  = 1;
         world_online = ws->online;
         world_port   = ws->port;
+        /* The same test world_send_list publishes as status 2, so the two
+         * answers about one world agree. It was computed for the list and
+         * nowhere else, so the realm minted tickets for worlds it had just
+         * told the client were full -- the world then refused them at
+         * admission, which is a round trip and a confusing error message to
+         * arrive at a conclusion the realm already held. Capacity of 0 means
+         * "not reported yet", not "no room"; see load_world_servers_from_table. */
+        world_full = (ws->max_players > 0 && ws->player_count >= ws->max_players);
         snprintf(world_name, sizeof(world_name), "%s", ws->name);
         snprintf(world_host, sizeof(world_host), "%s", ws->host);
     }
@@ -230,6 +250,17 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
         response.message[sizeof(response.message) - 1] = '\0';
         tls_send(client_fd, &response, sizeof(response), 0);
         LOG_ERROR("Error: World %u is offline", requested_world_id);
+        return;
+    }
+
+    if (world_full) {
+        response.success = 0;
+        strncpy(response.message, "That world is full. Please choose another.",
+                sizeof(response.message) - 1);
+        response.message[sizeof(response.message) - 1] = '\0';
+        tls_send(client_fd, &response, sizeof(response), 0);
+        LOG_INFO("Refused world entry for account %u: world %u is full",
+                 account_id, requested_world_id);
         return;
     }
     
@@ -293,8 +324,8 @@ void world_enter(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t by
     response.success = 1;
     strncpy(response.game_ticket, game_ticket, sizeof(response.game_ticket) - 1);
     response.game_ticket[sizeof(response.game_ticket) - 1] = '\0';
-    strncpy(response.world_ip, world_host, sizeof(response.world_ip) - 1);
-    response.world_ip[sizeof(response.world_ip) - 1] = '\0';
+    strncpy(response.world_host, world_host, sizeof(response.world_host) - 1);
+    response.world_host[sizeof(response.world_host) - 1] = '\0';
     response.world_port = htons(world_port);
     snprintf(response.message, sizeof(response.message), "Connecting to %s...", world_name);
     response.message[sizeof(response.message) - 1] = '\0';

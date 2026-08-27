@@ -9,7 +9,32 @@ SUPERVISOR_PID_FILE="$RUNTIME_DIR/supervisor.pid"
 
 declare -a SERVER_PIDS=()
 declare -a SERVER_NAMES=()
+declare -a SERVER_CMDS=()       # shell-quoted argv, so a dead service can be restarted
+declare -a SERVER_SLUGS=()      # log basename, needed again on every restart
+declare -a SERVER_FAILS=()      # restarts inside the current window
+declare -a SERVER_WINDOW=()     # SECONDS at which that window opened
 CLEANING_UP=0
+
+# Restart policy.
+#
+# A world server crashing used to take the whole stack with it: this script
+# noticed the dead child and ran cleanup, which TERMs and then KILLs all twelve
+# processes. That threw away the partial-failure tolerance everything above it
+# was built for -- the realm marks an unreachable world offline and steers
+# players to another one, world sessions in Redis carry a TTL precisely so a
+# world that crashed does not block anything, and capacity refusals are already
+# graceful. One process dying should cost that process's players, not everyone's.
+#
+# So a dead child is restarted where it stood. A service that will not stay up
+# is abandoned rather than restarted forever -- a crash loop is usually a bad
+# config or a corrupt data file, and hammering it buries the first, most useful
+# error under thousands of identical ones. The rest of the stack keeps running,
+# and the supervisor exits only when nothing is left alive.
+MAX_RESTARTS=${MMO_SUPERVISOR_MAX_RESTARTS:-3}
+RESTART_WINDOW=${MMO_SUPERVISOR_RESTART_WINDOW:-300}
+# Set to 0 for the old fail-fast behaviour: any exit stops the stack. Useful in
+# CI and when bisecting a startup crash, where the first failure is the answer.
+RESTART_ENABLED=${MMO_SUPERVISOR_RESTART:-1}
 
 is_our_supervisor() {
     local pid=$1
@@ -21,13 +46,35 @@ cleanup() {
     local exit_code=${1:-0}
     (( CLEANING_UP )) && return
     CLEANING_UP=1
-    trap - INT TERM EXIT
+
+    # Ignore further interrupts rather than restoring the default disposition.
+    #
+    # This was `trap - INT TERM EXIT`, which reset INT and TERM to "terminate".
+    # Cleanup then spent up to 15 seconds waiting for servers to save and exit,
+    # and a second Ctrl+C anywhere in that window -- the natural reaction to a
+    # shell that looks hung -- killed the supervisor outright, before the
+    # force-kill loop below ever ran. Anything still shutting down was orphaned
+    # with its listening socket still bound, so the next `make run` died on
+    # "Failed to create server socket" and the ports could only be freed by
+    # hand. A server that hangs in its own shutdown made that the normal case
+    # rather than the rare one.
+    #
+    # Ignoring the signals means the force-kill always runs: cleanup is bounded
+    # at ~15 seconds and cannot be interrupted into leaving a process behind.
+    # EXIT is still cleared, because cleanup ends in `exit` and would otherwise
+    # re-enter itself.
+    trap '' INT TERM
+    trap - EXIT
 
     echo
     echo "Stopping MMO server stack..."
 
+    # A PID of 0 marks a service that was abandoned after a crash loop. It must
+    # be skipped rather than signalled: kill(0) means "every process in my own
+    # group", which here is this supervisor and every server still running.
     local pid
     for pid in "${SERVER_PIDS[@]}"; do
+        (( pid == 0 )) && continue
         if kill -0 "$pid" 2>/dev/null; then
             kill -TERM "$pid" 2>/dev/null || true
         fi
@@ -38,6 +85,7 @@ cleanup() {
     while (( SECONDS < deadline )); do
         local alive=0
         for pid in "${SERVER_PIDS[@]}"; do
+            (( pid == 0 )) && continue
             kill -0 "$pid" 2>/dev/null && alive=1
         done
         (( alive == 0 )) && break
@@ -45,6 +93,7 @@ cleanup() {
     done
 
     for pid in "${SERVER_PIDS[@]}"; do
+        (( pid == 0 )) && continue
         if kill -0 "$pid" 2>/dev/null; then
             echo "Force-stopping unresponsive server PID $pid"
             kill -KILL "$pid" 2>/dev/null || true
@@ -72,22 +121,81 @@ fail() {
 LOG_DIR=${MMO_LOG_DIR:-"$PROJECT_ROOT/logs"}
 mkdir -p -- "$LOG_DIR"
 
+# Launch one service in the background, reporting its PID in REPLY_PID.
+#
+# Split out of start_server() because a restart needs the launch without the
+# bookkeeping and without the fail-fast check.
+REPLY_PID=0
+spawn() {
+    local log_slug=$1
+    shift
+    # The console stays on so this script's own supervision output still shows
+    # startup failures; set MMO_LOG_CONSOLE=0 to send everything to the files.
+    MMO_LOG_FILE="$LOG_DIR/$log_slug.log" "$@" &
+    REPLY_PID=$!
+}
+
 start_server() {
     local name=$1
     local log_slug=$2
     shift 2
 
     echo "Starting $name... (log: $LOG_DIR/$log_slug.log)"
-    # The console stays on so this script's own supervision output still shows
-    # startup failures; set MMO_LOG_CONSOLE=0 to send everything to the files.
-    MMO_LOG_FILE="$LOG_DIR/$log_slug.log" "$@" &
-    local pid=$!
+    spawn "$log_slug" "$@"
+    local pid=$REPLY_PID
+
+    # Remembered so this service can be restarted where it stood. %q survives
+    # the round trip through eval for any argument, including the ones this
+    # script does not happen to pass today.
+    local quoted
+    printf -v quoted '%q ' "$@"
+
     SERVER_NAMES+=("$name")
     SERVER_PIDS+=("$pid")
+    SERVER_SLUGS+=("$log_slug")
+    SERVER_CMDS+=("$quoted")
+    SERVER_FAILS+=(0)
+    SERVER_WINDOW+=("$SECONDS")
 
     # Catch immediate configuration, port, database, and asset failures.
+    #
+    # Still fail-fast, and deliberately: a service that cannot survive its first
+    # quarter second has a bad config, a taken port or a missing file, and none
+    # of those get better by being retried. The restart policy below is for a
+    # process that ran and then died.
     sleep 0.25
     kill -0 "$pid" 2>/dev/null || fail "$name failed during startup"
+}
+
+# Bring one service back after an unexpected exit.
+#
+# @return 0 when it was restarted, 1 when it has been abandoned.
+restart_server() {
+    local i=$1
+    local name=${SERVER_NAMES[$i]}
+
+    # Reopen the counting window when the last failure is far enough behind.
+    # Without this a service that crashes once a week is eventually abandoned
+    # for its third crash in a month, which is not a crash loop.
+    if (( SECONDS - SERVER_WINDOW[i] > RESTART_WINDOW )); then
+        SERVER_FAILS[$i]=0
+        SERVER_WINDOW[$i]=$SECONDS
+    fi
+
+    SERVER_FAILS[$i]=$(( SERVER_FAILS[i] + 1 ))
+
+    if (( SERVER_FAILS[i] > MAX_RESTARTS )); then
+        SERVER_PIDS[$i]=0
+        echo "$name has died ${SERVER_FAILS[i]} times within ${RESTART_WINDOW}s — giving up on it." >&2
+        echo "   The rest of the stack keeps running. The first failure is the one to read:" >&2
+        echo "   $LOG_DIR/${SERVER_SLUGS[$i]}.log" >&2
+        return 1
+    fi
+
+    echo "Restarting $name (${SERVER_FAILS[i]} of $MAX_RESTARTS within ${RESTART_WINDOW}s)..." >&2
+    eval "spawn \"\${SERVER_SLUGS[$i]}\" ${SERVER_CMDS[$i]}"
+    SERVER_PIDS[$i]=$REPLY_PID
+    return 0
 }
 
 trap 'cleanup 130' INT
@@ -181,14 +289,33 @@ echo "MMO stack running (${#SERVER_PIDS[@]} processes). Press Ctrl+C to stop eve
 echo "From another terminal, 'make stop' requests the same graceful shutdown."
 
 while :; do
+    any_alive=0
+
     for i in "${!SERVER_PIDS[@]}"; do
         pid=${SERVER_PIDS[$i]}
-        if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid" 2>/dev/null
-            status=$?
-            echo "${SERVER_NAMES[$i]} exited unexpectedly (status $status)" >&2
-            cleanup 1
+        (( pid == 0 )) && continue        # abandoned after a crash loop
+
+        if kill -0 "$pid" 2>/dev/null; then
+            any_alive=1
+            continue
         fi
+
+        wait "$pid" 2>/dev/null
+        status=$?
+        echo "${SERVER_NAMES[$i]} exited unexpectedly (status $status)" >&2
+
+        (( RESTART_ENABLED )) || cleanup 1
+
+        restart_server "$i" && any_alive=1
     done
+
+    # Only when there is nothing left to supervise. One world giving up costs
+    # that world; all twelve giving up means the machine has a problem this
+    # script cannot fix by waiting.
+    if (( ! any_alive )); then
+        echo "Every service has been abandoned — nothing left to supervise." >&2
+        cleanup 1
+    fi
+
     sleep 1
 done

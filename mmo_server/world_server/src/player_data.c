@@ -36,6 +36,22 @@
 
 #define SAVE_INTERVAL_SECONDS 120
 
+/** How often milestone state is drained, in seconds.
+ *
+ * The ordinary sweep is two minutes because that is a fine cadence for a
+ * position and a health bar: a crash rewinds the player a little way down the
+ * road and nobody writes in about it. It is a terrible cadence for a level, a
+ * quest turn-in, a purchase or a rare drop, which is what the same two minutes
+ * also costs today.
+ *
+ * So milestones get their own pass on a short timer. It is not a second sweep:
+ * it visits only players carrying is_dirty_critical, which is a handful even on
+ * a full world, and it costs one walk of the online list to find them. Five
+ * seconds bounds the loss at something a player will not notice rather than
+ * something they will report.
+ */
+#define SAVE_CRITICAL_INTERVAL_SECONDS 5
+
 /** Bound one persistence batch.
  *
  * PlayerSaveData is roughly 6 KB, so a queue sized MAX_PLAYERS is 5.7 MB — past a
@@ -722,6 +738,7 @@ int playerdata_save(ActivePlayer* player) {
     if (!committed) return 0;
 
     player->is_dirty = 0;
+    player->is_dirty_critical = 0;   /* on disk is on disk, in both senses */
     player->last_save = time(NULL);
 
     LOG_DEBUG("Saved character %u to database", player->character_id);
@@ -1160,6 +1177,117 @@ void playerdata_set_world_id(uint32_t world_id) {
     g_world_id = world_id;
 }
 
+int playerdata_critical_interval(void) { return SAVE_CRITICAL_INTERVAL_SECONDS; }
+int playerdata_save_interval(void)     { return SAVE_INTERVAL_SECONDS; }
+
+/**
+ * Snapshot and commit dirty players in batches.
+ *
+ * This is the body both passes share. The only difference between them is
+ * which players the scan picks up, so it is one parameter rather than two
+ * copies of the batching, the lock ordering and the failed-commit restore --
+ * which is what the duplicated version would have drifted apart on first.
+ *
+ * @param save_queue     SAVE_BATCH_SIZE snapshots, reused every pass.
+ * @param max_passes     Bound on batches, so a database outage cannot spin.
+ * @param critical_only  Take only players carrying is_dirty_critical.
+ * @return The number of characters committed.
+ */
+static int drain_saves(PlayerSaveData* save_queue, int max_passes, int critical_only) {
+    int committed = 0;
+
+    /* Drain in batches. The dirty bits are cleared under the slot lock as each
+     * player is snapshotted, so restarting the scan from the top never saves
+     * anyone twice. */
+    for (int pass = 0; pass < max_passes; pass++) {
+        int save_count = 0;
+
+        /* Parallel to save_queue: whether each snapshot was taken from a player
+         * the milestone pass had claimed. A failed commit has to put back the
+         * bit it cleared, and the snapshot does not carry it. */
+        int was_critical[SAVE_BATCH_SIZE];
+
+        // retain shared occupancy access while locking individual slots
+        player_registry_rdlock();
+        int online_count = 0;
+        const int* online = player_active_list_locked(&online_count);
+        for (int s_i = 0; s_i < online_count && save_count < SAVE_BATCH_SIZE; s_i++) {
+            int i = online[s_i];
+            if (!active_players[i].is_loaded) continue;
+            pthread_mutex_lock(&active_players[i].lock);
+
+            /* is_dirty_critical implies is_dirty, so the full sweep needs only
+             * the one test and picks up milestones too. */
+            int take = critical_only ? active_players[i].is_dirty_critical
+                                     : active_players[i].is_dirty;
+            if (take) {
+                was_critical[save_count] = active_players[i].is_dirty_critical;
+                player_snapshot_for_save(&active_players[i], &save_queue[save_count++]);
+                /* Both cleared while we hold the lock. Clearing only the
+                 * critical bit would leave the player dirty for a sweep that
+                 * has nothing left to write, and clearing only is_dirty would
+                 * have the milestone pass pick them up again every five
+                 * seconds forever. */
+                active_players[i].is_dirty          = 0;
+                active_players[i].is_dirty_critical = 0;
+            }
+            pthread_mutex_unlock(&active_players[i].lock);
+        }
+        player_registry_unlock();
+
+        if (save_count == 0) break;
+
+        // Now write to DB without holding any locks
+        for (int i = 0; i < save_count; i++) {
+            uint32_t character_id = save_queue[i].scalars.character_id;
+            LOG_DEBUG("%s save: character %u",
+                      critical_only ? "Milestone" : "Periodic", character_id);
+
+            if (player_commit_save(&save_queue[i])) {
+                committed++;
+            } else {
+                // restore dirty state after a failed commit
+                ActivePlayer* player = player_acquire(character_id);
+                if (player) {
+                    if (was_critical[i]) player_mark_critical(player);
+                    else                 player->is_dirty = 1;
+                    player_release(player);
+                }
+                LOG_ERROR("%s save failed for character %u; queued for retry",
+                          critical_only ? "Milestone" : "Periodic", character_id);
+            }
+
+            /* Released here, not after the batch: the buffer is reused
+             * every pass, so a snapshot left holding heap would leak it. */
+            player_snapshot_release(&save_queue[i]);
+        }
+
+        /* A short batch means the scan found nothing more waiting. Stopping here
+         * also keeps a commit failure from being retried within this interval. */
+        if (save_count < SAVE_BATCH_SIZE) break;
+    }
+
+    return committed;
+}
+
+int playerdata_flush_saves(int critical_only) {
+    /* Its own buffer rather than the save thread's: this runs on whatever
+     * thread called it, and SAVE_BATCH_SIZE snapshots is far too much for a
+     * stack. */
+    PlayerSaveData* queue = calloc(SAVE_BATCH_SIZE, sizeof(PlayerSaveData));
+    if (!queue) {
+        LOG_ERROR("playerdata_flush_saves: cannot allocate a %zu-byte batch buffer",
+                  SAVE_BATCH_SIZE * sizeof(PlayerSaveData));
+        return 0;
+    }
+
+    const int max_passes = (MAX_PLAYERS + SAVE_BATCH_SIZE - 1) / SAVE_BATCH_SIZE;
+    int committed = drain_saves(queue, max_passes, critical_only);
+
+    free(queue);
+    return committed;
+}
+
 void* periodic_save_thread(void* arg) {
     (void)arg;
     g_save_thread_running = 1;
@@ -1179,11 +1307,16 @@ void* periodic_save_thread(void* arg) {
      * pick them straight back up. */
     const int max_passes = (MAX_PLAYERS + SAVE_BATCH_SIZE - 1) / SAVE_BATCH_SIZE;
 
+    /* The thread wakes on the short interval and does the full sweep on a
+     * deadline of its own, rather than running two timers. One less thing to
+     * stop at shutdown, and the two passes can never overlap. */
+    time_t next_full_sweep = time(NULL) + SAVE_INTERVAL_SECONDS;
+
     while (1) {
 
         struct timespec deadline;
         clock_gettime(CLOCK_REALTIME, &deadline);
-        deadline.tv_sec += SAVE_INTERVAL_SECONDS;
+        deadline.tv_sec += SAVE_CRITICAL_INTERVAL_SECONDS;
 
         pthread_mutex_lock(&g_save_mutex);
         while (g_save_thread_running) {
@@ -1195,6 +1328,11 @@ void* periodic_save_thread(void* arg) {
         // If we were told to stop, exit immediately
         if (!g_save_thread_running) break;
 
+        /* A full sweep only every SAVE_INTERVAL_SECONDS; the wakeups in between
+         * are the milestone pass and touch nothing else. */
+        int full_sweep = time(NULL) >= next_full_sweep;
+        if (full_sweep) next_full_sweep = time(NULL) + SAVE_INTERVAL_SECONDS;
+
         /* Refresh every online character's world-session mark.
          *
          * Every online character, not just the dirty ones the drain below
@@ -1202,8 +1340,13 @@ void* periodic_save_thread(void* arg) {
          * from under a live session, and a character standing still is exactly
          * as live as one that is moving. The marks carry a TTL, so a world that
          * stops running stops renewing them and deletion becomes possible
-         * again on its own. */
-        {
+         * again on its own.
+         *
+         * Tied to the full sweep rather than to every wakeup: the TTL is sized
+         * against SAVE_INTERVAL_SECONDS, and renewing at the milestone cadence
+         * would multiply this world's Redis traffic by the ratio between the
+         * two intervals for no gain at all. */
+        if (full_sweep) {
             uint32_t* live = malloc(sizeof(uint32_t) * MAX_PLAYERS);
             int       live_count = 0;
 
@@ -1226,53 +1369,7 @@ void* periodic_save_thread(void* arg) {
             }
         }
 
-        /* Drain in batches. is_dirty is cleared under the slot lock as each player is
-         * snapshotted, so restarting the scan from the top never saves anyone twice. */
-        for (int pass = 0; pass < max_passes; pass++) {
-            int save_count = 0;
-
-            // retain shared occupancy access while locking individual slots
-            player_registry_rdlock();
-            int online_count = 0;
-            const int* online = player_active_list_locked(&online_count);
-            for (int s_i = 0; s_i < online_count && save_count < SAVE_BATCH_SIZE; s_i++) {
-                int i = online[s_i];
-                if (!active_players[i].is_loaded) continue;
-                pthread_mutex_lock(&active_players[i].lock);
-                if (active_players[i].is_dirty) {
-                    player_snapshot_for_save(&active_players[i], &save_queue[save_count++]);
-                    active_players[i].is_dirty = 0;  // cleared while we hold the lock
-                }
-                pthread_mutex_unlock(&active_players[i].lock);
-            }
-            player_registry_unlock();
-
-            if (save_count == 0) break;
-
-            // Now write to DB without holding any locks
-            for (int i = 0; i < save_count; i++) {
-                uint32_t character_id = save_queue[i].scalars.character_id;
-                LOG_DEBUG("Periodic save: character %u", character_id);
-
-                if (!player_commit_save(&save_queue[i])) {
-                    // restore dirty state after a failed commit
-                    ActivePlayer* player = player_acquire(character_id);
-                    if (player) {
-                        player->is_dirty = 1;
-                        player_release(player);
-                    }
-                    LOG_ERROR("Periodic save failed for character %u; queued for retry", character_id);
-                }
-
-                /* Released here, not after the batch: the buffer is reused
-                 * every pass, so a snapshot left holding heap would leak it. */
-                player_snapshot_release(&save_queue[i]);
-            }
-
-            /* A short batch means the scan found nothing more waiting. Stopping here
-             * also keeps a commit failure from being retried within this interval. */
-            if (save_count < SAVE_BATCH_SIZE) break;
-        }
+        drain_saves(save_queue, max_passes, !full_sweep);
     }
 
     free(save_queue);

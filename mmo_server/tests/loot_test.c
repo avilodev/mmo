@@ -40,11 +40,27 @@ static int g_failures = 0;
 
 /* --- The world this suite runs loot against ----------------------------- */
 
-/** The one player the fixture keeps online. */
+/** The players the fixture keeps online.
+ *
+ * Most cases use one. The pickup race needs several, because a duplication bug
+ * needs two players to duplicate an item between -- one player racing itself
+ * through one lock proves nothing about the path where two workers hold two
+ * different players and reach for the same thing on the ground.
+ */
 ActivePlayer active_players[MAX_PLAYERS];
 
-static uint32_t g_player_character_id = 4001;
-static int      g_player_fd           = 42;
+#define FIXTURE_PLAYERS 8
+
+static uint32_t g_player_character_id = 4001;   /**< The first; slot 0. */
+static int      g_player_fd           = 42;     /**< Its descriptor; slot i gets +i. */
+
+/** The character id occupying fixture slot i. */
+static uint32_t fixture_character(int slot) {
+    return g_player_character_id + (uint32_t)slot;
+}
+
+/** The descriptor of the character in fixture slot i. */
+static int fixture_fd(int slot) { return g_player_fd + slot; }
 
 /** Packets the module tried to send, counted rather than delivered. */
 static _Atomic int g_sends = 0;
@@ -63,19 +79,28 @@ ssize_t server_send_direct(int fd, void* buf, size_t len) {
     return (ssize_t)len;
 }
 
-/** Report the fixture's single player as near every point. */
+/** Report every fixture player as near every point. */
 int interest_collect_fds(float x, float y, float radius, int* out_fds, int max_out) {
     (void)x; (void)y; (void)radius;
-    if (max_out < 1) return 0;
-    out_fds[0] = g_player_fd;
-    return 1;
+    int n = 0;
+    for (int i = 0; i < FIXTURE_PLAYERS && n < max_out; i++)
+        out_fds[n++] = fixture_fd(i);
+    return n;
 }
 
-/** Hand back the fixture player, locked, exactly as the real registry does. */
+/** Hand back a fixture player, locked, exactly as the real registry does.
+ *
+ * The slot is derived from the character id rather than searched for, so the
+ * race below reaches eight independently locked players and not one shared
+ * one. A test whose registry handed every thread the same slot would serialise
+ * the very contention it exists to create.
+ */
 ActivePlayer* player_acquire(uint32_t character_id) {
-    if (character_id != g_player_character_id) return NULL;
-    pthread_mutex_lock(&active_players[0].lock);
-    return &active_players[0];
+    if (character_id < g_player_character_id) return NULL;
+    uint32_t slot = character_id - g_player_character_id;
+    if (slot >= FIXTURE_PLAYERS) return NULL;
+    pthread_mutex_lock(&active_players[slot].lock);
+    return &active_players[slot];
 }
 
 /** Release the fixture player. */
@@ -95,15 +120,29 @@ void quest_on_item_collect(uint32_t c, int fd, uint32_t item) {
     (void)c; (void)fd; (void)item;
 }
 
-/** One stackable definition, which is all the pickup path reads. */
+/** One stackable definition, which is all the pickup path reads.
+ *
+ * Built once and never written again. The obvious stub -- fill a function
+ * static on each call and hand back its address -- is a data race the moment
+ * two workers ask at the same time, and ThreadSanitizer is right to say so: the
+ * real item_get() returns a pointer into a table loaded before any thread
+ * starts, so a stub that rewrites shared storage models something the server
+ * does not do. Only the item id varies between callers, and nothing on the
+ * pickup path reads it.
+ */
+static ItemDefinition g_item_def;
+
+static void item_def_init(void) {
+    memset(&g_item_def, 0, sizeof(g_item_def));
+    g_item_def.stackable      = 1;
+    g_item_def.max_stack      = 20;
+    g_item_def.bind_on_pickup = 0;
+    g_item_def.rarity         = RARITY_COMMON;
+}
+
 const ItemDefinition* item_get(uint32_t item_id) {
-    static ItemDefinition def;
-    memset(&def, 0, sizeof(def));
-    def.id             = item_id;
-    def.stackable      = 1;
-    def.max_stack      = 20;
-    def.bind_on_pickup = 0;
-    return &def;
+    (void)item_id;
+    return &g_item_def;
 }
 
 /** Never used by these cases; the tick paths under test pass a NULL snapshot. */
@@ -127,15 +166,23 @@ static void fresh_world(void) {
     loot_init(g_empty_registry);
 }
 
+/** Put one empty-handed player at the origin in a fixture slot. */
+static void reset_player_slot(int slot) {
+    memset(&active_players[slot], 0, sizeof(active_players[slot]));
+    pthread_mutex_init(&active_players[slot].lock, NULL);
+    active_players[slot].character_id = fixture_character(slot);
+    active_players[slot].client_fd    = fixture_fd(slot);
+    active_players[slot].is_loaded    = 1;
+    active_players[slot].pos_x        = 0.0f;
+    active_players[slot].pos_y        = 0.0f;
+}
+
 /** Put one empty-handed player at the origin. */
-static void reset_player(void) {
-    memset(&active_players[0], 0, sizeof(active_players[0]));
-    pthread_mutex_init(&active_players[0].lock, NULL);
-    active_players[0].character_id = g_player_character_id;
-    active_players[0].client_fd    = g_player_fd;
-    active_players[0].is_loaded    = 1;
-    active_players[0].pos_x        = 0.0f;
-    active_players[0].pos_y        = 0.0f;
+static void reset_player(void) { reset_player_slot(0); }
+
+/** Put every fixture player at the origin, empty-handed. */
+static void reset_all_players(void) {
+    for (int i = 0; i < FIXTURE_PLAYERS; i++) reset_player_slot(i);
 }
 
 /** Fill every inventory slot so no pickup can be stored. */
@@ -160,12 +207,22 @@ static void request_pickup(uint32_t ground_item_id) {
                                (const uint8_t*)&req, (ssize_t)sizeof(req));
 }
 
-/** Total quantity of one item across the fixture player's bag. */
-static int inventory_total(uint32_t item_id) {
+/** Total quantity of one item in one fixture player's bag. */
+static int inventory_total_in(int slot, uint32_t item_id) {
     int total = 0;
     for (int i = 0; i < INVENTORY_SLOTS; i++)
-        if (active_players[0].inventory[i].item_id == item_id)
-            total += active_players[0].inventory[i].quantity;
+        if (active_players[slot].inventory[i].item_id == item_id)
+            total += active_players[slot].inventory[i].quantity;
+    return total;
+}
+
+/** Total quantity of one item across the fixture player's bag. */
+static int inventory_total(uint32_t item_id) { return inventory_total_in(0, item_id); }
+
+/** Total quantity of one item held by every fixture player together. */
+static int inventory_total_everywhere(uint32_t item_id) {
+    int total = 0;
+    for (int i = 0; i < FIXTURE_PLAYERS; i++) total += inventory_total_in(i, item_id);
     return total;
 }
 
@@ -419,8 +476,218 @@ static void test_concurrent_claims_have_one_winner(void) {
     CHECK(1, "50 eight-way races each produced exactly one winner");
 }
 
+/** One player's thread in the pickup race. */
+typedef struct {
+    int                 slot;
+    const uint32_t*     ground_ids;
+    int                 count;
+    pthread_barrier_t*  start;
+} PickupRaceArgs;
+
+/** Walk every ground item, asking to pick each one up. */
+static void* pickup_race_worker(void* arg) {
+    PickupRaceArgs* a = arg;
+    uint32_t character_id = fixture_character(a->slot);
+    int      client_fd    = fixture_fd(a->slot);
+
+    pthread_barrier_wait(a->start);
+
+    /* Every thread walks the whole floor, so each item is contested by all
+     * eight rather than by whoever happens to reach it. Two passes, because
+     * the interesting failure is a second attempt at an item this thread
+     * already lost -- the "Cannot pick up yet" and "Item not found" paths run
+     * concurrently with somebody else's commit. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < a->count; i++) {
+            LootPickupRequestPacket req = {0};
+            req.header.type         = PACKET_LOOT_PICKUP_REQUEST;
+            req.header.payload_size = htons(sizeof(req) - sizeof(PacketHeader));
+            req.ground_item_id      = htonl(a->ground_ids[i]);
+            loot_handle_pickup_request(character_id, client_fd,
+                                       (const uint8_t*)&req, (ssize_t)sizeof(req));
+        }
+    }
+    return NULL;
+}
+
+/** Eight players racing for a floor full of loot conserve every item. */
+static void test_concurrent_pickups_conserve_every_item(void) {
+    printf("concurrent pickups\n");
+
+    /* The case the whole suite was missing, and the one a duplication bug
+     * lives in. test_concurrent_claims_have_one_winner races loot_reserve
+     * alone, which is one lock doing one thing. This races the handler:
+     * snapshot, range check, reserve, insert into a *player's* inventory,
+     * then commit or restore -- five steps across two locks, with the item's
+     * existence living in one and its destination in the other.
+     *
+     * Two properties, and both have to hold at once:
+     *
+     *   Nothing is duplicated. Two players cannot both bank the same drop --
+     *   which is the exploit: kill something, have a friend stand on it.
+     *   Nothing is destroyed. An item whose insert failed goes back on the
+     *   ground; the commit-then-insert ordering this suite already tests for
+     *   one player has to survive being raced by eight.
+     *
+     * Conservation is the assertion for both: every dropped item is either in
+     * exactly one bag or still on the ground, and the two counts add up.
+     */
+    const uint32_t ITEM = 7777;
+    enum { DROPS = 120, TRIALS = 20 };
+
+    int trials_wrong = 0, duplicated = 0, destroyed = 0;
+
+    for (int trial = 0; trial < TRIALS; trial++) {
+        fresh_world();
+        reset_all_players();
+
+        uint32_t ids[DROPS];
+        for (int i = 0; i < DROPS; i++)
+            /* owner 0: unowned, so no exclusive window decides the race for
+             * us. Stacked at the origin, where every fixture player stands. */
+            ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0);
+
+        pthread_t      t[FIXTURE_PLAYERS];
+        PickupRaceArgs args[FIXTURE_PLAYERS];
+        pthread_barrier_t start;
+        pthread_barrier_init(&start, NULL, FIXTURE_PLAYERS);
+
+        for (int i = 0; i < FIXTURE_PLAYERS; i++) {
+            args[i] = (PickupRaceArgs){ .slot = i, .ground_ids = ids,
+                                        .count = DROPS, .start = &start };
+            pthread_create(&t[i], NULL, pickup_race_worker, &args[i]);
+        }
+        for (int i = 0; i < FIXTURE_PLAYERS; i++) pthread_join(t[i], NULL);
+        pthread_barrier_destroy(&start);
+
+        int held      = inventory_total_everywhere(ITEM);
+        int on_ground = (int)loot_active_count();
+
+        if (held + on_ground != DROPS) {
+            trials_wrong++;
+            if (held + on_ground > DROPS) duplicated++;
+            else                          destroyed++;
+        }
+    }
+
+    if (duplicated)
+        printf("  FAIL %d trial(s) ended with more of the item than was dropped "
+               "(%s:%d)\n", duplicated, __FILE__, __LINE__);
+    if (destroyed)
+        printf("  FAIL %d trial(s) lost items entirely (%s:%d)\n",
+               destroyed, __FILE__, __LINE__);
+    if (trials_wrong) g_failures++;
+
+    CHECK(trials_wrong == 0,
+          "20 eight-way races over 120 drops each: nothing duplicated, nothing lost");
+
+    /* And with the floor emptied, the ledger is exact rather than merely
+     * balanced: every drop is in somebody's bag. */
+    fresh_world();
+    reset_all_players();
+
+    uint32_t ids[DROPS];
+    for (int i = 0; i < DROPS; i++)
+        ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0);
+
+    pthread_t      t[FIXTURE_PLAYERS];
+    PickupRaceArgs args[FIXTURE_PLAYERS];
+    pthread_barrier_t start;
+    pthread_barrier_init(&start, NULL, FIXTURE_PLAYERS);
+    for (int i = 0; i < FIXTURE_PLAYERS; i++) {
+        args[i] = (PickupRaceArgs){ .slot = i, .ground_ids = ids,
+                                    .count = DROPS, .start = &start };
+        pthread_create(&t[i], NULL, pickup_race_worker, &args[i]);
+    }
+    for (int i = 0; i < FIXTURE_PLAYERS; i++) pthread_join(t[i], NULL);
+    pthread_barrier_destroy(&start);
+
+    CHECK(loot_active_count() == 0, "eight players between them clear the floor");
+    CHECK(inventory_total_everywhere(ITEM) == DROPS,
+          "and hold exactly what was dropped, no more and no less");
+
+    /* Each ground identifier resolved exactly once, which is what "no
+     * duplication" means at the level of the pool rather than the bag. */
+    int still_there = 0;
+    for (int i = 0; i < DROPS; i++) {
+        GroundItem snap;
+        if (loot_snapshot(ids[i], &snap)) still_there++;
+    }
+    CHECK(still_there == 0, "and no ground item outlived its pickup");
+}
+
+/** Buying loot off the floor while it is expiring underneath. */
+typedef struct {
+    const uint32_t*    ground_ids;
+    int                count;
+    _Atomic int*       running;
+    pthread_barrier_t* start;
+} ExpiryArgs;
+
+static void* expiry_worker(void* arg) {
+    ExpiryArgs* a = arg;
+    pthread_barrier_wait(a->start);
+    /* The tick that expires ground items runs on the simulation thread while
+     * pickups run on workers, so this is the real pairing. A NULL snapshot
+     * expires silently, which is what the fixture wants -- what is under test
+     * is the pool, not the broadcast. */
+    while (atomic_load(a->running)) loot_tick(NULL);
+    return NULL;
+}
+
+static void test_pickups_race_the_expiry_sweep(void) {
+    printf("pickups against the expiry sweep\n");
+
+    /* loot_tick() walks the pool and deactivates what has timed out. It runs
+     * on the simulation thread; pickups run on network workers. Nothing else
+     * in this suite puts the two together, and the pairing is exactly where a
+     * pickup could commit an item the sweep had already retired -- crediting a
+     * player for something that no longer existed. */
+    const uint32_t ITEM = 8888;
+    enum { DROPS = 60 };
+
+    fresh_world();
+    reset_all_players();
+
+    uint32_t ids[DROPS];
+    for (int i = 0; i < DROPS; i++)
+        ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0);
+
+    _Atomic int running = 1;
+    pthread_barrier_t start;
+    pthread_barrier_init(&start, NULL, FIXTURE_PLAYERS + 1);
+
+    pthread_t      sweeper;
+    ExpiryArgs     sweep_args = { .ground_ids = ids, .count = DROPS,
+                                  .running = &running, .start = &start };
+    pthread_create(&sweeper, NULL, expiry_worker, &sweep_args);
+
+    pthread_t      t[FIXTURE_PLAYERS];
+    PickupRaceArgs args[FIXTURE_PLAYERS];
+    for (int i = 0; i < FIXTURE_PLAYERS; i++) {
+        args[i] = (PickupRaceArgs){ .slot = i, .ground_ids = ids,
+                                    .count = DROPS, .start = &start };
+        pthread_create(&t[i], NULL, pickup_race_worker, &args[i]);
+    }
+    for (int i = 0; i < FIXTURE_PLAYERS; i++) pthread_join(t[i], NULL);
+
+    atomic_store(&running, 0);
+    pthread_join(sweeper, NULL);
+
+    /* The sweep only removes items; it never grants them. So however the two
+     * interleaved, no player may hold more than was dropped -- and every item
+     * a player does hold must have left the ground. */
+    int held      = inventory_total_everywhere(ITEM);
+    int on_ground = (int)loot_active_count();
+
+    CHECK(held <= DROPS, "the sweep running underneath duplicated nothing");
+    CHECK(held + on_ground <= DROPS,
+          "and bags plus floor never exceed what was dropped");
+}
+
 int main(void) {
     log_init();
+    item_def_init();   /* before any thread exists; see item_get() */
 
     /* A registry with no loot_tables section: these cases exercise the
      * ground-item pool, and item definitions come from the item_get() stub. */
@@ -441,6 +708,8 @@ int main(void) {
     test_ground_pool_grows();
     test_slots_are_reused();
     test_concurrent_claims_have_one_winner();
+    test_concurrent_pickups_conserve_every_item();
+    test_pickups_race_the_expiry_sweep();
 
     loot_cleanup();
     remove(g_empty_registry);

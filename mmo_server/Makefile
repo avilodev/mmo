@@ -322,7 +322,7 @@ QUEST_SRC = $(WORLD_DIR)/src/quest_system.c $(WORLD_DIR)/src/quest_registry.c \
             $(WORLD_DIR)/src/quest_storage.c $(WORLD_DIR)/src/quest_repeat.c
 
 .PHONY: test
-test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/net_reactor_test $(TEST_BIN)/realm_net_test $(TEST_BIN)/cert_pin_digest_test $(TEST_BIN)/tls_link_test $(TEST_BIN)/login_net_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/player_index_test $(TEST_BIN)/session_registry_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/interest_test $(TEST_BIN)/npc_world_test $(TEST_BIN)/broadcast_pool_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/dialogue_system_test $(TEST_BIN)/opening_sequence_test $(TEST_BIN)/quest_persistence_test $(TEST_BIN)/quest_repeat_test $(TEST_BIN)/quest_abandon_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
+test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)/net_loop_test $(TEST_BIN)/net_reactor_test $(TEST_BIN)/realm_net_test $(TEST_BIN)/cert_pin_digest_test $(TEST_BIN)/tls_link_test $(TEST_BIN)/login_net_test $(TEST_BIN)/login_concurrency_test $(TEST_BIN)/milestone_save_test $(TEST_BIN)/player_index_test $(TEST_BIN)/session_registry_test $(TEST_BIN)/tick_snapshot_test $(TEST_BIN)/interest_test $(TEST_BIN)/npc_world_test $(TEST_BIN)/broadcast_pool_test $(TEST_BIN)/item_data_test $(TEST_BIN)/item_instance_test $(TEST_BIN)/character_items_db_test $(TEST_BIN)/move_validator_test $(TEST_BIN)/world_collision_test $(TEST_BIN)/spatial_grid_test $(TEST_BIN)/tick_scheduler_test $(TEST_BIN)/json_util_test $(TEST_BIN)/race_registry_test $(TEST_BIN)/dialogue_system_test $(TEST_BIN)/opening_sequence_test $(TEST_BIN)/quest_persistence_test $(TEST_BIN)/quest_repeat_test $(TEST_BIN)/quest_abandon_test $(TEST_BIN)/progression_test $(TEST_BIN)/damage_stacking_test \
       $(TEST_BIN)/stats_test $(TEST_BIN)/passive_gating_test $(TEST_BIN)/cooldown_test $(TEST_BIN)/ability_data_test \
       $(TEST_BIN)/world_regions_test $(TEST_BIN)/ip_allowlist_test $(TEST_BIN)/party_test $(TEST_BIN)/world_table_test $(TEST_BIN)/loot_test $(TEST_BIN)/rate_limiter_test \
       $(TEST_BIN)/metrics_server_test $(TEST_BIN)/schema_migration_test \
@@ -411,6 +411,7 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo ""
 	@echo "=== Running move validator test ==="
 	@./$(TEST_BIN)/move_validator_test
+	@./$(TEST_BIN)/world_collision_test
 	@echo ""
 	@echo "=== Running spatial grid test ==="
 	@./$(TEST_BIN)/spatial_grid_test
@@ -441,6 +442,7 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo ""
 	@echo "=== Running login concurrency test ==="
 	@./$(TEST_BIN)/login_concurrency_test
+	@./$(TEST_BIN)/milestone_save_test
 	@echo ""
 	@echo "=== Running player index test ==="
 	@./$(TEST_BIN)/player_index_test
@@ -492,6 +494,11 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo "=== Running party test ==="
 	@./$(TEST_BIN)/party_test
 	@echo ""
+	@# Last, because it is the slowest: it drives the real supervisor against
+	@# stub services and the supervisor notices a dead child once a second.
+	@echo "=== Checking one dead service does not take the stack with it ==="
+	@./tests/supervisor_restart_test.sh
+	@echo ""
 	@echo "=== All tests passed ==="
 
 # Guards the realm-handshake admission check on the world's player listener.
@@ -526,7 +533,7 @@ $(TEST_BIN)/rate_limiter_test: tests/rate_limiter_test.c $(LOGIN_DIR)/src/rate_l
 # The shop counter and the money that moves through it. shop_session.c plus
 # the currency and inventory helpers -- no player registry, no NPC pool, so
 # what is tested is the rules rather than the plumbing around them.
-$(TEST_BIN)/shop_trade_test: tests/shop_trade_test.c $(WORLD_DIR)/src/shop_session.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
+$(TEST_BIN)/shop_trade_test: tests/shop_trade_test.c $(WORLD_DIR)/src/shop_trade.c $(WORLD_DIR)/src/shop_session.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
@@ -597,14 +604,15 @@ $(TEST_BIN)/net_loop_test: $(NET_LOOP_TEST_SRC)
 # ---------------------------------------------------------------------------
 # Every sanitizer target, in one command.
 #
-# There are ten of them and they were each invoked by hand, which is to say
-# they were each run by whoever remembered. CI runs this.
+# They were each invoked by hand, which is to say they were each run by
+# whoever remembered. CI runs this.
 # ---------------------------------------------------------------------------
 .PHONY: sanitize
 sanitize: player-index-sanitize session-registry-sanitize party-sanitize \
           npc-world-sanitize interest-sanitize broadcast-pool-sanitize \
           net-reactor-sanitize net-loop-sanitize tick-scheduler-sanitize \
-          spatial-grid-sanitize routes-fuzz-sanitize
+          spatial-grid-sanitize routes-fuzz-sanitize loot-sanitize \
+          shop-sanitize
 	@echo ""
 	@echo "=== All sanitizer suites clean ==="
 
@@ -687,6 +695,50 @@ party-sanitize:
 	  -o $(TEST_BIN)/party_asan tests/party_test.c $(WORLD_DIR)/src/party.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
 	@setarch `uname -m` -R ./$(TEST_BIN)/party_asan > /tmp/party_asan.log 2>&1 && echo "  clean" || \
 	  { grep -A 8 -E 'ERROR: |runtime error|leak' /tmp/party_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
+# Ground items are reserved by network workers and expired by the simulation
+# thread, and a pickup moves an item from a pool guarded by one lock into a
+# player guarded by another. That is where an item duplication bug lives, and
+# it was the largest gameplay file with no sanitizer coverage at all. Run this
+# when touching loot.c. Same ASLR caveat as the targets above.
+.PHONY: loot-sanitize
+loot-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (eight players racing one floor of loot) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/loot_tsan tests/loot_test.c $(WORLD_DIR)/src/loot.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c -lm
+	@MMO_LOG_LEVEL=error setarch `uname -m` -R ./$(TEST_BIN)/loot_tsan > /tmp/loot_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/loot_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/loot_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan (pool growth, slot reuse, snapshots) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/loot_asan tests/loot_test.c $(WORLD_DIR)/src/loot.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c -lm
+	@MMO_LOG_LEVEL=error setarch `uname -m` -R ./$(TEST_BIN)/loot_asan > /tmp/loot_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR: |runtime error|leak' /tmp/loot_asan.log | head -40; exit 1; }
+	@echo "=== sanitizers clean ==="
+
+# Buying and selling move coin and items in one breath, from worker threads,
+# against a session table those same threads open and close. A trade that
+# debited without delivering -- or delivered twice for one debit -- is the same
+# class of bug as duplicated loot and had the same amount of coverage: none.
+# Run this when touching shop_trade.c or shop_session.c.
+.PHONY: shop-sanitize
+shop-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== ThreadSanitizer (concurrent purchases and sales at one counter) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=thread -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/shop_tsan tests/shop_trade_test.c $(WORLD_DIR)/src/shop_trade.c $(WORLD_DIR)/src/shop_session.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c -lm
+	@MMO_LOG_LEVEL=error setarch `uname -m` -R ./$(TEST_BIN)/shop_tsan > /tmp/shop_tsan.log 2>&1; \
+	  races=`grep -c 'data race' /tmp/shop_tsan.log`; \
+	  echo "  data races: $$races"; \
+	  [ "$$races" = "0" ] || { grep -A 12 'data race' /tmp/shop_tsan.log | head -40; exit 1; }
+	@echo "=== AddressSanitizer + UBSan (session table churn and inventory bounds) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/shop_asan tests/shop_trade_test.c $(WORLD_DIR)/src/shop_trade.c $(WORLD_DIR)/src/shop_session.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/log.c -lm
+	@MMO_LOG_LEVEL=error setarch `uname -m` -R ./$(TEST_BIN)/shop_asan > /tmp/shop_asan.log 2>&1 && echo "  clean" || \
+	  { grep -A 8 -E 'ERROR: |runtime error|leak' /tmp/shop_asan.log | head -40; exit 1; }
 	@echo "=== sanitizers clean ==="
 
 # The NPC pool is read by every gameplay phase and written by spawns, deaths,
@@ -779,6 +831,13 @@ net-loop-sanitize:
 	@echo "=== sanitizers clean ==="
 
 $(TEST_BIN)/login_concurrency_test: tests/login_concurrency_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# The two save cadences: which players each pass takes, and which bits it
+# leaves behind. Same stub shape as login_concurrency_test -- the database is
+# a recorder, because what is under test is the selection, not the write.
+$(TEST_BIN)/milestone_save_test: tests/milestone_save_test.c $(WORLD_DIR)/src/player_data.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
 
@@ -1010,6 +1069,15 @@ $(TEST_BIN)/session_registry_test: tests/session_registry_test.c $(WORLD_DIR)/sr
 
 # Drives the movement rules against a synthetic collision map — no sockets, no
 # database, so this runs anywhere.
+# The collision loader against synthetic world.dat files: what it accepts, what
+# it refuses, and that the layer is mapped rather than copied per world. The
+# truncation case matters more since the mapping went in -- a file shorter than
+# its header claims used to be a short read and would now be a SIGBUS on the
+# simulation thread.
+$(TEST_BIN)/world_collision_test: tests/world_collision_test.c $(WORLD_DIR)/src/world_collision.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
 $(TEST_BIN)/move_validator_test: tests/move_validator_test.c $(WORLD_DIR)/src/move_validator.c $(WORLD_DIR)/src/world_collision.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm

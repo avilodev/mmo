@@ -170,6 +170,35 @@ Press `Ctrl+C` for a graceful shutdown. From another WSL terminal, you can also 
 make stop
 ```
 
+### When one service dies
+
+A service that exits unexpectedly is **restarted where it stood**, and nothing
+else is touched. One world crashing costs that world's players; the other nine
+worlds, the realm and the login server keep running, and the realm has already
+marked the missing world offline and is steering new players elsewhere.
+
+The supervisor used to stop the whole stack instead, which threw that away: a
+segfault in one world disconnected everybody on the machine.
+
+A service that will not stay up is **abandoned** rather than restarted forever.
+A crash loop is nearly always a bad config, a taken port or a corrupt data file,
+and retrying it buries the first and most useful error under thousands of
+identical ones. The supervisor says which log to read and carries on with the
+rest; it exits only once nothing is left alive.
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `MMO_SUPERVISOR_MAX_RESTARTS` | `3` | Restarts allowed inside one window before a service is abandoned. |
+| `MMO_SUPERVISOR_RESTART_WINDOW` | `300` | Seconds the restart count is measured over. A service quiet for longer starts counting again from zero. |
+| `MMO_SUPERVISOR_RESTART` | `1` | Set to `0` for the old fail-fast behaviour — any exit stops the stack. Useful in CI, and when bisecting a startup crash, where the first failure is the answer. |
+
+A failure during the first quarter second of startup is still fatal to the whole
+run, restarts or not: a service that cannot start at all has a problem that
+retrying does not fix, and the stack has not begun yet.
+
+`tests/supervisor_restart_test.sh` drives the real script against stub services
+and checks all of this; it runs as part of `make test`.
+
 ### Windows client, WSL server
 
 This is the supported development split: the servers run under WSL, the client
@@ -409,9 +438,34 @@ purpose.
 
 The game↔world hop carries positions, damage numbers and chat. Watching it
 yields roughly what standing next to the player would, and it is the one link
-running at 20Hz for every player at once. Everything worth capturing —
-credentials, the session key, world-entry tickets, the shared server auth key,
-and every character create/delete — travels on one of the other three.
+running at 20Hz for every player at once. Almost everything worth capturing —
+account credentials, the session key, the shared server auth key, and every
+character create/delete — travels on one of the other three.
+
+**One credential does cross the plaintext hop: the world-entry ticket.** The
+realm mints it over TLS, but it is *redeemed* on the game→world link in
+cleartext, so anyone on the path between the player and the world server can
+read it. Four properties are what make that survivable, and all four are load
+bearing — dropping any one turns a captured ticket into an account takeover:
+
+- **Single use.** Redemption fetches and deletes the key in one server-side
+  Lua step, so of two connections replaying the same ticket only the one whose
+  script removed it gets a value back. A plain `GET` then `DEL` would let both
+  through, and because a fresh session kicks the older one, the replayer would
+  win and boot the real player.
+- **Bound to the address it was issued to.** The ticket carries the client
+  address the realm observed, and a world refuses one presented from anywhere
+  else.
+- **Bound to the world that minted it.** A ticket for one world is refused by
+  every other, so a captured ticket cannot be spent past whatever the realm
+  decided about capacity, ownership, or a world being offline.
+- **Sixty seconds.** The Redis key expires on its own, so a ticket captured
+  and not redeemed promptly is worth nothing.
+
+An attacker on that path still gets a one-minute window in which racing the
+legitimate client from the same source address wins the character. Putting the
+game→world hop on a network where that path does not exist — the same ingress,
+or a private link between the two — is the mitigation the design assumes.
 
 Nothing here has a certificate from a public CA, so there is no chain to verify
 and chain verification would decide nothing. Identity is a **pin**: SHA-256 over

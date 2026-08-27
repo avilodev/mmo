@@ -241,7 +241,10 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
         server_send(client_fd, &resp, sizeof(resp));
         return;
     }
-    p->is_dirty = 1;
+    /* Coin left the player and an item arrived. Losing half of that pair to a
+     * crash is the worst shape this bug takes, so a purchase does not wait for
+     * the sweep. */
+    player_mark_critical(p);
     uint32_t new_balance = p->currency[currency];
     player_release(p);
 
@@ -325,7 +328,7 @@ void shop_handle_sell(uint32_t character_id, int client_fd, uint8_t* buffer, int
     // sell one unit from the selected stack
     inventory_remove_at(p->inventory, slot, 1);
     uint32_t new_balance = world_currency_credit(p->currency, currency, sell_price);
-    p->is_dirty = 1;
+    player_mark_critical(p);   /* the same trade, run the other way */
     player_release(p);
 
     resp.success     = 1;

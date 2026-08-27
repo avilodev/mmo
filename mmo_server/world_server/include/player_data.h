@@ -133,6 +133,48 @@ void player_send_data_response(int client_fd, uint32_t character_id);
 void player_send_slot_updates(int client_fd, uint32_t character_id,
                               const uint16_t* slot_ids, int count);
 
+/** Mark a player's pending state as one whose loss they would notice.
+ *
+ * Ordinary changes ride the SAVE_INTERVAL_SECONDS sweep, which is two minutes.
+ * A level gained, a quest turned in, coin spent or earned, a rare item picked
+ * up -- those are what a player files a ticket about losing, and they get the
+ * short pass instead, at PLAYER_SAVE_CRITICAL_SECONDS.
+ *
+ * Sets is_dirty as well, so a caller never has to set both. Cheap enough to
+ * call on the path that already decided the milestone happened; it does no I/O
+ * and takes no lock of its own.
+ *
+ * The caller must hold player->lock, exactly as a bare `is_dirty = 1` requires.
+ *
+ * Inline because it is two stores and because it is called from files that
+ * stub the player registry rather than link it -- the quest and shop suites
+ * among them, which would otherwise need a stub for a function that only
+ * assigns two fields they already own.
+ */
+static inline void player_mark_critical(ActivePlayer* player) {
+    if (!player) return;
+    player->is_dirty          = 1;
+    player->is_dirty_critical = 1;
+}
+
+/** How often the save thread drains milestone state, in seconds. */
+int playerdata_critical_interval(void);
+
+/** How often the save thread sweeps every dirty player, in seconds. */
+int playerdata_save_interval(void);
+
+/** Run one drain of pending saves on the calling thread.
+ *
+ * The same pass the save thread runs, reachable without waiting for its timer.
+ * Blocks on the database, so it must not be called with a player lock or the
+ * registry lock held.
+ *
+ * @param critical_only  Nonzero to take only players carrying milestone state,
+ *                       zero to take every dirty player.
+ * @return The number of characters committed.
+ */
+int playerdata_flush_saves(int critical_only);
+
 void* periodic_save_thread(void* arg);
 int playerdata_start_save_thread(void);
 void playerdata_stop_save_thread(void);

@@ -25,6 +25,7 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
@@ -32,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 static atomic_int passed;
@@ -195,6 +197,159 @@ static void test_two_packets_in_one_record(void) {
     close(pair.world_fd);
 }
 
+/** Milliseconds on the monotonic clock, for "did that return immediately?". */
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+static void test_an_abandoned_write_closes_the_session(void) {
+    printf("a write that gives up leaves the session unwritable\n");
+
+    Pair pair = connect_pair();
+
+    /* Small buffers at both ends, so a peer that never reads backs the writer
+     * up in kilobytes rather than megabytes. */
+    int small = 4096;
+    setsockopt(pair.realm_fd, SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    setsockopt(pair.world_fd, SOL_SOCKET, SO_RCVBUF, &small, sizeof(small));
+
+    WorldSide w = {.fd = pair.world_fd, .ctx = g_world_ctx, .pins = &g_realm_pins};
+    pthread_t t;
+    pthread_create(&t, NULL, world_thread, &w);
+    SSL* realm = tls_connect_pinned(g_realm_ctx, pair.realm_fd, &g_world_pins,
+                                    "world-under-test", 5000);
+    pthread_join(t, NULL);
+    assert(realm && w.result);
+
+    check(!tls_write_broken(realm), "a healthy session is not marked");
+
+    /* Non-blocking, which is what the loop hands a session in production. On a
+     * blocking descriptor SSL_write would sit inside write(2) and never report
+     * WANT_WRITE, so the case being tested could not arise. */
+    int flags = fcntl(pair.realm_fd, F_GETFL, 0);
+    fcntl(pair.realm_fd, F_SETFL, flags | O_NONBLOCK);
+
+    /* The world never reads. Write until the pipe is full and one send gives up
+     * on its deadline -- which is the moment the record is left half-written. */
+    static uint8_t chunk[8192];
+    memset(chunk, 0x5A, sizeof(chunk));
+
+    int gave_up = 0;
+    for (int i = 0; i < 512 && !gave_up; i++)
+        gave_up = !tls_send_exact(realm, chunk, sizeof(chunk), 200);
+
+    check(gave_up, "a peer that never reads eventually stalls a write");
+    check(tls_write_broken(realm), "and the session is marked unwritable");
+
+    /* The point of the mark. Without it the next write of anything else gets
+     * SSL_ERROR_SSL -- "bad write retry" -- because OpenSSL demands the stalled
+     * write be repeated byte for byte before it will take a different one. The
+     * route tables ignore what a reply returned, so "the next write of anything
+     * else" is the ordinary shape of a second request on one connection. */
+    long started = now_ms();
+    int again = tls_send_exact(realm, chunk, 64, 5000);
+    long elapsed = now_ms() - started;
+    check(!again, "a later tls_send_exact() refuses rather than retrying");
+    check(elapsed < 1000, "and refuses immediately, without waiting on the peer");
+
+    /* tls_send_on() would otherwise spend 16 attempts of half a second each. */
+    started = now_ms();
+    ssize_t sent = tls_send_on(realm, chunk, 64);
+    elapsed = now_ms() - started;
+    check(sent < 0, "so does a later tls_send_on()");
+    check(elapsed < 1000, "and it does not spend its retry budget first");
+
+    check(!tls_write_broken(NULL), "a NULL session is not reported as broken");
+
+    tls_close(realm);
+    tls_close(w.result);
+    close(pair.realm_fd);
+    close(pair.world_fd);
+}
+
+/** Bring up one pinned pair and hand back both ends, already handshaken. */
+static void handshaken_pair(Pair* pair, SSL** realm, SSL** world) {
+    *pair = connect_pair();
+    WorldSide w = {.fd = pair->world_fd, .ctx = g_world_ctx, .pins = &g_realm_pins};
+    pthread_t t;
+    pthread_create(&t, NULL, world_thread, &w);
+    *realm = tls_connect_pinned(g_realm_ctx, pair->realm_fd, &g_world_pins,
+                                "world-under-test", 5000);
+    pthread_join(t, NULL);
+    assert(*realm && w.result);
+    *world = w.result;
+}
+
+static void test_tls_send_refuses_another_sessions_fd(void) {
+    printf("tls_send() refuses a descriptor that is not the bound session's\n");
+
+    /* Two live connections, which is the only way the bug can show. tls_send()
+     * finds its session in a thread-local bound around dispatch and takes fd
+     * only because the route table was written against send(2). Every route
+     * today answers its own requester, so fd and the binding always name the
+     * same connection -- and a route that answered a *different* one would,
+     * without the check, write player B's packet into player A's session. */
+    Pair pa, pb;
+    SSL *realm_a, *world_a, *realm_b, *world_b;
+    handshaken_pair(&pa, &realm_a, &world_a);
+    handshaken_pair(&pb, &realm_b, &world_b);
+
+    /* A worker mid-dispatch on connection A. */
+    tls_set_conn(realm_a);
+
+    const char to_a[] = "for-a";
+    check(tls_send(SSL_get_fd(realm_a), to_a, sizeof(to_a), 0) == (ssize_t)sizeof(to_a),
+          "the bound session's own fd is written normally");
+
+    char got[sizeof(to_a)] = {0};
+    check(tls_recv_exact(world_a, got, sizeof(got), 2000) &&
+              memcmp(got, to_a, sizeof(to_a)) == 0,
+          "and it arrives on connection A");
+
+    /* The same worker, now asked for B's descriptor. */
+    const char to_b[] = "for-b";
+    check(tls_send(SSL_get_fd(realm_b), to_b, sizeof(to_b), 0) == -1,
+          "another session's fd is refused rather than written");
+
+    /* The refusal has to be a refusal, not a redirect: nothing may have gone
+     * out on A, which is the connection the bound session actually names. */
+    check(!tls_pending(world_a), "nothing was buffered for A");
+    char stray[sizeof(to_b)] = {0};
+    check(!tls_recv_exact(world_a, stray, sizeof(stray), 300),
+          "and A received no packet meant for B");
+
+    /* Nor may the refusal have poisoned A: the mark is for a half-written
+     * record, and this write never reached OpenSSL. */
+    check(!tls_write_broken(realm_a), "the bound session is still writable");
+    const char after[] = "still-a";
+    check(tls_send(SSL_get_fd(realm_a), after, sizeof(after), 0) == (ssize_t)sizeof(after),
+          "and still answers its own requester");
+    char got2[sizeof(after)] = {0};
+    check(tls_recv_exact(world_a, got2, sizeof(got2), 2000) &&
+              memcmp(got2, after, sizeof(after)) == 0,
+          "which arrives intact");
+
+    /* The supported way to write to a connection that is not the bound one. */
+    check(tls_send_on(realm_b, to_b, sizeof(to_b)) == (ssize_t)sizeof(to_b),
+          "tls_send_on() names the session and is allowed through");
+    char got3[sizeof(to_b)] = {0};
+    check(tls_recv_exact(world_b, got3, sizeof(got3), 2000) &&
+              memcmp(got3, to_b, sizeof(to_b)) == 0,
+          "and B gets its own packet");
+
+    /* A worker with nothing bound writes nothing, whatever fd it is handed. */
+    tls_set_conn(NULL);
+    check(tls_send(SSL_get_fd(realm_a), to_a, sizeof(to_a), 0) == -1,
+          "an unbound thread writes nothing at all");
+
+    tls_close(realm_a); tls_close(world_a);
+    close(pa.realm_fd); close(pa.world_fd);
+    tls_close(realm_b); tls_close(world_b);
+    close(pb.realm_fd); close(pb.world_fd);
+}
+
 static void test_an_unpinned_realm_is_refused(void) {
     printf("a world refuses a realm whose key it does not pin\n");
 
@@ -336,6 +491,8 @@ int main(void) {
 
     test_a_pinned_pair_completes();
     test_two_packets_in_one_record();
+    test_an_abandoned_write_closes_the_session();
+    test_tls_send_refuses_another_sessions_fd();
     test_an_unpinned_realm_is_refused();
     test_an_unpinned_world_is_refused();
     test_a_peer_with_no_certificate_is_refused();

@@ -9,19 +9,33 @@
 ServerConfig g_server;
 ServerState g_state;
 
-/** Request realm-server shutdown for supported termination signals. */
+/** Record which signal asked for the shutdown, for the main thread to report. */
+volatile sig_atomic_t g_shutdown_signal = 0;
+
+/** Request shutdown. Flag writes only.
+ *
+ * This used to call LOG_INFO(), which reaches vsnprintf(), a mutex and
+ * write(2) -- none of them async-signal-safe. A signal arriving while any
+ * thread held the log's lock deadlocked the handler on a non-recursive mutex
+ * its own thread already owned: the handler never returned, so running was
+ * never cleared and the main loop span forever, and the log stayed locked for
+ * every other thread too. Under load that is likely rather than exotic, which
+ * is why Ctrl+C left this process alive for the supervisor to force-kill while
+ * the world server -- whose handler was already reduced to flag writes --
+ * exited cleanly. The main loop reports the signal once it wakes.
+ */
 void signal_handler(int signum) {
     switch (signum) {
-        case SIGINT: 
+        case SIGINT:
         case SIGTERM:
         case SIGQUIT:
-            LOG_INFO("\nReceived shutdown signal (%d)", signum);
+            g_shutdown_signal = signum;
             g_server.running = 0;
             break;
         default:
             break;
-    } 
-} 
+    }
+}
 
 /** Install realm shutdown handlers and ignore broken-pipe signals. */
 void setup_signals(void) {

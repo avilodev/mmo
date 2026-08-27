@@ -30,6 +30,8 @@ static int g_listen_port = 0;
 
 static atomic_int g_packets_dispatched = 0;
 static atomic_int g_auth_calls         = 0;
+/** Tickets that reached validate_game_ticket() with no NUL inside the field. */
+static atomic_int g_unterminated_tickets = 0;
 
 /** Create a loopback listener on an ephemeral port. */
 static void start_listener(void) {
@@ -106,7 +108,20 @@ int validate_game_ticket(const char* t, const char* peer_ip, uint32_t expected_w
     (void)peer_ip;         /* the fixture connects over loopback; binding is covered elsewhere */
     (void)expected_world;  /* the fixture runs one world; world binding is covered elsewhere */
     atomic_fetch_add(&g_auth_calls, 1);
-    if (!t || strncmp(t, "test-ticket", 11) != 0) return 0;
+    if (!t) return 0;
+
+    /* The caller's obligation, checked where the obligation lands.
+     *
+     * game_ticket is a fixed char[64] taken straight off the wire with no
+     * guarantee of a NUL anywhere in it, and the real validate_game_ticket()
+     * builds a Redis key from it with "%s" -- which reads to a terminator
+     * regardless of the output bound. A client that filled the field therefore
+     * walked that read past it, through the rest of the packet and on into the
+     * reactor's buffer, before authenticating anything. See TEST 13. */
+    if (!memchr(t, '\0', sizeof(((WorldConnectPacket*)0)->game_ticket)))
+        atomic_fetch_add(&g_unterminated_tickets, 1);
+
+    if (strncmp(t, "test-ticket", 11) != 0) return 0;
 
     /* "test-ticket-N" is identity N. Distinct identities are what let TEST 7
      * hold 250 connections open at once: the session registry is linked for
@@ -596,6 +611,41 @@ int main(void) {
                net_loop_connection_count(), roster_count());
         assert(net_loop_connection_count() == 0);
         assert(roster_count() == 0);
+    }
+
+    printf("\nTEST 13: a ticket with no terminator is terminated before use\n");
+    /* The field is a fixed char[64] off the wire, and the code that consumes it
+     * treats it as a C string. A client that fills all 64 bytes therefore used
+     * to send the ticket lookup reading past the field, through character_id
+     * and protocol_version and into whatever the reactor's buffer held next --
+     * an out-of-bounds read reachable before authentication by anyone who could
+     * open the port. The fixture's validate_game_ticket() counts any ticket it
+     * is handed without a NUL inside the field; the count must stay zero.
+     *
+     * The connection is refused either way, so a rejection alone proves
+     * nothing. The counter is the assertion. */
+    atomic_store(&g_unterminated_tickets, 0);
+    {
+        int c6 = connect_client();
+        WorldConnectPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type = PACKET_WORLD_CONNECT;
+        pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+        memset(pkt.game_ticket, 'A', sizeof(pkt.game_ticket));   /* no NUL at all */
+        pkt.character_id     = htonl(0xAAAAAAAAu);               /* nor after it */
+        pkt.protocol_version = htons(PROTOCOL_VERSION);
+        assert(send(c6, &pkt, sizeof(pkt), 0) == (ssize_t)sizeof(pkt));
+
+        got = recv_timeout(c6, &ack, sizeof(ack), 2000);
+        printf("  ack success=%d (expect 0), unterminated seen=%d (expect 0)\n",
+               got > 0 ? ack.success : -1, atomic_load(&g_unterminated_tickets));
+        assert(got == (ssize_t)sizeof(ack));
+        assert(ack.success == 0);
+        assert(atomic_load(&g_unterminated_tickets) == 0);
+
+        close(c6);
+        for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
+        assert(net_loop_connection_count() == 0);
     }
 
     net_loop_stop();

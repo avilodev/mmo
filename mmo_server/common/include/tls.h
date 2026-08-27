@@ -13,9 +13,18 @@
  *
  * The client->world hop carries positions, damage numbers and chat. Watching it
  * yields what standing next to the player would; it is not worth the per-packet
- * cost on the one link that runs at 20Hz for every player at once. Everything
- * that is worth capturing -- credentials, session keys, world tickets, the
- * server auth key, character operations -- travels on one of the other three.
+ * cost on the one link that runs at 20Hz for every player at once. Almost
+ * everything worth capturing -- account credentials, session keys, the server
+ * auth key, character operations -- travels on one of the other three.
+ *
+ * The exception is the world-entry ticket. The realm *mints* it over TLS but
+ * the client *redeems* it here, in cleartext, so it is readable by anyone on
+ * that path. What makes it survivable is that it is single-use (consumed by an
+ * atomic fetch-and-delete in Redis), bound to the address the realm issued it
+ * to, bound to the world that minted it, and expires in sixty seconds --
+ * validate_game_ticket() in session.c enforces all four. README.md, "TLS and
+ * pinning", is the operator-facing version of this paragraph; the two are
+ * meant to agree.
  *
  * No certificate here is issued by a public CA, so chain verification has
  * nothing to chain to. Identity is a public-key pin on both sides, in
@@ -128,11 +137,21 @@ void tls_set_conn(SSL* ssl);
 /** Report the session bound to this thread, or NULL. */
 SSL* tls_get_conn(void);
 
-/** Write through the calling thread's session. Ignores fd and flags.
+/** Write through the calling thread's session. Ignores flags.
  *
  * Deliberately shaped like send(2) so a route table full of
  * send(fd, buf, len, flags) becomes tls_send(fd, buf, len, flags) without any
  * other change.
+ *
+ * fd is not what selects the session -- the thread-local binding is -- but it
+ * is checked against it, and a mismatch is refused rather than written to the
+ * bound session. Every route answers its own requester today, so the two always
+ * agree; the check is what stops the first route that answers a *different*
+ * connection from silently writing to whichever session this worker holds. Use
+ * tls_send_on() to write to a session that is not the bound one.
+ *
+ * @return The bytes written, or -1 -- including when fd names a different
+ *         session than the one bound to this thread.
  */
 ssize_t tls_send(int fd, const void* buf, size_t len, int flags);
 
@@ -143,6 +162,26 @@ ssize_t tls_send(int fd, const void* buf, size_t len, int flags);
  * session they mean.
  */
 ssize_t tls_send_on(SSL* ssl, const void* buf, size_t len);
+
+/** Report whether a session's record stream was left half-written.
+ *
+ * OpenSSL requires an SSL_write() that asked for another event to be retried
+ * with the same buffer and the same length. A caller that gives up and later
+ * writes something else gets SSL_ERROR_SSL -- "bad write retry" -- and the
+ * session is finished. Nearly every reply path in this tree ignores what a
+ * send returned, exactly as it did against send(2), so "gives up and later
+ * writes something else" is the ordinary shape of any route answering more
+ * than once on one connection.
+ *
+ * So a write that gives up marks its session instead of leaving the next one
+ * to discover it. Every later write on a marked session fails immediately
+ * without touching OpenSSL, and its owner closes the connection when it next
+ * looks -- which turns a stalled peer into a disconnect rather than into a
+ * protocol error no log line explains.
+ *
+ * @return Nonzero when the session can no longer be written to.
+ */
+int tls_write_broken(SSL* ssl);
 
 /* --- Blocking links (realm <-> world) ------------------------------------ */
 

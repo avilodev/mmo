@@ -22,7 +22,7 @@
  * enum that travels on the wire changes. tests/check_protocol_version.sh (and
  * the client's equivalent) fails the build when this file changes without it.
  */
-#define PROTOCOL_VERSION 5
+#define PROTOCOL_VERSION 7
 
 /* --- Byte order ----------------------------------------------------------
  *
@@ -492,18 +492,31 @@ typedef struct {
     PacketHeader header;
 } WorldListRequestPacket;
 
-/** Describe one world endpoint with explicit cross-platform padding. */
+/** Describe one world endpoint with explicit cross-platform padding.
+ *
+ * `host` and `region` are as wide as the realm's own WorldServer record, which
+ * is what worlds.conf parses into. They used to be 16 and 32 bytes against a
+ * 64-byte source: a world configured by hostname -- which the realm resolves
+ * with getaddrinfo() for its own link, so the config format genuinely allows
+ * one -- was published to clients cut off at fifteen characters, and every
+ * client then failed to reach it. A truncated address is not a degraded
+ * address; it is a different one, or none.
+ */
 typedef struct {
     char name[64];
     uint32_t world_id;
     uint16_t population;
-    int16_t capacity;
+    /** Unsigned, like `population`. It was int16_t while the value behind it
+     *  is a uint32_t max_players, so the two halves of one ratio disagreed
+     *  about sign for no reason either of them chose. */
+    uint16_t capacity;
     uint8_t status; // 0=offline, 1=online, 2=full
     uint8_t padding1[3];    // EXPLICIT PADDING ADDED
-    char ip[16];
+    /** Hostname or address literal; the client resolves it. */
+    char host[64];
     uint16_t port;
     uint8_t padding2[2];    // EXPLICIT PADDING ADDED
-    char region[32];
+    char region[64];
 } WorldInfo;
 
 /** Return up to MAX_WORLDS world descriptions. */
@@ -581,7 +594,11 @@ typedef struct {
     PacketHeader header;
     uint8_t success;
     char game_ticket[64];     // Short-lived token for world server
-    char world_ip[16];
+    /** Hostname or address literal the client dials; resolved client-side.
+     *  Sized from the realm's WorldServer.host for the reason WorldInfo.host
+     *  carries -- this is the field a world entry actually connects to, so a
+     *  truncation here was a world nobody could reach. */
+    char world_host[64];
     uint16_t world_port;
     char message[128];
 } EnterWorldResponsePacket;
@@ -755,13 +772,37 @@ typedef struct {
     float pos_y;
     float vel_x;
     float vel_y;
+    /** Numbers this proposal, so a correction can say which one it answers.
+     *
+     * The client predicts locally and keeps sending; by the time a refusal
+     * arrives it has moved on several frames. Without a sequence the client
+     * can only assign the corrected position to *now*, which throws away every
+     * step it took in the meantime and shows as a jerk even when the server
+     * agreed with where it was going. With one, the client rewinds to the
+     * position the server named, replays the steps taken after that sequence,
+     * and a correction it would have agreed with anyway becomes invisible.
+     *
+     * Monotonic per session, network order, and wraps harmlessly: the client
+     * only ever compares it to entries in a short ring of recent moves.
+     */
+    uint32_t sequence;
 } PlayerMovePacket;
 
-/** Acknowledge an accepted player position. */
+/** Correct a player's position, naming the proposal it rejects.
+ *
+ * Sent only when a move is refused -- an accepted move is acknowledged by
+ * silence, because saying so for every move at 20Hz per player is the one
+ * packet this link cannot afford.
+ *
+ * `sequence` is the PlayerMovePacket this answers. Everything the client sent
+ * after it is unresolved and has to be replayed from (pos_x, pos_y); the move
+ * carrying this sequence is the one being refused, and is dropped.
+ */
 typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
+    uint32_t sequence;
 } PlayerMoveAckPacket;
 
 /** Identify supported attack-area shapes. */

@@ -44,6 +44,12 @@ typedef struct {
 extern ServerConfig g_server;
 extern ServerState g_state;
 
+/** Signal number that requested shutdown; 0 until one arrives.
+ *
+ * Written by the handler, which does flag writes only -- see config.c.
+ * The main loop reports it once it wakes. */
+extern volatile sig_atomic_t g_shutdown_signal;
+
 void signal_handler(int signum);
 void setup_signals(void);
 int create_tcp_server_socket(int port);

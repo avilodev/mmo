@@ -326,17 +326,23 @@ static void release_world_connection(uint32_t world_id, PGconn* conn) {
 /**
  * Load an account's characters from a world's database.
  *
- * @return      The number of records written, or zero when the query fails or the output is invalid.
+ * Distinguishes "no characters" from "could not ask", which this used to
+ * report identically as zero. An account whose world database was unreachable
+ * was therefore shown an empty character list -- a player being told their
+ * characters are gone -- while world_character_count(), one screen away, said
+ * "Character database unavailable" about the same outage.
+ *
+ * @return      The number of records written, or -1 when the connection or query fails.
  */
 int world_character_get_list(uint32_t account_id, uint32_t world_id,
                              CharacterInfo* characters, int max_count) {
     if (!characters || max_count <= 0) {
-        return 0;
+        return -1;
     }
 
     PGconn* conn = acquire_world_connection(world_id);
     if (!conn) {
-        return 0;
+        return -1;
     }
 
     char account_id_str[32];
@@ -374,7 +380,7 @@ int world_character_get_list(uint32_t account_id, uint32_t world_id,
                   world_id, PQerrorMessage(conn));
         PQclear(res);
         release_world_connection(world_id, conn);
-        return 0;
+        return -1;
     }
 
     int count = PQntuples(res);
