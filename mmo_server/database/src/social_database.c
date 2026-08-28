@@ -478,6 +478,23 @@ FriendResult social_block_add(uint32_t account, uint32_t blocked_account) {
 
     FriendResult result = FRIEND_RESULT_ERROR;
 
+    /* Bounded, because every online player's block list is mirrored into each
+     * world's index so chat can be filtered without a round trip. Checked
+     * before the transaction and skipped when the block already exists, so
+     * re-blocking somebody at the cap is not an error. */
+    if (!block_exists(account, blocked_account)) {
+        int held = count_1("SELECT COUNT(*) FROM account_blocks WHERE account_id = ?;",
+                           account);
+        if (held < 0) {
+            pthread_mutex_unlock(&g_social_lock);
+            return FRIEND_RESULT_ERROR;
+        }
+        if (held >= MAX_BLOCKS) {
+            pthread_mutex_unlock(&g_social_lock);
+            return FRIEND_RESULT_FRIEND_CAP;
+        }
+    }
+
     if (!tx_begin()) {
         pthread_mutex_unlock(&g_social_lock);
         return FRIEND_RESULT_ERROR;
@@ -673,6 +690,38 @@ int social_is_blocked(uint32_t account, uint32_t other) {
     int found = g_social_db ? block_exists(account, other) : 0;
     pthread_mutex_unlock(&g_social_lock);
     return found;
+}
+
+int social_block_list(uint32_t account, uint32_t* out, int max) {
+    if (!out || max <= 0) return 0;
+
+    pthread_mutex_lock(&g_social_lock);
+    if (!g_social_db) {
+        pthread_mutex_unlock(&g_social_lock);
+        return -1;
+    }
+
+    const char* sql = "SELECT blocked_account FROM account_blocks "
+                      "WHERE account_id = ? "
+                      "ORDER BY created_at DESC, blocked_account ASC "
+                      "LIMIT ?;";
+
+    sqlite3_stmt* stmt = NULL;
+    if (sqlite3_prepare_v2(g_social_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        LOG_ERROR("social: block list prepare failed: %s", sqlite3_errmsg(g_social_db));
+        pthread_mutex_unlock(&g_social_lock);
+        return -1;
+    }
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)account);
+    sqlite3_bind_int(stmt, 2, max);
+
+    int n = 0;
+    while (n < max && sqlite3_step(stmt) == SQLITE_ROW)
+        out[n++] = (uint32_t)sqlite3_column_int64(stmt, 0);
+
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&g_social_lock);
+    return n;
 }
 
 int social_friend_count(uint32_t account) {

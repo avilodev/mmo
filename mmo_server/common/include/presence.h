@@ -227,6 +227,53 @@ int presence_requests_load(uint32_t account_id, FriendRequestCache* out, int max
 /** Drop an account's cached requests. */
 int presence_requests_drop(uint32_t account_id);
 
+/* --- Block cache ----------------------------------------------------------
+ *
+ * Who an account refuses to hear from. Cached beside the other two because it
+ * is consulted on a far hotter path than either: every line of chat delivered
+ * to a player is filtered through the blocks that player holds, and a Redis
+ * round trip per recipient per message is not a thing that can exist. World
+ * servers read this once when a player enters and mirror it into an in-memory
+ * index; see world_friends_is_blocked().
+ *
+ * Only the ids, with no names attached. A block is not something the player is
+ * ever shown a list of, so there is nothing to render and nothing to keep
+ * current -- which is also why this needs no equivalent of the name that
+ * travels with a cached friend.
+ */
+
+/** Accounts one account may block.
+ *
+ * A cap for the same reason MAX_FRIENDS is one, and enforced where the durable
+ * rows are written (social_block_add). It bounds the realm's read, the Redis
+ * set, and the world server's in-memory block index, so it has to be one
+ * number that all three see -- which is why it sits here beside the cache API
+ * rather than in social_database.h with the rest of the friend-graph limits.
+ *
+ * Generous against what anybody actually blocks, and deliberately larger than
+ * the friends cap: blocking is the one social action a player takes about
+ * people they do not know.
+ */
+#define MAX_BLOCKS 200
+
+/** Replace an account's cached block set.
+ *
+ * A count of zero stores an explicit empty marker, so an account that blocks
+ * nobody is distinguishable from one whose cache has not been built. That
+ * distinction is what keeps the common case -- almost every player -- from
+ * asking the realm to rebuild on every login.
+ */
+int presence_blocks_store(uint32_t account_id, const uint32_t* blocked, int count);
+
+/** Read an account's cached block set.
+ *
+ * @return Entries written, or -1 when the account is not cached at all.
+ */
+int presence_blocks_load(uint32_t account_id, uint32_t* out, int max);
+
+/** Drop an account's cached block set. */
+int presence_blocks_drop(uint32_t account_id);
+
 /* --- Mutation bus -------------------------------------------------------- */
 
 /** Hand one mutation to the realm. Returns 1 when Redis took it. */

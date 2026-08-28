@@ -52,17 +52,52 @@ static int             g_free_head = -1;
 static int             g_watch_used = 0;
 static pthread_mutex_t g_watch_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* --- The block index -----------------------------------------------------
+ *
+ * The same structure keyed the other way: "this local account refuses that
+ * account". Chat asks it once per recipient per message, which is why it is an
+ * index and not a Redis read.
+ *
+ * Sized for MAX_PLAYERS local players each holding a full MAX_BLOCKS list --
+ * the same worst case the watch index is sized for, and the same hard ceiling
+ * for the same reason. Past it the newest blocks are not registered, which
+ * fails open; see the note on world_friends_is_blocked().
+ */
+#define BLOCK_BUCKETS 8192
+#define BLOCK_ENTRIES (MAX_PLAYERS * 16)
+
+/** One "this local account refuses that account" edge. */
+typedef struct {
+    uint32_t blocker_account;
+    uint32_t blocked_account;
+    int      next;              /**< Next entry in this bucket, or -1. */
+} BlockEntry;
+
+static BlockEntry      g_block[BLOCK_ENTRIES];
+static int             g_block_buckets[BLOCK_BUCKETS];
+static int             g_block_free = -1;
+static int             g_block_used = 0;
+static pthread_mutex_t g_block_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static uint32_t   g_world_id = 0;
 static atomic_int g_ready    = 0;
 
-/** Mix an account id into a bucket.
+/** Mix an account id, for either index to take a bucket from.
  *
  * Account ids are a dense sequence from a SERIAL, so the low bits alone would
  * put every account that logged in together into adjacent buckets. Knuth's
  * multiplicative constant spreads them.
  */
+static inline uint32_t hash_account(uint32_t account_id) {
+    return account_id * 2654435761u;
+}
+
 static inline int bucket_of(uint32_t account_id) {
-    return (int)((account_id * 2654435761u) & (WATCH_BUCKETS - 1));
+    return (int)(hash_account(account_id) & (WATCH_BUCKETS - 1));
+}
+
+static inline int block_bucket_of(uint32_t account_id) {
+    return (int)(hash_account(account_id) & (BLOCK_BUCKETS - 1));
 }
 
 /* --- The reverse index --------------------------------------------------- */
@@ -154,6 +189,105 @@ int world_friends_watch_count(void) {
     pthread_mutex_lock(&g_watch_lock);
     int n = g_watch_used;
     pthread_mutex_unlock(&g_watch_lock);
+    return n;
+}
+
+/* --- The block index ----------------------------------------------------- */
+
+/** Reset the block index to empty. Caller must hold g_block_lock. */
+static void block_reset(void) {
+    for (int i = 0; i < BLOCK_BUCKETS; i++) g_block_buckets[i] = -1;
+
+    for (int i = 0; i < BLOCK_ENTRIES - 1; i++) g_block[i].next = i + 1;
+    g_block[BLOCK_ENTRIES - 1].next = -1;
+
+    g_block_free = 0;
+    g_block_used = 0;
+}
+
+/** Remove every edge one local account holds. Caller must hold g_block_lock. */
+static void block_remove_blocker(uint32_t blocker_account) {
+    for (int b = 0; b < BLOCK_BUCKETS; b++) {
+        int  index = g_block_buckets[b];
+        int* link  = &g_block_buckets[b];
+
+        while (index >= 0) {
+            int next = g_block[index].next;
+
+            if (g_block[index].blocker_account == blocker_account) {
+                *link = next;
+                g_block[index].next = g_block_free;
+                g_block_free = index;
+                g_block_used--;
+            } else {
+                link = &g_block[index].next;
+            }
+            index = next;
+        }
+    }
+}
+
+/** Register one edge. Caller must hold g_block_lock. */
+static void block_add(uint32_t blocker_account, uint32_t blocked_account) {
+    if (g_block_free < 0) {
+        LOG_WARN_RL(1, 300, "[FRIENDS] block index full at %d entries; "
+                            "some blocks will not be enforced", BLOCK_ENTRIES);
+        return;
+    }
+
+    int slot = g_block_free;
+    g_block_free = g_block[slot].next;
+
+    int b = block_bucket_of(blocker_account);
+    g_block[slot].blocker_account = blocker_account;
+    g_block[slot].blocked_account = blocked_account;
+    g_block[slot].next            = g_block_buckets[b];
+    g_block_buckets[b] = slot;
+    g_block_used++;
+}
+
+/** Replace one local account's block set from the Redis cache. */
+static void rebuild_block_set(uint32_t account_id) {
+    uint32_t blocked[MAX_BLOCKS];
+    int count = presence_blocks_load(account_id, blocked, MAX_BLOCKS);
+
+    /* A miss leaves whatever is already indexed alone rather than clearing it.
+     * Clearing would turn an expired key or an unreachable Redis into a
+     * silently lifted block, and the set this world already holds is the last
+     * thing the realm actually said. */
+    if (count < 0) return;
+
+    pthread_mutex_lock(&g_block_lock);
+    block_remove_blocker(account_id);
+    for (int i = 0; i < count; i++)
+        if (blocked[i]) block_add(account_id, blocked[i]);
+    pthread_mutex_unlock(&g_block_lock);
+}
+
+int world_friends_is_blocked(uint32_t blocker_account, uint32_t subject_account) {
+    if (!blocker_account || !subject_account ||
+        blocker_account == subject_account) return 0;
+
+    int found = 0;
+
+    pthread_mutex_lock(&g_block_lock);
+    for (int index = g_block_buckets[block_bucket_of(blocker_account)];
+         index >= 0; index = g_block[index].next) {
+        if (g_block[index].blocker_account == blocker_account &&
+            g_block[index].blocked_account == subject_account) {
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_block_lock);
+
+    return found;
+}
+
+int world_friends_block_count(void) {
+    pthread_mutex_lock(&g_block_lock);
+    int n = g_block_used;
+    pthread_mutex_unlock(&g_block_lock);
     return n;
 }
 
@@ -340,8 +474,13 @@ static void on_friend_event(const FriendEvent* e, void* user) {
         case FRIEND_EVENT_LIST_READY:
             /* The caches are fresh. Re-read them, push the panel, and re-invert
              * the friend set: a friendship that just appeared or vanished is
-             * exactly a watch that has to start or stop. */
+             * exactly a watch that has to start or stop.
+             *
+             * The block set is re-read here too, and it is the whole reason a
+             * block or an unblock has any effect on this world at all: the
+             * realm publishes this event after rewriting all three caches. */
             rebuild_watch_set(e->account_id, character);
+            rebuild_block_set(e->account_id);
             send_friend_list(character, e->account_id);
             send_request_list(character, e->account_id);
             break;
@@ -508,6 +647,10 @@ int world_friends_init(uint32_t world_id) {
     watch_reset();
     pthread_mutex_unlock(&g_watch_lock);
 
+    pthread_mutex_lock(&g_block_lock);
+    block_reset();
+    pthread_mutex_unlock(&g_block_lock);
+
     if (!friend_bus_start(world_id, on_friend_event, on_presence_change, NULL)) {
         LOG_WARN("[FRIENDS] the event bus did not start; friends will not update live");
         return 0;
@@ -530,6 +673,10 @@ void world_friends_shutdown(void) {
     pthread_mutex_lock(&g_watch_lock);
     watch_reset();
     pthread_mutex_unlock(&g_watch_lock);
+
+    pthread_mutex_lock(&g_block_lock);
+    block_reset();
+    pthread_mutex_unlock(&g_block_lock);
 }
 
 void world_friends_player_entered(uint32_t account_id, uint32_t character_id,
@@ -543,6 +690,7 @@ void world_friends_player_entered(uint32_t account_id, uint32_t character_id,
     /* Then their own view. A cache miss here asks the realm to build it, and
      * the LIST_READY that answers does the inversion instead. */
     rebuild_watch_set(account_id, character_id);
+    rebuild_block_set(account_id);
     send_friend_list(character_id, account_id);
     send_request_list(character_id, account_id);
 }
@@ -553,6 +701,16 @@ void world_friends_player_left(uint32_t account_id, uint32_t character_id) {
     pthread_mutex_lock(&g_watch_lock);
     watch_remove_watcher(character_id);
     pthread_mutex_unlock(&g_watch_lock);
+
+    /* The block edges go with them. They are keyed by account and this world
+     * may still hold another character of the same account -- a world transfer
+     * in progress, say -- so they are dropped only once no local slot is that
+     * account any more. local_character_of() answers exactly that. */
+    if (account_id && local_character_of(account_id) == 0) {
+        pthread_mutex_lock(&g_block_lock);
+        block_remove_blocker(account_id);
+        pthread_mutex_unlock(&g_block_lock);
+    }
 
     /* Guarded rather than unconditional: on a world transfer this leave can
      * land after the new world has already written its own presence, and an

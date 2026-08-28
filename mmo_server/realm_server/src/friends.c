@@ -136,6 +136,14 @@ void friends_refresh_caches(uint32_t account_id, uint32_t world_id) {
         presence_requests_store(account_id, cache, request_count);
     }
 
+    /* Then the blocks. Not shown in any panel -- this one is published purely
+     * so the worlds can filter chat and invitations without asking the realm
+     * per message. Stored even when empty, because "blocks nobody" is the
+     * common case and is exactly what a world most needs to learn cheaply. */
+    uint32_t blocked[MAX_BLOCKS];
+    int block_count = social_block_list(account_id, blocked, MAX_BLOCKS);
+    if (block_count >= 0) presence_blocks_store(account_id, blocked, block_count);
+
     if (!world_id) return;
 
     FriendEvent e = {
@@ -271,6 +279,15 @@ void friends_apply(const FriendMutation* m) {
 
         case FRIEND_OP_UNBLOCK:
             r = social_block_remove(m->actor_account, target);
+            /* Only the actor's own caches change -- unblocking restores no
+             * friendship and tells the other side nothing -- but they do have
+             * to change. This refreshed nothing at all, which was invisible
+             * while a block was a row nobody read; now that the worlds filter
+             * chat through the cached set, a stale one means an unblock the
+             * player performed goes on silencing somebody until the cache
+             * happens to expire. */
+            if (r == FRIEND_RESULT_OK)
+                friends_refresh_caches(m->actor_account, m->origin_world_id);
             break;
 
         default:

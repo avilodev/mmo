@@ -64,6 +64,10 @@ static void seat(int slot, uint32_t id, const char* name, float x, float y,
     memset(p, 0, sizeof(*p));
     pthread_mutex_init(&p->lock, NULL);
     p->character_id = id;
+    /* One account per character here. The blocks the delivery path consults
+     * are held against accounts, so the roster needs them to be distinct and
+     * nonzero. */
+    p->account_id   = 100 + id;
     p->client_fd    = fd;
     p->pos_x        = x;
     p->pos_y        = y;
@@ -112,6 +116,33 @@ int player_fd_by_name(const char* name) {
         if (strcmp(active_players[i].username, name) == 0)
             return active_players[i].client_fd;
     return -1;
+}
+
+uint32_t player_find_by_name(const char* name) {
+    for (int i = 0; i < ROSTER; i++)
+        if (strcmp(active_players[i].username, name) == 0)
+            return active_players[i].character_id;
+    return 0;
+}
+
+/* --- The block index, stubbed -------------------------------------------
+ *
+ * The real one is world_server/src/friends.c, which pulls in the friend bus
+ * and Redis. What this file has to prove is that delivery consults it and
+ * honours the answer, so one settable edge is the whole stub.
+ */
+static uint32_t g_block_holder = 0;   /**< Account doing the blocking. */
+static uint32_t g_block_target = 0;   /**< Account they refuse. */
+
+int world_friends_is_blocked(uint32_t blocker_account, uint32_t subject_account) {
+    return g_block_holder && blocker_account == g_block_holder &&
+           subject_account == g_block_target;
+}
+
+/** Make `blocker` refuse `subject`, by character id. */
+static void set_block(uint32_t blocker, uint32_t subject) {
+    g_block_holder = blocker ? 100 + blocker : 0;
+    g_block_target = subject ? 100 + subject : 0;
 }
 
 /* --- The recorder -------------------------------------------------------- */
@@ -336,7 +367,49 @@ int main(void) {
         CHECK(len_ok, "truncated to the field, with a terminator inside it");
     }
 
-    printf("\nTEST 13: the global cooldown applies per character\n");
+    printf("\nTEST 13: a block keeps the blocker out of every fan-out channel\n");
+    /* The blocker is not removed from the world and the sender is not stopped
+     * from speaking; the line simply is not delivered to whoever blocked
+     * them. Everybody else still hears it, which is the half that a filter
+     * applied in the wrong place gets wrong. */
+    set_block(3, 1);            /* Far refuses Sender */
+
+    clear_sends();
+    say(CHAT_CHANNEL_GLOBAL, "everyone but one");
+    n = settle();
+    printf("  %d recipient(s)\n", n);
+    CHECK(n == ROSTER - 1,  "one fewer recipient than the roster");
+    CHECK(!reached(FD_FAR), "the blocker does not receive it");
+    CHECK(reached(FD_NEAR), "everybody else still does");
+
+    clear_sends();
+    say(CHAT_CHANNEL_PARTY, "party line");
+    n = settle();
+    CHECK(!reached(FD_FAR),   "a block outranks shared party membership");
+    CHECK(reached(FD_SENDER), "and does not silence the sender's own copy");
+
+    printf("\nTEST 14: a whisper to somebody who blocked you tells you nothing\n");
+    /* The sender's echo still prints, so their client shows the line exactly
+     * as it would have. A distinguishable failure would make the block a
+     * detector, and a detector is what turns one blocked account into two. */
+    clear_sends();
+    say(CHAT_CHANNEL_WHISPER, "Far let me in");
+    n = settle();
+    printf("  %d recipient(s)\n", n);
+    CHECK(n == 1,             "exactly one send: the sender's own echo");
+    CHECK(!reached(FD_FAR),   "the target does not receive it");
+    CHECK(reached(FD_SENDER), "the sender sees the same echo as a delivered whisper");
+
+    printf("\nTEST 15: the block is directional\n");
+    set_block(1, 3);            /* Sender refuses Far -- the other way round */
+    clear_sends();
+    say(CHAT_CHANNEL_GLOBAL, "still audible");
+    n = settle();
+    CHECK(reached(FD_FAR), "blocking somebody does not stop you being heard by them");
+
+    set_block(0, 0);            /* clear, so the cases below are unaffected */
+
+    printf("\nTEST 16: the global cooldown applies per character\n");
     chat_shutdown();
     setenv("MMO_CHAT_GLOBAL_COOLDOWN", "600", 1);
     assert(chat_init());
@@ -350,7 +423,7 @@ int main(void) {
     CHECK(first == ROSTER, "the first global message goes out");
     CHECK(both == first,   "a second inside the cooldown adds nothing");
 
-    printf("\nTEST 14: the cooldown does not gag the other channels\n");
+    printf("\nTEST 17: the cooldown does not gag the other channels\n");
     clear_sends();
     say(CHAT_CHANNEL_LOCAL, "still talking");
     n = settle();

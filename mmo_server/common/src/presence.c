@@ -625,6 +625,90 @@ int presence_requests_drop(uint32_t account_id) {
     return redis_do("DEL friendreq:%u", account_id);
 }
 
+/* --- Block cache --------------------------------------------------------- */
+
+/** Seconds a cached block set stands. Matches the other two. */
+#define BLOCKS_CACHE_TTL_SECONDS FRIENDS_CACHE_TTL_SECONDS
+
+/** Member standing in for "this set is cached and it is empty".
+ *
+ * The same trick, and it matters more here than for friends: almost every
+ * account blocks nobody, so without the sentinel almost every login would miss
+ * the cache and ask the realm to rebuild a set that was already correct and
+ * already empty. Account id 0 is never a real account.
+ */
+#define BLOCKS_CACHE_SENTINEL "0"
+
+int presence_blocks_store(uint32_t account_id, const uint32_t* blocked, int count) {
+    if (!account_id) return 0;
+    if (count < 0 || !blocked) count = 0;
+
+    /* Replaced rather than merged, for the same reason the friends set is: the
+     * realm has just read the authoritative rows. */
+    if (!redis_do("DEL blocks:%u", account_id)) return 0;
+    if (!redis_do("SADD blocks:%u %s", account_id, BLOCKS_CACHE_SENTINEL)) return 0;
+
+    /* Members are decimal ids and nothing else, so unlike the friends set --
+     * whose members carry a player-chosen name -- these are safe to build into
+     * the command line, and the whole set goes in one SADD rather than one per
+     * member. Capped at what one command may carry; the caller is bounded by
+     * MAX_BLOCKS well below it. */
+    char cmd[64 + 12 * 256];
+    size_t used = (size_t)snprintf(cmd, sizeof(cmd), "SADD blocks:%u", account_id);
+    int    added = 0;
+
+    for (int i = 0; i < count; i++) {
+        if (!blocked[i]) continue;
+        int n = snprintf(cmd + used, sizeof(cmd) - used, " %u", blocked[i]);
+        if (n < 0 || (size_t)n >= sizeof(cmd) - used) break;
+        used += (size_t)n;
+        added++;
+    }
+
+    if (added && !redis_do("%s", cmd)) return 0;
+
+    return redis_do("EXPIRE blocks:%u %d", account_id, BLOCKS_CACHE_TTL_SECONDS);
+}
+
+int presence_blocks_load(uint32_t account_id, uint32_t* out, int max) {
+    if (!account_id) return -1;
+
+    if (!redis_pool_acquire()) return -1;
+    redisReply* reply = redis_command_locked("SMEMBERS blocks:%u", account_id);
+
+    int result = -1;
+
+    if (reply && reply->type == REDIS_REPLY_ARRAY) {
+        /* No members at all means no key, which means not cached. A cached
+         * account always holds at least the sentinel. */
+        if (reply->elements == 0) {
+            result = -1;
+        } else {
+            int n = 0;
+            for (size_t i = 0; i < reply->elements; i++) {
+                redisReply* el = reply->element[i];
+                if (!el || el->type != REDIS_REPLY_STRING || !el->str) continue;
+
+                unsigned long id = strtoul(el->str, NULL, 10);
+                if (id == 0) continue;              /* the sentinel */
+
+                if (out && n < max) out[n] = (uint32_t)id;
+                n++;
+            }
+            result = (out && n > max) ? max : n;
+        }
+    }
+
+    if (reply) freeReplyObject(reply);
+    redis_pool_release();
+    return result;
+}
+
+int presence_blocks_drop(uint32_t account_id) {
+    if (!account_id) return 0;
+    return redis_do("DEL blocks:%u", account_id);
+}
+
 /* --- Mutation bus -------------------------------------------------------- */
 
 /** The connection blocking reads own.

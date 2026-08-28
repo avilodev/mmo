@@ -19,6 +19,8 @@
  * PostgreSQL later changes nothing above this header.
  */
 
+#include "presence.h"
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -37,6 +39,13 @@
  * click again.
  */
 #define MAX_PENDING_REQUESTS 20
+
+/* MAX_BLOCKS -- the cap this file enforces in social_block_add() -- is defined
+ * in presence.h, not here. It bounds three arrays in three subsystems: the
+ * realm's read below, the Redis set presence_blocks_store() writes, and the
+ * world's block index. The cache contract is the one header all three include,
+ * so that is where it lives.
+ */
 
 /** Days a pending request stands before it is swept.
  *
@@ -170,6 +179,8 @@ FriendResult social_friend_remove(uint32_t account, uint32_t friend_account);
  * records the block so future requests from them are refused. One transaction:
  * a block that removed the friendship but failed to record itself would let
  * the next request straight back through.
+ *
+ * Refused with FRIEND_RESULT_FRIEND_CAP once the blocker holds MAX_BLOCKS.
  */
 FriendResult social_block_add(uint32_t account, uint32_t blocked_account);
 
@@ -210,6 +221,19 @@ int social_is_friend(uint32_t account, uint32_t other);
 
 /** Report whether `account` has blocked `other`. */
 int social_is_blocked(uint32_t account, uint32_t other);
+
+/**
+ * List the accounts `account` has blocked.
+ *
+ * The realm reads this to publish the block cache every world consults when it
+ * decides whether a line of chat may be delivered; social_is_blocked() answers
+ * one pair and is not usable on a per-message path.
+ *
+ * @param out  Receives up to `max` account ids, newest block first.
+ * @param max  Capacity of `out`.
+ * @return     Entries written, or -1 on failure.
+ */
+int social_block_list(uint32_t account, uint32_t* out, int max);
 
 /** Count an account's friends, or -1 on failure. */
 int social_friend_count(uint32_t account);

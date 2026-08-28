@@ -10,6 +10,7 @@
 #include "config.h"
 #include "log.h"
 #include "player_data.h"
+#include "friends.h"
 #include "types.h"
 #include "utils.h"
 #include "str_fixed.h"
@@ -52,6 +53,7 @@ typedef struct {
     ChatMessagePacket packet;      /**< Already byte-ordered and terminated. */
     uint8_t           channel;
     uint32_t          sender_id;
+    uint32_t          sender_account;      /**< Whose blocks recipients check. */
     int               sender_fd;
     float             sender_x, sender_y;
     uint32_t          sender_party;
@@ -165,10 +167,43 @@ static void deliver(const ChatJob* job) {
      * operations to deliver one line to one person, and the cost peaked
      * precisely when the world was busiest. One index lookup answers it now. */
     if (job->channel == CHAT_CHANNEL_WHISPER) {
-        int target_fd = player_fd_by_name(job->whisper_target);
+        /* Resolved to a character rather than straight to a descriptor, because
+         * the block is held against the sender's account and answering that
+         * needs the target's account. */
+        uint32_t target_id = player_find_by_name(job->whisper_target);
+        int      target_fd = -1;
+        uint32_t target_account = 0;
+
+        if (target_id) {
+            ActivePlayer* t = player_acquire(target_id);
+            if (t) {
+                target_fd      = t->client_fd;
+                target_account = t->account_id;
+                player_release(t);
+            }
+        }
+
+        /* A whisper to somebody who has blocked you is dropped, and the sender
+         * is told nothing -- not even that it failed. The echo below still
+         * prints, so their client shows the line they sent exactly as it would
+         * have. Telling them would make the block a detector, and a detector
+         * is what turns one blocked account into two. */
+        if (target_fd != -1 &&
+            world_friends_is_blocked(target_account, job->sender_account)) {
+            LOG_DEBUG("[WHISPER] account %u is blocked by %u; whisper swallowed",
+                      job->sender_account, target_account);
+            target_fd = -2;
+        }
 
         if (target_fd == -1) {
             LOG_WARN_RL(5, 60, "[WHISPER] Target '%s' not online", job->whisper_target);
+        } else if (target_fd == -2) {
+            /* Swallowed. The sender's own echo still goes out. */
+            ChatMessagePacket echo = msg;
+            memset(echo.sender_name, 0, sizeof(echo.sender_name));
+            snprintf(echo.sender_name, sizeof(echo.sender_name), "-> %.28s",
+                     job->whisper_target);
+            server_send(job->sender_fd, &echo, sizeof(echo));
         } else {
             server_send(target_fd, &msg, sizeof(msg));
             // label the sender's whisper echo with its target
@@ -191,11 +226,18 @@ static void deliver(const ChatJob* job) {
         if (!active_players[i].is_loaded) continue;
 
         pthread_mutex_lock(&active_players[i].lock);
-        int      fd          = active_players[i].client_fd;
-        float    dx          = active_players[i].pos_x - job->sender_x;
-        float    dy          = active_players[i].pos_y - job->sender_y;
-        uint32_t their_party = active_players[i].party_id;
+        int      fd            = active_players[i].client_fd;
+        float    dx            = active_players[i].pos_x - job->sender_x;
+        float    dy            = active_players[i].pos_y - job->sender_y;
+        uint32_t their_party   = active_players[i].party_id;
+        uint32_t their_account = active_players[i].account_id;
         pthread_mutex_unlock(&active_players[i].lock);
+
+        /* Whoever has blocked the sender does not receive the line, on any
+         * channel. Checked outside the slot lock, against an index rather than
+         * Redis, which is what makes it affordable once per recipient per
+         * message on the global channel. */
+        if (world_friends_is_blocked(their_account, job->sender_account)) continue;
 
         int wants = 0;
         if (job->channel == CHAT_CHANNEL_LOCAL)
@@ -401,9 +443,13 @@ void chat_handle_send(int client_fd, uint32_t character_id,
     ActivePlayer* sender = player_acquire(character_id);
     if (!sender) return;
     snprintf(sender_name, sizeof(sender_name), "%s", sender->username);
-    job.sender_x     = sender->pos_x;
-    job.sender_y     = sender->pos_y;
-    job.sender_party = sender->party_id;
+    job.sender_x       = sender->pos_x;
+    job.sender_y       = sender->pos_y;
+    job.sender_party   = sender->party_id;
+    /* Carried on the job, not looked up at delivery: a block is against the
+     * account, the sender may log out before the queue drains, and by then
+     * their slot may belong to somebody else. */
+    job.sender_account = sender->account_id;
     player_release(sender);
 
     if (job.channel == CHAT_CHANNEL_GLOBAL &&
