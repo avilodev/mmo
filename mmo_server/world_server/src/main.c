@@ -530,6 +530,28 @@ void* realm_accept_thread_func(void* arg) {
  * The same 50ms the tick report has always printed as "the budget"; named here
  * so the health check and the log line cannot disagree about it. */
 #define TICK_BUDGET_MS 50.0
+
+/* How often a world writes its two heartbeat lines, [TICK] and [STATS].
+ *
+ * At a flat ten seconds an empty world wrote about 3MB a day of "players=0",
+ * four fifths of everything in its file. Ten worlds idling over a weekend was
+ * enough to push the rotation ring around on nothing but proof that nothing had
+ * happened -- and the history someone would actually open the log for went with
+ * it. An empty world has nothing to say that a five-minute sample misses, so it
+ * says it every five minutes and drops back to ten seconds the moment anyone is
+ * on. Only the log cadence changes: /metrics is published on its own schedule
+ * below and is unaffected.
+ *
+ * g_state.current_players is atomic and is read here only to pick an interval,
+ * so a read landing mid-update costs at most one differently-timed line.
+ */
+#define HEARTBEAT_BUSY_SECS 10
+#define HEARTBEAT_IDLE_SECS 300
+
+static int heartbeat_interval_secs(void) {
+    return g_state.current_players > 0 ? HEARTBEAT_BUSY_SECS : HEARTBEAT_IDLE_SECS;
+}
+
 static const char* g_phase_name[TICK_PHASE_COUNT] = {
     "snapshot", "combat", "ability", "projectile", "npc_ai", "loot"
 };
@@ -559,27 +581,38 @@ static inline double mono_ms(void) {
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 
-/** Log rolling mean and worst phase times, then clear the timing window. */
-static void tick_phase_report(void) {
+/** Publish rolling mean and worst phase times, then clear the timing window.
+ *
+ * @param emit_log  Nonzero to also write the [TICK] line. The window is
+ *                  published and cleared either way, so /metrics keeps seeing a
+ *                  fresh ten-second sample while an idle world logs one every
+ *                  five minutes.
+ */
+static void tick_phase_report(int emit_log) {
     if (g_phase_samples == 0) return;
 
-    char line[512];
-    int  n = snprintf(line, sizeof(line), "[TICK] over %ld ticks —", g_phase_samples);
     double mean_total = 0.0;
+    for (int p = 0; p < TICK_PHASE_COUNT; p++)
+        mean_total += g_phase_total_ms[p] / (double)g_phase_samples;
 
-    for (int p = 0; p < TICK_PHASE_COUNT && n < (int)sizeof(line); p++) {
-        double mean = g_phase_total_ms[p] / (double)g_phase_samples;
-        mean_total += mean;
-        n += snprintf(line + n, sizeof(line) - (size_t)n, " %s %.2f/%.2f",
-                      g_phase_name[p], mean, g_phase_worst_ms[p]);
+    if (emit_log) {
+        char line[512];
+        int  n = snprintf(line, sizeof(line), "[TICK] over %ld ticks —", g_phase_samples);
+
+        for (int p = 0; p < TICK_PHASE_COUNT && n < (int)sizeof(line); p++) {
+            n += snprintf(line + n, sizeof(line) - (size_t)n, " %s %.2f/%.2f",
+                          g_phase_name[p],
+                          g_phase_total_ms[p] / (double)g_phase_samples,
+                          g_phase_worst_ms[p]);
+        }
+        if (n < (int)sizeof(line))
+            snprintf(line + n, sizeof(line) - (size_t)n,
+                     " | total mean %.2fms of %.0fms budget",
+                     mean_total, TICK_BUDGET_MS);
+
+        LOG_INFO("%s", line);
+        LOG_DEBUG("[TICK] figures are mean/worst milliseconds per phase");
     }
-    if (n < (int)sizeof(line))
-        snprintf(line + n, sizeof(line) - (size_t)n,
-                 " | total mean %.2fms of %.0fms budget",
-                 mean_total, TICK_BUDGET_MS);
-
-    LOG_INFO("%s", line);
-    LOG_DEBUG("[TICK] figures are mean/worst milliseconds per phase");
 
     /* Publish before clearing, so the endpoint always has a whole window. */
     double worst_total = 0.0;
@@ -773,6 +806,7 @@ void* combat_update_thread(void* arg) {
 
     double phase_ms[TICK_PHASE_COUNT];
     double last_report = mono_ms();
+    double last_tick_log = last_report;
 
     LOG_INFO("Combat update thread started (20Hz)");
 
@@ -807,7 +841,11 @@ void* combat_update_thread(void* arg) {
         g_phase_samples++;
 
         if (t1 - last_report >= 10000.0) {
-            tick_phase_report();
+            /* The window is published every ten seconds regardless, so a scrape
+             * never sees a stale one; only the log line follows the cadence. */
+            int emit = (t1 - last_tick_log) >= heartbeat_interval_secs() * 1000.0;
+            tick_phase_report(emit);
+            if (emit) last_tick_log = t1;
             last_report = t1;
         }
 
@@ -828,7 +866,7 @@ void* combat_update_thread(void* arg) {
         }
     }
 
-    tick_phase_report();          // final numbers before the counters go away
+    tick_phase_report(1);         // final numbers before the counters go away
     npc_snapshot_free(&npc_snapshot);
     tick_snapshot_free(&snapshot);
 
@@ -1540,6 +1578,13 @@ int main(int argc, char** argv) {
     }
     party_init();
 
+    /* Friends is optional infrastructure: it needs Redis, and a world that
+     * cannot reach it should still let people play. A failure here logs and
+     * leaves every friends panel empty rather than refusing to boot. */
+    if (!world_friends_init(g_server.world_id)) {
+        LOG_WARN("Friends and presence are unavailable this run");
+    }
+
     // Load NPC spawns from data file
     {
         int spawn_count = npc_spawns_load(SPAWNS_PATH, &g_npc_world);
@@ -1672,10 +1717,11 @@ int main(int argc, char** argv) {
     while (g_server.running) {
         sleep(1);
 
-        // Print server stats every 10 seconds
+        // Print server stats on the heartbeat cadence: every ten seconds with
+        // players on, every five minutes when the world is empty.
         static time_t last_stats = 0;
         time_t now = time(NULL);
-        if (now - last_stats >= 10) {
+        if (now - last_stats >= heartbeat_interval_secs()) {
             /* Players and uptime used to be the whole line, which said nothing
              * about whether the world was keeping its tick, whether anything
              * was queueing behind it, or whether it was refusing traffic --
@@ -1761,6 +1807,10 @@ int main(int argc, char** argv) {
     dialogue_system_cleanup();
     shop_session_shutdown();
     items_cleanup();
+    /* Stopped before the player pool it reads from. The bus thread calls into
+     * player_acquire(), and one still running while the pool is torn down is a
+     * shutdown crash that only ever reproduces on the live host. */
+    world_friends_shutdown();
     playerdata_stop_save_thread();
     playerdata_close();
     world_collision_shutdown();

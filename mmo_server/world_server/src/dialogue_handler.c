@@ -194,7 +194,10 @@ static void send_page(int client_fd, uint32_t character_id, const NPCSnapshot* n
 void handle_npc_interact_request(int client_fd, uint32_t character_id,
                                  uint8_t* buffer, ssize_t bytes) {
     if (bytes < 0 || (size_t)bytes < sizeof(NPCInteractRequestPacket)) {
-        LOG_WARN("[DIALOGUE] Malformed NPC interact request (size: %zd)", bytes);
+        /* Size is whatever the peer chose to send, so this is one line per
+         * bad packet until the limiter kicks them -- rate limited so a single
+         * client cannot roll the world's log history out of the ring. */
+        LOG_WARN_RL(10, 60, "[DIALOGUE] Malformed NPC interact request (size: %zd)", bytes);
         return;
     }
 
@@ -255,7 +258,7 @@ void handle_npc_interact_request(int client_fd, uint32_t character_id,
 void handle_dialogue_option_select(int client_fd, uint32_t character_id,
                                    uint8_t* buffer, ssize_t bytes) {
     if (bytes < 0 || (size_t)bytes < sizeof(DialogueOptionSelectPacket)) {
-        LOG_WARN("[DIALOGUE] Malformed option select packet (size: %zd)", bytes);
+        LOG_WARN_RL(10, 60, "[DIALOGUE] Malformed option select packet (size: %zd)", bytes);
         return;
     }
 
@@ -306,16 +309,18 @@ void handle_dialogue_option_select(int client_fd, uint32_t character_id,
 
     const DialogueOptionDef* option = dialogue_page_find_option(page, option_id);
     if (!option) {
-        LOG_WARN("[DIALOGUE] Character %u chose option %u, which page %u does not define",
-                 character_id, option_id, current_page);
+        LOG_WARN_RL(10, 60,
+                    "[DIALOGUE] Character %u chose option %u, which page %u does not define",
+                    character_id, option_id, current_page);
         return;
     }
 
     /* Re-checked rather than assumed: the option list the client holds was
      * filtered when it was sent, and the state behind it can have moved since. */
     if (!dialogue_option_available(option, character_id)) {
-        LOG_WARN("[DIALOGUE] Character %u chose option %u, which they no longer qualify for",
-                 character_id, option_id);
+        LOG_WARN_RL(10, 60,
+                    "[DIALOGUE] Character %u chose option %u, which they no longer qualify for",
+                    character_id, option_id);
         return;
     }
 

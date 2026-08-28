@@ -34,18 +34,25 @@ static void realm_send_disconnect(int fd, uint8_t reason) {
  * @return      One after ordinary dispatch, zero for an ignored packet, or -1 when the caller must disconnect.
  */
 int process_packet(int client_fd, uint32_t account_id, uint8_t* buffer, ssize_t bytes) {
-    LOG_INFO("Processing packet from account %u (fd: %d), %zd bytes",
-             account_id, client_fd, bytes);
+    /* Debug, not info: these two fire on every packet the realm handles, so at
+     * info they were the only thing in the file that grew with the player count
+     * -- two lines per request, ahead of any decision worth reading about. The
+     * outcome of the packet is logged by its handler; this is the trace you turn
+     * on when that outcome does not explain itself. */
+    LOG_DEBUG("Processing packet from account %u (fd: %d), %zd bytes",
+              account_id, client_fd, bytes);
 
     if (bytes < (ssize_t)sizeof(PacketHeader)) {
-        LOG_INFO("Packet too small (got %zd bytes, need at least %zu)",
-                 bytes, sizeof(PacketHeader));
+        /* Client-controlled: a peer can send a runt packet as fast as the
+         * limiter allows, and this is reached before the limiter runs. */
+        LOG_WARN_RL(10, 60, "Packet too small (got %zd bytes, need at least %zu)",
+                    bytes, sizeof(PacketHeader));
         return 0;
     }
 
     PacketHeader* header = (PacketHeader*)buffer;
 
-    LOG_INFO("Packet type: %d (0x%02X)", header->type, header->type);
+    LOG_DEBUG("Packet type: %d (0x%02X)", header->type, header->type);
 
     // Spend the connection's budget before doing any real work. Every opcode
     // below is a database round trip, so a flood has to die here rather than in

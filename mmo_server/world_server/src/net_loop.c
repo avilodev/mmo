@@ -18,6 +18,7 @@
 #include "net_notify.h"
 #include "net_reactor.h"
 #include "packet_limiter.h"
+#include "friends.h"
 #include "party.h"
 #include "peer_addr.h"
 #include "player_data.h"
@@ -192,8 +193,12 @@ static NetReactorVerdict world_on_work(NetReactorConn* conn) {
     WorldConnectPacket* pkt = (WorldConnectPacket*)buf;
 
     if (pkt->header.type != PACKET_WORLD_CONNECT) {
-        LOG_WARN("[NET] fd %d opened with packet type %u rather than a ticket",
-                 fd, pkt->header.type);
+        /* Pre-authentication and reachable by anyone who can open a socket, so
+         * a reconnect loop writes one line per attempt. Rate limited: the
+         * hundredth identical rejection tells an operator nothing the first
+         * did not, and it costs the log history that does. */
+        LOG_WARN_RL(10, 60, "[NET] fd %d opened with packet type %u rather than a ticket",
+                    fd, pkt->header.type);
         reject(conn, "Invalid ticket");
         return NET_REACTOR_CLOSE;
     }
@@ -203,8 +208,8 @@ static NetReactorVerdict world_on_work(NetReactorConn* conn) {
      * answered here rather than diagnosed later as a corrupt ticket. */
     uint16_t client_protocol = ntohs(pkt->protocol_version);
     if (client_protocol != PROTOCOL_VERSION) {
-        LOG_WARN("[NET] fd %d speaks protocol %u, this world speaks %u — refusing",
-                 fd, client_protocol, (unsigned)PROTOCOL_VERSION);
+        LOG_WARN_RL(10, 60, "[NET] fd %d speaks protocol %u, this world speaks %u — refusing",
+                    fd, client_protocol, (unsigned)PROTOCOL_VERSION);
         reject(conn, "This client is a different version than the server. Please update.");
         return NET_REACTOR_CLOSE;
     }
@@ -334,14 +339,29 @@ static NetReactorVerdict world_on_work(NetReactorConn* conn) {
     } else {
         player_send_data_response(fd, character_id);
 
+        char friend_name[32] = {0};
+
         ActivePlayer* p = player_acquire(character_id);
         if (p) {
+            /* The slot learns which account is playing it here, and nowhere
+             * else. Friends attributes every mutation to this field rather
+             * than to anything the client sends, so it has to be written on
+             * the one path that has already checked ownership above. */
+            p->account_id = account_id;
+
+            snprintf(friend_name, sizeof(friend_name), "%s", p->username);
+
             player_send_stats_locked(fd, p);
             ability_send_data(fd, p);
             p->is_ready = 1;   /* handshake complete; broadcasts may start */
             player_release(p);
         }
         quest_send_all(character_id, fd);
+
+        /* After the slot is published, because this both reads it and sends to
+         * it. The name given here is the one every friend of this account sees
+         * in their panel until the character logs out. */
+        world_friends_player_entered(account_id, character_id, friend_name);
     }
 
     LOG_INFO("[NET] account %u, character %u entered the world", account_id, character_id);
@@ -405,6 +425,11 @@ static void world_on_retire(NetReactorConn* conn) {
                 player_release(player);
                 if (player_remove_active_if_fd(character_id, client_fd)) {
                     party_handle_disconnect(character_id);
+                    /* Only on the branch that actually took the slot down. The
+                     * else below is a reconnect that rebound it, and clearing
+                     * presence there would mark a player offline who is, at
+                     * that moment, online on this very server. */
+                    world_friends_player_left(account_id, character_id);
                 } else {
                     /* A reconnect rebound the slot after our snapshot. Do not
                      * write stale data over the live session. */
