@@ -22,6 +22,7 @@
 #include "ability_bar.h"
 #include "combat_system.h"
 #include "ui/quest_log.h"
+#include "ui/friends_panel.h"
 #include "state_handler.h"
 
 #include <assert.h>
@@ -74,6 +75,7 @@ static void dispatch_all(uint8_t type, const char* data, int length) {
     if (net_dispatch_world(type, data, length))     return;
     if (net_dispatch_combat(type, data, length))    return;
     if (net_dispatch_inventory(type, data, length)) return;
+    if (net_dispatch_friends(type, data, length))   return;
     /* An unclaimed opcode is fine: the real dispatcher logs and drops it. */
 }
 
@@ -136,6 +138,11 @@ static void test_declared_counts_are_not_trusted(void) {
         PACKET_INVENTORY_UPDATE,
         PACKET_QUEST_ACCEPT,
         PACKET_SHOP_OPEN,
+        /* Both trimmed by the server to the entries it filled, so the count is
+         * the only thing that says how many are there -- and it arrives from
+         * the network like everything else. */
+        PACKET_FRIEND_LIST_RESPONSE,
+        PACKET_FRIEND_REQUESTS_LIST,
     };
 
     /* Every count byte value, at a handful of buffer sizes: a size that could
@@ -166,7 +173,7 @@ static void test_declared_counts_are_not_trusted(void) {
             }
         }
     }
-    printf("  ok   12 counted opcodes x 256 counts x 7 sizes survived\n");
+    printf("  ok   14 counted opcodes x 256 counts x 7 sizes survived\n");
 }
 
 /** Strings that fill their field with no terminator anywhere. */
@@ -186,6 +193,11 @@ static void test_unterminated_strings(void) {
         PACKET_DISCONNECT,
         PACKET_DIALOGUE_UPDATE,
         PACKET_QUEST_ACCEPT,
+        PACKET_FRIEND_LIST_RESPONSE,
+        PACKET_FRIEND_REQUESTS_LIST,
+        PACKET_FRIEND_REQUEST_NOTIFY,
+        PACKET_FRIEND_PRESENCE_UPDATE,
+        PACKET_FRIEND_OP_RESULT,
     };
 
     for (size_t o = 0; o < sizeof(texty) / sizeof(texty[0]); o++) {
@@ -204,7 +216,7 @@ static void test_unterminated_strings(void) {
             dispatch_all(texty[o], (const char*)g_buf, len);
         }
     }
-    printf("  ok   12 text-bearing opcodes survived unterminated fields\n");
+    printf("  ok   17 text-bearing opcodes survived unterminated fields\n");
 }
 
 /** Random bytes, at random lengths, for every opcode. */
@@ -327,6 +339,222 @@ static void test_a_refused_move_is_reverted(void) {
                "out-of-range slots in a refusal change nothing");
 }
 
+/* --- The friends panel --------------------------------------------------- */
+
+static int g_friend_failures = 0;
+
+#define FRIEND_CHECK(cond, what)                                            \
+    do {                                                                    \
+        if (cond) { printf("  ok   %s\n", (what)); }                        \
+        else { printf("  FAIL %s  (%s:%d)\n", (what), __FILE__, __LINE__);   \
+               g_friend_failures++; }                                       \
+    } while (0)
+
+/** Build a friends-list packet trimmed to `count` entries, as the server sends it. */
+static size_t build_friend_list(uint8_t count) {
+    memset(g_buf, 0, FIXTURE_MAX);
+
+    FriendListResponsePacket* pkt = (FriendListResponsePacket*)g_buf;
+    pkt->header.type = PACKET_FRIEND_LIST_RESPONSE;
+    pkt->count = count;
+
+    for (uint8_t i = 0; i < count; i++) {
+        pkt->friends[i].account_id = htonl(1000u + i);
+        pkt->friends[i].online     = (i % 2 == 0) ? 1 : 0;
+        /* The server sends a world only for an online friend, and a name for
+         * both -- offline rows still need something to label them with. */
+        pkt->friends[i].world_id   = (i % 2 == 0) ? htonl(3) : 0;
+        snprintf(pkt->friends[i].name, sizeof(pkt->friends[i].name), "Friend%u", i);
+    }
+
+    size_t size = offsetof(FriendListResponsePacket, friends)
+                + (size_t)count * sizeof(FriendWireEntry);
+    pkt->header.payload_size = htons((uint16_t)(size - sizeof(PacketHeader)));
+    return size;
+}
+
+/**
+ * A trimmed list is read as the server sent it, and a lying count is not.
+ *
+ * The server sends only the entries it filled, so the count byte is the only
+ * thing that says how many are there -- and it arrives over the network like
+ * everything else. Reading it without checking the bytes that came with it is
+ * a read past the end of the packet.
+ */
+static void test_the_friends_list_is_read_from_what_arrived(void) {
+    printf("a friends list is read from the bytes that actually arrived\n");
+    reset_game();
+
+    size_t size = build_friend_list(3);
+    dispatch_all(PACKET_FRIEND_LIST_RESPONSE, (const char*)g_buf, (int)size);
+
+    FriendsState* fs = &g_playing.friends;
+    FRIEND_CHECK(fs->friend_count == 3, "three friends are stored");
+    FRIEND_CHECK(fs->have_list == 1, "and the list is marked as arrived");
+    FRIEND_CHECK(fs->friends[0].account_id == 1000, "the first has its account");
+    FRIEND_CHECK(fs->friends[0].online == 1, "and its presence");
+    FRIEND_CHECK(fs->friends[0].world_id == 3, "and its world");
+    FRIEND_CHECK(strcmp(fs->friends[0].name, "Friend0") == 0, "and its name");
+    FRIEND_CHECK(fs->friends[1].online == 0, "the second is offline");
+    FRIEND_CHECK(fs->friends[1].world_id == 0, "with no world");
+    FRIEND_CHECK(strcmp(fs->friends[1].name, "Friend1") == 0,
+                 "but still named, so the row can be acted on");
+
+    /* Now the same packet claiming far more entries than it carries. */
+    reset_game();
+    size = build_friend_list(3);
+    ((FriendListResponsePacket*)g_buf)->count = 100;
+    dispatch_all(PACKET_FRIEND_LIST_RESPONSE, (const char*)g_buf, (int)size);
+
+    FRIEND_CHECK(g_playing.friends.friend_count == 3,
+                 "a count past the bytes is cut to what arrived");
+}
+
+/** An unterminated name from the wire must not be printed as a C string. */
+static void test_an_unterminated_friend_name_is_bounded(void) {
+    printf("a friend name with no terminator is bounded\n");
+    reset_game();
+
+    size_t size = build_friend_list(1);
+    FriendListResponsePacket* pkt = (FriendListResponsePacket*)g_buf;
+    memset(pkt->friends[0].name, 'Z', sizeof(pkt->friends[0].name));
+
+    dispatch_all(PACKET_FRIEND_LIST_RESPONSE, (const char*)g_buf, (int)size);
+
+    FriendsState* fs = &g_playing.friends;
+    FRIEND_CHECK(fs->friend_count == 1, "the entry is stored");
+    FRIEND_CHECK(strlen(fs->friends[0].name) == sizeof(fs->friends[0].name) - 1,
+                 "the name is terminated at the buffer's end");
+}
+
+/**
+ * A presence change updates a friend already listed and invents nobody.
+ *
+ * A change for a stranger means the list on screen is behind. Adding a row for
+ * them would show a friend with no name and no history, which is worse than
+ * waiting for the refreshed list that fixes it.
+ */
+static void test_presence_updates_only_a_listed_friend(void) {
+    printf("a presence change updates a listed friend and invents nobody\n");
+    reset_game();
+
+    size_t size = build_friend_list(2);
+    dispatch_all(PACKET_FRIEND_LIST_RESPONSE, (const char*)g_buf, (int)size);
+
+    FriendsState* fs = &g_playing.friends;
+    FRIEND_CHECK(fs->friends[1].online == 0, "the second friend starts offline");
+
+    FriendPresenceUpdatePacket upd;
+    memset(&upd, 0, sizeof(upd));
+    upd.header.type = PACKET_FRIEND_PRESENCE_UPDATE;
+    upd.account_id  = htonl(1001);
+    upd.world_id    = htonl(9);
+    upd.online      = 1;
+    snprintf(upd.name, sizeof(upd.name), "%s", "Elsewhere");
+
+    dispatch_all(PACKET_FRIEND_PRESENCE_UPDATE, (const char*)&upd, sizeof(upd));
+
+    FRIEND_CHECK(fs->friends[1].online == 1, "the update brings them online");
+    FRIEND_CHECK(fs->friends[1].world_id == 9, "on the world they are on");
+    FRIEND_CHECK(strcmp(fs->friends[1].name, "Elsewhere") == 0,
+                 "under the character they are playing");
+
+    /* Going offline drops the world and keeps the name: there is no last world
+     * to show, and a row that loses its label the moment somebody logs out is
+     * a row nobody can act on. */
+    upd.account_id = htonl(1001);
+    upd.online     = 0;
+    upd.world_id   = 0;
+    memset(upd.name, 0, sizeof(upd.name));
+    dispatch_all(PACKET_FRIEND_PRESENCE_UPDATE, (const char*)&upd, sizeof(upd));
+
+    FRIEND_CHECK(fs->friends[1].online == 0, "going offline is applied");
+    FRIEND_CHECK(fs->friends[1].world_id == 0, "with no world left behind");
+    FRIEND_CHECK(strcmp(fs->friends[1].name, "Elsewhere") == 0,
+                 "and the name kept, so the row stays identifiable");
+
+    /* Now for somebody who is not a friend at all. */
+    upd.account_id = htonl(4242);
+    upd.online     = 1;
+    dispatch_all(PACKET_FRIEND_PRESENCE_UPDATE, (const char*)&upd, sizeof(upd));
+
+    FRIEND_CHECK(fs->friend_count == 2, "a stranger's change adds no row");
+}
+
+/**
+ * A result carrying percent signs is data, not a format string.
+ *
+ * The subject name is chosen by whoever the player typed at, and it reaches an
+ * snprintf. If it were ever used as the format, a name of "%s%s%s" would read
+ * arbitrary stack.
+ */
+static void test_a_result_name_is_not_a_format_string(void) {
+    printf("a result's subject name is data, never a format\n");
+    reset_game();
+
+    FriendOpResultPacket res;
+    memset(&res, 0, sizeof(res));
+    res.header.type = PACKET_FRIEND_OP_RESULT;
+    res.action = FRIEND_ACTION_REQUEST;
+    res.result = FRIEND_WIRE_NOT_FOUND;
+    memset(res.subject_name, '%', sizeof(res.subject_name));
+    res.subject_name[0] = '%';
+    res.subject_name[1] = 'n';
+
+    dispatch_all(PACKET_FRIEND_OP_RESULT, (const char*)&res, sizeof(res));
+
+    FriendsState* fs = &g_playing.friends;
+    FRIEND_CHECK(fs->notice_timer > 0.0f, "a notice was recorded");
+    FRIEND_CHECK(strstr(fs->notice, "No player named") != NULL,
+                 "phrased from the table, not from the packet");
+}
+
+/** Opening the panel asks the server; the panel never answers from memory. */
+static void test_opening_the_panel_queues_a_refresh(void) {
+    printf("opening the panel asks the server for the list\n");
+    reset_game();
+
+    FriendsState* fs = &g_playing.friends;
+    friends_panel_init(fs);
+
+    char name[32];
+    FRIEND_CHECK(friends_panel_take_pending(fs, name, sizeof(name)) == FRIEND_PENDING_NONE,
+                 "a closed panel has nothing queued");
+
+    friends_panel_toggle(fs);
+    FRIEND_CHECK(fs->is_open == 1, "the panel opens");
+    FRIEND_CHECK(friends_panel_take_pending(fs, name, sizeof(name)) == FRIEND_PENDING_REFRESH,
+                 "and queues a refresh");
+    FRIEND_CHECK(friends_panel_take_pending(fs, name, sizeof(name)) == FRIEND_PENDING_NONE,
+                 "which is taken exactly once");
+
+    friends_panel_toggle(fs);
+    FRIEND_CHECK(fs->is_open == 0, "and toggles shut again");
+    FRIEND_CHECK(friends_panel_take_pending(fs, name, sizeof(name)) == FRIEND_PENDING_NONE,
+                 "queueing nothing on the way out");
+}
+
+/**
+ * An empty list before it arrives and after it arrives are different states.
+ *
+ * They render as "Loading..." and "No friends yet", and saying the second when
+ * the first is true tells a player something they act on.
+ */
+static void test_loading_and_empty_are_distinguishable(void) {
+    printf("an unarrived list and an empty one are told apart\n");
+    reset_game();
+
+    FriendsState* fs = &g_playing.friends;
+    FRIEND_CHECK(fs->have_list == 0 && fs->friend_count == 0,
+                 "before the list arrives, nothing is known");
+
+    size_t size = build_friend_list(0);
+    dispatch_all(PACKET_FRIEND_LIST_RESPONSE, (const char*)g_buf, (int)size);
+
+    FRIEND_CHECK(fs->have_list == 1 && fs->friend_count == 0,
+                 "an empty list that arrived is known to be empty");
+}
+
 int main(void) {
     printf("=== client packet dispatch ===\n");
 
@@ -341,10 +569,18 @@ int main(void) {
     test_random_fuzz();
     test_a_refused_move_is_reverted();
 
+    test_the_friends_list_is_read_from_what_arrived();
+    test_an_unterminated_friend_name_is_bounded();
+    test_presence_updates_only_a_listed_friend();
+    test_a_result_name_is_not_a_format_string();
+    test_opening_the_panel_queues_a_refresh();
+    test_loading_and_empty_are_distinguishable();
+
     DeleteCriticalSection(&g_net.response_lock);
 
-    if (g_move_failures) {
-        printf("=== client packet dispatch: %d check(s) FAILED ===\n", g_move_failures);
+    int failures = g_move_failures + g_friend_failures;
+    if (failures) {
+        printf("=== client packet dispatch: %d check(s) FAILED ===\n", failures);
         return 1;
     }
 

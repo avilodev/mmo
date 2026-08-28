@@ -10,6 +10,7 @@
  * are edits to different files.
  */
 #include "states/state_playing_internal.h"
+#include "ui/friends_panel.h"
 #include "core/race_registry.h"
 #include "renderer.h"
 #include "npc.h"
@@ -307,6 +308,13 @@ void playing_render(GameState* game) {
                                                        game->player.y),
                           game->camera.viewport_width,
                           game->camera.viewport_height);
+
+    /* Friends panel. Above the currency panel and below the shop, matching the
+     * order the input layer checks them in -- whichever draws last is the one
+     * a click reaches first. */
+    friends_panel_render(&game->playing->friends,
+                         game->camera.viewport_width,
+                         game->camera.viewport_height);
 
     // Shop window (on top of game world, below pause)
     shop_ui_render(game);

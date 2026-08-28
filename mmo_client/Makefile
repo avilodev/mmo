@@ -459,6 +459,7 @@ TESTS = $(TEST_BIN)/tile_palette_test \
 # the list survives the packet.
 NET_SRC = Game/src/network/net_session.c Game/src/network/net_world.c \
           Game/src/network/net_combat.c Game/src/network/net_inventory.c \
+          Game/src/network/net_friends.c Game/src/ui/friends_panel.c \
           Game/src/core/race_registry.c Game/src/network/name_cache.c \
           Game/src/core/client_log.c
 

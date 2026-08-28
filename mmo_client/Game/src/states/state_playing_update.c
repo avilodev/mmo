@@ -16,6 +16,7 @@
 #include "inventory.h"
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
+#include "ui/friends_panel.h"
 
 #include <math.h>
 #include "core/client_log.h"
@@ -27,6 +28,10 @@
  */
 void playing_update(GameState* game, float delta_time) {
     double now = glfwGetTime();
+
+    /* The friends panel's result line, which is the only thing in it that
+     * expires on its own. */
+    friends_panel_update(&game->playing->friends, delta_time);
 
     // Check for character data
     if (!game->player.info_loaded) {

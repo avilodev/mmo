@@ -17,6 +17,7 @@ typedef struct {
     int toggle_character;
     int toggle_quest_log;
     int toggle_currency;
+    int toggle_friends;
     int party_leave;
 
     int basic_attack;

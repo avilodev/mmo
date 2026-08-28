@@ -649,6 +649,92 @@ static void test_payload_behind_the_ack_is_delivered(void) {
 }
 
 /**
+ * A refused handshake reports what the server said, not that it hung up.
+ *
+ * A realm that refuses a connection sends PACKET_DISCONNECT with a reason and
+ * a sentence for the player, and then closes. Both arrive in one read: the
+ * bytes, then the FIN.
+ *
+ * network_update() used to drop the link the moment the FIN came back and
+ * return from there -- before the dispatch loop, and after drop_link() had
+ * already cleared the reassembly buffer. So the one packet whose whole purpose
+ * is to explain the disconnect was the one packet guaranteed to be thrown
+ * away, and every refusal reached the player as "the server closed the
+ * connection during the handshake". A client built against an older
+ * PROTOCOL_VERSION was then indistinguishable from a realm that was down: the
+ * world list sat on "Loading..." with nothing anywhere saying to rebuild.
+ */
+static void test_a_refusal_reports_the_servers_reason(void) {
+    printf("\na realm that refuses the handshake\n");
+
+    network_connect_abort();
+    network_clear_disconnect_reason();
+
+    uint16_t port = 0;
+    int ls = open_listener(&port);
+    CHECK(ls >= 0, "a loopback listener came up");
+    if (ls < 0) return;
+
+    RealmSide realm = {.listen_fd = ls, .ctx = g_realm_ctx, .fd = -1, .ssl = NULL};
+    pthread_t t;
+    pthread_create(&t, NULL, realm_thread, &realm);
+
+    int started = network_begin_realm_connect("127.0.0.1", port, k_session_key, 1234);
+    CHECK(started, "the connect attempt began");
+
+    double deadline = seconds_now() + 5.0;
+    while (!g_net.handshaking && seconds_now() < deadline) network_connect_poll();
+    pthread_join(t, NULL);
+
+    CHECK(realm.ssl != NULL, "the realm completed a TLS handshake with the client");
+    if (!realm.ssl) { closesocket(ls); return; }
+
+    RealmConnectPacket got;
+    memset(&got, 0, sizeof(got));
+    SSL_read(realm.ssl, &got, sizeof(got));
+    CHECK(got.header.type == PACKET_REALM_CONNECT, "the connect packet arrived");
+
+    /* What realm_net.c sends a client whose PROTOCOL_VERSION it does not
+     * share: no acknowledgement, a reason, and then the socket. */
+    static const char* const k_said =
+        "This client is a different version than the server. Please update.";
+
+    DisconnectPacket bye;
+    memset(&bye, 0, sizeof(bye));
+    bye.header.type         = PACKET_DISCONNECT;
+    bye.header.payload_size = htons(sizeof(bye) - sizeof(PacketHeader));
+    bye.reason              = DISCONNECT_REASON_VERSION;
+    snprintf(bye.message, sizeof(bye.message), "%s", k_said);
+
+    SSL_write(realm.ssl, &bye, sizeof(bye));
+    SSL_shutdown(realm.ssl);
+    SSL_free(realm.ssl);
+    closesocket(realm.fd);
+    realm.ssl = NULL;
+    realm.fd  = -1;
+
+    NetConnectPhase r = poll_until_settled(2.0);
+    CHECK(r == NET_CONNECT_FAILED, "the attempt failed");
+
+    uint8_t reason = 0;
+    char    said[128] = {0};
+    CHECK(network_get_disconnect_reason(&reason, said, (int)sizeof(said)),
+          "the disconnect packet was dispatched, not discarded with the buffer");
+    CHECK(reason == DISCONNECT_REASON_VERSION, "and carried the version reason");
+    CHECK(strcmp(said, k_said) == 0, "and the sentence meant for the player");
+
+    const char* reported = network_connect_message();
+    CHECK(strstr(reported, "different version") != NULL,
+          "the reported failure names the version mismatch");
+    CHECK(strstr(reported, "closed the connection") == NULL,
+          "and is not the generic \"the server closed the connection\" line");
+
+    network_connect_abort();
+    network_clear_disconnect_reason();
+    closesocket(ls);
+}
+
+/**
  * A world handshake is not reported as a realm handshake.
  *
  * network_connect_poll() reports SUCCEEDED and FAILED exactly once, so only the
@@ -718,6 +804,7 @@ int main(void) {
     test_reconnect_cancel();
     test_traffic_before_the_ack_is_ignored();
     test_payload_behind_the_ack_is_delivered();
+    test_a_refusal_reports_the_servers_reason();
     test_world_attempt_is_not_a_realm_attempt();
     test_an_unpinned_realm_is_refused();
 

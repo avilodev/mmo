@@ -83,6 +83,7 @@ void keybinds_defaults(void) {
     g_keybinds.toggle_inventory = GLFW_KEY_I;
     g_keybinds.toggle_character = GLFW_KEY_C;
     g_keybinds.toggle_quest_log = GLFW_KEY_J;
+    g_keybinds.toggle_friends   = GLFW_KEY_U;
     g_keybinds.toggle_currency  = GLFW_KEY_G;
     g_keybinds.party_leave      = GLFW_KEY_P;
     g_keybinds.basic_attack     = GLFW_KEY_SPACE;
@@ -138,6 +139,7 @@ void keybinds_load(const char* path) {
         else if (strcmp(key_str, "toggle_inventory") == 0) g_keybinds.toggle_inventory = key;
         else if (strcmp(key_str, "toggle_character") == 0) g_keybinds.toggle_character = key;
         else if (strcmp(key_str, "toggle_quest_log") == 0) g_keybinds.toggle_quest_log = key;
+        else if (strcmp(key_str, "toggle_friends") == 0) g_keybinds.toggle_friends = key;
         else if (strcmp(key_str, "toggle_currency")  == 0) g_keybinds.toggle_currency  = key;
         else if (strcmp(key_str, "party_leave")      == 0) g_keybinds.party_leave      = key;
         else if (strcmp(key_str, "basic_attack")     == 0) g_keybinds.basic_attack     = key;
@@ -175,6 +177,7 @@ void keybinds_save(const char* path) {
     fprintf(f, "toggle_inventory=%s\n", name_from_key(g_keybinds.toggle_inventory));
     fprintf(f, "toggle_character=%s\n", name_from_key(g_keybinds.toggle_character));
     fprintf(f, "toggle_quest_log=%s\n", name_from_key(g_keybinds.toggle_quest_log));
+    fprintf(f, "toggle_friends=%s\n", name_from_key(g_keybinds.toggle_friends));
     fprintf(f, "toggle_currency=%s\n",  name_from_key(g_keybinds.toggle_currency));
     fprintf(f, "party_leave=%s\n",      name_from_key(g_keybinds.party_leave));
     fprintf(f, "basic_attack=%s\n",     name_from_key(g_keybinds.basic_attack));

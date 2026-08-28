@@ -66,6 +66,7 @@ void playing_enter(GameState* game) {
     hud_init(&game->playing->hud, 1920, 1080);
     quest_log_init(&game->playing->quest_log);
     currency_panel_init(&game->playing->currency_panel);
+    friends_panel_init(&game->playing->friends);
 
     /* No dialogue data to load: the server sends the page's text with the page,
      * so there is nothing here that could drift from what the NPC actually says. */

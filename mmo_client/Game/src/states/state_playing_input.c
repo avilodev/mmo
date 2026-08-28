@@ -19,10 +19,30 @@
 #include "ui/npc_dialogue.h"
 #include "ui/shop_ui.h"
 #include "ui/settings_panel.h"
+#include "ui/friends_panel.h"
 #include "core/keybinds.h"
 
 #include <string.h>
 #include "core/client_log.h"
+
+/**
+ * Send whatever the friends panel queued this frame.
+ *
+ * The panel hit-tests and draws; it does not know what a socket is, the same
+ * split the quest log uses for abandoning a quest. This is the one place that
+ * turns a click in it into a packet.
+ */
+static void friends_drain_pending(GameState* game) {
+    char name[32];
+    switch (friends_panel_take_pending(&game->playing->friends, name, sizeof(name))) {
+        case FRIEND_PENDING_ACCEPT:  network_send_friend_respond(name, 1); break;
+        case FRIEND_PENDING_DECLINE: network_send_friend_respond(name, 0); break;
+        case FRIEND_PENDING_REMOVE:  network_send_friend_remove(name);     break;
+        case FRIEND_PENDING_REFRESH: network_send_friend_list_request();   break;
+        case FRIEND_PENDING_NONE:
+        default:                                                          break;
+    }
+}
 
 /**
  * Route gameplay, panel, chat, targeting, movement, and combat input.
@@ -152,6 +172,27 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
                                     game->camera.viewport_height))
         return;
     if (game->playing->currency_panel.is_open) return;
+
+    /* Friends panel. Same shape as the currency panel: it consumes the click
+     * when it is open, and gameplay never sees it. */
+    if (friends_panel_handle_input(&game->playing->friends,
+                                   game->input.mouse_x, game->input.mouse_y,
+                                   game->input.mouse_left_clicked,
+                                   !game->playing->chat.is_typing &&
+                                       input_key_just_pressed(&game->input, g_keybinds.toggle_friends),
+                                   !game->playing->chat.is_typing &&
+                                       input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
+                                   !game->playing->chat.is_typing &&
+                                       input_key_just_pressed(&game->input, GLFW_KEY_PAGE_UP),
+                                   !game->playing->chat.is_typing &&
+                                       input_key_just_pressed(&game->input, GLFW_KEY_PAGE_DOWN),
+                                   game->camera.viewport_width,
+                                   game->camera.viewport_height)) {
+        friends_drain_pending(game);
+        return;
+    }
+    friends_drain_pending(game);
+    if (game->playing->friends.is_open) return;
 
     // Toggle inventory
     if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_inventory)) {
@@ -332,6 +373,17 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
                         network_send_party_invite(msg + 8);
                     } else if (strcmp(msg, "/leave") == 0) {
                         network_send_party_leave();
+                    } else if (strncmp(msg, "/friend ", 8) == 0 && msg[8] != '\0') {
+                        /* Typed rather than clicked, because adding a friend
+                         * needs a name the client has never seen and the chat
+                         * bar is this client's only text input. */
+                        network_send_friend_request(msg + 8);
+                    } else if (strncmp(msg, "/unfriend ", 10) == 0 && msg[10] != '\0') {
+                        network_send_friend_remove(msg + 10);
+                    } else if (strncmp(msg, "/block ", 7) == 0 && msg[7] != '\0') {
+                        network_send_friend_block(msg + 7, 1);
+                    } else if (strncmp(msg, "/unblock ", 9) == 0 && msg[9] != '\0') {
+                        network_send_friend_block(msg + 9, 0);
                     } else if (strncmp(msg, "/g ", 3) == 0 && msg[3] != '\0') {
                         network_send_chat(1, msg + 3); // channel 1 = global
                     } else if (strncmp(msg, "/p ", 3) == 0 && msg[3] != '\0') {

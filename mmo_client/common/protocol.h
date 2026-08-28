@@ -22,7 +22,7 @@
  * enum that travels on the wire changes. tests/check_protocol_version.sh (and
  * the client's equivalent) fails the build when this file changes without it.
  */
-#define PROTOCOL_VERSION 7
+#define PROTOCOL_VERSION 9
 
 /* Byte order: every multi-byte INTEGER on the wire is in network order
  * (htonl/htons); every FLOAT is native-endian and memcpy'd as-is, which is
@@ -201,6 +201,28 @@ typedef enum {
      * second. */
     PACKET_NAME_QUERY_REQUEST  = 212,   // Client -> Server: who are these ids?
     PACKET_NAME_QUERY_RESPONSE = 213,   // Server -> Client: their names
+
+    /* Friends and presence (230-238).
+     *
+     * The friend graph is a graph of ACCOUNTS, not of characters: character ids
+     * are per-world SERIALs, so character 5 exists in all ten worlds and only
+     * account_id means anything outside one. Nothing on this wire carries a
+     * friend's character id for that reason -- you friend a person and are shown
+     * whichever character of theirs is online.
+     *
+     * Every client->server opcode here names its subject by NAME, because a
+     * player types a name and has no way to know an account id. Resolution
+     * happens on the server. */
+    PACKET_FRIEND_REQUEST         = 230, // Client -> Server: befriend this name
+    PACKET_FRIEND_RESPOND         = 231, // Client -> Server: accept or decline a request
+    PACKET_FRIEND_REMOVE          = 232, // Client -> Server: remove a friend, or cancel a request
+    PACKET_FRIEND_BLOCK           = 233, // Client -> Server: block or unblock an account
+    PACKET_FRIEND_LIST_REQUEST    = 234, // Client -> Server: open the panel
+    PACKET_FRIEND_LIST_RESPONSE   = 235, // Server -> Client: friends and their presence
+    PACKET_FRIEND_REQUESTS_LIST   = 236, // Server -> Client: requests waiting to be answered
+    PACKET_FRIEND_REQUEST_NOTIFY  = 237, // Server -> Client: somebody just asked
+    PACKET_FRIEND_PRESENCE_UPDATE = 238, // Server -> Client: a friend came online or left
+    PACKET_FRIEND_OP_RESULT       = 239, // Server -> Client: what became of your last action
 } PacketType;
 
 /** Bound race identifiers on the wire.
@@ -1611,6 +1633,209 @@ typedef struct {
     uint8_t         padding[2];
     QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
+
+
+/* --- Friends and presence -------------------------------------------------
+ *
+ * See mmo_server/Next_steps/friends_design.md. The wire rules that matter here:
+ *
+ *   * A friend is addressed by account_id in every SERVER -> CLIENT packet and
+ *     by NAME in every CLIENT -> SERVER one. The client never learns an account
+ *     id it can act on by guessing, and a player never has to know one.
+ *
+ *   * created_at on a pending request is a 64-bit time and therefore travels
+ *     through mmo_htonll(), not htonl(). It is the only 64-bit field here.
+ *
+ *   * A friend's status is current only. There is no last-seen time and no
+ *     last world: the game keeps no history of where somebody used to be, so
+ *     a friend is on a world right now or they are offline, and that is the
+ *     whole of what a list packet says about them.
+ *
+ *   * An offline friend still carries a name -- the character the account was
+ *     last seen playing -- because it is what identifies the row and what the
+ *     client's own commands take. It is a label, not a location.
+ */
+
+/** Bound the friends carried by one list packet.
+ *
+ * Equal to MAX_FRIENDS in social_database.h, so a full list is always one
+ * packet and the client never has to page. 100 * 52 bytes plus the header sits
+ * comfortably inside MAX_PACKET_SIZE; the static assert below is what keeps it
+ * that way if the entry ever grows.
+ */
+#define MAX_FRIENDS_PER_PACKET 100
+
+/** Bound the pending requests carried by one packet.
+ *
+ * Incoming requests are not capped the way outgoing ones are -- anybody may ask
+ * -- so this is a wire cap and the server LIMITs its read to match. A player
+ * with more than this many pending requests sees the oldest ones first.
+ */
+#define MAX_FRIEND_REQUESTS_PER_PACKET 20
+
+/** Report what happened to a friend action.
+ *
+ * Mirrors FriendResult in social_database.h with one deliberate omission: there
+ * is no "blocked" value. A request to somebody who has blocked you is reported
+ * as FRIEND_WIRE_OK and nothing is written. Telling a sender they are blocked
+ * is how you get a second account.
+ */
+typedef enum {
+    FRIEND_WIRE_OK = 0,
+    FRIEND_WIRE_ALREADY_FRIENDS = 1,
+    FRIEND_WIRE_ALREADY_PENDING = 2,
+    FRIEND_WIRE_MUTUAL          = 3,  // they had already asked; you are now friends
+    FRIEND_WIRE_SELF            = 4,
+    FRIEND_WIRE_NOT_FOUND       = 5,  // no such player, or no such request
+    FRIEND_WIRE_FRIEND_CAP      = 6,
+    FRIEND_WIRE_PENDING_CAP     = 7,
+    FRIEND_WIRE_ERROR           = 8,
+    FRIEND_WIRE_UNAVAILABLE     = 9   // the realm did not answer in time
+} FriendWireResult;
+
+/** Name the action a FRIEND_OP_RESULT is reporting on. */
+typedef enum {
+    FRIEND_ACTION_REQUEST = 0,
+    FRIEND_ACTION_ACCEPT  = 1,
+    FRIEND_ACTION_DECLINE = 2,
+    FRIEND_ACTION_REMOVE  = 3,
+    FRIEND_ACTION_BLOCK   = 4,
+    FRIEND_ACTION_UNBLOCK = 5
+} FriendActionId;
+
+/** Ask to befriend a named player. */
+typedef struct {
+    PacketHeader header;
+    char         target_name[32];
+} FriendRequestPacket;
+
+/** Answer a pending request.
+ *
+ * The sender is named rather than the request, because a player has one pending
+ * request per person and a request id would be a number the client has to hold
+ * and could get wrong.
+ */
+typedef struct {
+    PacketHeader header;
+    char         from_name[32];
+    uint8_t      accept;          // nonzero accepts, zero declines
+    uint8_t      padding[3];
+} FriendRespondPacket;
+
+/** Remove a friend, or withdraw a request already sent to them.
+ *
+ * One opcode for both because they are the same intent -- "undo whatever I have
+ * with this person" -- and the server already knows which of the two exists.
+ */
+typedef struct {
+    PacketHeader header;
+    char         target_name[32];
+} FriendRemovePacket;
+
+/** Block or unblock an account. */
+typedef struct {
+    PacketHeader header;
+    char         target_name[32];
+    uint8_t      block;           // nonzero blocks, zero unblocks
+    uint8_t      padding[3];
+} FriendBlockPacket;
+
+/** Ask for the friends list and the pending requests.
+ *
+ * Answered with a FRIEND_LIST_RESPONSE and a FRIEND_REQUESTS_LIST, in that
+ * order. Two packets rather than one because they have unrelated size bounds
+ * and the panel renders them in separate places.
+ */
+typedef struct {
+    PacketHeader header;
+} FriendListRequestPacket;
+
+/** Describe one friend and whether they are playing right now.
+ *
+ * Current status only. There is no "last seen" and no "last world": the game
+ * keeps no history of where somebody used to be, so a panel claiming to show
+ * one would be showing something invented. A friend is online on a world, or
+ * they are offline.
+ *
+ * `name` is the character the account was last seen playing, and is what
+ * identifies the row -- including for an offline friend, who has no live
+ * character to be named after. It is also the name the panel's commands take,
+ * so what is displayed is what can be typed back.
+ */
+typedef struct {
+    uint32_t account_id;
+    uint32_t world_id;       // 0 when offline
+    char     name[32];
+    uint8_t  online;
+    uint8_t  padding[3];
+} FriendWireEntry;           // 44 bytes
+
+/** Return the whole friends list. */
+typedef struct {
+    PacketHeader    header;
+    uint8_t         count;
+    uint8_t         padding[3];
+    FriendWireEntry friends[MAX_FRIENDS_PER_PACKET];
+} FriendListResponsePacket;
+
+/** Describe one request waiting to be answered. */
+typedef struct {
+    uint32_t from_account;
+    char     from_name[32];  // their last known character; "" when never seen
+    int64_t  created_at;     // unix seconds, mmo_htonll
+} FriendRequestWireEntry;    // 44 bytes
+
+/** Return every request waiting for this player. */
+typedef struct {
+    PacketHeader           header;
+    uint8_t                count;
+    uint8_t                padding[3];
+    FriendRequestWireEntry requests[MAX_FRIEND_REQUESTS_PER_PACKET];
+} FriendRequestsListPacket;
+
+/** Announce one request that has just arrived.
+ *
+ * A convenience over re-sending the whole list, and never the record: the panel
+ * reads pending requests through the server when it opens rather than trusting
+ * that this arrived. A dropped notify costs a popup, not a request.
+ */
+typedef struct {
+    PacketHeader header;
+    uint32_t     from_account;
+    char         from_name[32];
+} FriendRequestNotifyPacket;
+
+/** Announce that a friend came online, changed character, or left. */
+typedef struct {
+    PacketHeader header;
+    uint32_t     account_id;
+    uint32_t     world_id;      // 0 when offline
+    char         name[32];      // the character they are now on; "" when offline
+    uint8_t      online;
+    uint8_t      padding[3];
+} FriendPresenceUpdatePacket;
+
+/** Report the outcome of a friend action.
+ *
+ * `subject_name` echoes the name the player typed, so a client with two actions
+ * in flight can attribute the answer without holding a request id.
+ */
+typedef struct {
+    PacketHeader header;
+    uint8_t      action;        // FriendActionId
+    uint8_t      result;        // FriendWireResult
+    uint8_t      padding[2];
+    char         subject_name[32];
+} FriendOpResultPacket;
+
+_Static_assert(sizeof(FriendWireEntry) == 44,
+               "FriendWireEntry must stay 52 bytes on every target");
+_Static_assert(sizeof(FriendRequestWireEntry) == 44,
+               "FriendRequestWireEntry must stay 44 bytes on every target");
+_Static_assert(sizeof(FriendListResponsePacket) <= 8192,
+               "FriendListResponsePacket must fit inside MAX_PACKET_SIZE");
+_Static_assert(sizeof(FriendRequestsListPacket) <= 8192,
+               "FriendRequestsListPacket must fit inside MAX_PACKET_SIZE");
 
 /** Convert 64-bit integers to and from network order without platform-name collisions.
  *

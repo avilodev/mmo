@@ -134,6 +134,7 @@ static void process_packet(const char* data, int length) {
     if (net_dispatch_combat(type, data, length))    return;
     if (net_dispatch_session(type, data, length))   return;
     if (net_dispatch_inventory(type, data, length)) return;
+    if (net_dispatch_friends(type, data, length))   return;
 
     NET_WARN("[NET] Unknown packet type: %d (0x%02X)\n", type, type);
 }
@@ -472,6 +473,22 @@ void network_update(void) {
         return;
     }
 
+    /* Why the link has to come down, recorded rather than acted on.
+     *
+     * These three paths used to call drop_link() and return from here, which
+     * threw away every complete packet already sitting in the reassembly
+     * buffer -- drop_link() clears recv_len, and the dispatch loop below never
+     * ran. A server that says why it is closing and then closes produces
+     * exactly that ordering: the read that delivers PACKET_DISCONNECT is
+     * followed by the read that reports the FIN, in this same call. So the
+     * one packet whose entire purpose is to explain the disconnect was the one
+     * packet guaranteed to be discarded, and every close -- a version refusal,
+     * a kick, a shutdown notice, an expired session -- reached the player as
+     * "the server closed the connection". The reason is dispatched first now,
+     * and the link comes down afterwards. */
+    const char* drop_reason = NULL;
+    char        drop_reason_buf[64];
+
     // Read as much as we can into the reassembly buffer
     while (1) {
         int space = (int)sizeof(g_net.recv_buf) - g_net.recv_len;
@@ -483,8 +500,8 @@ void network_update(void) {
             g_net.recv_len += bytes;
             NET_LOG("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_net.recv_len);
         } else if (bytes == 0) {
-            drop_link("Server closed connection");
-            return;
+            drop_reason = "Server closed connection";
+            break;
         } else {
             /* On the TLS link the two negative cases have to be told apart
              * here, because WSAGetLastError() describes the descriptor and a
@@ -495,16 +512,15 @@ void network_update(void) {
              * believing it was connected. */
             if (net_tls_active()) {
                 if (bytes == NET_TLS_AGAIN) break;
-                drop_link("TLS session failed");
-                return;
+                drop_reason = "TLS session failed";
+                break;
             }
 
             int err = WSAGetLastError();
             if (err == WSAEWOULDBLOCK) break;
-            char reason[64];
-            snprintf(reason, sizeof(reason), "Socket error: %d", err);
-            drop_link(reason);
-            return;
+            snprintf(drop_reason_buf, sizeof(drop_reason_buf), "Socket error: %d", err);
+            drop_reason = drop_reason_buf;
+            break;
         }
     }
 
@@ -563,6 +579,11 @@ void network_update(void) {
             g_net.recv_len = 0;
         }
     }
+
+    /* Now that everything the server managed to send has been dispatched. A
+     * PACKET_DISCONNECT among it has already recorded its reason, which is
+     * what network_get_disconnect_reason() hands to the UI. */
+    if (drop_reason) drop_link(drop_reason);
 }
 
 /**

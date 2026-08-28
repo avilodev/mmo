@@ -130,4 +130,13 @@ void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot);
 
 void network_send_session_list_request(uint16_t page);
 
+/* Friends. Every one of these names a character; the server resolves that to
+ * the account behind it, because friendships are between accounts and a player
+ * only ever knows their friends by the character they are playing. */
+void network_send_friend_request(const char* target_name);
+void network_send_friend_respond(const char* from_name, int accept);
+void network_send_friend_remove(const char* target_name);
+void network_send_friend_block(const char* target_name, int block);
+void network_send_friend_list_request(void);
+
 #endif // NETWORK_H

@@ -12,8 +12,9 @@
  * This exists because packet dispatch used to be one 1,500-line switch with
  * about seventy cases in a single 3,100-line file: session handshakes, item
  * moves, damage numbers, and party rosters all in one function. The cases are
- * now grouped by domain into net_session.c, net_world.c, net_combat.c, and
- * net_inventory.c, and this header is the small amount of state they share.
+ * now grouped by domain into net_session.c, net_world.c, net_combat.c,
+ * net_inventory.c and net_friends.c, and this header is the small amount of
+ * state they share.
  */
 
 #include "network.h"
@@ -228,5 +229,6 @@ int net_dispatch_session(uint8_t type, const char* data, int length);
 int net_dispatch_world(uint8_t type, const char* data, int length);
 int net_dispatch_combat(uint8_t type, const char* data, int length);
 int net_dispatch_inventory(uint8_t type, const char* data, int length);
+int net_dispatch_friends(uint8_t type, const char* data, int length);
 
 #endif // NET_INTERNAL_H

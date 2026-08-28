@@ -445,9 +445,29 @@ NetConnectPhase network_connect_poll(void) {
     }
 
     /* A socket the server closed during the handshake shows up here, because
-     * network_update() clears `connected` when the peer goes away. */
+     * network_update() clears `connected` when the peer goes away.
+     *
+     * Prefer what the server said over the fact that it hung up. A realm that
+     * refuses a handshake sends PACKET_DISCONNECT with a reason and a sentence
+     * for the player -- "This client is a different version than the server.
+     * Please update." is the one that matters here, because a stale client
+     * binary is otherwise indistinguishable from a realm that is down. That
+     * sentence was reaching the client and being replaced by this generic
+     * line, so the player saw a world list stuck on "Loading..." and nothing
+     * that said to rebuild. */
     if (!g_net.connected) {
-        finish_failed("The server closed the connection during the handshake");
+        uint8_t reason = 0;
+        char    said[128] = {0};
+
+        if (network_get_disconnect_reason(&reason, said, (int)sizeof(said)) && said[0]) {
+            char why[128];
+            snprintf(why, sizeof(why), "%.100s", said);
+            finish_failed(why);
+        } else if (reason == DISCONNECT_REASON_VERSION) {
+            finish_failed("This client is a different version than the server. Please update.");
+        } else {
+            finish_failed("The server closed the connection during the handshake");
+        }
         return NET_CONNECT_FAILED;
     }
 

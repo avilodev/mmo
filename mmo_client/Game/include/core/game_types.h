@@ -10,6 +10,7 @@
 #include "combat_state.h"
 #include "ui/quest_log.h"
 #include "ui/currency_panel.h"
+#include "ui/friends_panel.h"
 typedef struct GameState GameState;
 typedef struct CharacterScreenState CharacterScreenState;
 typedef struct WorldState WorldState;
@@ -541,6 +542,7 @@ typedef struct {
     /** Gameplay UI subsystem state. */
     ChatState         chat;
     PartyState        party;
+    FriendsState      friends;
     ShopState         shop;
     QuestLogState     quest_log;
     CurrencyPanelState currency_panel;

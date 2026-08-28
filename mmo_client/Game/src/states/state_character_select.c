@@ -15,6 +15,17 @@
 #include <winsock2.h>
 #include "core/client_log.h"
 
+/** Seconds to hold off an automatic character-list retry after an attempt.
+ *
+ * The realm prices a character list at 5 query tokens against a bucket that
+ * holds 20 and refills at 8/s, and it closes a connection that is refused 20
+ * times in 10 seconds. One attempt per hold-off cannot reach either limit.
+ */
+#define CHAR_LIST_RETRY_SECONDS 2.0f
+
+/** Time left before the character list may be asked for again, in seconds. */
+static float s_char_list_retry_in = 0.0f;
+
 /** The identifier of the world the player picked, or 0 when none is valid.
  *
  * Every use of server_list.selected_index goes through this. Two of the three
@@ -48,6 +59,7 @@ static void char_select_enter(GameState* game) {
     memset(game->char_select.new_name, 0, sizeof(game->char_select.new_name));
     memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
     game->net_state = NET_STATE_IDLE;
+    s_char_list_retry_in = 0.0f;   /* the first attempt is immediate */
 }
 
 static void char_select_exit(GameState* game) {
@@ -100,6 +112,8 @@ static void resolve_stalled_request(GameState* game, float delta_time,
  * @param delta_time  Elapsed frame time in seconds.
  */
 static void char_select_update(GameState* game, float delta_time) {
+    if (s_char_list_retry_in > 0.0f) s_char_list_retry_in -= delta_time;
+
     resolve_stalled_request(game, delta_time,
                             game->char_select.error_message,
                             sizeof(game->char_select.error_message));
@@ -169,12 +183,29 @@ static void char_select_update(GameState* game, float delta_time) {
     // State machine
     switch (game->net_state) {
         case NET_STATE_IDLE: {
+            /* Held off between attempts, not retried on the very next frame.
+             *
+             * resolve_stalled_request() returns to this state on a refusal or
+             * a timeout, and the only condition guarding the request is
+             * `!loaded` -- which a refused request never changes. So a realm
+             * that answered PACKET_RATE_LIMITED got the same request back one
+             * frame later, sixty times a second, until it had refused twenty
+             * of them and closed the connection for abuse. The client then
+             * reconnected, walked back to this screen, and did it again. It is
+             * the same defect state_server_list.c was fixed for; the hold-off
+             * here is that fix, in the shape this screen needs -- the list is
+             * fetched once, not on an interval.
+             *
+             * Armed on both outcomes, so a request that could not even be sent
+             * waits too. */
             uint32_t world_id = char_select_world_id(game);
-            if (!game->char_select.loaded && world_id != 0) {
+            if (!game->char_select.loaded && world_id != 0 &&
+                s_char_list_retry_in <= 0.0f) {
                 if (network_request_character_list(world_id)) {
                     game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
                     game->net_wait_seconds = 0.0f;
                 }
+                s_char_list_retry_in = CHAR_LIST_RETRY_SECONDS;
             }
             break;
         }
