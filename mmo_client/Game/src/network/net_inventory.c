@@ -208,14 +208,18 @@ int net_dispatch_inventory(uint8_t type, const char* data, int length) {
                             break;
                         }
                     }
-                    if (g_current_game->inventory) {
-                        uint32_t item_id = ntohl(pkt->item_id);
-                        uint8_t slot = pkt->inventory_slot;
-                        if (slot < INVENTORY_SIZE) {
-                            g_current_game->inventory->slots[slot].template_id = item_id;
-                            g_current_game->inventory->slots[slot].quantity = pkt->quantity;
-                        }
-                    }
+                    /* The bag is not written from here.
+                     *
+                     * This used to set the named slot to the item and to
+                     * `quantity`, which is how many units the pickup added --
+                     * not what the stack now holds. On a pickup that topped up
+                     * a stack the player was already carrying, that wrote the
+                     * wrong number into the right slot; before the server
+                     * started naming the stack it merged into, it wrote a
+                     * whole phantom item into an empty one. The authoritative
+                     * INVENTORY_UPDATE for every slot the pickup touched
+                     * arrives immediately behind this packet and is the only
+                     * thing that should be believed. */
                 }
             }
             break;

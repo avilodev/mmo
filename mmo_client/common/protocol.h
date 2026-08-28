@@ -1659,7 +1659,7 @@ typedef struct {
 /** Bound the friends carried by one list packet.
  *
  * Equal to MAX_FRIENDS in social_database.h, so a full list is always one
- * packet and the client never has to page. 100 * 52 bytes plus the header sits
+ * packet and the client never has to page. 100 * 44 bytes plus the header sits
  * comfortably inside MAX_PACKET_SIZE; the static assert below is what keeps it
  * that way if the entry ever grows.
  */
@@ -1829,7 +1829,7 @@ typedef struct {
 } FriendOpResultPacket;
 
 _Static_assert(sizeof(FriendWireEntry) == 44,
-               "FriendWireEntry must stay 52 bytes on every target");
+               "FriendWireEntry must stay 44 bytes on every target");
 _Static_assert(sizeof(FriendRequestWireEntry) == 44,
                "FriendRequestWireEntry must stay 44 bytes on every target");
 _Static_assert(sizeof(FriendListResponsePacket) <= 8192,
