@@ -271,6 +271,21 @@ int  character_update_full_data(const void* info) { (void)info; return 1; }
 /** Stub party disconnect cleanup. */
 void party_handle_disconnect(uint32_t c) { (void)c; }
 
+/* The friends hooks net_loop.c calls on entry and exit.
+ *
+ * The real ones are world_server/src/friends.c, which pulls in the friend bus,
+ * the presence cache and Redis -- none of which the reactor contract this file
+ * measures has anything to do with. Stubbed rather than linked for the same
+ * reason party_handle_disconnect() above is.
+ */
+void world_friends_player_entered(uint32_t account_id, uint32_t character_id,
+                                  const char* character_name) {
+    (void)account_id; (void)character_id; (void)character_name;
+}
+void world_friends_player_left(uint32_t account_id, uint32_t character_id) {
+    (void)account_id; (void)character_id;
+}
+
 /** Validate framing and record one dispatched packet. */
 int process_packet(int fd, uint32_t character_id, int player_slot,
                    ssize_t bytes, uint8_t* buffer) {
