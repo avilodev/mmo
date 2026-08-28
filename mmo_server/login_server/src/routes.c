@@ -40,7 +40,7 @@ void route_packet(int client_fd, void* packet_data, ssize_t bytes) {
             } else {
                 LOG_ERROR_RL(10, 60, "Invalid login packet size: %zd", bytes);
             }
-            break; 
+            break;
             
         case PACKET_START_GAME_REQUEST:
             LOG_DEBUG("-> Handling START_GAME_REQUEST (session creation)");
