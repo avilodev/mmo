@@ -213,6 +213,107 @@ int main(void) {
     printf("  instance %llu moved slot 0 -> 40, id unchanged\n",
            (unsigned long long)id_before);
 
+    printf("\nTEST 3b: two items exchanging slots still saves\n");
+    /* The whole layout is written as one statement, so a swap passes through a
+     * state where two rows claim one slot. UNIQUE(character_id, slot) is
+     * checked per row unless it is deferred, so this used to fail the entire
+     * transaction -- taking the scalars and the currency down with it -- and
+     * because the database kept the old layout it then failed identically on
+     * every save afterwards. One drag of an item onto an occupied slot and
+     * that character never persisted again. Migration 2 defers the check to
+     * COMMIT; this is what says so.
+     *
+     * Slots 40 and 2 both hold something at this point: 40 from the move above
+     * and 2 from the fixture. */
+    assert(inv[40].instance_id != 0 && inv[2].instance_id != 0);
+    uint64_t swap_a = inv[40].instance_id;
+    uint64_t swap_b = inv[2].instance_id;
+    assert(swap_a != swap_b);
+
+    /* Not inventory_move(): these two are different items, so a merge would
+     * not happen anyway, but naming the swap directly is what the test is
+     * about. */
+    ItemInstance tmp_swap = inv[40];
+    inv[40] = inv[2];
+    inv[2]  = tmp_swap;
+
+    save_and_reload();
+    assert(loaded_inv[40].instance_id == swap_b);
+    assert(loaded_inv[2].instance_id  == swap_a);
+    expect_same(inv, loaded_inv, INVENTORY_SLOTS, "inventory");
+    printf("  instances %llu and %llu exchanged slots 40 and 2\n",
+           (unsigned long long)swap_a, (unsigned long long)swap_b);
+
+    /* Put them back, so the cases below see the layout they were written
+     * against. This is a second swap, and it has to save too. */
+    tmp_swap = inv[40];
+    inv[40]  = inv[2];
+    inv[2]   = tmp_swap;
+    save_and_reload();
+    assert(loaded_inv[40].instance_id == swap_a);
+    printf("  and swapped back, which is a second save through the same path\n");
+
+    printf("\nTEST 3c: a three-way rotation saves too\n");
+    /* A swap is the two-element case. Nothing about the fix is special to two,
+     * and a rotation is what a player dragging items around actually produces.
+     * Slots 40, 2 and 1 are the three the fixture leaves occupied. */
+    assert(inv[1].instance_id != 0);
+    uint64_t rot_a = inv[40].instance_id;
+    uint64_t rot_b = inv[2].instance_id;
+    uint64_t rot_c = inv[1].instance_id;
+
+    ItemInstance carry = inv[40];
+    inv[40] = inv[2];
+    inv[2]  = inv[1];
+    inv[1]  = carry;
+
+    save_and_reload();
+    assert(loaded_inv[40].instance_id == rot_b);
+    assert(loaded_inv[2].instance_id  == rot_c);
+    assert(loaded_inv[1].instance_id  == rot_a);
+    expect_same(inv, loaded_inv, INVENTORY_SLOTS, "inventory");
+    printf("  three instances rotated through slots 40, 2 and 1\n");
+
+    /* Rotate back the other way, restoring the fixture layout for the cases
+     * below. This is a third save through the same path. */
+    carry   = inv[1];
+    inv[1]  = inv[2];
+    inv[2]  = inv[40];
+    inv[40] = carry;
+    save_and_reload();
+    assert(loaded_inv[40].instance_id == rot_a);
+    assert(loaded_inv[2].instance_id  == rot_b);
+    assert(loaded_inv[1].instance_id  == rot_c);
+
+    printf("\nTEST 3d: a bag slot and a worn slot exchanging saves\n");
+    /* Equipping over gear you are already wearing is the other way a player
+     * reaches this, and the two arrays are written by the same statement -- the
+     * equipment slots simply sit at EQUIP_SLOT_BASE. The constraint does not
+     * care which array a row came from. */
+    assert(equip[EQUIP_HELMET].instance_id != 0);
+    uint64_t worn   = equip[EQUIP_HELMET].instance_id;
+    uint64_t bagged = inv[40].instance_id;
+
+    ItemInstance swap_tmp   = inv[40];
+    inv[40]                 = equip[EQUIP_HELMET];
+    equip[EQUIP_HELMET]     = swap_tmp;
+
+    save_and_reload();
+    assert(loaded_inv[40].instance_id            == worn);
+    assert(loaded_equip[EQUIP_HELMET].instance_id == bagged);
+    expect_same(inv, loaded_inv, INVENTORY_SLOTS, "inventory");
+    expect_same(equip, loaded_equip, EQUIP_SLOTS, "equipment");
+    printf("  instance %llu moved from the helmet slot into bag slot 40\n",
+           (unsigned long long)worn);
+
+    /* And back, so TEST 4 onwards sees the fixture it was written against. */
+    swap_tmp            = inv[40];
+    inv[40]             = equip[EQUIP_HELMET];
+    equip[EQUIP_HELMET] = swap_tmp;
+    save_and_reload();
+    assert(loaded_equip[EQUIP_HELMET].instance_id == worn);
+    assert(loaded_inv[40].instance_id             == bagged);
+
     printf("\nTEST 4: consumed items are deleted, not left behind\n");
     uint64_t doomed = inv[1].instance_id;
     assert(doomed != 0);

@@ -200,6 +200,78 @@ static const SchemaMigration character_migrations[] = {
          * that recreated empty columns would be a lie about what it restored. */
         .down = NULL,
     },
+    {
+        .version = 2,
+        .name    = "defer the item slot uniqueness check to commit",
+        .up =
+            /* UNIQUE(character_id, slot) was checked per row, which made a
+             * routine inventory swap unsaveable.
+             *
+             * save_items_tx() writes the character's whole slot layout as one
+             * statement. When two items exchange slots it writes the first
+             * into a slot the second has not yet vacated, and a non-deferrable
+             * unique constraint rejects that the moment the row is written --
+             * even though the layout the statement ends on is perfectly
+             * unique. The whole save transaction then rolled back, taking the
+             * scalars and the currency with it, and because the database kept
+             * the old layout the *next* save collided in exactly the same way.
+             * One drag of an item onto an occupied slot, or one equip over
+             * worn gear, and that character never persisted anything again.
+             *
+             * Deferring the check to COMMIT is the whole fix: the constraint
+             * still holds, it is simply asked about the state the transaction
+             * ends in rather than the states it passes through. Every write
+             * path here already runs inside a transaction (character_items_save
+             * and character_save_all both BEGIN/COMMIT), so INITIALLY DEFERRED
+             * takes effect without any of them changing, and a genuine
+             * duplicate is still refused -- at COMMIT, which tx_exec checks.
+             *
+             * The constraint is not an ON CONFLICT arbiter anywhere (the
+             * upsert arbitrates on instance_id, the primary key), which is
+             * what makes deferring it possible at all: PostgreSQL will not
+             * infer a deferrable constraint as an arbiter index.
+             *
+             * Written as a lookup rather than a literal DROP CONSTRAINT
+             * because the name depends on how the table was created: the
+             * baseline's inline UNIQUE produces
+             * character_items_character_id_slot_key, and a database that has
+             * already run this step has the explicit name below. Matching on
+             * the column set covers both, and re-running finds it deferrable
+             * and does nothing. */
+            "DO $$ "
+            "DECLARE "
+            "  con    name; "
+            "  is_def boolean; "
+            "BEGIN "
+            "  SELECT c.conname, c.condeferrable "
+            "    INTO con, is_def "
+            "    FROM pg_constraint c "
+            "   WHERE c.conrelid = 'character_items'::regclass "
+            "     AND c.contype  = 'u' "
+            "     AND (SELECT array_agg(a.attname::text ORDER BY a.attname) "
+            "            FROM unnest(c.conkey) k "
+            "            JOIN pg_attribute a "
+            "              ON a.attrelid = c.conrelid AND a.attnum = k) "
+            "         = ARRAY['character_id','slot'] "
+            "   LIMIT 1; "
+            "  IF con IS NOT NULL AND is_def THEN RETURN; END IF; "
+            "  IF con IS NOT NULL THEN "
+            "    EXECUTE format('ALTER TABLE character_items DROP CONSTRAINT %I', con); "
+            "  END IF; "
+            "  ALTER TABLE character_items "
+            "    ADD CONSTRAINT character_items_owner_slot_unique "
+            "    UNIQUE (character_id, slot) DEFERRABLE INITIALLY DEFERRED; "
+            "END $$;",
+
+        /* Reversible: the same constraint, checked immediately again. Kept
+         * because rolling this back loses nothing but the fix. */
+        .down =
+            "ALTER TABLE character_items "
+            "  DROP CONSTRAINT IF EXISTS character_items_owner_slot_unique;"
+            "ALTER TABLE character_items "
+            "  ADD CONSTRAINT character_items_character_id_slot_key "
+            "  UNIQUE (character_id, slot);",
+    },
 };
 
 
@@ -1279,6 +1351,14 @@ static void arraybuf_free(ArrayBuf* b) { free(b->buf); b->buf = NULL; }
  * The caller owns the transaction. Split out of character_items_save() so the
  * same statements can run inside a transaction that also carries the scalar
  * and currency writes -- see character_save_all().
+ *
+ * The transaction is not only for atomicity. UNIQUE(character_id, slot) is
+ * DEFERRABLE INITIALLY DEFERRED (migration 2) because the upsert below writes
+ * a whole slot layout in one statement and passes through states where two
+ * rows briefly claim one slot -- a swap does exactly that. Deferred means the
+ * check runs at COMMIT, on the layout the statement ends in. Running these
+ * statements outside a transaction would take that back and make every
+ * inventory swap unsaveable again.
  *
  * Two statements, whatever the character is carrying: one DELETE for the
  * instances that are gone, and one INSERT ... ON CONFLICT for the ones that
