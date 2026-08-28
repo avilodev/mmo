@@ -862,7 +862,16 @@ void* combat_update_thread(void* arg) {
         long drift_ns = (now.tv_sec - next_tick.tv_sec) * 1000000000 +
                         (now.tv_nsec - next_tick.tv_nsec);
         if (drift_ns > 10000000) {
-            LOG_INFO("[WARNING] Combat thread lagging by %ldms", drift_ns / 1000000);
+            /* One line per late tick, so a world that is genuinely behind wrote
+             * twenty a second -- the loudest thing in the file at exactly the
+             * moment its history mattered most. Rate limited to five a minute:
+             * the suppressed count that rides along says how many of that
+             * minute's 1200 ticks were late, which is the number worth reading,
+             * and a lag that outlasts the window still reports every window.
+             * LOG_WARN because the text always said WARNING; at info it went to
+             * stdout and vanished from a warn-level filter. */
+            LOG_WARN_RL(5, 60, "[WARNING] Combat thread lagging by %ldms",
+                        drift_ns / 1000000);
         }
     }
 
