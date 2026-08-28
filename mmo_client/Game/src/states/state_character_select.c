@@ -26,6 +26,40 @@
 /** Time left before the character list may be asked for again, in seconds. */
 static float s_char_list_retry_in = 0.0f;
 
+/* --- Retrying a refused world entry --------------------------------------
+ *
+ * The realm answers a request it could not afford with PACKET_RATE_LIMITED,
+ * carrying the milliseconds until it could. Nothing used that number: the
+ * request was abandoned, an error was put on screen, and the player was left
+ * to click the character again. Entering a world always follows something else
+ * -- a character list, and usually a character creation, which costs the
+ * realm's whole burst allowance -- so the first click was routinely the one
+ * that got refused. Every world entry in the client log was preceded by
+ * exactly one refusal, roughly a second before it.
+ *
+ * Waiting out the delay the server named and sending the same request again is
+ * what the field is for. Once only: a second refusal means something other
+ * than a bucket that had not refilled, and telling the player is then the
+ * right answer.
+ */
+
+/** Seconds until the refused world entry is resent; 0 when none is pending. */
+static float    s_enter_retry_in = 0.0f;
+
+/** The request to resend, captured when it was first sent. */
+static uint32_t s_enter_retry_char_id  = 0;
+static uint32_t s_enter_retry_world_id = 0;
+
+/** Nonzero once this screen has already retried; reset on entry. */
+static int      s_enter_retried = 0;
+
+/** Margin added to the server's advertised delay, in seconds.
+ *
+ * The delay names the moment the bucket reaches the cost exactly, and the two
+ * clocks are not the same clock. Landing a frame early would spend the retry
+ * on another refusal. */
+#define ENTER_RETRY_MARGIN_SECONDS 0.15f
+
 /** The identifier of the world the player picked, or 0 when none is valid.
  *
  * Every use of server_list.selected_index goes through this. Two of the three
@@ -60,6 +94,14 @@ static void char_select_enter(GameState* game) {
     memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
     game->net_state = NET_STATE_IDLE;
     s_char_list_retry_in = 0.0f;   /* the first attempt is immediate */
+
+    /* A world entry left half-retried belongs to the visit that started it.
+     * Carrying one into a fresh visit would fire a request for a character on
+     * a world the player may no longer have selected. */
+    s_enter_retry_in       = 0.0f;
+    s_enter_retry_char_id  = 0;
+    s_enter_retry_world_id = 0;
+    s_enter_retried        = 0;
 }
 
 static void char_select_exit(GameState* game) {
@@ -92,6 +134,30 @@ static void resolve_stalled_request(GameState* game, float delta_time,
     uint16_t retry_ms      = 0;
 
     if (network_get_rate_limit_notice(&rejected_type, &retry_ms)) {
+        /* A world entry the realm could not afford is resent once, after the
+         * delay it named, rather than handed back to the player as an error
+         * they have to answer with another click. */
+        if (rejected_type == PACKET_ENTER_WORLD &&
+            game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD &&
+            !s_enter_retried) {
+
+            s_enter_retry_in       = retry_ms / 1000.0f + ENTER_RETRY_MARGIN_SECONDS;
+            s_enter_retry_char_id  = game->pending_character_id;
+            s_enter_retry_world_id = game->pending_world_id;
+            s_enter_retried        = 1;
+
+            /* Back to idle so nothing waits on a response that will never
+             * come; the retry below is what carries the request. The screen
+             * keeps saying "Entering world...", because from the player's side
+             * that is exactly what is still happening. */
+            game->net_state        = NET_STATE_IDLE;
+            game->net_wait_seconds = 0.0f;
+
+            CLOG_INFO("[CHAR_SELECT] World entry refused for %ums; resending once",
+                      (unsigned)retry_ms);
+            return;
+        }
+
         game->net_state        = NET_STATE_IDLE;
         game->net_wait_seconds = 0.0f;
         snprintf(error_out, error_size,
@@ -117,6 +183,39 @@ static void char_select_update(GameState* game, float delta_time) {
     resolve_stalled_request(game, delta_time,
                             game->char_select.error_message,
                             sizeof(game->char_select.error_message));
+
+    /* Resend a world entry the realm refused, once its stated delay is up.
+     *
+     * Only from idle: the player may have gone somewhere else in the meantime
+     * -- into the creation panel, or back to the world list -- and a request
+     * fired into the middle of that would answer a screen nobody is on. */
+    if (s_enter_retry_in > 0.0f) {
+        s_enter_retry_in -= delta_time;
+
+        if (s_enter_retry_in <= 0.0f) {
+            s_enter_retry_in = 0.0f;
+
+            if (game->net_state == NET_STATE_IDLE && s_enter_retry_world_id != 0 &&
+                network_request_enter_world(s_enter_retry_char_id,
+                                            s_enter_retry_world_id)) {
+                game->pending_character_id = s_enter_retry_char_id;
+                game->pending_world_id     = s_enter_retry_world_id;
+                game->net_state            = NET_STATE_WAITING_FOR_ENTER_WORLD;
+                game->net_wait_seconds     = 0.0f;
+                CLOG_INFO("[CHAR_SELECT] Resent the world entry for character %u",
+                          s_enter_retry_char_id);
+            } else {
+                /* Could not be sent, or the player moved on. Say so rather
+                 * than leaving the screen claiming it is still entering. */
+                snprintf(game->char_select.error_message,
+                         sizeof(game->char_select.error_message),
+                         "Could not enter the world - please try again");
+            }
+
+            s_enter_retry_char_id  = 0;
+            s_enter_retry_world_id = 0;
+        }
+    }
 
     // Handle deferred character creation
     if (game->char_select.pending_create) {
@@ -564,7 +663,10 @@ static void char_select_render(GameState* game) {
         float item_h = 60;
         float item_spacing = 10;
 
-        int is_busy = (game->net_state != NET_STATE_IDLE);
+        /* A pending retry counts as busy. Without it the screen invites the
+         * very click this whole path exists to make unnecessary, and the two
+         * requests would race for one ticket. */
+        int is_busy = (game->net_state != NET_STATE_IDLE) || (s_enter_retry_in > 0.0f);
 
         for (int i = 0; i < game->char_select.list.count && i < 10; i++) {
             float y = item_y + i * (item_h + item_spacing);
@@ -639,7 +741,10 @@ static void char_select_render(GameState* game) {
     }
 
     // Loading indicator
-    if (game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD) {
+    if (game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD || s_enter_retry_in > 0.0f) {
+        /* Shown across the retry as well. The request is in the air either
+         * way, and a screen that went blank between the refusal and the resend
+         * would be the same invitation to click again that the refusal was. */
         renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.2f, 0.6f, 0.8f, 0.9f);
         renderer_draw_text(panel_x + 220, panel_y + 230, "Entering world...");
     } else if (game->net_state == NET_STATE_DELETING_CHARACTER) {
