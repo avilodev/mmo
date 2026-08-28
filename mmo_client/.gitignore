@@ -56,6 +56,9 @@ mmo_server
 
 # Logs, dumps, and temporary files
 *.log
+# core/client_log.c rotates to client.log.1, .2, .3, which *.log does not match.
+*.log.[0-9]*
+Game/logs/
 *.dump
 *.tmp
 *.swp
