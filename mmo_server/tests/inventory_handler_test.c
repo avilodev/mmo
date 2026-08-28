@@ -1,6 +1,7 @@
 /**
  * @file
- * Check the five inventory packet handlers: equip, unequip, use, drop, move.
+ * Check the five inventory packet handlers -- equip, unequip, use, drop, move
+ * -- and the name-query route that shares packet_handler.c with them.
  *
  * These are the handlers that move a player's belongings, and they had no
  * coverage at all. Each one takes a slot index straight off the wire and
@@ -72,6 +73,15 @@ const int* player_active_list_locked(int* n) { if (n) *n = 1; return g_slots; }
 
 uint32_t player_find_by_name(const char* name) { (void)name; return 0; }
 void player_send_data_response(int fd, uint32_t c) { (void)fd; (void)c; }
+
+/** The block index, which only the party-invite route in this file consults.
+ *
+ * Nothing here is blocked; friends.c pulls in the friend bus and Redis, and
+ * whether an invite honours a block is world_friends_test's subject.
+ */
+int world_friends_is_blocked(uint32_t blocker, uint32_t subject) {
+    (void)blocker; (void)subject; return 0;
+}
 
 /** Equipment bonuses and the derived-stat packet are their own subjects.
  *
@@ -335,6 +345,47 @@ int main(void) {
     CHECK(me()->inventory[0].item_id == 21, "and stayed in the bag");
 
     /* ---------------------------------------------------------------- */
+    printf("\nTEST 6b: a two-hander displaces the worn off-hand, and says so\n");
+    /* The displacement touches two slots beyond the two an equip normally
+     * changes: the bag slot the off-hand lands in, and the off-hand equipment
+     * slot it left. Those were not in the update, so the client went on drawing
+     * the shield as worn and the bag slot as empty -- and nothing corrected it,
+     * because a successful equip is answered with a stats request and stats
+     * carry no inventory. */
+    reset_player();
+    assert(inventory_add(me()->inventory, 21, 1, 1, 0) == 0);   /* shield  -> slot 0 */
+    send_equip(21, 0, SLOT_OFF_HAND);
+    CHECK(me()->equipment[EQUIP_SECOND_HAND].item_id == 21, "the shield is worn");
+
+    reset_io();
+    assert(inventory_add(me()->inventory, 20, 1, 1, 0) == 0);   /* greatsword -> slot 0 */
+    uint64_t shield_instance = me()->equipment[EQUIP_SECOND_HAND].instance_id;
+    send_equip(20, 0, SLOT_MAIN_HAND);
+
+    CHECK(me()->equipment[EQUIP_MAIN_HAND].item_id == 20, "the greatsword went on");
+    CHECK(me()->equipment[EQUIP_SECOND_HAND].instance_id == 0, "the off-hand was emptied");
+    {
+        int shield_slot = -1;
+        for (int i = 0; i < INVENTORY_SLOTS; i++)
+            if (me()->inventory[i].instance_id == shield_instance) shield_slot = i;
+        CHECK(shield_slot >= 0, "the same shield instance is back in the bag");
+
+        /* Four slots, in any order: the bag slot the sword came from, the main
+         * hand it went to, the bag slot the shield landed in, and the off-hand
+         * it vacated. */
+        int saw_main = 0, saw_off = 0, saw_shield = 0;
+        for (int i = 0; i < g_synced_count; i++) {
+            if (g_synced[i] == EQUIP_SLOT_BASE + EQUIP_MAIN_HAND)   saw_main = 1;
+            if (g_synced[i] == EQUIP_SLOT_BASE + EQUIP_SECOND_HAND) saw_off = 1;
+            if (shield_slot >= 0 && g_synced[i] == (uint16_t)shield_slot) saw_shield = 1;
+        }
+        CHECK(g_synced_count == 4, "four slots were resynchronized, not two");
+        CHECK(saw_main,   "the main hand is among them");
+        CHECK(saw_off,    "the vacated off-hand is among them");
+        CHECK(saw_shield, "and the bag slot the shield moved into");
+    }
+
+    /* ---------------------------------------------------------------- */
     printf("\nTEST 7: unequipping returns the same instance to the first free slot\n");
     reset_player();
     assert(inventory_add(me()->inventory, 10, 1, 1, 0) == 0);
@@ -529,6 +580,68 @@ int main(void) {
     CHECK(me()->inventory[0].quantity == 5, "the bag is untouched");
     CHECK(g_drops == 0, "nothing reached the ground");
     CHECK(g_reply_count == 0, "and nothing was sent back");
+
+    /* ---------------------------------------------------------------- */
+    printf("\nTEST 22: a name query trimmed to the ids asked about is answered\n");
+    /* The client sends offsetof(character_ids) + count * 4, not the whole
+     * 32-entry array -- the same trimming the response uses. The handler
+     * demanded sizeof(NameQueryRequestPacket) and returned without a word for
+     * anything smaller, so unless a client happened to have exactly 32 names
+     * pending, no player ever learned another player's name. */
+    reset_player();
+    snprintf(me()->username, sizeof(me()->username), "%s", "Named");
+    reset_io();
+    {
+        NameQueryRequestPacket req;
+        memset(&req, 0, sizeof(req));
+        req.header.type = PACKET_NAME_QUERY_REQUEST;
+        req.count = 1;
+        req.character_ids[0] = htonl(CHAR_ID);
+
+        size_t trimmed = offsetof(NameQueryRequestPacket, character_ids)
+                       + sizeof(uint32_t);
+        handle_name_query_request(1, (uint8_t*)&req, (ssize_t)trimmed);
+
+        const NameQueryResponsePacket* r = reply_of(PACKET_NAME_QUERY_RESPONSE);
+        CHECK(r != NULL, "a one-name query is answered");
+        if (r) {
+            CHECK(r->count == 1, "with exactly one entry");
+            CHECK(ntohl(r->entries[0].character_id) == CHAR_ID, "naming the id asked about");
+            CHECK(strcmp(r->entries[0].name, "Named") == 0, "and carrying the name");
+        }
+    }
+
+    printf("\nTEST 23: a name query claiming more ids than it carries is clamped\n");
+    /* The count is believed only as far as the bytes that arrived, so a short
+     * packet claiming a full array cannot walk off the end of it. */
+    reset_io();
+    {
+        NameQueryRequestPacket req;
+        memset(&req, 0, sizeof(req));
+        req.header.type = PACKET_NAME_QUERY_REQUEST;
+        req.count = MAX_NAME_QUERY;          /* claims 32 */
+        req.character_ids[0] = htonl(CHAR_ID);
+
+        size_t trimmed = offsetof(NameQueryRequestPacket, character_ids)
+                       + sizeof(uint32_t);   /* carries 1 */
+        handle_name_query_request(1, (uint8_t*)&req, (ssize_t)trimmed);
+
+        const NameQueryResponsePacket* r = reply_of(PACKET_NAME_QUERY_RESPONSE);
+        CHECK(r && r->count == 1, "only the id that actually arrived is read");
+    }
+
+    printf("\nTEST 24: a name query with no room for even one id is dropped\n");
+    reset_io();
+    {
+        NameQueryRequestPacket req;
+        memset(&req, 0, sizeof(req));
+        req.header.type = PACKET_NAME_QUERY_REQUEST;
+        req.count = 4;
+        handle_name_query_request(1, (uint8_t*)&req,
+                                  (ssize_t)offsetof(NameQueryRequestPacket, character_ids));
+        CHECK(reply_of(PACKET_NAME_QUERY_RESPONSE) == NULL,
+              "a request carrying no identifiers is answered with nothing");
+    }
 
     remove(items_path);
     items_cleanup();

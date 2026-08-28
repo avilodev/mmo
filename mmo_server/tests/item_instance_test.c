@@ -214,6 +214,96 @@ int main(void) {
     assert(inv[1].is_bound == 0);
     printf("  bind_on_pickup sets the flag, absence leaves it clear\n");
 
+    printf("\nTEST 9: an add reports the slots it actually touched\n");
+    /* Every caller has to tell the client which slots changed, and each of
+     * them used to answer with inventory_first_free() read before the add --
+     * the right slot only when nothing merged. A pickup that topped up a stack
+     * the player was already carrying named an empty slot instead, so the
+     * client redrew a slot that had not changed and left the one that had. */
+    {
+        uint16_t changed[8];
+        int      n = -1;
+
+        // into an empty bag: one newly opened slot, and it is slot 0
+        reset();
+        assert(inventory_add_tracked(inv, 10, 5, STACK_100, 0,
+                                     changed, 8, &n) == 0);
+        assert(n == 1 && changed[0] == 0);
+        printf("  a fresh stack reports the slot it opened\n");
+
+        // topping that stack up reports the stack, not the next free slot
+        n = -1;
+        assert(inventory_add_tracked(inv, 10, 5, STACK_100, 0,
+                                     changed, 8, &n) == 0);
+        assert(n == 1 && changed[0] == 0);
+        assert(inv[0].quantity == 10);
+        assert(inv[1].instance_id == 0);          // nothing was opened
+        printf("  a merge reports the stack it merged into, not slot 1\n");
+
+        // an add that fills a partial stack AND opens a new one reports both
+        reset();
+        assert(inventory_add(inv, 10, 95, STACK_100, 0) == 0);   // slot 0: 95
+        n = -1;
+        assert(inventory_add_tracked(inv, 10, 30, STACK_100, 0,
+                                     changed, 8, &n) == 0);
+        assert(n == 2 && changed[0] == 0 && changed[1] == 1);
+        assert(inv[0].quantity == 100 && inv[1].quantity == 25);
+        check_invariants();
+        printf("  an add that spans two slots reports both, in the order touched\n");
+
+        // the report is optional and bounded
+        reset();
+        assert(inventory_add_tracked(inv, 10, 5, STACK_100, 0,
+                                     NULL, 0, NULL) == 0);
+        assert(inv[0].quantity == 5);
+        n = -1;
+        assert(inventory_add(inv, 11, 5, STACK_100, 0) == 0);    // plain form still works
+        assert(inventory_add_tracked(inv, 12, 5, STACK_100, 0,
+                                     changed, 0, &n) == 0);
+        assert(n == 0);                            // no room to report, add still happened
+        assert(inventory_count(inv, 12) == 5);
+        printf("  a NULL or zero-length report is accepted and the add still lands\n");
+    }
+
+    printf("\nTEST 10: bound and unbound stacks of one item never merge\n");
+    /* Merging them would move units across the binding boundary in whichever
+     * direction the destination happened to sit -- laundering a bound unit
+     * into a free stack, or binding a free one -- decided by nothing but bag
+     * order. Nothing enforces is_bound yet, so this cannot be exploited today;
+     * it is written this way so that it never can be. */
+    {
+        reset();
+        assert(inventory_add(inv, 10, 5, STACK_100, 1) == 0);    // slot 0: bound
+        assert(inv[0].is_bound == 1);
+
+        // an unbound add of the same item opens its own stack
+        uint16_t changed[4];
+        int n = -1;
+        assert(inventory_add_tracked(inv, 10, 5, STACK_100, 0,
+                                     changed, 4, &n) == 0);
+        assert(n == 1 && changed[0] == 1);
+        assert(inv[0].quantity == 5 && inv[0].is_bound == 1);
+        assert(inv[1].quantity == 5 && inv[1].is_bound == 0);
+        printf("  an unbound add beside a bound stack opens a second stack\n");
+
+        // and a further bound add joins the bound one, not the unbound one
+        n = -1;
+        assert(inventory_add_tracked(inv, 10, 3, STACK_100, 1,
+                                     changed, 4, &n) == 0);
+        assert(n == 1 && changed[0] == 0);
+        assert(inv[0].quantity == 8 && inv[1].quantity == 5);
+        printf("  a bound add finds the bound stack\n");
+
+        // dragging one onto the other swaps rather than merging
+        uint32_t total_bound = inventory_count(inv, 10);
+        assert(inventory_move(inv, 1, 0, STACK_100) == 1);
+        assert(inventory_count(inv, 10) == total_bound);
+        assert(inv[0].is_bound == 0 && inv[0].quantity == 5);
+        assert(inv[1].is_bound == 1 && inv[1].quantity == 8);
+        check_invariants();
+        printf("  a move across the boundary swaps, conserving both stacks\n");
+    }
+
     printf("\nALL ASSERTIONS PASSED\n");
     return 0;
 }

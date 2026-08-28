@@ -194,26 +194,22 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
 
     /* Spend coin only after inventory placement succeeds.
      *
-     * The slot the purchase actually landed in is found by diffing the
-     * inventory across the insert, not by searching for the item id
-     * afterwards. That search returned the *first* slot holding the item,
-     * which is the right answer only while the item sits in exactly one
-     * stack: buy a potion while holding two part-filled stacks and the
-     * response named the wrong one, so the client redrew a slot that had not
-     * changed and left the one that had. */
+     * The slot the purchase landed in comes from the add itself, not from a
+     * search for the item id afterwards. That search returned the *first* slot
+     * holding the item, which is the right answer only while the item sits in
+     * exactly one stack: buy a potion while holding two part-filled stacks and
+     * the response named the wrong one, so the client redrew a slot that had
+     * not changed and left the one that had. */
     const ItemDefinition* buy_def = item_get(item_id);
-    int slot_before = inventory_first_free(p->inventory);
 
-    uint32_t before_qty[INVENTORY_SLOTS];
-    uint64_t before_inst[INVENTORY_SLOTS];
-    for (int i = 0; i < INVENTORY_SLOTS; i++) {
-        before_qty[i]  = p->inventory[i].quantity;
-        before_inst[i] = p->inventory[i].instance_id;
-    }
+    uint16_t changed[MAX_SLOT_UPDATES];
+    int      changed_count = 0;
 
-    uint16_t unplaced = inventory_add(p->inventory, item_id, 1,
-                                      buy_def ? buy_def->max_stack : 1,
-                                      buy_def ? buy_def->bind_on_pickup : 0);
+    uint16_t unplaced = inventory_add_tracked(p->inventory, item_id, 1,
+                                              buy_def ? buy_def->max_stack : 1,
+                                              buy_def ? buy_def->bind_on_pickup : 0,
+                                              changed, MAX_SLOT_UPDATES,
+                                              &changed_count);
     if (unplaced > 0) {
         player_release(p);
         resp.success = 0;
@@ -222,15 +218,7 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
         return;
     }
 
-    int slot = -1;
-    for (int i = 0; i < INVENTORY_SLOTS; i++) {
-        if (p->inventory[i].instance_id != before_inst[i] ||
-            p->inventory[i].quantity    != before_qty[i]) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) slot = slot_before;
+    int slot = changed_count > 0 ? (int)changed[0] : 0;
 
     /* The balance was checked under this same lock, so the debit cannot fail;
      * routing it through the guarded helper keeps that guarantee in one place. */
@@ -256,10 +244,8 @@ void shop_handle_buy(uint32_t character_id, int client_fd, uint8_t* buffer, int 
     server_send(client_fd, &resp, sizeof(resp));
 
     // send the resulting slot quantity after stack merging
-    {
-        uint16_t changed[1] = { (uint16_t)slot };
-        player_send_slot_updates(client_fd, character_id, changed, 1);
-    }
+    if (changed_count > 0)
+        player_send_slot_updates(client_fd, character_id, changed, changed_count);
 
     LOG_DEBUG("[SHOP] Player %u bought item %u for %u %s (slot %d)",
               character_id, item_id, price, coin_name, slot);

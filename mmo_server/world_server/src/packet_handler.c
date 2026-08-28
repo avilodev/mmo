@@ -5,6 +5,7 @@
 
 #include "packet_handler.h"
 #include "str_fixed.h"
+#include "friends.h"
 #include "log.h"
 #include "player_data.h"
 #include "zone_system.h"
@@ -243,7 +244,17 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         return;
     }
 
-    // enforce two-handed and off-hand exclusivity
+    /* Enforce two-handed and off-hand exclusivity.
+     *
+     * Displacing the off-hand touches two slots beyond the two this equip
+     * would otherwise change, and they have to be told to the client with the
+     * rest. They were not, so a two-handed weapon equipped over a shield left
+     * the client drawing the shield still worn and the bag slot it had moved
+     * into still empty -- and nothing later corrected it, because the client
+     * answers a successful equip with a stats request, and stats carry no
+     * inventory. Recorded here and appended to the update below. */
+    int displaced_slot = -1;
+
     if (equip_slot == SLOT_MAIN_HAND && item->is_two_handed &&
         player->equipment[EQUIP_SECOND_HAND].instance_id != 0) {
 
@@ -260,6 +271,7 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
         }
         player->inventory[offhand_slot] = player->equipment[EQUIP_SECOND_HAND];
         memset(&player->equipment[EQUIP_SECOND_HAND], 0, sizeof(ItemInstance));
+        displaced_slot = offhand_slot;
     }
 
     if (equip_slot == SLOT_OFF_HAND &&
@@ -305,11 +317,17 @@ void handle_equip_item(int client_fd, uint32_t character_id, uint8_t* buffer, ss
 
     server_send(client_fd, &response, sizeof(response));
 
-    // synchronize both changed slots
+    // synchronize every slot this equip changed, the displaced off-hand included
     {
-        uint16_t changed[2] = { inventory_slot,
-                                (uint16_t)(EQUIP_SLOT_BASE + equip_index) };
-        player_send_slot_updates(client_fd, character_id, changed, 2);
+        uint16_t changed[4];
+        int n = 0;
+        changed[n++] = inventory_slot;
+        changed[n++] = (uint16_t)(EQUIP_SLOT_BASE + equip_index);
+        if (displaced_slot >= 0) {
+            changed[n++] = (uint16_t)displaced_slot;
+            changed[n++] = (uint16_t)(EQUIP_SLOT_BASE + EQUIP_SECOND_HAND);
+        }
+        player_send_slot_updates(client_fd, character_id, changed, n);
     }
 
     /* Re-resolve the character rather than reusing the released pointer.
@@ -624,17 +642,22 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
 
     // retain merge overflow in the source slot
     const ItemDefinition* moved = item_get(player->inventory[from_slot].item_id);
-    inventory_move(player->inventory, from_slot, to_slot,
-                   moved ? moved->max_stack : 1);
-    player->is_dirty = 1;
+    int moved_ok = inventory_move(player->inventory, from_slot, to_slot,
+                                  moved ? moved->max_stack : 1);
+    if (moved_ok) player->is_dirty = 1;
 
     player_release(player);
 
+    /* Answer with what actually happened. This reported success unconditionally,
+     * including when inventory_move() had refused -- an empty source slot, or a
+     * slot dragged onto itself -- which made the client's own put-it-back path
+     * unreachable and left the player's bag showing a move the server had not
+     * made until some later update happened to overwrite it. */
     MoveItemResponsePacket response = {0};
     response.header.type = PACKET_MOVE_ITEM_RESPONSE;
     response.header.player_id = htonl(character_id);
     response.header.payload_size = htons(sizeof(MoveItemResponsePacket) - sizeof(PacketHeader));
-    response.success = 1;
+    response.success = moved_ok ? 1 : 0;
     response.from_slot = from_slot;
     response.to_slot = to_slot;
 
@@ -646,7 +669,8 @@ void handle_move_item(int client_fd, uint32_t character_id, uint8_t* buffer, ssi
         player_send_slot_updates(client_fd, character_id, changed, 2);
     }
 
-    LOG_DEBUG("Character %u moved item from slot %u to %u", character_id, from_slot, to_slot);
+    LOG_DEBUG("Character %u moved item from slot %u to %u (%s)", character_id,
+              from_slot, to_slot, moved_ok ? "applied" : "refused");
 }
 
 /* Chat lives in chat.c now.
@@ -670,6 +694,7 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     ActivePlayer* inviter = player_acquire(character_id);
     if (!inviter) return;
     uint32_t inviter_party_id = inviter->party_id;
+    uint32_t inviter_account  = inviter->account_id;
     char inviter_name[32];
     strncpy(inviter_name, inviter->username, 31);
     inviter_name[31] = '\0';
@@ -690,6 +715,25 @@ void handle_party_invite(int client_fd, uint32_t character_id, uint8_t* buffer, 
     if (target_id == character_id) {
         LOG_WARN_RL(5, 60, "[PARTY] Invite failed: can't invite yourself");
         return;
+    }
+
+    /* A block covers invitations too. An invite is a popup on somebody's
+     * screen with the sender's name on it, which is the thing a block is for.
+     *
+     * Swallowed rather than refused with a reason, the same way a whisper and
+     * a friend request are: every distinguishable failure tells the sender the
+     * block exists, and a sender who knows makes another account. The inviter
+     * sees exactly what they would see inviting somebody who is not there. */
+    {
+        ActivePlayer* target = player_acquire(target_id);
+        uint32_t target_account = target ? target->account_id : 0;
+        if (target) player_release(target);
+
+        if (world_friends_is_blocked(target_account, inviter_account)) {
+            LOG_DEBUG("[PARTY] account %u is blocked by %u; invite swallowed",
+                      inviter_account, target_account);
+            return;
+        }
     }
 
     /* Advisory: the invitation is only a hint that an accept may succeed, and
@@ -861,12 +905,30 @@ void handle_party_kick(int client_fd, uint32_t character_id, uint8_t* buffer, ss
  * only a name it could have learned by standing next to that player.
  */
 void handle_name_query_request(int client_fd, uint8_t* buffer, ssize_t bytes) {
-    if (bytes < (ssize_t)sizeof(NameQueryRequestPacket)) return;
+    /* Only the fixed part is required, never the whole struct.
+     *
+     * The request is trimmed to the identifiers actually being asked about --
+     * name_cache_flush_requests() sends offsetof(character_ids) + count * 4 --
+     * exactly as the response below is trimmed to the ones it resolved. This
+     * used to demand sizeof(NameQueryRequestPacket), which is the array at its
+     * full 32 entries, so every request smaller than the maximum was dropped
+     * without a word and no player ever learned another player's name.
+     */
+    const ssize_t base = (ssize_t)offsetof(NameQueryRequestPacket, character_ids);
+    if (bytes < base) return;
 
     NameQueryRequestPacket* req = (NameQueryRequestPacket*)buffer;
 
     uint8_t asked = req->count;
     if (asked > MAX_NAME_QUERY) asked = MAX_NAME_QUERY;
+    if (asked == 0) return;
+
+    /* And the count is believed only as far as the bytes that arrived, so a
+     * short packet claiming a full array cannot walk off the end of it. */
+    while (asked > 0 &&
+           bytes < base + (ssize_t)asked * (ssize_t)sizeof(uint32_t)) {
+        asked--;
+    }
     if (asked == 0) return;
 
     NameQueryResponsePacket resp;

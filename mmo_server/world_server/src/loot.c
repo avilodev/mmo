@@ -758,7 +758,12 @@ void loot_handle_pickup_request(uint32_t character_id, int client_fd,
     float dx = player->pos_x - snapshot.pos_x;
     float dy = player->pos_y - snapshot.pos_y;
     float dist = sqrtf(dx * dx + dy * dy);
-    int inv_slot = inventory_first_free(player->inventory);
+    /* An advisory check only, so a full bag is refused before the item is
+     * reserved. It is not where the answer comes from: a pickup that tops up a
+     * stack needs no free slot at all, and the slots that actually changed are
+     * whatever inventory_add_tracked() reports below. */
+    int has_room = inventory_first_free(player->inventory) >= 0 ||
+                   inventory_count(player->inventory, snapshot.item_id) > 0;
     player_release(player);
 
     if (dist > LOOT_PICKUP_RANGE) {
@@ -767,7 +772,7 @@ void loot_handle_pickup_request(uint32_t character_id, int client_fd,
         return;
     }
 
-    if (inv_slot < 0) {
+    if (!has_room) {
         send_pickup_response(client_fd, character_id, ground_item_id, 0, 0, 0, 0,
                              "Inventory full");
         return;
@@ -784,13 +789,17 @@ void loot_handle_pickup_request(uint32_t character_id, int client_fd,
     /* The item is reserved from here on. Every path out of this block either
      * commits it or restores it; none of them may return without doing one. */
     uint16_t stored = 0;
+    uint16_t changed[MAX_SLOT_UPDATES];
+    int      changed_count = 0;
     player = player_acquire(character_id);
     if (player && player->client_fd == client_fd) {
         const ItemDefinition* def = item_get(item_id);
         uint16_t want = quantity ? quantity : 1;
-        uint16_t left = inventory_add(player->inventory, item_id, want,
-                                      def ? def->max_stack : 1,
-                                      def ? def->bind_on_pickup : 0);
+        uint16_t left = inventory_add_tracked(player->inventory, item_id, want,
+                                              def ? def->max_stack : 1,
+                                              def ? def->bind_on_pickup : 0,
+                                              changed, MAX_SLOT_UPDATES,
+                                              &changed_count);
         stored = (uint16_t)(want - left);
         if (stored > 0) {
             /* Rarity is the line. Every kill drops something, and marking each
@@ -818,12 +827,17 @@ void loot_handle_pickup_request(uint32_t character_id, int client_fd,
 
     quest_on_item_collect(character_id, client_fd, item_id);
 
-    send_pickup_response(client_fd, character_id, ground_item_id, 1, item_id,
-                         (uint8_t)stored, (uint8_t)inv_slot, "Item picked up");
+    /* The slot named on the wire is the first one the add touched, which is
+     * the stack the pickup went into -- an existing one it topped up when
+     * there was one, and the newly opened slot when there was not. */
+    uint8_t landed = changed_count > 0 ? (uint8_t)changed[0] : 0;
 
-    // refresh the stack that may have absorbed the pickup
-    uint16_t changed[1] = { (uint16_t)inv_slot };
-    player_send_slot_updates(client_fd, character_id, changed, 1);
+    send_pickup_response(client_fd, character_id, ground_item_id, 1, item_id,
+                         (uint8_t)stored, landed, "Item picked up");
+
+    // refresh every stack the pickup actually touched
+    if (changed_count > 0)
+        player_send_slot_updates(client_fd, character_id, changed, changed_count);
 }
 
 /* --- The tick ------------------------------------------------------------ */

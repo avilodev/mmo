@@ -28,6 +28,30 @@ uint64_t item_instance_next_id(void);
 uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
                        uint16_t max_stack, uint8_t bind_on_pickup);
 
+/** Add items and report every slot the addition touched.
+ *
+ * The same operation as inventory_add(), which is written in terms of this
+ * one. It exists because callers have to tell the client which slots changed,
+ * and every one of them used to answer that with inventory_first_free() read
+ * *before* the add -- which is the right slot only when nothing merged. A
+ * pickup that topped up a stack the player was already carrying named an empty
+ * slot instead, so the client redrew a slot that had not changed and left the
+ * one that had. The function doing the merging is the only thing that knows
+ * where the items went, so it is what says.
+ *
+ * @param changed        Receives touched slot indices, in the order touched;
+ *                       partial stacks first, then newly opened slots. May be
+ *                       NULL to ignore the report.
+ * @param max_changed    Capacity of `changed`.
+ * @param changed_count  Receives how many were written, capped at max_changed.
+ * @return               The quantity that could not fit.
+ */
+uint16_t inventory_add_tracked(ItemInstance* slots, uint32_t item_id,
+                               uint16_t quantity, uint16_t max_stack,
+                               uint8_t bind_on_pickup,
+                               uint16_t* changed, int max_changed,
+                               int* changed_count);
+
 // return the quantity removed and clear exhausted stacks
 uint16_t inventory_remove_at(ItemInstance* slots, int slot, uint16_t quantity);
 

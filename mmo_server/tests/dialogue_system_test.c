@@ -45,9 +45,21 @@ void player_send_slot_updates(int fd, uint32_t c, const uint16_t* s, int n) {
     (void)fd; (void)c; (void)s; (void)n;
 }
 const ItemDefinition* item_get(uint32_t item_id) { (void)item_id; return NULL; }
+/** The bag is full here: rewards are refused, which is not this file's subject. */
+uint16_t inventory_add_tracked(ItemInstance* slots, uint32_t item_id,
+                               uint16_t quantity, uint16_t max_stack,
+                               uint8_t bind_on_pickup,
+                               uint16_t* changed, int max_changed,
+                               int* changed_count) {
+    (void)slots; (void)item_id; (void)max_stack; (void)bind_on_pickup;
+    (void)changed; (void)max_changed;
+    if (changed_count) *changed_count = 0;
+    return quantity;
+}
 uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
                        uint16_t max_stack, uint8_t bind_on_pickup) {
-    (void)slots; (void)item_id; (void)max_stack; (void)bind_on_pickup; return quantity;
+    return inventory_add_tracked(slots, item_id, quantity, max_stack,
+                                 bind_on_pickup, NULL, 0, NULL);
 }
 int inventory_first_free(const ItemInstance* slots) { (void)slots; return -1; }
 ssize_t server_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }

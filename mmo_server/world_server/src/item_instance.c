@@ -30,33 +30,59 @@ static inline uint16_t effective_stack(uint16_t max_stack) {
     return max_stack < 1 ? 1 : max_stack;
 }
 
+/** Record one touched slot for the caller, if it still fits and wants them. */
+static inline void note_changed(uint16_t* changed, int max_changed, int* count,
+                                int slot) {
+    if (!changed || !count || *count >= max_changed) return;
+    changed[(*count)++] = (uint16_t)slot;
+}
+
 /**
  * Add items by filling partial stacks before opening empty slots.
+ *
+ * Binding is part of stack identity here: a bound stack and an unbound one are
+ * never merged, even when they hold the same item. Merging them would move
+ * units across the boundary in whichever direction the destination happened to
+ * sit -- laundering a bound unit into a free stack, or binding a free one by
+ * accident -- and which of those happened would depend on nothing but bag
+ * order. The flag is only recorded today and enforced nowhere, so this cannot
+ * yet be exploited; it is written this way so that it never can be.
  *
  * @param slots           Caller-owned array of INVENTORY_SLOTS entries.
  * @param item_id         Nonzero item definition identifier.
  * @param quantity        Number of units requested.
  * @param max_stack       Per-slot capacity; zero is normalized to one.
  * @param bind_on_pickup  Nonzero to bind newly created stacks.
+ * @param changed         Receives touched slot indices, or NULL.
+ * @param max_changed     Capacity of `changed`.
+ * @param changed_count   Receives how many were written, or NULL.
  * @return                The quantity that could not fit.
  */
-uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
-                       uint16_t max_stack, uint8_t bind_on_pickup) {
+uint16_t inventory_add_tracked(ItemInstance* slots, uint32_t item_id,
+                               uint16_t quantity, uint16_t max_stack,
+                               uint8_t bind_on_pickup,
+                               uint16_t* changed, int max_changed,
+                               int* changed_count) {
+    int written = 0;
+    if (changed_count) *changed_count = 0;
     if (!slots || item_id == 0 || quantity == 0) return quantity;
 
-    const uint16_t cap = effective_stack(max_stack);
+    const uint16_t cap   = effective_stack(max_stack);
+    const uint8_t  bound = bind_on_pickup ? 1 : 0;
 
     // fill compatible partial stacks first
     if (cap > 1) {
         for (int i = 0; i < INVENTORY_SLOTS && quantity > 0; i++) {
             if (slots[i].instance_id == 0) continue;
             if (slots[i].item_id != item_id) continue;
+            if ((slots[i].is_bound ? 1 : 0) != bound) continue;
             if (slots[i].quantity >= cap) continue;
 
             uint16_t room = (uint16_t)(cap - slots[i].quantity);
             uint16_t take = quantity < room ? quantity : room;
             slots[i].quantity = (uint16_t)(slots[i].quantity + take);
             quantity = (uint16_t)(quantity - take);
+            note_changed(changed, max_changed, &written, i);
         }
     }
 
@@ -68,12 +94,25 @@ uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
         slots[i].instance_id = item_instance_next_id();
         slots[i].item_id     = item_id;
         slots[i].quantity    = take;
-        slots[i].is_bound    = bind_on_pickup ? 1 : 0;
+        slots[i].is_bound    = bound;
         slots[i]._pad        = 0;
         quantity = (uint16_t)(quantity - take);
+        note_changed(changed, max_changed, &written, i);
     }
 
+    if (changed_count) *changed_count = written;
     return quantity;   // whatever would not fit
+}
+
+/**
+ * Add items, discarding the report of which slots changed.
+ *
+ * @return The quantity that could not fit.
+ */
+uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
+                       uint16_t max_stack, uint8_t bind_on_pickup) {
+    return inventory_add_tracked(slots, item_id, quantity, max_stack,
+                                 bind_on_pickup, NULL, 0, NULL);
 }
 
 /**
@@ -137,10 +176,18 @@ int inventory_move(ItemInstance* slots, int from, int to, uint16_t max_stack) {
 
     const uint16_t cap = effective_stack(max_stack);
 
-    // preserve any source remainder after a partial merge
+    /* Preserve any source remainder after a partial merge.
+     *
+     * Binding has to match for the same reason it does in
+     * inventory_add_tracked(): a merge moves units into the destination's
+     * identity, so merging across the boundary would silently bind or unbind
+     * them depending on which slot was dragged onto which. Mismatched stacks
+     * fall through to the swap below, which is what a player dragging one onto
+     * the other would expect anyway. */
     if (cap > 1 &&
         slots[to].instance_id != 0 &&
         slots[to].item_id == slots[from].item_id &&
+        (slots[to].is_bound ? 1 : 0) == (slots[from].is_bound ? 1 : 0) &&
         slots[to].quantity < cap) {
 
         uint16_t room = (uint16_t)(cap - slots[to].quantity);

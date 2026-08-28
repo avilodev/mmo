@@ -245,25 +245,49 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
     cpkt.currency_reward = htonl(q->currency_reward);
     cpkt.currency_id     = q->currency_id;
 
+    /* Slots touched across every reward in this turn-in, collected as the
+     * rewards are placed. Read from inventory_add_tracked() rather than from
+     * inventory_first_free() taken beforehand: a reward that stacks onto
+     * something the player is already carrying opens no slot at all, and the
+     * free slot this used to name was one that had not changed. */
+    uint16_t changed[MAX_SLOT_UPDATES];
+    int      changed_count = 0;
+
     for (int i = 0; i < q->item_reward_count && i < MAX_QUEST_OBJECTIVES; i++) {
         uint32_t reward_id = q->item_rewards[i].item_id;
         uint16_t want      = q->item_rewards[i].quantity ? q->item_rewards[i].quantity : 1;
 
         const ItemDefinition* def = item_get(reward_id);
-        int slot = inventory_first_free(p->inventory);
+
+        uint16_t touched[MAX_SLOT_UPDATES];
+        int      touched_count = 0;
 
         // retain unplaced reward quantities for warning output
-        uint16_t left   = inventory_add(p->inventory, reward_id, want,
-                                        def ? def->max_stack : 1,
-                                        def ? def->bind_on_pickup : 0);
+        uint16_t left   = inventory_add_tracked(p->inventory, reward_id, want,
+                                                def ? def->max_stack : 1,
+                                                def ? def->bind_on_pickup : 0,
+                                                touched, MAX_SLOT_UPDATES,
+                                                &touched_count);
         uint16_t stored = (uint16_t)(want - left);
 
         if (stored > 0) {
             cpkt.items[cpkt.item_count].item_id        = htonl(reward_id);
             cpkt.items[cpkt.item_count].quantity       = (uint8_t)stored;
-            cpkt.items[cpkt.item_count].inventory_slot = (uint8_t)(slot < 0 ? 0 : slot);
+            cpkt.items[cpkt.item_count].inventory_slot =
+                touched_count > 0 ? (uint8_t)touched[0] : 0;
             cpkt.item_count++;
         }
+
+        for (int t = 0; t < touched_count && changed_count < MAX_SLOT_UPDATES; t++) {
+            /* Two rewards of the same item land in the same stack, so the same
+             * slot can come back twice; sending it twice would spend a scarce
+             * update entry saying the same thing. */
+            int already = 0;
+            for (int c = 0; c < changed_count; c++)
+                if (changed[c] == touched[t]) { already = 1; break; }
+            if (!already) changed[changed_count++] = touched[t];
+        }
+
         if (left > 0)
             LOG_WARN("[QUEST] character %u had no room for %u x item %u",
                      character_id, left, reward_id);
@@ -273,14 +297,9 @@ int quest_player_turnin(uint32_t character_id, int client_fd, uint32_t quest_id)
 
     server_send(client_fd, &cpkt, sizeof(cpkt));
 
-    // report current slots after stack merges
-    if (cpkt.item_count > 0) {
-        uint16_t changed[MAX_SLOT_UPDATES];
-        int n = 0;
-        for (int i = 0; i < cpkt.item_count && n < MAX_SLOT_UPDATES; i++)
-            changed[n++] = cpkt.items[i].inventory_slot;
-        player_send_slot_updates(client_fd, character_id, changed, n);
-    }
+    // report the stacks the rewards actually landed in
+    if (changed_count > 0)
+        player_send_slot_updates(client_fd, character_id, changed, changed_count);
 
     LOG_DEBUG("[QUEST] Character %u completed quest %u '%s'", character_id, quest_id, q->title);
     return 1;
