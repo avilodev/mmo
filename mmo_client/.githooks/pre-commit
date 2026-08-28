@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Reject a commit that introduces trailing whitespace or a space before a tab.
+#
+# Tracked, rather than left in .git/hooks, because .git is not version
+# controlled and a hook that lives there is gone the moment anyone clones
+# fresh. Git still will not run this until a clone points itself at it once:
+#
+#     git config core.hooksPath .githooks
+#
+# Only the lines a commit adds or changes are checked. The trailing whitespace
+# already sitting in the tree blocks nothing until someone edits the line
+# carrying it, which is the point -- cleanup lands where a person already had a
+# reason to be, instead of as a repo-wide rewrite that churns git blame for
+# lines nobody touched.
+#
+# git's default core.whitespace already covers both rules, so this works in a
+# clone that has set nothing else.
+
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    against=HEAD
+else
+    against=$(git hash-object -t tree /dev/null)   # initial commit: empty tree
+fi
+
+exec git diff-index --check --cached "$against" --
