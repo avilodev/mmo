@@ -15,7 +15,7 @@
 #include "log.h"
 #include "items_database.h"
 
-#include <stdio.h>
+#include <stdio.h> 
 #include <stdlib.h>
 #include <string.h>
 
@@ -111,7 +111,7 @@ int shop_init(const char* json_path) {
         return 1;  // non-fatal: no merchants rather than no world
     }
 
-    const JsonValue* shops = json_get(doc, "shops");
+    const JsonValue* shops = json_get(doc, "shops"); 
     int declared = json_count(shops);
 
     for (int i = 0; i < declared && g_shop_count < MAX_SHOPS; i++) {

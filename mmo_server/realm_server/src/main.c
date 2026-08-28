@@ -22,6 +22,7 @@
 #include "net_tuning.h"
 #include "class_stats.h"
 #include "data_paths.h"
+#include "realm_friends.h"
 #include "world_table.h"
 #include "tls.h"
 
@@ -580,6 +581,15 @@ int main(int argc, char** argv) {
         free(key);
     }
 
+    /* The friend graph. Started after Redis, because the consumer drains a Redis
+     * queue, and deliberately NOT fatal: a realm that cannot open the social
+     * database can still authenticate players and hand out characters, and
+     * refusing to boot over a friends list would take the whole game down for
+     * a feature nobody is required to use. friends_start() says so in the log
+     * and everything else carries on. */
+    if (!friends_start(SOCIAL_DB))
+        LOG_WARN("Friends and presence are unavailable this run");
+
     memset(&g_server, 0, sizeof(g_server));
     memset(&g_state, 0, sizeof(g_state));
     g_server.running = 1;  // Initialize running state
@@ -743,6 +753,7 @@ int main(int argc, char** argv) {
     tls_server_cleanup(g_tls_ctx);
     g_tls_ctx = NULL;
     world_databases_cleanup();
+    friends_stop();          /* joins the consumer before session_close() takes Redis away */
     session_close();
     pthread_mutex_destroy(&g_server.world_servers_lock);
     free(g_server.world_servers);

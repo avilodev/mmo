@@ -178,6 +178,16 @@ void handle_name_query_request(int fd, uint8_t* buffer, ssize_t bytes) {
     raw_handler("handle_name_query_request", PACKET_NAME_QUERY_REQUEST, buffer, bytes);
 }
 
+/* The five friend opcodes share one entry point, so the opcode it was reached
+ * for has to come from the packet rather than from the stub's name. The router
+ * promises these only a header; every per-opcode length check lives in
+ * friends.c and is covered by world_friends_test. */
+void world_friends_handle_packet(int fd, uint32_t c, const uint8_t* buffer, ssize_t bytes) {
+    (void)fd; (void)c;
+    uint8_t opcode = (bytes > 0) ? buffer[0] : 0;
+    raw_handler("world_friends_handle_packet", opcode, buffer, bytes);
+}
+
 /* --- The corpus ---------------------------------------------------------- */
 
 /** A non-blocking socket pair; see the note in the realm fuzzer. */
@@ -260,6 +270,11 @@ int main(void) {
     fz_declare(PACKET_SHOP_SELL,             sizeof(PacketHeader));
     fz_declare(PACKET_SESSION_LIST_REQUEST,  sizeof(PacketHeader));
     fz_declare(PACKET_NAME_QUERY_REQUEST,    sizeof(PacketHeader));
+    fz_declare(PACKET_FRIEND_REQUEST,        sizeof(PacketHeader));
+    fz_declare(PACKET_FRIEND_RESPOND,        sizeof(PacketHeader));
+    fz_declare(PACKET_FRIEND_REMOVE,         sizeof(PacketHeader));
+    fz_declare(PACKET_FRIEND_BLOCK,          sizeof(PacketHeader));
+    fz_declare(PACKET_FRIEND_LIST_REQUEST,   sizeof(PacketHeader));
 
     printf("\nTEST 1: every opcode, truncated at every length up to 256 bytes\n");
     for (int opcode = 0; opcode <= 255; opcode++) {

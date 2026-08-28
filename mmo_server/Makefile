@@ -315,6 +315,18 @@ TEST_CFLAGS = -Wall -Wextra -Werror -g $(OPT) -pthread $(TEST_CFLAGS_BASE)
 REACTOR_SRC = $(COMMON_DIR)/src/net_reactor.c $(COMMON_DIR)/src/net_reactor_conn.c \
               $(COMMON_DIR)/src/net_reactor_work.c $(COMMON_DIR)/src/net_reactor_loop.c
 
+# The friends and presence feature. Split by which process owns the data: the
+# realm owns the durable graph (social_database.c) and drains the mutation
+# queue (realm_server/friends.c); every process shares the Redis caches
+# (presence.c) and the event bus (friend_bus.c).
+#
+# Unlike the rest of the suite these want a live Redis. They are written to
+# skip the Redis half and still check the encodings when there is none, so a
+# machine without one gets a partial pass rather than a failure.
+SOCIAL_SRC = $(DB_DIR)/src/social_database.c
+PRESENCE_SRC = $(COMMON_DIR)/src/presence.c $(COMMON_DIR)/src/session.c
+FRIEND_BUS_SRC = $(COMMON_DIR)/src/friend_bus.c $(PRESENCE_SRC)
+
 # The quest feature is three translation units split by what changes them: the
 # authored definitions, one character's tables and their file, and the rules
 # joining the two. Named once here so a fourth is one edit, not five.
@@ -329,7 +341,10 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
       $(TEST_BIN)/shop_trade_test $(TEST_BIN)/log_trace_test \
       $(TEST_BIN)/login_routes_fuzz_test $(TEST_BIN)/realm_routes_fuzz_test \
       $(TEST_BIN)/world_routes_fuzz_test $(TEST_BIN)/chat_routing_test \
-      $(TEST_BIN)/inventory_handler_test
+      $(TEST_BIN)/inventory_handler_test \
+      $(TEST_BIN)/social_database_test $(TEST_BIN)/presence_test \
+      $(TEST_BIN)/friend_bus_test $(TEST_BIN)/realm_friends_test \
+      $(TEST_BIN)/world_friends_test
 	@echo "=== Checking the wire format against PROTOCOL_VERSION ==="
 	@./tests/check_protocol_version.sh
 	@echo ""
@@ -374,6 +389,17 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo ""
 	@echo "=== Running inventory handler test ==="
 	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/inventory_handler_test
+	@echo ""
+	@echo "=== Running the friends and presence suite ==="
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/social_database_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/presence_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/friend_bus_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/realm_friends_test
+	@echo ""
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/world_friends_test
 	@echo ""
 	@echo "=== Fuzzing the three server packet routers ==="
 	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/login_routes_fuzz_test
@@ -504,6 +530,30 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 # Guards the realm-handshake admission check on the world's player listener.
 # The correlation id: what appears on a log line, and what must never leak
 # from one player's thread to another's.
+$(TEST_BIN)/social_database_test: tests/social_database_test.c $(SOCIAL_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lsqlite3
+
+$(TEST_BIN)/presence_test: tests/presence_test.c $(PRESENCE_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lhiredis
+
+$(TEST_BIN)/friend_bus_test: tests/friend_bus_test.c $(FRIEND_BUS_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lhiredis
+
+# The realm half end to end: a mutation goes onto the queue, the consumer
+# applies it to real SQLite, and the result comes back over a real subscription.
+$(TEST_BIN)/realm_friends_test: tests/realm_friends_test.c $(REALM_DIR)/src/friends.c $(SOCIAL_SRC) $(FRIEND_BUS_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -I$(REALM_DIR)/include -o $@ $^ -lsqlite3 -lhiredis
+
+# The reverse index that turns "somebody, somewhere, changed presence" into
+# "these local sessions care" without scanning the player pool.
+$(TEST_BIN)/world_friends_test: tests/world_friends_test.c $(WORLD_DIR)/src/friends.c $(WORLD_DIR)/src/player_data.c $(FRIEND_BUS_SRC) $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lhiredis
+
 $(TEST_BIN)/log_trace_test: tests/log_trace_test.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^

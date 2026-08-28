@@ -61,6 +61,20 @@ static const PacketLimitProfile WORLD_PROFILE = {
         [PACKET_PARTY_LEAVE]           = { LIMIT_CLASS_SOCIAL,   2 },
         [PACKET_PARTY_KICK]            = { LIMIT_CLASS_SOCIAL,   2 },
 
+        /* Friend mutations. Each one crosses to the realm over the mutation
+         * queue and lands as a durable write, so they are priced above a party
+         * invite. The request costs most of all: it is the one a stranger can
+         * aim at somebody who has not agreed to hear from them, and the cost
+         * is what turns "spam a name" into "spam a name eight times a minute".
+         *
+         * The list request is a QUERY, not a SOCIAL, because it changes nothing
+         * -- but it is priced for its answer, which is up to 5.2 KB of friends
+         * and pending requests built from two Redis reads. */
+        [PACKET_FRIEND_REQUEST]        = { LIMIT_CLASS_SOCIAL,   5 },
+        [PACKET_FRIEND_RESPOND]        = { LIMIT_CLASS_SOCIAL,   3 },
+        [PACKET_FRIEND_REMOVE]         = { LIMIT_CLASS_SOCIAL,   3 },
+        [PACKET_FRIEND_BLOCK]          = { LIMIT_CLASS_SOCIAL,   3 },
+
         // Queries — priced by what they actually do.
         [PACKET_LOGOUT]                = { LIMIT_CLASS_QUERY,    1 },
         [PACKET_REQUEST_PLAYER_DATA]   = { LIMIT_CLASS_QUERY,    2 },
@@ -74,6 +88,7 @@ static const PacketLimitProfile WORLD_PROFILE = {
         [PACKET_SHOP_BUY]              = { LIMIT_CLASS_QUERY,    5 },
         [PACKET_SHOP_SELL]             = { LIMIT_CLASS_QUERY,    5 },
         [PACKET_SESSION_LIST_REQUEST]  = { LIMIT_CLASS_QUERY,    5 },
+        [PACKET_FRIEND_LIST_REQUEST]   = { LIMIT_CLASS_QUERY,    5 },
 
         /* Priced for its answer, like the race list. One query resolves up to
          * 32 names and the client caches them for the session, so a client

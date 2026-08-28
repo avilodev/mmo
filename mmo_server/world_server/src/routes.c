@@ -12,6 +12,7 @@
 #include "routes.h"
 #include "combat.h"
 #include "dialogue_handler.h"
+#include "friends.h"
 #include "items_database.h"
 #include "chat.h"
 #include "loot.h"
@@ -331,6 +332,17 @@ int process_packet(int client_fd, uint32_t character_id, int player_slot,
 
         case PACKET_SHOP_SELL:
             shop_handle_sell(character_id, client_fd, buffer, bytes);
+            break;
+
+        /* One handler for all five, because they differ only in which mutation
+         * they queue and friends.c is where that mapping lives. Size checks and
+         * the account lookup happen there too, per opcode. */
+        case PACKET_FRIEND_REQUEST:
+        case PACKET_FRIEND_RESPOND:
+        case PACKET_FRIEND_REMOVE:
+        case PACKET_FRIEND_BLOCK:
+        case PACKET_FRIEND_LIST_REQUEST:
+            world_friends_handle_packet(client_fd, character_id, buffer, bytes);
             break;
 
         case PACKET_SESSION_LIST_REQUEST:

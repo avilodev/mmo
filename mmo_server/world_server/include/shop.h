@@ -21,11 +21,11 @@ typedef struct {
  * A shop belongs to a kingdom and deals only in that kingdom's currency: its
  * prices are quoted in it, purchases are charged in it, and sales pay it. When
  * cross-currency trade arrives, the discounted rate applies here, at the point
- * of sale, rather than changing what a shop's own coin is.
+ * of sale, rather than changing what a shop's own coin is. 
  */
 typedef struct {
     uint32_t      shop_id;
-    char          name[32];
+    char          name[32]; 
     uint8_t       currency_id;   // CurrencyId this shop trades in
     uint8_t       item_count;
     ShopItemEntry items[MAX_SHOP_ITEMS];

@@ -6,6 +6,14 @@
 /** Locate the legacy user database relative to a server process. */
 #define USERS_DB "../database/databases/users_data/users.db"
 
+/** Locate the friend graph, beside the account database it references.
+ *
+ * A separate file rather than more tables in users.db: the login server owns
+ * that one and has no use for any of this, and the realm owns this one and
+ * never writes accounts. Two owners, two files.
+ */
+#define SOCIAL_DB "../database/databases/users_data/social.db"
+
 /** Define fixed protocol framing sizes in bytes. */
 #define MIN_HEADER_SIZE 7
 #define AUTH_REGISTER_SIZE 215

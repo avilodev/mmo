@@ -44,6 +44,7 @@
 #include "broadcast_pool.h"
 #include "broadcast_snapshot.h"
 #include "tick_scheduler.h"
+#include "friends.h"
 #include "party.h"
 #include "quest_system.h"
 #include "net_tuning.h"
@@ -373,6 +374,13 @@ void* realm_handler_thread(void* arg) {
             }
 
             if (hb.header.type == PACKET_WORLD_HEARTBEAT) {
+
+                /* The realm's heartbeat is the only regular tick this thread
+                 * has, and it is the cadence PRESENCE_TTL_SECONDS is sized
+                 * against. A world that stops answering it has its whole
+                 * population read as offline by every other world two minutes
+                 * later -- which is correct, because it has stopped. */
+                world_friends_heartbeat();
 
                 WorldStatusPacket status = {0};
                 status.header.type = PACKET_WORLD_STATUS;
