@@ -140,7 +140,28 @@ static const PacketLimitProfile REALM_PROFILE = {
          * redeployed; nobody needs it twice. */
         [PACKET_RACE_LIST_REQUEST]        = { LIMIT_CLASS_QUERY,    10 },
         [PACKET_CHARACTER_LIST_REQUEST]   = { LIMIT_CLASS_QUERY,     5 },
-        [PACKET_ENTER_WORLD]              = { LIMIT_CLASS_QUERY,    10 },
+
+        /* Priced like the world list, and deliberately not like the race list
+         * above it.
+         *
+         * This mints one Redis ticket and answers with a small packet naming a
+         * host and a port. It was 10 -- the race list's price, for a tenth of
+         * the race list's work -- and that number had a cost the pricing did
+         * not account for: it is the one action the character screen exists
+         * for, and it is always taken immediately after something else.
+         *
+         * Creating a character costs the entire burst capacity (20 of 20), so
+         * the bucket is empty the instant a character exists, and the very
+         * next thing every player does is click Join. At cost 10 that click
+         * was refused for the 1.25 seconds the bucket took to afford it, and
+         * the player -- told nothing they could act on -- simply clicked
+         * again. Every join in the logs was preceded by exactly one refusal.
+         *
+         * Three costs 0.375s of refill from empty, which no human beats
+         * between watching a character appear and clicking it. The client
+         * retries once on a refusal now as well, so neither half depends on
+         * the other being right. */
+        [PACKET_ENTER_WORLD]              = { LIMIT_CLASS_QUERY,     3 },
 
         // Character creation and deletion are the most expensive things this
         // server does, and the ones most worth making tedious to repeat.

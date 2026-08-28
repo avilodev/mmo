@@ -176,6 +176,47 @@ int main(void) {
     printf("  realm character lists allowed=%d (expect ≈4 at cost 5)\n", a2);
     assert(a2 >= 3 && a2 <= 6);
 
+    printf("\nTEST 14b: the character-select flow fits inside the realm budget\n");
+    /* The screen's own traffic is not optional, and the action it exists for
+     * comes at the end of it. Priced so that the last step could not be
+     * afforded, the realm refuses the click that opens the game -- which is
+     * what it did: creating a character costs the whole burst allowance, so
+     * the Join immediately after it was refused for over a second, and every
+     * world entry in the client log was preceded by exactly one refusal.
+     *
+     * One connection, one bucket, in the order a player actually produces:
+     * world list, race list, character list, create, then enter. */
+    packet_limiter_reset(26);
+    {
+        const uint8_t flow[] = {
+            PACKET_WORLD_LIST_REQUEST,
+            PACKET_RACE_LIST_REQUEST,
+            PACKET_CHARACTER_LIST_REQUEST,
+            PACKET_CHARACTER_CREATE_REQUEST,
+        };
+        int refused = 0;
+        for (size_t i = 0; i < sizeof(flow) / sizeof(flow[0]); i++)
+            if (packet_limiter_check(26, flow[i]) != PACKET_LIMIT_ALLOW) refused++;
+
+        /* The create is allowed to be the one that does not fit -- it costs
+         * the whole capacity by design, and a player who is refused it is
+         * told so and clicks the button again. What must not happen is the
+         * step after it being refused as a consequence. */
+        printf("  %d of %zu setup requests refused\n",
+               refused, sizeof(flow) / sizeof(flow[0]));
+
+        /* The bucket is now at its emptiest. This is the exact moment the
+         * player clicks their new character. */
+        uint16_t wait = packet_limiter_retry_after_ms(26, PACKET_ENTER_WORLD);
+        printf("  a Join at the emptiest moment waits %ums\n", wait);
+
+        /* Under a fifth of a second: shorter than the gap between a character
+         * appearing on screen and a hand reaching it, so in practice it is
+         * never waited for at all. At the old cost of 10 this was over a
+         * second, which is not. */
+        assert(wait < 200);
+    }
+
     printf("\nTEST 15: the running totals count every verdict exactly once\n");
     /* These are what /metrics and the world's [STATS] line report. The limiter
      * used to say what it had done only through a rate-limited log line --
