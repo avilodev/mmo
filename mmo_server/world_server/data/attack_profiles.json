@@ -1,0 +1,127 @@
+{
+  "_comment": "One basic attack per race, keyed by the same race key races.json uses. A race with no entry here gets a plain melee fallback rather than no attack at all, so adding a race stays a data-only change even before its basic attack is designed.",
+
+  "_fields_comment": "attack_type is single, aoe, cone or line. cone_half_angle applies to cone; line_width to line. damage_stat names one of the eleven attributes. is_ranged spawns a projectile at cast resolution instead of resolving instantly.",
+
+  "profiles": [
+    {
+      "_comment": "Fast, light bites. The wolf's damage comes from its kit, not its filler.",
+      "race": "wolf",
+      "base_damage": 14,
+      "damage_variance": 15,
+      "cast_time": 0.35,
+      "cooldown": 0.6,
+      "range": 55,
+      "attack_type": "single",
+      "damage_stat": "strength"
+    },
+    {
+      "_comment": "Slow and heavy, in the swing arc a bear's reach implies.",
+      "race": "bear",
+      "base_damage": 22,
+      "damage_variance": 20,
+      "cast_time": 0.9,
+      "cooldown": 1.0,
+      "range": 65,
+      "attack_type": "cone",
+      "cone_half_angle": 35,
+      "damage_stat": "strength"
+    },
+    {
+      "race": "fox",
+      "base_damage": 12,
+      "damage_variance": 15,
+      "cast_time": 0.3,
+      "cooldown": 0.5,
+      "range": 50,
+      "attack_type": "single",
+      "damage_stat": "dexterity"
+    },
+    {
+      "_comment": "Fights at range from the air.",
+      "race": "crow",
+      "base_damage": 13,
+      "damage_variance": 20,
+      "cast_time": 0.4,
+      "cooldown": 0.9,
+      "range": 400,
+      "attack_type": "single",
+      "damage_stat": "intelligence",
+      "is_ranged": true,
+      "projectile_speed": 620,
+      "projectile_width": 12,
+      "projectile_damage_type": "spirit"
+    },
+    {
+      "_comment": "A stoop from height: ranged, fast, and precise.",
+      "race": "hawk",
+      "base_damage": 17,
+      "damage_variance": 15,
+      "cast_time": 0.35,
+      "cooldown": 0.8,
+      "range": 450,
+      "attack_type": "single",
+      "damage_stat": "dexterity",
+      "is_ranged": true,
+      "projectile_speed": 780,
+      "projectile_width": 10
+    },
+    {
+      "_comment": "The healer's filler. Low damage on purpose; Deer's contribution is elsewhere.",
+      "race": "deer",
+      "base_damage": 9,
+      "damage_variance": 15,
+      "cast_time": 0.5,
+      "cooldown": 1.1,
+      "range": 380,
+      "attack_type": "single",
+      "damage_stat": "intelligence",
+      "is_ranged": true,
+      "projectile_speed": 560,
+      "projectile_width": 12,
+      "projectile_damage_type": "spirit"
+    },
+    {
+      "race": "snake",
+      "base_damage": 15,
+      "damage_variance": 25,
+      "cast_time": 0.4,
+      "cooldown": 0.8,
+      "range": 60,
+      "attack_type": "single",
+      "damage_stat": "ferocity"
+    },
+    {
+      "race": "rabbit",
+      "base_damage": 8,
+      "damage_variance": 15,
+      "cast_time": 0.3,
+      "cooldown": 0.6,
+      "range": 45,
+      "attack_type": "single",
+      "damage_stat": "dexterity"
+    },
+    {
+      "_comment": "A wide, ugly swipe that catches everything in front of it.",
+      "race": "hyena",
+      "base_damage": 18,
+      "damage_variance": 20,
+      "cast_time": 0.7,
+      "cooldown": 0.9,
+      "range": 60,
+      "attack_type": "cone",
+      "cone_half_angle": 30,
+      "damage_stat": "strength"
+    },
+    {
+      "race": "cat",
+      "base_damage": 13,
+      "damage_variance": 20,
+      "cast_time": 0.3,
+      "cooldown": 0.55,
+      "range": 50,
+      "attack_type": "single",
+      "damage_stat": "dexterity"
+    }
+  ]
+}

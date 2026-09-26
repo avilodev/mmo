@@ -1,0 +1,135 @@
+{
+  "id": 28,
+  "name": "Elder of the Fallen",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Come in out of the open. There -- that is better.\n\nYou will want to know where the god is. Everyone does.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 108,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 108
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 108
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 108
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 108
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 108
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "She is not here. She has not been for a long time, and I would rather tell you plainly\nthan let you work it out from how people go quiet.\n\nShe died getting others out. Not fighting -- getting others out. The thing that took\nher was put down later, by someone louder, and he is very welcome to the story.\nOurs is the running.\n\nSo learn this before anything else. Your speed is not for you. It is for the one\nbehind you who does not have it. Anybody can be brave in one direction.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "And if I cannot carry them all?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "And if I cannot carry them all?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Then you carry who you can, and you come back. You always come back.\n\nGo and let the sentry at the south gate write your name down. It matters that\nsomebody knows it.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "Nobody sent you? Then nobody is expecting you back, and that is the part I mind.\n\nThe Warden, in the middle of the courtyard. Tell her I want your name written down.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "You came back. Good. That is the whole lesson, really.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

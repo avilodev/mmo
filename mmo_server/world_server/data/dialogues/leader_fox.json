@@ -1,0 +1,135 @@
+{
+  "id": 23,
+  "name": "God of Secrets",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Did you find me, or did I let you? Sit with that a moment.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden pointed the way.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 103,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 103
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden pointed the way.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 103
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 103
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 103
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 103
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "The Warden points at a great many things.\n\nHere is your first lesson, and it is the only one I will hand over whole: nothing\nworth having in Ennara is where it is supposed to be.\n\nLook at the courtyard. Count the paving stones along the north wall. Now count them\nagain.\n\nDifferent number, is it not? Good. That is Search. You already knew how -- you had\nsimply never been told it was allowed.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "What is under the stones?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "What is under the stones?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "What a question. What a wonderfully answered-for-you question.\n\nGo and see the sentry at the south gate. Tell her nothing interesting.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "You came here without being sent. I like that. It will get you hurt, but I like it.\n\nThe Warden first. Then come back and we will pretend this never happened.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Back already. Did you count them again?",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

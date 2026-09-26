@@ -1,0 +1,45 @@
+{
+  "_comment": "Every number a playtest is likely to move. `make run` recopies this file without rebuilding, so retuning never costs a compile. Anything added here needs a matching key in ProgressionConfig; anything missing falls back to the compiled default.",
+
+  "max_level": 30,
+
+  "_xp_comment": "Reaching level 2 costs `base`; every level after costs `growth` times the one before. At 100 x1.5 the steps run 100/150/225/338/506 and level 30 costs ~8.5M for ~25.6M cumulative.",
+  "xp": {
+    "base": 100,
+    "growth": 1.5
+  },
+
+  "tunables": {
+    "_damage_comment": "Percentage damage reducers sum in percentage space and apply once, so -10% and -10% is -20%. The cap stops enough stacked sources from reaching immunity.",
+    "damage_taken_reduction_cap": 0.80,
+
+    "_form_comment": "Cooldowns are absolute expiry instants and keep ticking in both forms, so no swap can shorten one. This exists only to stop frame-by-frame flicker; set it to 0 to make swapping free.",
+    "form_swap_cooldown": 1.5,
+
+    "_vitals_comment": "Vitality drives health. The three resource stats map one-to-one onto the three roles: Focus feeds Mana for healers, Stamina Capacity feeds Stamina for DPS, Endurance feeds Rage for tanks.",
+    "base_health": 60,
+    "health_per_vitality": 12,
+    "base_resource": 50,
+    "mana_per_focus": 10,
+    "stamina_per_stamina_capacity": 6,
+    "rage_per_endurance": 4,
+
+    "move_speed_per_dexterity": 1.5,
+    "crit_chance_per_precision": 0.5,
+    "crit_damage_per_ferocity": 0.02,
+    "crit_chance_cap": 60,
+
+    "_ferality_comment": "The single knob controlling the Human/Animal power gap. Animal Form ability output is multiplied by 1 + ferality * this. Human Form is weaker on two axes at once — reduced output and no race passive — so raise this if the gap feels punitive rather than 'not by a lot'.",
+    "animal_power_per_ferality": 0.01,
+
+    "_rage_comment": "Rage inverts the usual pool: it builds through combat instead of draining, and decays out of it.",
+    "rage_per_damage_dealt": 0.5,
+    "rage_per_damage_taken": 1.0,
+    "rage_decay_per_second": 3.0,
+    "rage_decay_delay": 5.0,
+
+    "mana_regen_per_focus": 0.20,
+    "stamina_regen_per_capacity": 0.15,
+    "resource_regen_base": 2.0
+  }
+}

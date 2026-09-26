@@ -1,0 +1,143 @@
+#ifndef TLS_FIXTURE_H
+#define TLS_FIXTURE_H
+
+/**
+ * @file
+ * Mint a throwaway certificate in memory, so a TLS link can be tested for real.
+ *
+ * Both encrypted links in this tree identify their peer by a pin over the
+ * public key, which means a test of either one needs a real key pair and a real
+ * handshake. Shelling out to `openssl req` would make the suite depend on that
+ * binary being installed and on a writable directory; generating the pair here
+ * depends on the library the servers already link.
+ *
+ * Nothing produced here touches the filesystem. The certificate lives as long
+ * as the context does and is thrown away with it.
+ */
+
+#include "cert_pin.h"
+#include "cert_spki.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+
+/** One generated identity: the key pair, its certificate, and its pin. */
+typedef struct {
+    EVP_PKEY* key;
+    X509*     cert;
+    uint8_t   pin[CERT_PIN_DIGEST_LEN];
+} TlsFixtureIdentity;
+
+/** Generate a self-signed RSA identity with the given common name. */
+static inline void tls_fixture_identity(TlsFixtureIdentity* id, const char* cn) {
+    id->key = EVP_RSA_gen(2048);
+    assert(id->key);
+
+    id->cert = X509_new();
+    assert(id->cert);
+
+    X509_set_version(id->cert, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(id->cert), 1);
+    X509_gmtime_adj(X509_getm_notBefore(id->cert), 0);
+    X509_gmtime_adj(X509_getm_notAfter(id->cert), 60 * 60);
+    X509_set_pubkey(id->cert, id->key);
+
+    X509_NAME* name = X509_get_subject_name(id->cert);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               (const unsigned char*)cn, -1, -1, 0);
+    X509_set_issuer_name(id->cert, name);
+    assert(X509_sign(id->cert, id->key, EVP_sha256()) > 0);
+
+    /* The same function the servers use, so a fixture pin and a production pin
+     * are the same 32 bytes. Computing it a second way here is how the tree
+     * came to have every pin check comparing a digest of the key bit string
+     * against a pin file naming the SubjectPublicKeyInfo. */
+    assert(cert_spki_digest(id->cert, id->pin) == 1);
+}
+
+static inline void tls_fixture_identity_free(TlsFixtureIdentity* id) {
+    if (id->cert) X509_free(id->cert);
+    if (id->key)  EVP_PKEY_free(id->key);
+    id->cert = NULL;
+    id->key  = NULL;
+}
+
+/** Install an identity into a context, so it presents that certificate. */
+static inline void tls_fixture_use_identity(SSL_CTX* ctx, TlsFixtureIdentity* id) {
+    assert(SSL_CTX_use_certificate(ctx, id->cert) == 1);
+    assert(SSL_CTX_use_PrivateKey(ctx, id->key) == 1);
+    assert(SSL_CTX_check_private_key(ctx) == 1);
+}
+
+/** Build a server context presenting a fresh identity. */
+static inline SSL_CTX* tls_fixture_server_ctx(TlsFixtureIdentity* id, const char* cn) {
+    tls_fixture_identity(id, cn);
+    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    assert(ctx);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    tls_fixture_use_identity(ctx, id);
+    return ctx;
+}
+
+/** Build a plain client context that verifies nothing.
+ *
+ * The tests that use this are testing the server's half. Where a test is about
+ * the pin check itself it fingerprints the peer and compares explicitly, which
+ * is what the servers do too.
+ */
+static inline SSL_CTX* tls_fixture_client_ctx(void) {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    assert(ctx);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    return ctx;
+}
+
+/** Write an identity out as the PEM pair the servers actually load.
+ *
+ * The production context builders take paths, and what they do with those paths
+ * -- load, check the key against the certificate, set the verify mode -- is
+ * part of what is under test. Handing them files rather than reaching past them
+ * to SSL_CTX_use_certificate() is what keeps the test pointed at the code that
+ * runs.
+ *
+ * The paths are the caller's to unlink.
+ */
+static inline void tls_fixture_write_pem(const TlsFixtureIdentity* id,
+                                         const char* cert_path,
+                                         const char* key_path) {
+    FILE* f = fopen(cert_path, "w");
+    assert(f);
+    assert(PEM_write_X509(f, id->cert) == 1);
+    fclose(f);
+
+    f = fopen(key_path, "w");
+    assert(f);
+    assert(PEM_write_PrivateKey(f, id->key, NULL, NULL, 0, NULL, NULL) == 1);
+    fclose(f);
+}
+
+/** Write a pin file naming one identity, in the format cert_pin_load_file reads. */
+static inline void tls_fixture_write_pin_file(const TlsFixtureIdentity* id,
+                                              const char* path) {
+    char hex[CERT_PIN_DIGEST_LEN * 2 + 1];
+    cert_pin_format(id->pin, hex, sizeof(hex));
+    FILE* f = fopen(path, "w");
+    assert(f);
+    fprintf(f, "# generated by tls_fixture.h\n%s\n", hex);
+    fclose(f);
+}
+
+/** Add an identity's pin to a set, in the textual form a pin file carries. */
+static inline void tls_fixture_pin(CertPinSet* set, const TlsFixtureIdentity* id) {
+    char hex[CERT_PIN_DIGEST_LEN * 2 + 1];
+    cert_pin_format(id->pin, hex, sizeof(hex));
+    assert(cert_pin_add_line(set, hex) == 1);
+}
+
+#endif // TLS_FIXTURE_H

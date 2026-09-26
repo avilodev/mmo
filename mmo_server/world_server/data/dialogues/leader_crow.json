@@ -1,0 +1,135 @@
+{
+  "id": 24,
+  "name": "God of the Unseen",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "...ah. You.\n\nI was listening for something else.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 104,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 104
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 104
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 104
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 104
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 104
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Sent. Yes. That is one of the words for it.\n\nI will not fight you and I will not test you. I have never been much good at either,\nand the wind does not care which of us is stronger.\n\nWhat I can give you is height. The Windborne go over the thing instead of through it.\nOver walls. Over water. Over most arguments.\n\nGo up. Look east until the harbour stops being a shape and starts being a place.\nSomething out there has not answered me in a long while. I am not saying it will not.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "What are you waiting for?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "What are you waiting for?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "I have stopped phrasing it as a question. It keeps better that way.\n\nThe sentry at the south gate. She writes names down. Let her have yours.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "No one sent you. That happens more than people admit.\n\nThe Warden is in the middle of the courtyard, and she is easier to find than I am.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "You came back. Most things do not.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,415 @@
+{
+  "_comment": "Twenty abilities: five universal Human Form actions plus three animal kits of five. Adding one is an entry here and an icon in Game/Sprites/Abilities. The only thing that ever needs code is a genuinely new effect verb.",
+
+  "_form_comment": "form is 'human' or 'animal'. Human Form is cooldown-only and has no resource pool, so a resourceCost there is refused by the loader rather than silently charged. Animal abilities name the race that owns them; human abilities name none, which is what makes them universal.",
+
+  "_percent_comment": "Percentages travel as tenths of a percent so an ability stays plain numbers: 100 is 10.0%. That applies to healPercent and to the resource, damage_taken, damage_dealt and hot_percent effects.",
+
+  "abilities": {
+
+    "human_strike": {
+      "name": "Strike",
+      "form": "human",
+      "unlockLevel": 1,
+      "cooldown": 3.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 14,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "animation": "attack_melee",
+      "sfx": "strike.wav",
+      "vfx": "slash",
+      "image": "strike.png"
+    },
+
+    "human_guard": {
+      "_comment": "The only mitigation any character has outside Animal Form, since the race passive does not apply in Human Form. That makes it the clean test case for the damage-taken accumulator in isolation.",
+      "name": "Guard",
+      "form": "human",
+      "unlockLevel": 1,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "damage_taken", "value": 150, "duration": 4.0, "self": true }
+      ],
+      "animation": "guard",
+      "sfx": "guard.wav",
+      "vfx": "shield",
+      "image": "guard.png"
+    },
+
+    "human_second_wind": {
+      "name": "Second Wind",
+      "form": "human",
+      "unlockLevel": 1,
+      "cooldown": 20.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "hot_percent", "value": 20, "duration": 4.0, "tickRate": 1.0, "self": true }
+      ],
+      "animation": "recover",
+      "sfx": "second_wind.wav",
+      "vfx": "restore",
+      "image": "second_wind.png"
+    },
+
+    "human_sweep": {
+      "name": "Sweep",
+      "form": "human",
+      "unlockLevel": 1,
+      "cooldown": 10.0,
+      "castTime": 0.0,
+      "range": 90.0,
+      "targetType": "enemy",
+      "damage": 11,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "aoe": { "shape": "cone", "radius": 90.0, "angle": 90.0 },
+      "statusEffects": [
+        { "type": "slow", "value": 40, "duration": 2.0 }
+      ],
+      "animation": "sweep",
+      "sfx": "sweep.wav",
+      "vfx": "arc",
+      "image": "sweep.png"
+    },
+
+    "human_sprint": {
+      "_comment": "The design asks for +40% move speed. Move-speed buffs are flat units, and base speeds sit around 200-250, so 90 is that 40% expressed in the units the engine already has. Retuning it is a number here.",
+      "name": "Sprint",
+      "form": "human",
+      "unlockLevel": 1,
+      "cooldown": 15.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "buff", "stat": "move_speed", "value": 90, "duration": 3.0, "self": true }
+      ],
+      "animation": "sprint",
+      "sfx": "sprint.wav",
+      "vfx": "dust",
+      "image": "sprint.png"
+    },
+
+    "wolf_bite": {
+      "name": "Bite",
+      "race": "wolf",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 12,
+      "cooldown": 4.0,
+      "castTime": 0.0,
+      "range": 55.0,
+      "targetType": "enemy",
+      "damage": 20,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "healPercent": 50,
+      "healSelf": true,
+      "animation": "bite",
+      "sfx": "bite.wav",
+      "vfx": "bite",
+      "image": "wolf_bite.png"
+    },
+
+    "wolf_claws": {
+      "name": "Claws",
+      "race": "wolf",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 8,
+      "cooldown": 2.5,
+      "castTime": 0.0,
+      "range": 55.0,
+      "targetType": "enemy",
+      "damage": 16,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "animation": "claw",
+      "sfx": "claws.wav",
+      "vfx": "rake",
+      "image": "wolf_claws.png"
+    },
+
+    "wolf_dash": {
+      "name": "Dash",
+      "race": "wolf",
+      "form": "animal",
+      "unlockLevel": 3,
+      "resourceCost": 18,
+      "cooldown": 9.0,
+      "castTime": 0.0,
+      "range": 240.0,
+      "targetType": "enemy",
+      "damage": 18,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "movement": { "type": "dash", "distance": 240.0 },
+      "projectile": { "type": "linear", "speed": 900.0, "width": 40.0 },
+      "animation": "dash",
+      "sfx": "dash.wav",
+      "vfx": "streak",
+      "image": "wolf_dash.png"
+    },
+
+    "wolf_growl": {
+      "_comment": "Armour shred: a negative armor buff on the target. The long cooldown is what keeps it a setup tool rather than a permanent debuff.",
+      "name": "Growl",
+      "race": "wolf",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 15,
+      "cooldown": 30.0,
+      "castTime": 0.0,
+      "range": 200.0,
+      "targetType": "enemy",
+      "aoe": { "shape": "circle", "radius": 200.0 },
+      "statusEffects": [
+        { "type": "buff", "stat": "armor", "value": -6, "duration": 10.0 }
+      ],
+      "animation": "growl",
+      "sfx": "growl.wav",
+      "vfx": "roar_ring",
+      "image": "wolf_growl.png"
+    },
+
+    "wolf_rend": {
+      "_comment": "One ability, two branches. Below the threshold the bonus multiplier applies and the onCondition effects fire: the wolf hurts itself and gains a short resistance window. Above it, Rend is a plain burst and neither effect happens.",
+      "name": "Rend",
+      "race": "wolf",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 45,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 55.0,
+      "targetType": "enemy",
+      "damage": 30,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "bonusDamage": {
+        "condition": "target_below_hp_percent",
+        "threshold": 25.0,
+        "multiplier": 2.5
+      },
+      "statusEffects": [
+        { "type": "dot", "value": 6, "duration": 3.0, "tickRate": 1.0,
+          "self": true, "onCondition": true },
+        { "type": "damage_taken", "value": 250, "duration": 5.0,
+          "self": true, "onCondition": true }
+      ],
+      "animation": "rend",
+      "sfx": "rend.wav",
+      "vfx": "gore",
+      "image": "wolf_rend.png"
+    },
+
+    "bear_tough_hide": {
+      "_comment": "Stacks additively on top of Thick Hide, the always-on race passive. Passive alone is -10%; with this up it is -20%, never -19%.",
+      "name": "Tough Hide",
+      "race": "bear",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 0,
+      "cooldown": 18.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "damage_taken", "value": 100, "duration": 8.0, "self": true }
+      ],
+      "animation": "brace",
+      "sfx": "tough_hide.wav",
+      "vfx": "hide",
+      "image": "bear_tough_hide.png"
+    },
+
+    "bear_bite": {
+      "name": "Bite",
+      "race": "bear",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 0,
+      "cooldown": 3.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 18,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "animation": "bite",
+      "sfx": "bite.wav",
+      "vfx": "bite",
+      "image": "bear_bite.png"
+    },
+
+    "bear_hibernate": {
+      "_comment": "Ten percent of max health over five seconds, and no actions for the duration. The channel is the cost.",
+      "name": "Hibernate",
+      "race": "bear",
+      "form": "animal",
+      "unlockLevel": 4,
+      "resourceCost": 0,
+      "cooldown": 45.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "channel", "duration": 5.0, "self": true },
+        { "type": "hot_percent", "value": 20, "duration": 5.0, "tickRate": 1.0, "self": true }
+      ],
+      "animation": "hibernate",
+      "sfx": "hibernate.wav",
+      "vfx": "slumber",
+      "image": "bear_hibernate.png"
+    },
+
+    "bear_roar": {
+      "name": "Roar",
+      "race": "bear",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 25,
+      "cooldown": 15.0,
+      "castTime": 0.0,
+      "range": 250.0,
+      "targetType": "enemy",
+      "aoe": { "shape": "circle", "radius": 250.0 },
+      "statusEffects": [
+        { "type": "taunt", "duration": 5.0 }
+      ],
+      "animation": "roar",
+      "sfx": "roar.wav",
+      "vfx": "roar_ring",
+      "image": "bear_roar.png"
+    },
+
+    "bear_pounce": {
+      "name": "Pounce",
+      "race": "bear",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 30,
+      "cooldown": 14.0,
+      "castTime": 0.0,
+      "range": 260.0,
+      "targetType": "enemy",
+      "damage": 24,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "movement": { "type": "dash", "distance": 260.0 },
+      "aoe": { "shape": "circle", "radius": 110.0 },
+      "statusEffects": [
+        { "type": "root", "duration": 2.0 }
+      ],
+      "animation": "pounce",
+      "sfx": "pounce.wav",
+      "vfx": "impact",
+      "image": "bear_pounce.png"
+    },
+
+    "deer_ranged_shot": {
+      "_comment": "The healer's filler: low damage, cheap enough to use between heals without threatening the mana pool.",
+      "name": "Ranged Shot",
+      "race": "deer",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 6,
+      "cooldown": 2.0,
+      "castTime": 0.4,
+      "range": 420.0,
+      "targetType": "enemy",
+      "damage": 10,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "projectile": { "type": "linear", "speed": 700.0, "width": 24.0 },
+      "animation": "shoot",
+      "sfx": "shot.wav",
+      "vfx": "bolt",
+      "image": "deer_ranged_shot.png"
+    },
+
+    "deer_mend": {
+      "name": "Mend",
+      "race": "deer",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 22,
+      "cooldown": 1.5,
+      "castTime": 1.2,
+      "range": 400.0,
+      "targetType": "ally",
+      "healing": 34,
+      "animation": "cast_heal",
+      "sfx": "mend.wav",
+      "vfx": "heal_single",
+      "image": "deer_mend.png"
+    },
+
+    "deer_renewal": {
+      "name": "Renewal",
+      "race": "deer",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 55,
+      "cooldown": 12.0,
+      "castTime": 2.0,
+      "range": 350.0,
+      "targetType": "ally",
+      "healing": 22,
+      "aoe": { "shape": "circle", "radius": 250.0 },
+      "statusEffects": [
+        { "type": "hot", "value": 8, "duration": 6.0, "tickRate": 2.0 }
+      ],
+      "animation": "cast_heal",
+      "sfx": "renewal.wav",
+      "vfx": "heal_area",
+      "image": "deer_renewal.png"
+    },
+
+    "deer_clear_mind": {
+      "name": "Clear Mind",
+      "race": "deer",
+      "form": "animal",
+      "unlockLevel": 4,
+      "resourceCost": 30,
+      "cooldown": 20.0,
+      "castTime": 0.0,
+      "range": 400.0,
+      "targetType": "ally",
+      "removesDebuffs": 3,
+      "animation": "cast_utility",
+      "sfx": "clear_mind.wav",
+      "vfx": "cleanse",
+      "image": "deer_clear_mind.png"
+    },
+
+    "deer_bounty": {
+      "_comment": "Restores 30% of each ally's maximum resource, whatever that resource is. Because the pool follows role rather than race, this one entry serves a rage tank and a stamina striker without knowing either exists.",
+      "name": "Bounty",
+      "race": "deer",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 60,
+      "cooldown": 90.0,
+      "castTime": 0.0,
+      "range": 300.0,
+      "targetType": "ally",
+      "aoe": { "shape": "circle", "radius": 300.0 },
+      "statusEffects": [
+        { "type": "resource", "value": 300 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "bounty.wav",
+      "vfx": "bounty",
+      "image": "deer_bounty.png"
+    }
+  }
+}

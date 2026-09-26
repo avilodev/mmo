@@ -1,0 +1,169 @@
+# The build, the tests, the cross-tree checks and the sanitizers.
+#
+# Every one of these existed and none of them ran anywhere: `make strict`,
+# `make test`, the four cross-tree scripts and ten sanitizer suites all
+# depended on a person remembering. The cross-tree checks in particular could
+# not run without both repositories present at once, which is exactly why the
+# protocol and the world format could drift.
+#
+# So this job checks out both trees, side by side, in the layout the scripts
+# expect:
+#
+#     workspace/
+#       mmo_server/    <- this repository
+#       mmo_client/    <- checked out beside it
+#
+# The client's Windows build is not attempted here. What CI can build of the
+# client is what matters most: the world generator and the packet dispatchers,
+# which are the code that produces the file the server reads and parses the
+# bytes a hostile server could send.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      # A throwaway PostgreSQL, so character_items_db_test actually runs.
+      # It is the only test that exercises item persistence and the only one
+      # that calls item_instance_seed() — which is why the instance-id defect
+      # that corrupted inventories survived a green `make test` for as long as
+      # it did: the test that would have caught it skips itself when
+      # MMO_TEST_PGCONN is unset, and it was never set.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_world
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out the server
+        uses: actions/checkout@v4
+        with:
+          path: mmo_server
+
+      # The cross-tree checks compare the two protocol.h copies and the two
+      # world_format.h copies. They skip themselves when the client is absent,
+      # which would make this whole job pass while the trees disagreed.
+      - name: Check out the client beside it
+        uses: actions/checkout@v4
+        with:
+          repository: avilodev/mmo_client
+          ref: ${{ github.ref_name }}
+          path: mmo_client
+          # A branch that exists in one repository and not the other is
+          # normal; fall back to the default branch rather than failing.
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Check out the client's default branch if that branch is absent
+        uses: actions/checkout@v4
+        with:
+          repository: avilodev/mmo_client
+          path: mmo_client
+        if: ${{ hashFiles('mmo_client/Makefile') == '' }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libsqlite3-dev libhiredis-dev libpq-dev \
+            libssl-dev libsodium-dev postgresql-client redis-tools
+
+      - name: Build with warnings as errors
+        working-directory: mmo_server
+        run: make strict
+
+      # MMO_CLIENT_ROOT is set explicitly rather than relying on the sibling
+      # default, so a checkout that failed to produce a client tree fails this
+      # step instead of silently skipping every cross-tree check and going
+      # green -- which is exactly the shape of "the trees were never compared
+      # at all, and nobody noticed".
+      - name: Cross-tree checks
+        working-directory: mmo_server
+        env:
+          MMO_CLIENT_ROOT: ${{ github.workspace }}/mmo_client
+        run: |
+          ./tests/check_tree_pairing.sh
+          ./tests/check_protocol_version.sh
+          ./tests/check_protocol_sync.sh
+          ./tests/check_single_definition.sh
+          ./tests/check_pinning_sync.sh
+          ./tests/check_client_content.sh
+
+      # The world file is a gigabyte at its shipped size, so CI generates a
+      # small one: what is being checked is that the generator and both readers
+      # agree about the layout, which does not depend on how big the world is.
+      - name: Generate a small world and check the format
+        run: |
+          cd mmo_client
+          make Game/data/bin/worldgen
+          ./Game/data/bin/worldgen /tmp/world.dat 256 256
+          mkdir -p ../mmo_server/world_server/data ../mmo_server/world_server/bin/data
+          cp /tmp/world.dat ../mmo_server/world_server/data/world.dat
+          cp /tmp/world.dat ../mmo_server/world_server/bin/data/world.dat
+          cd ../mmo_server
+          ./tests/check_world_format.sh
+
+      - name: Prepare the throwaway database
+        env:
+          PGPASSWORD: ci
+        run: |
+          psql -h 127.0.0.1 -U postgres -d ci_world -c "SELECT version();"
+
+      - name: Server tests
+        working-directory: mmo_server
+        env:
+          # The one test that touches PostgreSQL. It skips itself, successfully,
+          # when this is unset — which is how the item-instance defect stayed
+          # hidden behind a green suite.
+          MMO_TEST_PGCONN: "host=127.0.0.1 port=5432 dbname=ci_world user=postgres password=ci"
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+        run: make test
+
+      - name: Server sanitizers
+        working-directory: mmo_server
+        run: make sanitize
+
+      - name: Client tests
+        working-directory: mmo_client
+        run: make test
+
+      - name: Client packet dispatchers under ASan and UBSan
+        working-directory: mmo_client
+        run: make net-sanitize
+
+      - name: Upload sanitizer logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-logs
+          path: /tmp/*_tsan.log
+          if-no-files-found: ignore

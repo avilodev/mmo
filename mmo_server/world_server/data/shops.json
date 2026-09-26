@@ -1,0 +1,5 @@
+{
+  "_comment": "buy_price omitted falls back to item value * 2 in shop.c. Keep every buy_price strictly above the item's sell value, or players can buy and resell for profit and mint coin.",
+  "_currency": "Each shop trades in one kingdom's coin, named by the optional 'currency' key: 0 Ennara, 1 Kingdom 1, 2 Kingdom 2, 3 Kingdom 3 (CurrencyId in common/include/world_regions.h). A shop that omits it trades in Ennara's coin. Prices are quoted in that currency, purchases are charged in it, and sales pay it.",
+  "shops": []
+}

@@ -1,0 +1,135 @@
+{
+  "id": 21,
+  "name": "God of the Hunt",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Walk while you talk. Standing still is how things end up eaten.\n\nYou smell like the rift. Everyone does, the first week. It passes.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden sent me.",
+          "next_page": 1,
+          "fail_page": -1,
+          "action": "quest_turnin",
+          "action_value": 101,
+          "conditions": [
+            {
+              "type": "quest_complete",
+              "value": 101
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "The Warden sent me.",
+          "next_page": 0,
+          "conditions": [
+            {
+              "type": "quest_active",
+              "value": 101
+            }
+          ]
+        },
+        {
+          "option_id": 3,
+          "text": "I was not sent here.",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_not_started",
+              "value": 101
+            }
+          ]
+        },
+        {
+          "option_id": 4,
+          "text": "Where is the gate again?",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 101
+            },
+            {
+              "type": "quest_active",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Nothing. Just passing.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_turned_in",
+              "value": 101
+            },
+            {
+              "type": "quest_turned_in",
+              "value": 200
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Good. Then keep up.\n\nHere is the whole of it. You are fast. You are not fast alone. Anything you can run\ndown by yourself was already dying, and the rest you take with the pack at your\nshoulder -- and the pack does not wait for you to finish deciding.\n\nChange. Now, not in a moment. Animal Form is not something you put on for the hunt.\nIt is how you learn the ground under your own feet. Run the ring road until you stop\nthinking about running it.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "How far?",
+          "next_page": 2,
+          "action": "quest_accept",
+          "action_value": 200,
+          "conditions": [
+            {
+              "type": "quest_available",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "option_id": 2,
+          "text": "How far?",
+          "next_page": 2
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Until it is boring. Then further.\n\nThe sentry at the south gate logs every new mouth in this city. See her, and after\nthat Ennara is yours to wear out.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "I will go.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "You are not on my list, and I do not keep one.\n\nGo back to the Warden in the middle of the courtyard. She sorts you. I run you.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "The Warden, then.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Still here? Move.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Understood.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

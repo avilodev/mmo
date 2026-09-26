@@ -1,0 +1,13 @@
+# Line-ending policy
+#
+# The repository stores every text file with LF. Before this file, history was
+# mixed: 100 of 173 tracked text files held CRLF, so an LF edit from WSL showed
+# up as a whole-file diff and buried the real change during review.
+
+* text=auto eol=lf
+
+# Shell scripts must be LF or they fail to execute.
+*.sh text eol=lf
+
+# Generated world data is binary and enormous; never diff or normalize it.
+*.dat binary
