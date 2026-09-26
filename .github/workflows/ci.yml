@@ -1,22 +1,19 @@
-# The build, the tests, the cross-tree checks and the sanitizers.
+# The build, the tests, the cross-tree checks and the sanitizers, for both
+# trees.
 #
-# Every one of these existed and none of them ran anywhere: `make strict`,
-# `make test`, the four cross-tree scripts and ten sanitizer suites all
-# depended on a person remembering. The cross-tree checks in particular could
-# not run without both repositories present at once, which is exactly why the
-# protocol and the world format could drift.
+# Client and server used to be two repositories, and the server's CI had to
+# check the client out beside it -- falling back to the client's default branch
+# when a branch existed in only one of them -- so the cross-tree checks had
+# something to compare. One checkout now holds both trees in the layout the
+# scripts expect:
 #
-# So this job checks out both trees, side by side, in the layout the scripts
-# expect:
+#     mmo_server/
+#     mmo_client/
 #
-#     workspace/
-#       mmo_server/    <- this repository
-#       mmo_client/    <- checked out beside it
+# so a branch always compares the server and client that were committed
+# together.
 #
-# The client's Windows build is not attempted here. What CI can build of the
-# client is what matters most: the world generator and the packet dispatchers,
-# which are the code that produces the file the server reads and parses the
-# bytes a hostile server could send.
+# The client's Windows build (and the Win32 Launcher) is not attempted here.
 
 name: CI
 
@@ -31,13 +28,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  server:
     runs-on: ubuntu-latest
 
     services:
       # A throwaway PostgreSQL, so character_items_db_test actually runs.
       # It is the only test that exercises item persistence and the only one
-      # that calls item_instance_seed() — which is why the instance-id defect
+      # that calls item_instance_seed() -- which is why the instance-id defect
       # that corrupted inventories survived a green `make test` for as long as
       # it did: the test that would have caught it skips itself when
       # MMO_TEST_PGCONN is unset, and it was never set.
@@ -63,31 +60,7 @@ jobs:
           --health-retries 20
 
     steps:
-      - name: Check out the server
-        uses: actions/checkout@v4
-        with:
-          path: mmo_server
-
-      # The cross-tree checks compare the two protocol.h copies and the two
-      # world_format.h copies. They skip themselves when the client is absent,
-      # which would make this whole job pass while the trees disagreed.
-      - name: Check out the client beside it
-        uses: actions/checkout@v4
-        with:
-          repository: avilodev/mmo_client
-          ref: ${{ github.ref_name }}
-          path: mmo_client
-          # A branch that exists in one repository and not the other is
-          # normal; fall back to the default branch rather than failing.
-          fetch-depth: 1
-        continue-on-error: true
-
-      - name: Check out the client's default branch if that branch is absent
-        uses: actions/checkout@v4
-        with:
-          repository: avilodev/mmo_client
-          path: mmo_client
-        if: ${{ hashFiles('mmo_client/Makefile') == '' }}
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -101,10 +74,8 @@ jobs:
         run: make strict
 
       # MMO_CLIENT_ROOT is set explicitly rather than relying on the sibling
-      # default, so a checkout that failed to produce a client tree fails this
-      # step instead of silently skipping every cross-tree check and going
-      # green -- which is exactly the shape of "the trees were never compared
-      # at all, and nobody noticed".
+      # default, so a missing client tree fails this step instead of silently
+      # skipping every cross-tree check and going green.
       - name: Cross-tree checks
         working-directory: mmo_server
         env:
@@ -141,7 +112,7 @@ jobs:
         working-directory: mmo_server
         env:
           # The one test that touches PostgreSQL. It skips itself, successfully,
-          # when this is unset — which is how the item-instance defect stayed
+          # when this is unset -- which is how the item-instance defect stayed
           # hidden behind a green suite.
           MMO_TEST_PGCONN: "host=127.0.0.1 port=5432 dbname=ci_world user=postgres password=ci"
           REDIS_HOST: 127.0.0.1
@@ -152,14 +123,6 @@ jobs:
         working-directory: mmo_server
         run: make sanitize
 
-      - name: Client tests
-        working-directory: mmo_client
-        run: make test
-
-      - name: Client packet dispatchers under ASan and UBSan
-        working-directory: mmo_client
-        run: make net-sanitize
-
       - name: Upload sanitizer logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -167,3 +130,31 @@ jobs:
           name: sanitizer-logs
           path: /tmp/*_tsan.log
           if-no-files-found: ignore
+
+  # The whole game tree builds and tests on Linux: the Makefile resolves GLFW,
+  # OpenGL and OpenSSL through pkg-config, and the network sources build
+  # against the Winsock shim in Game/tests/hostcompat.
+  client:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mmo_client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libglfw3-dev libgl-dev libssl-dev
+
+      - name: Tests
+        run: make test
+
+      - name: Build the game with warnings as errors
+        run: make strict
+
+      - name: Packet dispatchers under ASan and UBSan
+        run: make net-sanitize

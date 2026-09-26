@@ -1,0 +1,5 @@
+# Line-ending policy: store text as LF. mmo_client/ and mmo_server/ carry
+# their own .gitattributes with the per-tree rules.
+* text=auto eol=lf
+*.pdf binary
+*.png binary
