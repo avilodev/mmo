@@ -93,6 +93,51 @@ typedef struct {
      */
     int max_npcs;
 
+    /** Size the projectile pool for this world; 0 keeps PROJECTILE_CAPACITY_DEFAULT.
+     *
+     * Heap-allocated at startup like the NPC pool, so a shard tuned for dense
+     * combat is a deployment decision. Set `projectile_capacity = N`.
+     */
+    int projectile_capacity;
+
+    /** Size the ground-zone pool; 0 keeps ZONE_CAPACITY_DEFAULT.
+     *
+     * One pool serves players and, from V6, NPCs. Set `zone_capacity = N`.
+     */
+    int zone_capacity;
+
+    /** Status effect slots per NPC; 0 keeps NPC_STATE_EFFECT_SLOTS_DEFAULT.
+     *
+     * Sizes a per-slot array on the NPC pool, matching the eight a player carries.
+     * Set `npc_effect_slots = N`.
+     */
+    int npc_effect_slots;
+
+    /** Ground zones one caster may hold at once; 0 keeps ZONE_PER_OWNER_DEFAULT.
+     *
+     * Only matters because NPCs cast zones: a Rot Crawler lays one per tick and a
+     * Firebrand five per cast, so without a per-caster cap two of either would own
+     * the whole pool and every other zone in the world would fail to spawn. Past
+     * the cap a caster's oldest zone is retired rather than the new one refused,
+     * which is what makes a trail behave like a trail. Set `zone_per_owner = N`.
+     */
+    int zone_per_owner;
+
+    /** Live summons one NPC may own; 0 keeps SUMMON_PER_PARENT_DEFAULT.
+     *
+     * A summoner with a two-second cooldown and no budget fills the NPC pool.
+     * Set `summon_per_parent = N`.
+     */
+    int summon_per_parent;
+
+    /** NPCs one player is told about per tick; 0 means no limit.
+     *
+     * A bound on the broadcast, not on the world: an NPC past the limit still
+     * exists, still thinks and can still kill you. Nearest-first, so what is cut
+     * is what is furthest away. Set `npc_view_limit = N`.
+     */
+    int npc_view_limit;
+
     /** Retain compiled packet budgets for override fields left at zero. */
     PacketLimitOverrides limits;
 

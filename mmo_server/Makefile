@@ -115,6 +115,10 @@ data: $(if $(WORLD_DAT_SRC),$(WORLD_BIN)/data/world.dat)
 	@rm -rf $(WORLD_BIN)/data/dialogues
 	@cp -r world_server/data/dialogues $(WORLD_BIN)/data/
 	@cp world_server/data/npc_types.json $(WORLD_BIN)/data/
+	@# Same reason the dialogues directory is cleared first: an enemy deleted from
+	@# the source tree must stop loading here, and cp -r would nest instead.
+	@rm -rf $(WORLD_BIN)/data/npc
+	@cp -r world_server/data/npc $(WORLD_BIN)/data/
 	@cp world_server/data/spawns.json $(WORLD_BIN)/data/
 	@cp world_server/data/attack_profiles.json $(WORLD_BIN)/data/
 	@cp world_server/data/quests.json $(WORLD_BIN)/data/
@@ -344,7 +348,8 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
       $(TEST_BIN)/inventory_handler_test \
       $(TEST_BIN)/social_database_test $(TEST_BIN)/presence_test \
       $(TEST_BIN)/friend_bus_test $(TEST_BIN)/realm_friends_test \
-      $(TEST_BIN)/world_friends_test
+      $(TEST_BIN)/world_friends_test \
+      $(TEST_BIN)/npc_registry_test $(TEST_BIN)/npc_content_test $(TEST_BIN)/npc_behavior_test
 	@echo "=== Checking the wire format against PROTOCOL_VERSION ==="
 	@./tests/check_protocol_version.sh
 	@echo ""
@@ -413,6 +418,12 @@ test: $(TEST_BIN)/packet_limiter_test $(TEST_BIN)/config_limits_test $(TEST_BIN)
 	@echo ""
 	@echo "=== Running race registry test ==="
 	@./$(TEST_BIN)/race_registry_test
+	@echo ""
+	@echo "=== Running NPC registry test ==="
+	@./$(TEST_BIN)/npc_registry_test $(TEST_BIN)/npc_fixtures
+	@echo ""
+	@echo "=== Running NPC content test (validates the shipped data files) ==="
+	@./$(TEST_BIN)/npc_content_test $(WORLD_DIR)/data/npc
 	@echo ""
 	@echo "=== Running progression test ==="
 	@./$(TEST_BIN)/progression_test
@@ -659,7 +670,7 @@ $(TEST_BIN)/net_loop_test: $(NET_LOOP_TEST_SRC)
 # ---------------------------------------------------------------------------
 .PHONY: sanitize
 sanitize: player-index-sanitize session-registry-sanitize party-sanitize \
-          npc-world-sanitize interest-sanitize broadcast-pool-sanitize \
+          npc-world-sanitize npc-behavior-sanitize interest-sanitize broadcast-pool-sanitize \
           net-reactor-sanitize net-loop-sanitize tick-scheduler-sanitize \
           spatial-grid-sanitize routes-fuzz-sanitize loot-sanitize \
           shop-sanitize
@@ -795,6 +806,24 @@ shop-sanitize:
 # and respawns, all concurrently. Run this when touching npc_world.c or
 # npc_snapshot.c. Same ASLR caveat as the targets above.
 .PHONY: npc-world-sanitize
+npc-behavior-sanitize:
+	@mkdir -p $(TEST_BIN)
+	@echo "=== AddressSanitizer + UBSan (NPC effects, mitigation, triggers, one tick per type) ==="
+	$(CC) -Wall -Wextra -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -pthread $(TEST_CFLAGS_BASE) \
+	  -o $(TEST_BIN)/npc_behavior_asan tests/npc_behavior_test.c \
+	  $(WORLD_DIR)/src/npc_effects.c $(WORLD_DIR)/src/npc_mitigation.c \
+	  $(WORLD_DIR)/src/npc_triggers.c $(WORLD_DIR)/src/npc_delivery.c \
+	  $(WORLD_DIR)/src/npc_geometry.c $(WORLD_DIR)/src/npc_behavior.c \
+	  $(WORLD_DIR)/src/npc_ai.c $(WORLD_DIR)/src/npc_summon.c \
+	  $(WORLD_DIR)/src/npc_ai_profile.c $(WORLD_DIR)/src/npc_world.c \
+	  $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c \
+	  $(NPC_REGISTRY_SRC) $(COMMON_DIR)/src/damage_model.c \
+	  $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c -lm
+	@MMO_LOG_LEVEL=error ./$(TEST_BIN)/npc_behavior_asan $(WORLD_DIR)/data/npc > /tmp/npc_behavior_asan.log 2>&1 \
+	  && echo "  NPC runtime clean under ASan + UBSan" \
+	  || { tail -40 /tmp/npc_behavior_asan.log; exit 1; }
+	@echo ""
+
 npc-world-sanitize:
 	@mkdir -p $(TEST_BIN)
 	@echo "=== ThreadSanitizer (concurrent damage vs. snapshots vs. churn) ==="
@@ -927,7 +956,7 @@ $(TEST_BIN)/item_instance_test: tests/item_instance_test.c $(WORLD_DIR)/src/item
 # replaced, so what is measured is recipient selection.
 $(TEST_BIN)/chat_routing_test: tests/chat_routing_test.c $(WORLD_DIR)/src/chat.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
-	$(CC) $(TEST_CFLAGS) -std=gnu11 -o $@ $^
+	$(CC) $(TEST_CFLAGS) -std=gnu11 -o $@ $^ -lm
 
 # The five handlers that move a player's belongings. The real handlers, the
 # real inventory model and the real item registry; player_level.c is stubbed
@@ -935,7 +964,7 @@ $(TEST_BIN)/chat_routing_test: tests/chat_routing_test.c $(WORLD_DIR)/src/chat.c
 # the experience curve.
 $(TEST_BIN)/inventory_handler_test: tests/inventory_handler_test.c $(WORLD_DIR)/src/packet_handler.c $(WORLD_DIR)/src/items_database.c $(WORLD_DIR)/src/item_instance.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
-	$(CC) $(TEST_CFLAGS) -std=gnu11 -o $@ $^
+	$(CC) $(TEST_CFLAGS) -std=gnu11 -o $@ $^ -lm
 
 # All three services name their dispatcher's header "routes.h", so the search
 # path has to carry exactly one of them: TEST_CFLAGS_BASE includes the world's
@@ -987,6 +1016,25 @@ $(TEST_BIN)/json_util_test: tests/json_util_test.c $(COMMON_DIR)/src/json_util.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
+# Covers the composed NPC content model: that unresolved references fail the load
+# rather than being skipped, that an override may retune a scalar but not change an
+# ability's shape, that each validation rule actually fires, and -- the two the
+# design turns on -- that nothing caps how many types load and that per-NPC sizing
+# is read off the content instead of a #define.
+NPC_REGISTRY_SRC = $(WORLD_DIR)/src/npc_registry.c $(WORLD_DIR)/src/npc_registry_load.c \
+                   $(WORLD_DIR)/src/npc_registry_types.c \
+                   $(WORLD_DIR)/src/npc_content_validate.c
+
+$(TEST_BIN)/npc_registry_test: tests/npc_registry_test.c $(NPC_REGISTRY_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Runs every rule over the data files the server actually ships, so a content typo
+# fails here rather than as an enemy standing inert in a live world.
+$(TEST_BIN)/npc_content_test: tests/npc_content_test.c $(NPC_REGISTRY_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
 # Covers the race registry and, with it, contract M1: adding a race is a data
 # change. The eleventh-race fixture is the executable form of that promise.
 $(TEST_BIN)/dialogue_system_test: tests/dialogue_system_test.c $(WORLD_DIR)/src/dialogue_system.c $(WORLD_DIR)/src/dialogue_loader.c $(QUEST_SRC) $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
@@ -1020,7 +1068,7 @@ $(TEST_BIN)/quest_abandon_test: tests/quest_abandon_test.c $(QUEST_SRC) $(COMMON
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
-$(TEST_BIN)/opening_sequence_test: tests/opening_sequence_test.c $(QUEST_SRC) $(WORLD_DIR)/src/dialogue_system.c $(WORLD_DIR)/src/dialogue_loader.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_spawns.c $(WORLD_DIR)/src/items_database.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
+$(TEST_BIN)/opening_sequence_test: tests/opening_sequence_test.c $(QUEST_SRC) $(WORLD_DIR)/src/dialogue_system.c $(WORLD_DIR)/src/dialogue_loader.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_spawns.c $(WORLD_DIR)/src/npc_mitigation.c $(WORLD_DIR)/src/npc_geometry.c $(WORLD_DIR)/src/npc_effects.c $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(COMMON_DIR)/src/damage_model.c $(COMMON_DIR)/src/progression.c $(WORLD_DIR)/src/world_collision.c $(NPC_REGISTRY_SRC) $(WORLD_DIR)/src/items_database.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/race_registry.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
@@ -1090,6 +1138,22 @@ $(TEST_BIN)/item_data_test: tests/item_data_test.c $(WORLD_DIR)/src/items_databa
 $(TEST_BIN)/broadcast_pool_test: tests/broadcast_pool_test.c $(WORLD_DIR)/src/broadcast_pool.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^
+
+# The runtime half: effects, mitigation and triggers against the shipped content.
+# The deferred queue's far end is stubbed in the test -- every action an ability
+# takes reaches outside the NPC pool, and a test of the decision has no business
+# linking the projectile pool and the player registry to watch it.
+$(TEST_BIN)/npc_behavior_test: tests/npc_behavior_test.c $(WORLD_DIR)/src/npc_effects.c \
+    $(WORLD_DIR)/src/npc_mitigation.c $(WORLD_DIR)/src/npc_triggers.c \
+    $(WORLD_DIR)/src/npc_delivery.c $(WORLD_DIR)/src/npc_geometry.c \
+    $(WORLD_DIR)/src/npc_behavior.c $(WORLD_DIR)/src/npc_ai.c \
+    $(WORLD_DIR)/src/npc_summon.c \
+    $(WORLD_DIR)/src/npc_ai_profile.c $(WORLD_DIR)/src/npc_world.c \
+    $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c \
+    $(NPC_REGISTRY_SRC) $(COMMON_DIR)/src/damage_model.c \
+    $(COMMON_DIR)/src/progression.c $(COMMON_DIR)/src/json_util.c $(COMMON_DIR)/src/log.c
+	@mkdir -p $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 $(TEST_BIN)/npc_world_test: tests/npc_world_test.c $(WORLD_DIR)/src/npc_world.c $(WORLD_DIR)/src/npc_snapshot.c $(WORLD_DIR)/src/spatial_grid.c $(COMMON_DIR)/src/log.c
 	@mkdir -p $(TEST_BIN)

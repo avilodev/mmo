@@ -9,9 +9,12 @@
 #include "log.h"
 #include "player_data.h"
 #include "zone_system.h"
+#include "player_effects.h"
+#include "npc_query.h"
 #include "config.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <arpa/inet.h>
 
 static int equip_index_for(uint8_t equip_slot) {
@@ -117,6 +120,23 @@ void handle_player_move(int client_fd, uint32_t character_id, int player_slot, P
                                         player->pos_x, player->pos_y,
                                         client_x, client_y,
                                         player->move_speed, &now);
+
+    /* Fear refuses movement *toward* what caused it. The player keeps control,
+     * they simply cannot close the distance -- which is what running scared
+     * looks like from the server's side, and needs nothing of the client beyond
+     * the correction it already handles.
+     *
+     * The source is an NPC identifier, so its position comes from the shared
+     * query index rather than from a pool scan on a network thread. */
+    if (verdict == MOVE_ACCEPT) {
+        uint32_t fear_src = player_fear_source(player);
+        NpcQueryHit src;
+        if (fear_src && npc_query_lookup(fear_src, &src)) {
+            float was   = hypotf(player->pos_x - src.pos_x, player->pos_y - src.pos_y);
+            float now_d = hypotf(client_x - src.pos_x, client_y - src.pos_y);
+            if (now_d < was) verdict = MOVE_REJECT_SPEED;
+        }
+    }
 
     if (verdict != MOVE_ACCEPT) {
         LOG_WARN_RL(5, 60,

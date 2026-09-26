@@ -94,7 +94,22 @@ static void index_erase(NPCWorld* world, uint32_t id) {
  * @param capacity  Requested slots, clamped to [1, NPC_CAPACITY_MAX].
  * @return  1 on success, or 0 for NULL input or allocation failure.
  */
+/** Clamp one configured state width to its ceiling, taking the default at zero. */
+static int state_width(int requested, int fallback, int ceiling, const char* what) {
+    if (requested <= 0) return fallback;
+    if (requested > ceiling) {
+        LOG_ERROR("[NPC] %s of %d is past the %d this build allocates; keeping %d",
+                  what, requested, ceiling, ceiling);
+        return ceiling;
+    }
+    return requested;
+}
+
 int npc_world_init(NPCWorld* world, int capacity) {
+    return npc_world_init_sized(world, capacity, NULL);
+}
+
+int npc_world_init_sized(NPCWorld* world, int capacity, const NPCStateSizes* sizes) {
     if (!world) return 0;
 
     if (capacity <= 0)                capacity = NPC_CAPACITY_DEFAULT;
@@ -112,8 +127,35 @@ int npc_world_init(NPCWorld* world, int capacity) {
     world->live_slots    = calloc((size_t)capacity, sizeof(int));
     world->live_position = calloc((size_t)capacity, sizeof(int));
 
+    /* Per-NPC state, sized from the content rather than from a #define. */
+    world->max_abilities = state_width(sizes ? sizes->max_abilities : 0,
+                                       NPC_STATE_ABILITIES_DEFAULT,
+                                       NPC_STATE_ABILITIES_MAX, "ability width");
+    world->max_effect_slots = state_width(sizes ? sizes->max_effect_slots : 0,
+                                          NPC_STATE_EFFECT_SLOTS_DEFAULT,
+                                          NPC_STATE_EFFECT_SLOTS_MAX, "effect slots");
+    world->max_triggers = sizes && sizes->max_triggers > 0 ? sizes->max_triggers : 0;
+    world->latch_words  = (world->max_triggers + 31) / 32;
+    world->max_phases   = sizes && sizes->max_phases > 0 ? sizes->max_phases : 0;
+
+    world->ability_cooldowns = calloc((size_t)capacity * (size_t)world->max_abilities,
+                                      sizeof(double));
+    world->ability_swap = calloc((size_t)capacity * (size_t)world->max_abilities,
+                                 sizeof(uint16_t));
+    world->effects = calloc((size_t)capacity * (size_t)world->max_effect_slots,
+                            sizeof(NPCEffect));
+    world->trigger_latches = world->latch_words
+        ? calloc((size_t)capacity * (size_t)world->latch_words, sizeof(uint32_t))
+        : NULL;
+    world->phase_index      = calloc((size_t)capacity, sizeof(uint8_t));
+    world->phase_started_at = calloc((size_t)capacity, sizeof(double));
+    world->phase_uses       = calloc((size_t)capacity, sizeof(uint16_t));
+
     if (!world->npcs || !world->slot_locks || !world->index_slot ||
-        !world->live_slots || !world->live_position) {
+        !world->live_slots || !world->live_position ||
+        !world->ability_cooldowns || !world->ability_swap || !world->effects ||
+        (world->latch_words && !world->trigger_latches) ||
+        !world->phase_index || !world->phase_started_at || !world->phase_uses) {
         LOG_ERROR("[NPC] could not allocate a pool of %d NPCs", capacity);
         npc_world_shutdown(world);
         return 0;
@@ -129,10 +171,17 @@ int npc_world_init(NPCWorld* world, int capacity) {
 
     pthread_rwlock_init(&world->lock, NULL);
 
-    LOG_INFO("[NPC] pool initialized: %d slots, %u index buckets (%zu KB)",
-             capacity, buckets,
+    size_t state_bytes = (size_t)capacity *
+        ((size_t)world->max_abilities * sizeof(double) +
+         (size_t)world->max_effect_slots * sizeof(NPCEffect) +
+         (size_t)world->latch_words * sizeof(uint32_t) +
+         sizeof(uint8_t) + sizeof(double) + sizeof(uint16_t));
+
+    LOG_INFO("[NPC] pool initialized: %d slots, %u index buckets, "
+             "%d ability + %d effect slots each (%zu KB total)",
+             capacity, buckets, world->max_abilities, world->max_effect_slots,
              ((size_t)capacity * (sizeof(NPCEntity) + sizeof(pthread_mutex_t)) +
-              (size_t)buckets * sizeof(int32_t)) / 1024);
+              (size_t)buckets * sizeof(int32_t) + state_bytes) / 1024);
     return 1;
 }
 
@@ -153,7 +202,102 @@ void npc_world_shutdown(NPCWorld* world) {
     free(world->index_slot);
     free(world->live_slots);
     free(world->live_position);
+    free(world->ability_cooldowns);
+    free(world->ability_swap);
+    free(world->effects);
+    free(world->trigger_latches);
+    free(world->phase_index);
+    free(world->phase_started_at);
+    free(world->phase_uses);
     memset(world, 0, sizeof(*world));
+}
+
+/* --- Per-NPC state ------------------------------------------------------- */
+
+/** Report whether a slot index names a real slot in an initialized pool. */
+static int slot_ok(const NPCWorld* world, int slot) {
+    return world && world->npcs && slot >= 0 && slot < world->capacity;
+}
+
+double* npc_world_cooldowns(NPCWorld* world, int slot) {
+    if (!slot_ok(world, slot) || !world->ability_cooldowns) return NULL;
+    return &world->ability_cooldowns[(size_t)slot * (size_t)world->max_abilities];
+}
+
+int npc_world_ability_override(NPCWorld* world, int slot, int ability) {
+    if (!slot_ok(world, slot) || !world->ability_swap) return -1;
+    if (ability < 0 || ability >= world->max_abilities) return -1;
+    uint16_t to = world->ability_swap[(size_t)slot * (size_t)world->max_abilities +
+                                      (size_t)ability];
+    /* Zero is the cleared state, which means "not redirected" rather than
+     * "redirected to registry ability 0" -- npc_world_clear_state() memsets this
+     * array and a respawned NPC must come back with the kit its type declares.
+     * Redirections are therefore stored biased by one. */
+    return to == 0 ? -1 : (int)to - 1;
+}
+
+void npc_world_ability_swap(NPCWorld* world, int slot, int ability,
+                            int registry_index) {
+    if (!slot_ok(world, slot) || !world->ability_swap) return;
+    if (ability < 0 || ability >= world->max_abilities) return;
+    if (registry_index < -1 || registry_index >= 0xFFFE) return;
+    world->ability_swap[(size_t)slot * (size_t)world->max_abilities + (size_t)ability] =
+        registry_index < 0 ? 0 : (uint16_t)(registry_index + 1);
+}
+
+NPCEffect* npc_world_effects(NPCWorld* world, int slot) {
+    if (!slot_ok(world, slot) || !world->effects) return NULL;
+    return &world->effects[(size_t)slot * (size_t)world->max_effect_slots];
+}
+
+uint32_t* npc_world_latches(NPCWorld* world, int slot) {
+    if (!slot_ok(world, slot) || !world->trigger_latches) return NULL;
+    return &world->trigger_latches[(size_t)slot * (size_t)world->latch_words];
+}
+
+int npc_world_latch_get(NPCWorld* world, int slot, int trigger) {
+    if (trigger < 0 || !world || trigger >= world->max_triggers) return 0;
+    uint32_t* words = npc_world_latches(world, slot);
+    if (!words) return 0;
+    return (words[trigger / 32] >> (trigger % 32)) & 1u;
+}
+
+void npc_world_latch_set(NPCWorld* world, int slot, int trigger) {
+    if (trigger < 0 || !world || trigger >= world->max_triggers) return;
+    uint32_t* words = npc_world_latches(world, slot);
+    if (!words) return;
+    words[trigger / 32] |= 1u << (trigger % 32);
+}
+
+void npc_world_clear_state(NPCWorld* world, int slot) {
+    if (!slot_ok(world, slot)) return;
+
+    double* cds = npc_world_cooldowns(world, slot);
+    if (cds) memset(cds, 0, (size_t)world->max_abilities * sizeof(*cds));
+
+    if (world->ability_swap)
+        memset(&world->ability_swap[(size_t)slot * (size_t)world->max_abilities], 0,
+               (size_t)world->max_abilities * sizeof(uint16_t));
+
+    NPCEffect* fx = npc_world_effects(world, slot);
+    if (fx) memset(fx, 0, (size_t)world->max_effect_slots * sizeof(*fx));
+
+    uint32_t* latches = npc_world_latches(world, slot);
+    if (latches) memset(latches, 0, (size_t)world->latch_words * sizeof(*latches));
+
+    if (world->phase_index)      world->phase_index[slot] = 0;
+    if (world->phase_started_at) world->phase_started_at[slot] = 0.0;
+    if (world->phase_uses)       world->phase_uses[slot] = 0;
+}
+
+int npc_world_max_abilities(const NPCWorld* world) {
+    return world ? world->max_abilities : 0;
+}
+int npc_world_max_effect_slots(const NPCWorld* world) {
+    return world ? world->max_effect_slots : 0;
+}
+int npc_world_latch_words(const NPCWorld* world) {
+    return world ? world->latch_words : 0;
 }
 
 /**
@@ -279,6 +423,10 @@ uint32_t npc_world_spawn(NPCWorld* world,
     if (previous_id != 0) index_erase(world, previous_id);
 
     memset(npc, 0, sizeof(*npc));
+    /* A recycled slot must not inherit the previous occupant's cooldowns, buffs
+     * or fired latches -- the state lives beside the entity now, not inside it,
+     * so clearing the entity is no longer enough to clear the NPC. */
+    npc_world_clear_state(world, slot);
     npc->id              = g_next_npc_id++;
     STR_COPY_FIELD(npc->name, name);
     npc->pos_x           = x;
@@ -333,6 +481,7 @@ void npc_world_remove(NPCWorld* world, uint32_t npc_id) {
         pthread_mutex_lock(&world->slot_locks[slot]);
         index_erase(world, npc_id);
         memset(&world->npcs[slot], 0, sizeof(NPCEntity));
+        npc_world_clear_state(world, slot);
         pthread_mutex_unlock(&world->slot_locks[slot]);
 
         /* Delisted before the count falls: live_list_remove() reads

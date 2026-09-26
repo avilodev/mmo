@@ -1,0 +1,1203 @@
+{
+  "_comment": "The shared ability registry. A row is one SHAPE - one telegraph a player learns to recognise - and types reference it by key, retuning scalars with overrides. Two enemies whose attacks a player would call the same move share a row; two whose attacks demand different responses do not. Distances are in tiles, times in seconds, and every percentage stated as an effect value is in tenths of a percent.",
+  "_count": 62,
+  "abilities": [
+    {
+      "key": "contact_hit",
+      "name": "Contact Hit",
+      "delivery": "contact",
+      "cooldown": 0.6,
+      "range_tiles": 0.5,
+      "damage": 8,
+      "_used_by": "Rusher, Zealot (10), Purge Rusher (10), Mini Wolf (5), Swarm Critter (3), Husk (6), Rot Crawler (8), Choir Add (6)"
+    },
+    {
+      "key": "lunge_strike",
+      "name": "Lunge",
+      "delivery": "telegraph",
+      "cast_time": 0.3,
+      "cooldown": 0.6,
+      "range_tiles": 1.5,
+      "damage": 12,
+      "recovery": 0.2,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1,
+        "length_tiles": 1.5
+      },
+      "_used_by": "Bonded Wolf, Wolf, Rogue Hyena, Rogue Wolf, Alpha Wolf, Alpha Predator, High Zealot, Feral Blessed Wolf"
+    },
+    {
+      "key": "feint_lunge",
+      "name": "Feint",
+      "delivery": "telegraph",
+      "cast_time": 0.3,
+      "cooldown": 1.5,
+      "range_tiles": 2,
+      "damage": 0,
+      "recovery": 0.4,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1,
+        "length_tiles": 2,
+        "resolve_mode": "none"
+      },
+      "_note": "Resolves into nothing. The player still sees the wind-up and the release, which is what makes it a feint rather than a bug.",
+      "_used_by": "Dasher"
+    },
+    {
+      "key": "dash_lunge",
+      "name": "Dash Lunge",
+      "delivery": "telegraph",
+      "cast_time": 0.4,
+      "cooldown": 1.5,
+      "range_tiles": 2,
+      "damage": 14,
+      "recovery": 0.8,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1,
+        "length_tiles": 2
+      },
+      "_note": "The 0.8s recovery is the retreat window the source describes: it is part of the shape, which is why this is its own row rather than an override of lunge_strike.",
+      "_used_by": "Dasher"
+    },
+    {
+      "key": "short_swing",
+      "name": "Sword Swing",
+      "delivery": "telegraph",
+      "cast_time": 0.3,
+      "cooldown": 0.6,
+      "range_tiles": 1,
+      "damage": 10,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1,
+        "length_tiles": 1
+      },
+      "_used_by": "Risen Soldier, Net-thrower, Cage-Keeper, Rogue Rabbit, Blood Ritualist, Chain-breaker, Cursed Knight, Iron Zealot, Vein-Binder"
+    },
+    {
+      "key": "guard_arc",
+      "name": "Guard Sweep",
+      "delivery": "telegraph",
+      "cast_time": 0.6,
+      "cooldown": 1.0,
+      "range_tiles": 1.5,
+      "damage": 16,
+      "recovery": 0.6,
+      "telegraph": {
+        "shape": "cone",
+        "radius_tiles": 1.5,
+        "angle": 120
+      },
+      "_used_by": "Enforcer, Cult Enforcer, Cult Guard, Watch Captain, Ancient Guardian"
+    },
+    {
+      "key": "heavy_arc",
+      "name": "Heavy Swipe",
+      "delivery": "telegraph",
+      "cast_time": 0.8,
+      "cooldown": 1.2,
+      "range_tiles": 2,
+      "damage": 22,
+      "recovery": 1.2,
+      "telegraph": {
+        "shape": "cone",
+        "radius_tiles": 2,
+        "angle": 120
+      },
+      "_used_by": "Bear, Feral Blessed Bear, Caged Monstrosity, Rogue Bear, Vault Guardian, Overseer, Battlefield Revenant"
+    },
+    {
+      "key": "wide_swing",
+      "name": "Wide Swing",
+      "delivery": "telegraph",
+      "cast_time": 0.9,
+      "cooldown": 1.2,
+      "range_tiles": 2,
+      "damage": 30,
+      "recovery": 1.0,
+      "telegraph": {
+        "shape": "cone",
+        "radius_tiles": 2,
+        "angle": 180
+      },
+      "_used_by": "Brawler"
+    },
+    {
+      "key": "ground_slam",
+      "name": "Ground Slam",
+      "delivery": "telegraph",
+      "cast_time": 1.2,
+      "cooldown": 1.2,
+      "range_tiles": 1.5,
+      "damage": 35,
+      "recovery": 1.4,
+      "telegraph": {
+        "shape": "circle",
+        "radius_tiles": 1.5
+      },
+      "effects": [
+        {
+          "type": "stun",
+          "duration": 0.6
+        }
+      ],
+      "_note": "A 180-degree arc and a radial slam are different answers for the player, which is why Brawler carries both rather than one with overrides.",
+      "_used_by": "Brawler"
+    },
+    {
+      "key": "claw_rake",
+      "name": "Claw Rake",
+      "delivery": "telegraph",
+      "cast_time": 0.4,
+      "cooldown": 1.2,
+      "range_tiles": 1,
+      "damage": 12,
+      "telegraph": {
+        "shape": "cone",
+        "radius_tiles": 1,
+        "angle": 120
+      },
+      "effects": [
+        {
+          "type": "dot",
+          "duration": 4,
+          "tick_rate": 1,
+          "value": 4
+        }
+      ],
+      "_used_by": "Skinner"
+    },
+    {
+      "key": "exposed_bite",
+      "name": "Exposed Bite",
+      "delivery": "telegraph",
+      "cast_time": 0.4,
+      "cooldown": 0.8,
+      "range_tiles": 1,
+      "damage": 15,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1,
+        "length_tiles": 1
+      },
+      "_note": "Frost Warden's answer once its shield is down. It is a separate row rather than short_swing because the player learns it as the punish window.",
+      "_used_by": "Frost Warden"
+    },
+    {
+      "key": "mutant_swipe",
+      "name": "Mutant Swipe",
+      "delivery": "telegraph",
+      "cast_time": 0.5,
+      "cooldown": 1.2,
+      "range_tiles": 2.5,
+      "damage": 14,
+      "recovery": 0.5,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1.2,
+        "length_tiles": 2.5,
+        "resolve_mode": "random_range"
+      },
+      "_note": "One animation, two reaches. The telegraph is honest about where it might land and dishonest about how far, which is the whole read.",
+      "_used_by": "Grafted Horror"
+    },
+    {
+      "key": "erratic_strike",
+      "name": "Erratic Strike",
+      "delivery": "telegraph",
+      "cast_time": 0.5,
+      "cooldown": 1.0,
+      "range_tiles": 2,
+      "damage": 13,
+      "recovery": 0.4,
+      "telegraph": {
+        "shape": "rectangle",
+        "width_tiles": 1,
+        "length_tiles": 2,
+        "resolve_mode": "random_cast_time"
+      },
+      "_used_by": "Failed Experiment"
+    },
+    {
+      "key": "single_bolt",
+      "name": "Bolt Cast",
+      "delivery": "projectile",
+      "cast_time": 0.4,
+      "cooldown": 1.5,
+      "range_tiles": 10,
+      "damage": 8,
+      "projectile": {
+        "speed": 420,
+        "width": 8
+      },
+      "_used_by": "Cultist, Preacher, Handler, Trapper"
+    },
+    {
+      "key": "suppressing_shot",
+      "name": "Suppressing Shot",
+      "delivery": "projectile",
+      "cast_time": 0.3,
+      "cooldown": 1.5,
+      "range_tiles": 12,
+      "damage": 4,
+      "projectile": {
+        "speed": 200,
+        "width": 8
+      },
+      "_note": "Deliberately slow travel. It punishes closing the distance in a straight line rather than dealing damage worth respecting.",
+      "_used_by": "Volley"
+    },
+    {
+      "key": "spread_shot",
+      "name": "Spread Shot",
+      "delivery": "projectile",
+      "cast_time": 0.5,
+      "cooldown": 2.0,
+      "range_tiles": 10,
+      "damage": 6,
+      "projectile": {
+        "speed": 400,
+        "width": 8
+      },
+      "burst": {
+        "count": 3,
+        "interval": 0,
+        "spread_angle": 25
+      },
+      "_note": "Fires simultaneously and fans. serial_burst fires over time. That difference is what the player dodges, so they are two rows.",
+      "_used_by": "Bone Archer, Ritualist, Rogue Fox, High Zealot, Overseer"
+    },
+    {
+      "key": "serial_burst",
+      "name": "Serial Burst",
+      "delivery": "projectile",
+      "cast_time": 0.5,
+      "cooldown": 1.8,
+      "range_tiles": 10,
+      "damage": 6,
+      "projectile": {
+        "speed": 420,
+        "width": 8
+      },
+      "burst": {
+        "count": 3,
+        "interval": 0.3
+      },
+      "_used_by": "Volley, Hunter, Purifier, Alpha Wolf"
+    },
+    {
+      "key": "root_shot",
+      "name": "Net Throw",
+      "delivery": "projectile",
+      "cast_time": 0.5,
+      "cooldown": 2.5,
+      "range_tiles": 9,
+      "damage": 5,
+      "projectile": {
+        "speed": 360,
+        "width": 10
+      },
+      "effects": [
+        {
+          "type": "root",
+          "duration": 1.2
+        }
+      ],
+      "_used_by": "Net-thrower"
+    },
+    {
+      "key": "chain_throw",
+      "name": "Chain Throw",
+      "delivery": "projectile",
+      "cast_time": 0.5,
+      "cooldown": 3.0,
+      "range_tiles": 9,
+      "damage": 0,
+      "projectile": {
+        "speed": 380,
+        "width": 10
+      },
+      "effects": [
+        {
+          "type": "form_lock",
+          "duration": 4
+        }
+      ],
+      "_note": "Zero damage on purpose: the whole ability is the four seconds a Blessed spends unable to change what they are.",
+      "_used_by": "Chain-breaker"
+    },
+    {
+      "key": "mark_shot",
+      "name": "Mark",
+      "delivery": "projectile",
+      "cast_time": 0.5,
+      "cooldown": 4.0,
+      "range_tiles": 11,
+      "damage": 0,
+      "projectile": {
+        "speed": 460,
+        "width": 8
+      },
+      "effects": [
+        {
+          "type": "mark",
+          "duration": 3,
+          "value": 250
+        }
+      ],
+      "_note": "value is tenths of a percent: 250 is +25% damage taken, which is what makes burst_release worth clearing the mark before.",
+      "_used_by": "Rogue Hawk"
+    },
+    {
+      "key": "wail",
+      "name": "Wail",
+      "delivery": "projectile",
+      "cast_time": 0.6,
+      "cooldown": 2.5,
+      "range_tiles": 9,
+      "damage": 4,
+      "projectile": {
+        "speed": 300,
+        "width": 14
+      },
+      "effects": [
+        {
+          "type": "slow",
+          "duration": 3,
+          "value": 30
+        },
+        {
+          "type": "fear",
+          "duration": 1.5
+        }
+      ],
+      "_used_by": "Wailing Spirit"
+    },
+    {
+      "key": "ambush_bite",
+      "name": "Ambush Bite",
+      "delivery": "contact",
+      "cast_time": 0.1,
+      "cooldown": 2.0,
+      "range_tiles": 1,
+      "damage": 8,
+      "effects": [
+        {
+          "type": "dot",
+          "duration": 4,
+          "tick_rate": 1,
+          "value": 3
+        }
+      ],
+      "_used_by": "Snake"
+    },
+    {
+      "key": "frost_cone",
+      "name": "Frost Cone",
+      "delivery": "telegraph",
+      "cast_time": 0.6,
+      "cooldown": 2.5,
+      "range_tiles": 5,
+      "damage": 14,
+      "recovery": 0.4,
+      "telegraph": {
+        "shape": "cone",
+        "radius_tiles": 5,
+        "angle": 60
+      },
+      "zone_on_impact": {
+        "radius_tiles": 2,
+        "duration": 4,
+        "tick_rate": 1,
+        "effects": [
+          {
+            "type": "slow",
+            "duration": 1.2,
+            "value": 30,
+            "reapply": true
+          }
+        ]
+      },
+      "_used_by": "Ice Slinger"
+    },
+    {
+      "key": "corrosive_spread",
+      "name": "Corrosive Spread",
+      "delivery": "projectile",
+      "cast_time": 0.6,
+      "cooldown": 2.5,
+      "range_tiles": 9,
+      "damage": 6,
+      "projectile": {
+        "speed": 330,
+        "width": 10
+      },
+      "zone_on_impact": {
+        "radius_tiles": 1.2,
+        "duration": 3,
+        "tick_rate": 1,
+        "count": 3,
+        "effects": [
+          {
+            "type": "dot",
+            "duration": 1,
+            "tick_rate": 1,
+            "value": 4,
+            "reapply": true
+          }
+        ]
+      },
+      "_used_by": "Bio-Caster"
+    },
+    {
+      "key": "molotov_spread",
+      "name": "Molotov",
+      "delivery": "projectile",
+      "cast_time": 0.7,
+      "cooldown": 4.0,
+      "range_tiles": 9,
+      "damage": 6,
+      "projectile": {
+        "speed": 300,
+        "width": 10
+      },
+      "zone_on_impact": {
+        "radius_tiles": 1,
+        "duration": 2,
+        "tick_rate": 1,
+        "count": 5,
+        "effects": [
+          {
+            "type": "dot",
+            "duration": 1,
+            "tick_rate": 1,
+            "value": 3,
+            "reapply": true
+          }
+        ]
+      },
+      "_note": "Five zones against corrosive_spread's three, at a shorter life and a tighter radius. The nearest pair in the family, and still not one row.",
+      "_used_by": "Firebrand"
+    },
+    {
+      "key": "silence_bubble",
+      "name": "Silence Bubble",
+      "delivery": "zone",
+      "cast_time": 0.6,
+      "cooldown": 8.0,
+      "range_tiles": 6,
+      "damage": 0,
+      "zone_on_impact": {
+        "radius_tiles": 2.5,
+        "duration": 5,
+        "tick_rate": 0.5,
+        "effects": [
+          {
+            "type": "form_lock",
+            "duration": 1,
+            "reapply": true
+          }
+        ]
+      },
+      "_used_by": "Silencer"
+    },
+    {
+      "key": "charm_circle",
+      "name": "Charm Circle",
+      "delivery": "zone",
+      "cast_time": 0.8,
+      "cooldown": 5.0,
+      "range_tiles": 6,
+      "damage": 0,
+      "zone_on_impact": {
+        "radius_tiles": 2,
+        "duration": 4,
+        "tick_rate": 0.5,
+        "effects": [
+          {
+            "type": "charm",
+            "duration": 3,
+            "reapply": true
+          }
+        ]
+      },
+      "_used_by": "Charm Singer"
+    },
+    {
+      "key": "snare_trap",
+      "name": "Snare Trap",
+      "delivery": "zone",
+      "cast_time": 0.6,
+      "cooldown": 6.0,
+      "range_tiles": 7,
+      "damage": 12,
+      "zone_on_impact": {
+        "radius_tiles": 1.2,
+        "duration": 12,
+        "tick_rate": 1,
+        "effects": [
+          {
+            "type": "root",
+            "duration": 1.5,
+            "reapply": true
+          },
+          {
+            "type": "dot",
+            "duration": 1,
+            "tick_rate": 1,
+            "value": 12
+          }
+        ]
+      },
+      "_note": "Twelve seconds of life against a ten-second recall timer, so a Trapper that re-places one is picking up a trap that is still armed.",
+      "_used_by": "Trapper"
+    },
+    {
+      "key": "blind_bomb",
+      "name": "Blind Bomb",
+      "delivery": "zone",
+      "cast_time": 0.4,
+      "cooldown": 5.0,
+      "range_tiles": 5,
+      "damage": 5,
+      "zone_on_impact": {
+        "radius_tiles": 2,
+        "duration": 2,
+        "tick_rate": 0.5,
+        "effects": [
+          {
+            "type": "blind",
+            "duration": 1.5,
+            "value": 35,
+            "reapply": true
+          }
+        ]
+      },
+      "_used_by": "Smoke Thief"
+    },
+    {
+      "key": "poison_trail",
+      "name": "Poison Trail",
+      "delivery": "zone",
+      "cooldown": 0.5,
+      "range_tiles": 0,
+      "damage": 0,
+      "zone_on_self": {
+        "radius_tiles": 0.8,
+        "duration": 3,
+        "tick_rate": 1,
+        "per_tick": true,
+        "effects": [
+          {
+            "type": "dot",
+            "duration": 1,
+            "tick_rate": 1,
+            "value": 3,
+            "reapply": true
+          }
+        ]
+      },
+      "_note": "Laid where the caster stands, on a half-second cadence. This is the per-caster zone cap's worst case, and why that cap retires the oldest rather than refusing the newest.",
+      "_used_by": "Rot Crawler"
+    },
+    {
+      "key": "venom_coil",
+      "name": "Venom Coil",
+      "delivery": "telegraph",
+      "cast_time": 0.7,
+      "cooldown": 4.0,
+      "range_tiles": 2,
+      "damage": 15,
+      "recovery": 0.6,
+      "telegraph": {
+        "shape": "circle",
+        "radius_tiles": 2
+      },
+      "zone_on_self": {
+        "radius_tiles": 2,
+        "duration": 4,
+        "tick_rate": 1,
+        "effects": [
+          {
+            "type": "dot",
+            "duration": 1,
+            "tick_rate": 1,
+            "value": 5,
+            "reapply": true
+          }
+        ]
+      },
+      "_used_by": "Serpent Remnant"
+    },
+    {
+      "key": "figure8_sweep",
+      "name": "Figure-8 Sweep",
+      "delivery": "telegraph",
+      "cast_time": 0.7,
+      "cooldown": 3.0,
+      "range_tiles": 4,
+      "damage": 16,
+      "recovery": 0.5,
+      "telegraph": {
+        "shape": "line",
+        "width_tiles": 1.5,
+        "length_tiles": 4
+      },
+      "_used_by": "Bone Caller"
+    },
+    {
+      "key": "ice_slam",
+      "name": "Ice Slam",
+      "delivery": "telegraph",
+      "cast_time": 0.8,
+      "cooldown": 3.0,
+      "range_tiles": 2,
+      "damage": 20,
+      "recovery": 0.8,
+      "telegraph": {
+        "shape": "circle",
+        "radius_tiles": 2
+      },
+      "effects": [
+        {
+          "type": "root",
+          "duration": 0.8
+        }
+      ],
+      "_used_by": "Frost Warden"
+    },
+    {
+      "key": "dive_bomb",
+      "name": "Dive Bomb",
+      "delivery": "telegraph",
+      "cast_time": 0.7,
+      "cooldown": 3.0,
+      "range_tiles": 10,
+      "damage": 16,
+      "telegraph": {
+        "shape": "circle",
+        "radius_tiles": 1.5,
+        "at_target": true
+      },
+      "effects": [
+        {
+          "type": "knockup",
+          "duration": 0.4
+        }
+      ],
+      "_note": "The shadow that grows on the ground before impact IS the telegraph the client already renders, centred on the target rather than the caster.",
+      "_used_by": "Hawk"
+    },
+    {
+      "key": "charge",
+      "name": "Charge",
+      "delivery": "telegraph",
+      "cast_time": 0.6,
+      "cooldown": 2.5,
+      "range_tiles": 4,
+      "damage": 18,
+      "recovery": 1.5,
+      "telegraph": {
+        "shape": "line",
+        "width_tiles": 1.2,
+        "length_tiles": 4,
+        "teleport_on_resolve": true
+      },
+      "_note": "teleport_on_resolve is the shape Boar was authored against and it still ships: the NPC arrives at the end of the line when the cast resolves. A travelling charge is a displace delivery, which is what Wagon Breaker uses.",
+      "_used_by": "Boar, Wagon Breaker"
+    },
+    {
+      "key": "bull_charge",
+      "name": "Bull Charge",
+      "delivery": "displace",
+      "cast_time": 1.2,
+      "cooldown": 3.0,
+      "range_tiles": 6,
+      "damage": 35,
+      "recovery": 1.8,
+      "displace": {
+        "distance_tiles": 6,
+        "mode": "dash",
+        "damage_on_contact": true,
+        "terrain_stagger": true
+      },
+      "_note": "A real travelling dash, which is why hitting a wall staggers it for its own recovery: step aside and the Wagon Breaker punishes itself.",
+      "_used_by": "Wagon Breaker"
+    },
+    {
+      "key": "zigzag_dash",
+      "name": "Zigzag Dash",
+      "delivery": "displace",
+      "cast_time": 0.4,
+      "cooldown": 2.0,
+      "range_tiles": 4,
+      "damage": 15,
+      "recovery": 0.5,
+      "displace": {
+        "distance_tiles": 3,
+        "mode": "dash",
+        "damage_on_contact": true
+      },
+      "_used_by": "Fox-bonded Fanatic"
+    },
+    {
+      "key": "teleport_flank",
+      "name": "Teleport Flank",
+      "delivery": "contact",
+      "cast_time": 0.4,
+      "cooldown": 1.8,
+      "range_tiles": 8,
+      "damage": 16,
+      "recovery": 0.3,
+      "displace": {
+        "distance_tiles": 8,
+        "mode": "teleport",
+        "behind_target": true
+      },
+      "_note": "The displacement is a component, so it lands before the strike: an ambush that hit from where it started and then teleported would be a teleport with a hit attached.",
+      "_used_by": "Wraith"
+    },
+    {
+      "key": "flyby_strike",
+      "name": "Flyby",
+      "delivery": "displace",
+      "cast_time": 0.4,
+      "cooldown": 2.5,
+      "range_tiles": 7,
+      "damage": 14,
+      "displace": {
+        "distance_tiles": 6,
+        "mode": "dash",
+        "damage_on_contact": true
+      },
+      "_used_by": "Rogue Crow"
+    },
+    {
+      "key": "evasive_hop",
+      "name": "Evasive Hop",
+      "delivery": "displace",
+      "cooldown": 1.2,
+      "range_tiles": 1,
+      "damage": 0,
+      "displace": {
+        "distance_tiles": 1,
+        "mode": "hop"
+      },
+      "_note": "Not a dodge roll. An attack that reaches the Rabbit still always connects -- the hop is about not being there when it lands, resolved by the position tests the engine already runs.",
+      "_used_by": "Rogue Rabbit"
+    },
+    {
+      "key": "reposition",
+      "name": "Reposition",
+      "delivery": "displace",
+      "cooldown": 2.0,
+      "range_tiles": 3,
+      "damage": 0,
+      "displace": {
+        "distance_tiles": 2,
+        "mode": "hop"
+      },
+      "_note": "Forfeits the attack. An Ice Slinger that backs off is choosing distance over damage, which is the trade the player is being invited to close.",
+      "_used_by": "Ice Slinger"
+    },
+    {
+      "key": "vanish",
+      "name": "Vanish",
+      "delivery": "buff",
+      "cast_time": 2.0,
+      "cooldown": 8.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "buff": {
+        "target": "self",
+        "duration": 30,
+        "effects": [
+          {
+            "type": "stealth",
+            "duration": 30
+          }
+        ]
+      },
+      "_note": "Re-entering stealth. Enforced by omission from the broadcast, so no client has a position to draw however it is told to.",
+      "_used_by": "Snowveil Stalker, Rogue Cat"
+    },
+    {
+      "key": "ambush_strike",
+      "name": "Ambush Strike",
+      "delivery": "contact",
+      "cast_time": 0.2,
+      "cooldown": 1.0,
+      "range_tiles": 6,
+      "damage": 20,
+      "recovery": 0.2,
+      "displace": {
+        "distance_tiles": 6,
+        "mode": "teleport",
+        "behind_target": true
+      },
+      "_used_by": "Snowveil Stalker, Rogue Cat"
+    },
+    {
+      "key": "snatch_vanish",
+      "name": "Snatch and Vanish",
+      "delivery": "buff",
+      "cast_time": 0.3,
+      "cooldown": 4.0,
+      "range_tiles": 1,
+      "damage": 0,
+      "displace": {
+        "distance_tiles": 3,
+        "mode": "hop"
+      },
+      "buff": {
+        "target": "self",
+        "duration": 3,
+        "effects": [
+          {
+            "type": "stealth",
+            "duration": 3
+          }
+        ]
+      },
+      "_used_by": "Smoke Thief"
+    },
+    {
+      "key": "constrict",
+      "name": "Constrict",
+      "delivery": "contact",
+      "cast_time": 0.3,
+      "cooldown": 1.0,
+      "range_tiles": 1,
+      "damage": 10,
+      "effects": [
+        {
+          "type": "root",
+          "duration": 1.0
+        }
+      ],
+      "_used_by": "Serpent Remnant"
+    },
+    {
+      "key": "faction_rally",
+      "name": "Rally",
+      "delivery": "buff",
+      "cast_time": 0.8,
+      "cooldown": 15.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "buff": {
+        "target": "faction",
+        "radius_tiles": 6,
+        "duration": 6,
+        "effects": [
+          {
+            "type": "buff",
+            "stat": "move_speed",
+            "value": 20,
+            "duration": 6
+          },
+          {
+            "type": "damage_dealt",
+            "value": 150,
+            "duration": 6
+          }
+        ]
+      },
+      "_used_by": "Alpha Wolf, Overseer, Bone Caller, Whistle-caller"
+    },
+    {
+      "key": "passive_aura",
+      "name": "Aura",
+      "delivery": "buff",
+      "cooldown": 3.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "buff": {
+        "target": "faction",
+        "radius_tiles": 4,
+        "duration": 4,
+        "effects": [
+          {
+            "type": "damage_dealt",
+            "value": 100,
+            "duration": 4
+          },
+          {
+            "type": "buff",
+            "stat": "move_speed",
+            "value": 10,
+            "duration": 4
+          }
+        ]
+      },
+      "_note": "An aura is a buff on a short cooldown with a duration that outlasts it, so standing in it keeps it up and walking out of it lets it lapse. That is what 'passive' means with per-NPC effect slots and no aura subsystem.",
+      "_used_by": "Preacher, Rogue Deer, Bonded Wolf"
+    },
+    {
+      "key": "ally_heal",
+      "name": "Mend",
+      "delivery": "buff",
+      "cast_time": 0.6,
+      "cooldown": 5.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "heal": {
+        "amount": 16,
+        "radius_tiles": 3,
+        "target": "lowest_ally"
+      },
+      "_used_by": "Net-thrower, Rogue Deer"
+    },
+    {
+      "key": "tether",
+      "name": "Tether",
+      "delivery": "buff",
+      "cast_time": 0.5,
+      "cooldown": 8.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "buff": {
+        "target": "faction",
+        "radius_tiles": 5,
+        "duration": 8,
+        "single_ally": true,
+        "effects": [
+          {
+            "type": "damage_dealt",
+            "value": 200,
+            "duration": 8
+          }
+        ]
+      },
+      "_used_by": "Vein-Binder"
+    },
+    {
+      "key": "blood_channel",
+      "name": "Blood Channel",
+      "delivery": "buff",
+      "cast_time": 1.0,
+      "cooldown": 12.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "self_cost": {
+        "health_percent": 10
+      },
+      "buff": {
+        "target": "self",
+        "duration": 6,
+        "effects": [
+          {
+            "type": "damage_dealt",
+            "value": 300,
+            "duration": 6
+          }
+        ]
+      },
+      "_note": "Paid before it lands, which is what makes a Blood Ritualist a race the player can win by pressuring it.",
+      "_used_by": "Blood Ritualist"
+    },
+    {
+      "key": "command",
+      "name": "Command",
+      "delivery": "buff",
+      "cast_time": 0.5,
+      "cooldown": 4.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "buff": {
+        "target": "faction",
+        "radius_tiles": 4,
+        "duration": 0,
+        "ready_allies": true
+      },
+      "_note": "Not a buff. It clears an ally's cooldowns so it acts now, which is a different threat from an ally acting 15% faster on its own schedule.",
+      "_used_by": "Handler"
+    },
+    {
+      "key": "direct",
+      "name": "Direct",
+      "delivery": "buff",
+      "cast_time": 0.3,
+      "cooldown": 3.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "buff": {
+        "target": "faction",
+        "radius_tiles": 12,
+        "duration": 0,
+        "ready_allies": true,
+        "retarget": true
+      },
+      "_used_by": "Packmaster"
+    },
+    {
+      "key": "summon_adds",
+      "name": "Summon",
+      "delivery": "summon",
+      "cast_time": 0.6,
+      "cooldown": 10.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "summon": {
+        "types": [
+          "hunt_mini_wolf"
+        ],
+        "count_min": 2,
+        "count_max": 3,
+        "delay": 1.0,
+        "spread_tiles": 2
+      },
+      "_note": "Five summoners, one row. The types, counts and delays are all scalars; the behaviour is identical. This is the family that most justifies the override system.",
+      "_used_by": "Packmaster, Whistle-caller, Grave Caller, Experimenter, Watch Captain"
+    },
+    {
+      "key": "summon_decoys",
+      "name": "Illusion",
+      "delivery": "summon",
+      "cast_time": 0.5,
+      "cooldown": 8.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "summon": {
+        "types": [
+          "vessane_decoy"
+        ],
+        "count_min": 2,
+        "count_max": 2,
+        "delay": 0,
+        "spread_tiles": 2
+      },
+      "_used_by": "Ashen Acolyte, Rogue Fox"
+    },
+    {
+      "key": "death_release",
+      "name": "Death Release",
+      "delivery": "summon",
+      "cooldown": 0,
+      "range_tiles": 0,
+      "damage": 0,
+      "summon": {
+        "types": [
+          "choir_caged_monstrosity"
+        ],
+        "count_min": 1,
+        "count_max": 1,
+        "delay": 0,
+        "spread_tiles": 1
+      },
+      "_note": "Fired by an on_death trigger, which is latched: a corpse persists for its whole respawn timer, and an unlatched death trigger would release a new monstrosity every tick until it got back up.",
+      "_used_by": "Cage-Keeper"
+    },
+    {
+      "key": "decoy_swap",
+      "name": "Decoy Swap",
+      "delivery": "displace",
+      "cooldown": 3.0,
+      "range_tiles": 6,
+      "damage": 0,
+      "displace": {
+        "distance_tiles": 6,
+        "mode": "ally_swap"
+      },
+      "_note": "A teleport whose destination is another NPC. No ally to trade with means no swap: teleporting to nowhere in particular would be a different ability than the one authored.",
+      "_used_by": "Ashen Acolyte"
+    },
+    {
+      "key": "counter_punish",
+      "name": "Counter",
+      "delivery": "contact",
+      "cooldown": 3.0,
+      "range_tiles": 2,
+      "damage": 27,
+      "_note": "1.5x a melee base of 18. Fired by an ability_cast_nearby trigger, so it lands on a player who committed to a cast inside the Duelist's reach.",
+      "_used_by": "duelist affix"
+    },
+    {
+      "key": "burst_release",
+      "name": "Burst Release",
+      "delivery": "contact",
+      "cooldown": 3.0,
+      "range_tiles": 11,
+      "damage": 25,
+      "_note": "No telegraph and no travel time: the mark was the warning, and three seconds was the window to clear it.",
+      "_used_by": "Rogue Hawk"
+    },
+    {
+      "key": "finisher_heal",
+      "name": "Finisher",
+      "delivery": "buff",
+      "cooldown": 1.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "heal": {
+        "percent": 250,
+        "target": "self"
+      },
+      "_note": "percent is tenths of a percent: 250 is a quarter of its own maximum, on a kill.",
+      "_used_by": "Rogue Hyena"
+    },
+    {
+      "key": "panic_flee",
+      "name": "Panic",
+      "delivery": "zone",
+      "cast_time": 0.4,
+      "cooldown": 20.0,
+      "range_tiles": 0,
+      "damage": 0,
+      "zone_on_self": {
+        "radius_tiles": 2.5,
+        "duration": 2,
+        "tick_rate": 0.5,
+        "effects": [
+          {
+            "type": "blind",
+            "duration": 1.5,
+            "value": 35,
+            "reapply": true
+          }
+        ]
+      },
+      "_note": "The blind and the running are two triggers on one threshold, not one ability that does both: the flee is a movement state, and states are what triggers set.",
+      "_used_by": "Smoke Thief"
+    },
+    {
+      "key": "armor_break",
+      "name": "Armor Break",
+      "delivery": "passive",
+      "_note": "A trigger-only marker. Wagon Breaker's two-whiff penalty is expressed as an ability_missed trigger with a modifier, so this row carries no delivery of its own.",
+      "_used_by": "Wagon Breaker"
+    },
+    {
+      "key": "trap_recall",
+      "name": "Trap Recall",
+      "delivery": "zone",
+      "cast_time": 0.6,
+      "cooldown": 10.0,
+      "range_tiles": 7,
+      "damage": 12,
+      "zone_on_impact": {
+        "radius_tiles": 1.2,
+        "duration": 12,
+        "tick_rate": 1,
+        "effects": [
+          {
+            "type": "root",
+            "duration": 1.5,
+            "reapply": true
+          },
+          {
+            "type": "dot",
+            "duration": 1,
+            "tick_rate": 1,
+            "value": 12
+          }
+        ]
+      },
+      "_note": "Picking the trap up and re-placing it is exactly what the per-caster zone cap already does: laying a second retires the first. So the recall is a timed re-cast rather than a mechanic of its own.",
+      "_used_by": "Trapper"
+    }
+  ]
+}

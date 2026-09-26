@@ -1,0 +1,18 @@
+{
+  "_comment": "A modifier composed onto a base type. Duelist is the only one enemy_types.txt authors, and it is written there as a modifier rather than as an enemy. applies_to is a guard the validator enforces, so 'Duelist Turret' cannot be authored by accident. The system exists because the second, third and fourth cost a row each and multiply the roster without adding a type.",
+  "affixes": [
+    {
+      "key": "duelist",
+      "name": "Duelist",
+      "name_prefix": "Duelist ",
+      "applies_to": { "roles": ["melee", "brute"] },
+      "modifiers": { "cast_time_pct": 40, "damage_pct": 20 },
+      "triggers": [
+        { "when": "ability_cast_nearby", "once": false,
+          "action": "cast", "ability": "counter_punish" }
+      ],
+      "_note": "The longer cast is the tell and the counter is the punish: a Duelist telegraphs for 40% longer, which is exactly the window a player is tempted to use for their own cast. Taking that bait is what counter_punish answers.",
+      "outline": [1.0, 0.85, 0.30]
+    }
+  ]
+}

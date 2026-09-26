@@ -18,6 +18,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "packet_handler.h"
+#include "npc_query.h"
 #include "items_database.h"
 #include "item_instance.h"
 #include "server_types.h"
@@ -72,6 +73,14 @@ static int g_slots[1] = { 0 };
 const int* player_active_list_locked(int* n) { if (n) *n = 1; return g_slots; }
 
 uint32_t player_find_by_name(const char* name) { (void)name; return 0; }
+
+/* Movement validation asks two questions this test has no opinion about: is this
+ * player afraid of something, and where is that something standing. Nobody here
+ * is feared, so the answer is no and the lookup never runs. */
+uint32_t player_fear_source(const ActivePlayer* p) { (void)p; return 0; }
+int npc_query_lookup(uint32_t npc_id, NpcQueryHit* out) {
+    (void)npc_id; (void)out; return 0;
+}
 void player_send_data_response(int fd, uint32_t c) { (void)fd; (void)c; }
 
 /** The block index, which only the party-invite route in this file consults.

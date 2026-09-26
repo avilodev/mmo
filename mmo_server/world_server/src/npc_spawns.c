@@ -6,6 +6,8 @@
 #include "npc_spawns.h"
 #include "npc_world.h"
 #include "combat.h"
+#include "npc_registry.h"
+#include "npc_mitigation.h"
 #include "log.h"
 
 #include <stdio.h>
@@ -166,11 +168,49 @@ int npc_spawns_load(const char* json_filepath, NPCWorld* world) {
                                             npc_type_id, respawn, category);
 
         if (npc_id > 0) {
+            /* A spawn row may name an affix, which composes a modifier onto the
+             * base type without needing a type of its own. That is how the roster
+             * grows without the type count growing (V15): "Duelist Rusher" is a
+             * spawn-table entry, not an eightieth enemy. */
+            char affix_key[NPC_KEY_MAX] = "";
+            json_get_string(obj, "affix", affix_key, sizeof(affix_key));
+            int affix_index = affix_key[0] ? npc_affix_index_by_key(affix_key) : -1;
+            if (affix_key[0] && affix_index < 0)
+                LOG_WARN("[NPC] spawn '%s' names unknown affix '%s'", name, affix_key);
+
             // Set optional fields that npc_world_spawn doesn't cover
             NPCEntity* npc = npc_world_acquire(world, npc_id);
             if (npc) {
                 if (xp >= 0) npc->xp_reward = (uint32_t)xp;
                 npc->armor = armor;
+                npc->affix_index = (int16_t)affix_index;
+
+                const NPCTypeDef* type = npc_type_get(npc_type_id);
+                if (type) {
+                    npc->stealth_active = type->stealth;
+                    if (type->summon_only) { npc->no_reward = 1; npc->xp_reward = 0; }
+                }
+                npc_mitigation_init(npc, npc_type_id);
+
+                const NPCAffixDef* affix = affix_index >= 0
+                                         ? npc_affix_at(affix_index) : NULL;
+                if (affix) {
+                    npc->mod_cast_time_pct    += affix->cast_time_pct;
+                    npc->mod_damage_pct       += affix->damage_pct;
+                    npc->mod_move_speed_pct   += affix->move_speed_pct;
+                    npc->mod_attack_speed_pct += affix->attack_speed_pct;
+                    npc->mod_damage_taken_pct += affix->damage_taken_pct;
+
+                    /* Renamed so a player can tell one apart before it starts
+                     * casting differently at them. */
+                    if (affix->name_prefix[0] || affix->name_suffix[0]) {
+                        char composed[NPC_NAME_MAX * 3];
+                        snprintf(composed, sizeof(composed), "%s%s%s",
+                                 affix->name_prefix, npc->name, affix->name_suffix);
+                        strncpy(npc->name, composed, sizeof(npc->name) - 1);
+                        npc->name[sizeof(npc->name) - 1] = '\0';
+                    }
+                }
                 npc_world_release(world, npc);
             }
             spawned++;

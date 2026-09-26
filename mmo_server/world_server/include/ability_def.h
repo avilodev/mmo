@@ -62,6 +62,16 @@ typedef enum {
     EFFECT_CHANNEL         = 15,    // Actions locked for the duration
     EFFECT_HOT_PERCENT     = 16,    // Heal over time as a percentage of max health per tick
 
+    /* The five NPC kits introduce. Each is a predicate over an existing gate
+     * rather than a new subsystem: blind and fear read in movement and aim,
+     * charm redirects a target, form-lock rejects a swap, mark is a damage-taken
+     * modifier that also tells the client to draw something over the target. */
+    EFFECT_BLIND           = 17,    // Aim is scattered; `value` is the cone half-angle in degrees
+    EFFECT_FEAR            = 18,    // Movement inverted away from the source; actions still allowed
+    EFFECT_CHARM           = 19,    // Target selection forced toward `source_id`
+    EFFECT_FORM_LOCK       = 20,    // Form swap refused for the duration
+    EFFECT_MARK            = 21,    // Damage taken raised by `value` tenths of a percent
+
     EFFECT_COUNT
 } StatusEffectType;
 
@@ -73,7 +83,8 @@ typedef enum {
  */
 static inline int effect_value_is_permille(StatusEffectType type) {
     return type == EFFECT_RESOURCE     || type == EFFECT_DAMAGE_TAKEN ||
-           type == EFFECT_DAMAGE_DEALT || type == EFFECT_HOT_PERCENT;
+           type == EFFECT_DAMAGE_DEALT || type == EFFECT_HOT_PERCENT  ||
+           type == EFFECT_MARK;
 }
 
 /** Convert an effect value in tenths of a percent to a fraction: 100 becomes 0.10. */

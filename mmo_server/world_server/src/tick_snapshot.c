@@ -82,6 +82,9 @@ void tick_snapshot_build(TickSnapshot* snapshot) {
         snapshot->pos_y[count]        = active_players[i].pos_y;
         snapshot->is_dead[count]      = active_players[i].is_dead;
         snapshot->client_fd[count]    = active_players[i].client_fd;
+        snapshot->form[count]         = active_players[i].form;
+        snapshot->health[count]       = active_players[i].health;
+        snapshot->max_health[count]   = active_players[i].max_health;
         pthread_mutex_unlock(&active_players[i].lock);
 
         snapshot->points[count].x = snapshot->pos_x[count];

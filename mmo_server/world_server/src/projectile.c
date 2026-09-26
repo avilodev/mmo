@@ -5,6 +5,8 @@
  */
 
 #include "projectile.h"
+#include "npc_mitigation.h"
+#include "npc_triggers.h"
 
 #include "interest.h"
 #include "log.h"
@@ -29,22 +31,23 @@
 
 extern ActivePlayer active_players[];
 
-static Projectile      g_projectiles[MAX_PROJECTILES];
+static Projectile*     g_projectiles;
+static int             g_projectile_capacity;
 static pthread_mutex_t g_projectiles_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t        g_next_projectile_id = 1;
 
-/** Bound one tick's deferred sends.
+/** Deferred sends per projectile.
  *
  * Derived from the projectile pool rather than picked as a round number: a
  * projectile can contribute at most one destroy, one effect, one XP award, and
  * one loot roll in a single tick, so four entries per projectile cannot overflow.
  *
- * The previous fixed 256 was below that ceiling and the overflow was silent —
+ * The fixed 256 this replaced was below that ceiling and the overflow was silent —
  * the queue simply stopped accepting, and the packets it dropped were despawns,
  * so clients kept rendering projectiles that no longer existed. Exactly the
  * failure that only appears once the server is busy enough to matter.
  */
-#define MAX_DEFERRED_SENDS (MAX_PROJECTILES * 4)
+#define DEFERRED_SENDS_PER_PROJECTILE 4
 
 typedef enum {
     DSEND_PROJECTILE_DESTROY,
@@ -85,18 +88,55 @@ typedef struct {
     };
 } DeferredSend;
 
+/** One projectile's position, copied out under the pool lock for broadcasting. */
 typedef struct {
-    DeferredSend items[MAX_DEFERRED_SENDS];
+    uint32_t id;
+    float px, py;
+} ProjSnapshot;
+
+static _Thread_local ProjSnapshot* t_proj_snaps;
+static _Thread_local int           t_snap_capacity;
+
+typedef struct {
+    DeferredSend* items;
     int count;
+    int capacity;
 } DeferredQueue;
 
-static void dq_init(DeferredQueue* q) { q->count = 0; }
+/** Retain one deferred-send buffer per thread.
+ *
+ * The queue is used from more than one thread: projectile_tick() runs on the
+ * gameplay thread, but projectile_remove() is reachable from a packet thread.
+ * A shared buffer would race, and allocating per call would malloc twenty times
+ * a second for the life of the server, so each thread keeps its own and grows it
+ * once. Same arrangement as npc_ai.c's queue, for the same reason.
+ */
+static _Thread_local DeferredSend* t_dq_items;
+static _Thread_local int           t_dq_capacity;
+
+static void dq_init(DeferredQueue* q) {
+    int want = g_projectile_capacity * DEFERRED_SENDS_PER_PROJECTILE;
+    if (want > t_dq_capacity) {
+        DeferredSend* grown = realloc(t_dq_items, (size_t)want * sizeof(*grown));
+        if (grown) {
+            t_dq_items    = grown;
+            t_dq_capacity = want;
+        } else {
+            LOG_ERROR("[PROJECTILE] could not size the deferred queue to %d sends; "
+                      "holding at %d", want, t_dq_capacity);
+        }
+    }
+    q->items    = t_dq_items;
+    q->capacity = t_dq_capacity;
+    q->count    = 0;
+}
 
 static void dq_push(DeferredQueue* q, const DeferredSend* item) {
-    if (q->count >= MAX_DEFERRED_SENDS) {
+    if (q->count >= q->capacity) {
+        /* Only reachable when the allocation above failed; never silently. */
         LOG_WARN_RL(5, 60, "[PROJECTILE] deferred queue full at %d sends — "
                            "a projectile packet was dropped this tick",
-                    MAX_DEFERRED_SENDS);
+                    q->capacity);
         return;
     }
     q->items[q->count++] = *item;
@@ -299,18 +339,35 @@ static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
 /**
  * Initialize the projectile pool and identifier sequence.
  */
-void projectile_init(void) {
-    memset(g_projectiles, 0, sizeof(g_projectiles));
+int projectile_init(int capacity) {
+    if (capacity <= 0)                        capacity = PROJECTILE_CAPACITY_DEFAULT;
+    if (capacity > PROJECTILE_CAPACITY_MAX)   capacity = PROJECTILE_CAPACITY_MAX;
+
+    free(g_projectiles);
+    g_projectiles = calloc((size_t)capacity, sizeof(*g_projectiles));
+    if (!g_projectiles) {
+        g_projectile_capacity = 0;
+        LOG_ERROR("[PROJECTILE] could not allocate a pool of %d projectiles", capacity);
+        return 0;
+    }
+
+    g_projectile_capacity = capacity;
     g_next_projectile_id = 1;
-    LOG_INFO("[PROJECTILE] System initialized");
+    LOG_INFO("[PROJECTILE] pool initialized: %d slots (%zu KB)",
+             capacity, ((size_t)capacity * sizeof(*g_projectiles)) / 1024);
+    return 1;
 }
+
+int projectile_capacity(void) { return g_projectile_capacity; }
 
 /**
  * Clear the projectile pool while holding its state lock.
  */
 void projectile_cleanup(void) {
     pthread_mutex_lock(&g_projectiles_lock);
-    memset(g_projectiles, 0, sizeof(g_projectiles));
+    free(g_projectiles);
+    g_projectiles = NULL;
+    g_projectile_capacity = 0;
     pthread_mutex_unlock(&g_projectiles_lock);
     LOG_DEBUG("[PROJECTILE] System cleaned up");
 }
@@ -336,7 +393,7 @@ uint32_t projectile_spawn(const ProjectileSpawnInfo* info) {
     pthread_mutex_lock(&g_projectiles_lock);
 
     int slot = -1;
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
+    for (int i = 0; i < g_projectile_capacity; i++) {
         if (!g_projectiles[i].is_active) { slot = i; break; }
     }
 
@@ -411,7 +468,7 @@ void projectile_remove(uint32_t projectile_id) {
     int found = 0;
 
     pthread_mutex_lock(&g_projectiles_lock);
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
+    for (int i = 0; i < g_projectile_capacity; i++) {
         if (g_projectiles[i].is_active &&
             g_projectiles[i].projectile_id == projectile_id) {
             px = g_projectiles[i].pos_x;
@@ -449,7 +506,7 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, NPCTickSnapshot* npcs,
 
     pthread_mutex_lock(&g_projectiles_lock);
 
-    for (int p = 0; p < MAX_PROJECTILES; p++) {
+    for (int p = 0; p < g_projectile_capacity; p++) {
         if (!g_projectiles[p].is_active) continue;
 
         Projectile* proj = &g_projectiles[p];
@@ -512,8 +569,18 @@ void projectile_tick(NPCWorld* world, TickSnapshot* snap, NPCTickSnapshot* npcs,
                     int damage = calc_projectile_damage(proj,
                                                          npc->health, npc->max_health,
                                                          &target_mods);
+
+                    /* Shields, facings and weak points, consulted here as at
+                     * every other path that writes NPC health. Measured from the
+                     * projectile's position, which is where the hit came from --
+                     * not from the caster, who may be behind the NPC by now. */
+                    damage = npc_mitigation_apply(world, npcs->slot[c], npc, damage,
+                                                  proj->pos_x, proj->pos_y,
+                                                  get_monotonic_time(), NULL);
+
                     npc->health -= damage;
                     if (npc->health < 0) npc->health = 0;
+                    npc_trigger_note_damage(npc, proj->pos_x, proj->pos_y);
 
                     uint8_t is_kill = (npc->health == 0) ? 1 : 0;
                     if (is_kill) {
@@ -661,17 +728,26 @@ void projectile_broadcast(const BroadcastSnapshot* snapshot, int shard, int shar
     const BroadcastPlayer* snapshots = snapshot->players;
     const int snapshot_count = snapshot->count;
 
-    // Snapshot projectile positions
-    typedef struct {
-        uint32_t id;
-        float px, py;
-    } ProjSnapshot;
-
-    ProjSnapshot proj_snaps[MAX_PROJECTILES];
+    /* Snapshot projectile positions.
+     *
+     * Retained per thread for the same reason the deferred queue is: every shard
+     * broadcasts concurrently, so one shared buffer would race. */
+    if (g_projectile_capacity > t_snap_capacity) {
+        ProjSnapshot* grown = realloc(t_proj_snaps,
+                                      (size_t)g_projectile_capacity * sizeof(*grown));
+        if (!grown) {
+            LOG_ERROR("[PROJECTILE] could not size the broadcast snapshot to %d",
+                      g_projectile_capacity);
+            return;
+        }
+        t_proj_snaps    = grown;
+        t_snap_capacity = g_projectile_capacity;
+    }
+    ProjSnapshot* proj_snaps = t_proj_snaps;
     int proj_count = 0;
 
     pthread_mutex_lock(&g_projectiles_lock);
-    for (int i = 0; i < MAX_PROJECTILES; i++) {
+    for (int i = 0; i < g_projectile_capacity; i++) {
         if (!g_projectiles[i].is_active) continue;
         proj_snaps[proj_count].id = g_projectiles[i].projectile_id;
         proj_snaps[proj_count].px = g_projectiles[i].pos_x;

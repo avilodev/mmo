@@ -30,6 +30,9 @@
 #include "chat.h"
 #include "loot.h"
 #include "npc_ai.h"
+#include "npc_summon.h"
+#include "npc_effects.h"
+#include "npc_registry.h"
 #include "npc_snapshot.h"
 #include "npc_spawns.h"
 #include "npc_query.h"
@@ -66,7 +69,7 @@
 static char DATA_PATH[512];
 static char ABILITIES_PATH[512];
 static char DIALOGUES_PATH[512];
-static char NPC_TYPES_PATH[512];
+static char NPC_CONTENT_DIR[512];
 static char SPAWNS_PATH[512];
 static char ATTACK_PROFILES_PATH[512];
 static char QUESTS_PATH[512];
@@ -124,7 +127,7 @@ static void init_data_paths(void) {
     set_data_path(DATA_PATH,            sizeof(DATA_PATH),            exe, "/data/items.json");
     set_data_path(ABILITIES_PATH,       sizeof(ABILITIES_PATH),       exe, "/data/abilities.json");
     set_data_path(DIALOGUES_PATH,       sizeof(DIALOGUES_PATH),       exe, "/data/dialogues");
-    set_data_path(NPC_TYPES_PATH,       sizeof(NPC_TYPES_PATH),       exe, "/data/npc_types.json");
+    set_data_path(NPC_CONTENT_DIR,      sizeof(NPC_CONTENT_DIR),      exe, "/data/npc");
     set_data_path(SPAWNS_PATH,          sizeof(SPAWNS_PATH),          exe, "/data/spawns.json");
     set_data_path(ATTACK_PROFILES_PATH, sizeof(ATTACK_PROFILES_PATH), exe, "/data/attack_profiles.json");
     set_data_path(QUESTS_PATH,          sizeof(QUESTS_PATH),          exe, "/data/quests.json");
@@ -834,7 +837,7 @@ void* combat_update_thread(void* arg) {
         ability_tick(&g_npc_world, &snapshot, &npc_snapshot, DELTA_TIME); t1 = mono_ms(); phase_ms[2] = t1 - t0; t0 = t1;
         projectile_tick(&g_npc_world, &snapshot, &npc_snapshot, DELTA_TIME);
                                               t1 = mono_ms(); phase_ms[3] = t1 - t0; t0 = t1;
-        npc_ai_tick(&g_npc_world, &snapshot, DELTA_TIME);  t1 = mono_ms(); phase_ms[4] = t1 - t0; t0 = t1;
+        npc_ai_tick(&g_npc_world, &snapshot, &npc_snapshot, DELTA_TIME);  t1 = mono_ms(); phase_ms[4] = t1 - t0; t0 = t1;
         loot_tick(&snapshot);                 t1 = mono_ms(); phase_ms[5] = t1 - t0;
 
         /* Off the phase table on purpose: it walks one entry per character
@@ -1098,12 +1101,19 @@ static void shard_broadcast_npcs(void* ctx, int shard, int shard_count) {
         pkt.header.payload_size = 0;
         pkt.npc_count = 0;
 
+        /* How many NPCs one player is told about. `npc_view_limit` bounds it
+         * below the packet's own capacity for a shard that wants to; zero, the
+         * default, takes the packet's. The query is nearest-first either way, so
+         * whichever bound applies drops the furthest. */
+        int limit = g_server.npc_view_limit;
+        if (limit <= 0 || limit > MAX_NPCS_PER_PACKET) limit = MAX_NPCS_PER_PACKET;
+
         int nearby[MAX_NPCS_PER_PACKET];
         int nearby_count = spatial_grid_query(bc->npc_grids[shard],
                                               snap->players[i].pos_x,
                                               snap->players[i].pos_y,
                                               NPC_VIEW_RADIUS,
-                                              nearby, MAX_NPCS_PER_PACKET);
+                                              nearby, limit);
 
         // Nearest-first, so a player in a dense spawn gets the NPCs actually
         // around them rather than the lowest slot indices.
@@ -1145,6 +1155,7 @@ static void task_broadcast_npcs(void* ctx) {
      * hundred used to pay for four thousand, ten times a second. */
     int live_count = 0;
     const int* live = npc_world_live_slots(&g_npc_world, &live_count);
+    const double npc_now = mono_ms() / 1000.0;
 
     for (int i = 0; i < live_count && npc_count < bc->npc_capacity; i++) {
         int n = live[i];
@@ -1152,6 +1163,16 @@ static void task_broadcast_npcs(void* ctx) {
         if (!npc || npc->id == 0) continue;   // unlocked pre-filter only
 
         npc_world_slot_lock(&g_npc_world, n);
+
+        /* A stealthed NPC is omitted from the stream entirely (V10). Enforced
+         * here rather than with a flag on the wire, because a flag is a request
+         * and this is a fact: no client has the position, so no client can draw
+         * it however it is told to. It still thinks, still moves and can still
+         * kill you -- being unseen is the whole ability. */
+        if (npc->id != 0 && npc_stealth_hidden(npc, npc_now)) {
+            npc_world_slot_unlock(&g_npc_world, n);
+            continue;
+        }
 
         if (npc->id != 0) {
             // Byte-swapped once here rather than once per recipient.
@@ -1442,16 +1463,46 @@ int main(int argc, char** argv) {
 
     combat_profiles_load(ATTACK_PROFILES_PATH);
 
-    ability_handler_init();
-    projectile_init();
+    if (!ability_handler_init(g_server.zone_capacity, g_server.zone_per_owner)) {
+        LOG_ERROR("FAILED - could not allocate the ground-zone pool");
+        return 1;
+    }
+    npc_summon_configure(g_server.summon_per_parent);
+    if (!projectile_init(g_server.projectile_capacity)) {
+        LOG_ERROR("FAILED - could not allocate the projectile pool");
+        return 1;
+    }
 
     if (!loot_init(DATA_PATH)) {
         LOG_ERROR("FAILED - Loot system initialization");
         return 1;
     }
 
-    if (!npc_ai_init(NPC_TYPES_PATH)) {
+    /* The composed NPC content model: factions, archetypes, abilities, affixes and
+     * types, resolved into one registry. Loading is separate from validating on
+     * purpose -- the loader rejects references that do not resolve, and the
+     * validator rejects content that resolves but cannot work, such as an enemy
+     * whose only attack is shorter than the distance its archetype stands at.
+     *
+     * Both refuse to start rather than serving a world with an inert enemy in it.
+     * An empty registry that loads "successfully" is the failure this replaces. */
+    if (!npc_registry_load(NPC_CONTENT_DIR)) {
+        LOG_ERROR("FAILED - NPC content did not load from %s", NPC_CONTENT_DIR);
+        return 1;
+    }
+    int content_problems = npc_content_validate();
+    if (content_problems > 0) {
+        LOG_ERROR("FAILED - NPC content has %d problem(s); refusing to serve it",
+                  content_problems);
+        npc_registry_cleanup();
+        return 1;
+    }
+
+    /* The runtime behaviour table is derived from the registry, so it is built
+     * after the content is loaded and validated -- not from a file of its own. */
+    if (!npc_ai_init()) {
         LOG_ERROR("FAILED - NPC AI system initialization");
+        npc_registry_cleanup();
         return 1;
     }
 
@@ -1579,11 +1630,25 @@ int main(int argc, char** argv) {
                  (unsigned long long)highest_instance_id);
     }
 
-    if (!npc_world_init(&g_npc_world, g_server.max_npcs)) {
+    /* Per-NPC state is sized from what the content actually needs rather than from
+     * a compiled constant, so a seven-ability mini-boss costs a data edit and a
+     * shard whose widest enemy has three abilities allocates three. */
+    NPCStateSizes npc_state = {
+        .max_abilities    = npc_registry_max_abilities(),
+        .max_effect_slots = g_server.npc_effect_slots,
+        .max_triggers     = npc_registry_max_triggers(),
+        .max_phases       = npc_registry_max_phases(),
+    };
+
+    if (!npc_world_init_sized(&g_npc_world, g_server.max_npcs, &npc_state)) {
         LOG_ERROR("FAILED - could not allocate the NPC pool");
+        npc_registry_cleanup();
         playerdata_close();
         return 1;
     }
+
+    if (npc_content_check_capacities(npc_world_capacity(&g_npc_world), 0) > 0)
+        LOG_WARN("NPC content does not fit this world's configured capacities");
 
     /* The index packet threads query instead of scanning the pool. Allocated
      * here, published every tick by the gameplay thread. */

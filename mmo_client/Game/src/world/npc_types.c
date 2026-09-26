@@ -13,6 +13,19 @@
 #define MAX_NPC_TYPE_ID 256
 
 static char  g_names[MAX_NPC_TYPE_ID][32];
+
+/** Generated presentation, parallel to g_names.
+ *
+ * Faction hue times role value, and the role's box scale, both resolved by the
+ * generator rather than decided here. g_has_style distinguishes "drawn plain"
+ * from "no row", so a client older than the content it is talking to falls back
+ * to category colouring instead of drawing everything black. */
+static float g_color[MAX_NPC_TYPE_ID][3];
+static float g_size[MAX_NPC_TYPE_ID];
+static unsigned char g_has_style[MAX_NPC_TYPE_ID];
+static float g_outline[MAX_NPC_TYPE_ID][3];
+static unsigned char g_has_outline[MAX_NPC_TYPE_ID];
+
 static int   g_loaded = 0;
 
 static const char* skip_ws(const char* p) {
@@ -62,6 +75,33 @@ static int read_int(const char* p) {
     return (int)strtol(p, NULL, 10);
 }
 
+/** Read a JSON float starting at p. */
+static float read_float(const char* p) {
+    p = skip_ws(p);
+    return (float)strtod(p, NULL);
+}
+
+/** Read a fixed-length array of floats, e.g. "color": [0.5, 0.4, 0.2].
+ *
+ * @param p      Position expected to point at the opening bracket.
+ * @param out    Receives `n` values; left untouched when the shape is wrong.
+ * @param n      How many values to read.
+ * @return       1 when all `n` were read, 0 otherwise.
+ */
+static int read_float_array(const char* p, float* out, int n) {
+    p = skip_ws(p);
+    if (*p != '[') return 0;
+    p++;
+    for (int i = 0; i < n; i++) {
+        p = skip_ws(p);
+        if (*p == ']' || *p == '\0') return 0;
+        out[i] = read_float(p);
+        while (*p && *p != ',' && *p != ']') p++;
+        if (*p == ',') p++;
+    }
+    return 1;
+}
+
 /**
  * Advance past one JSON scalar or balanced container value.
  *
@@ -95,6 +135,11 @@ static const char* skip_value(const char* p) {
  */
 void npc_types_init(const char* path) {
     memset(g_names, 0, sizeof(g_names));
+    memset(g_color, 0, sizeof(g_color));
+    memset(g_size, 0, sizeof(g_size));
+    memset(g_has_style, 0, sizeof(g_has_style));
+    memset(g_outline, 0, sizeof(g_outline));
+    memset(g_has_outline, 0, sizeof(g_has_outline));
     g_loaded = 1;
 
     FILE* f = fopen(path, "r");
@@ -120,16 +165,41 @@ void npc_types_init(const char* path) {
     fclose(f);
 
     int count = 0;
-    const char* p = json;
 
-    // Walk through every '{' ... '}' object in the top-level array
-    while (*p) {
+    /* Anchor the walk on the npc_types array.
+     *
+     * It used to start at the document root, which made the root '{' itself look
+     * like an entry: the first key inside it that was neither "id" nor "name"
+     * had its value skipped by skip_value(), and for "npc_types" that value is
+     * the entire array. The walk then ran off the end having seen no rows, so
+     * the table was always empty and every NPC rendered as "NPC_<id>".
+     */
+    const char* p = strstr(json, "\"npc_types\"");
+    if (p) p = strchr(p, '[');
+    if (!p) {
+        CLOG_WARN("[NPC_TYPES] %s has no npc_types array — names will be generic", path);
+        free(json);
+        return;
+    }
+    p++;   /* step past '[' into the array */
+
+    // Walk through every '{' ... '}' object inside it
+    while (*p && *p != ']') {
         p = skip_ws(p);
+        /* skip_ws stops on the terminator, and every generated file ends with a
+         * newline -- so without this the '!=' below is true, p++ steps past the
+         * NUL, and the loop condition reads off the end of the buffer. */
+        if (*p == '\0' || *p == ']') break;
         if (*p != '{') { p++; continue; }
         p++; // enter object
 
-        int  id   = -1;
-        char name[32] = "";
+        int   id   = -1;
+        char  name[32] = "";
+        float color[3] = { 0.0f, 0.0f, 0.0f };
+        float outline[3] = { 0.0f, 0.0f, 0.0f };
+        float size = 1.0f;
+        int   have_color = 0;
+        int   have_outline = 0;
 
         while (*p && *p != '}') {
             p = skip_ws(p);
@@ -149,6 +219,15 @@ void npc_types_init(const char* path) {
             } else if (strcmp(key, "name") == 0) {
                 read_str(p, name, sizeof(name));
                 p = skip_value(p);
+            } else if (strcmp(key, "color") == 0) {
+                have_color = read_float_array(p, color, 3);
+                p = skip_value(p);
+            } else if (strcmp(key, "outline") == 0) {
+                have_outline = read_float_array(p, outline, 3);
+                p = skip_value(p);
+            } else if (strcmp(key, "size_scale") == 0) {
+                size = read_float(p);
+                p = skip_value(p);
             } else {
                 p = skip_value(p);
             }
@@ -161,6 +240,19 @@ void npc_types_init(const char* path) {
         if (id >= 0 && id < MAX_NPC_TYPE_ID && name[0] != '\0') {
             memcpy(g_names[id], name, 31);
             g_names[id][31] = '\0';
+            if (have_color) {
+                g_color[id][0] = color[0];
+                g_color[id][1] = color[1];
+                g_color[id][2] = color[2];
+                g_size[id] = (size > 0.0f) ? size : 1.0f;
+                g_has_style[id] = 1;
+            }
+            if (have_outline) {
+                g_outline[id][0] = outline[0];
+                g_outline[id][1] = outline[1];
+                g_outline[id][2] = outline[2];
+                g_has_outline[id] = 1;
+            }
             count++;
         }
     }
@@ -174,7 +266,33 @@ void npc_types_init(const char* path) {
  */
 void npc_types_cleanup(void) {
     memset(g_names, 0, sizeof(g_names));
+    memset(g_color, 0, sizeof(g_color));
+    memset(g_size, 0, sizeof(g_size));
+    memset(g_has_style, 0, sizeof(g_has_style));
+    memset(g_outline, 0, sizeof(g_outline));
+    memset(g_has_outline, 0, sizeof(g_has_outline));
     g_loaded = 0;
+}
+
+int npc_type_get_style(uint8_t type_id, float* out_rgb, float* out_size) {
+    if (!g_loaded || !g_has_style[type_id]) return 0;
+    if (out_rgb) {
+        out_rgb[0] = g_color[type_id][0];
+        out_rgb[1] = g_color[type_id][1];
+        out_rgb[2] = g_color[type_id][2];
+    }
+    if (out_size) *out_size = g_size[type_id];
+    return 1;
+}
+
+int npc_type_get_outline(uint8_t type_id, float* out_rgb) {
+    if (!g_loaded || !g_has_outline[type_id]) return 0;
+    if (out_rgb) {
+        out_rgb[0] = g_outline[type_id][0];
+        out_rgb[1] = g_outline[type_id][1];
+        out_rgb[2] = g_outline[type_id][2];
+    }
+    return 1;
 }
 
 /**

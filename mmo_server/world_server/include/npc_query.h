@@ -29,6 +29,7 @@
 typedef struct {
     int      slot;           /**< Pool slot, for npc_world_acquire_slot(). */
     uint32_t id;
+    uint16_t npc_type_id;    /**< Resolves faction and role without a pool read. */
     float    pos_x, pos_y;
     float    hitbox_radius;
 } NpcQueryHit;
@@ -61,6 +62,17 @@ void npc_query_publish(NPCWorld* world);
  * @return         Number of hits written.
  */
 int npc_query_near(float x, float y, float radius, NpcQueryHit* out, int max_out);
+
+/** Look one NPC up by identifier in the published index.
+ *
+ * Safe to call from any thread. Answers "where is the thing I am running from"
+ * and "whose side is the thing that charmed me on" -- both asked on a network
+ * thread, where scanning the pool is exactly what this index exists to avoid.
+ *
+ * @param out  Receives the hit when the NPC is found.
+ * @return     1 when the index holds that identifier, else 0.
+ */
+int npc_query_lookup(uint32_t npc_id, NpcQueryHit* out);
 
 /** The largest hitbox radius in the published index.
  *

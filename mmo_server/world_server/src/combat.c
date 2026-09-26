@@ -7,6 +7,11 @@
 #include "npc_snapshot.h"
 #include "npc_query.h"
 #include "npc_world.h"
+#include "npc_mitigation.h"
+#include "npc_effects.h"
+#include "player_effects.h"
+#include "npc_triggers.h"
+#include "player_cast_flags.h"
 #include "log.h"
 #include "combat_stats.h"
 #include "player_level.h"
@@ -427,6 +432,23 @@ void combat_handle_attack_intent(NPCWorld* world,
     float aim_x    = pkt->aim_x;
     float aim_y    = pkt->aim_y;
 
+    /* Blind scatters aim rather than preventing the attack: the swing still
+     * happens, it just may not go where it was pointed. Applied to the
+     * snapshotted aim, so what resolves is what the blind spoiled -- and applied
+     * server-side, because a client that scattered its own aim would simply not
+     * bother. */
+    float blind = player_blind_spread(attacker);
+    if (blind > 0.0f) {
+        float ax = aim_x - origin_x, ay = aim_y - origin_y;
+        float r = ((float)(rand() % 2001) / 1000.0f - 1.0f) * blind *
+                  (float)(M_PI / 180.0);
+        float c = cosf(r), sn = sinf(r);
+        aim_x = origin_x + ax * c - ay * sn;
+        aim_y = origin_y + ax * sn + ay * c;
+    }
+
+    uint32_t charm_source = player_charm_source(attacker);
+
     // Mark combat timestamp for HP regen suppression
     attacker->last_combat_time = now;
 
@@ -496,11 +518,27 @@ void combat_handle_attack_intent(NPCWorld* world,
     int candidate_count = npc_query_near(origin_x, origin_y, search_radius,
                                          candidates, max_hits);
 
+    /* A charmed player cannot bring themselves to strike the charmer's own kind.
+     * That is what charm can honestly mean in a game whose client drives its own
+     * movement: not "you now walk over there", but "these are your friends and
+     * you will not hit them". Server-authoritative and explainable in a sentence.
+     *
+     * Resolved once, here, rather than per candidate -- the charmer's faction is
+     * a property of the charm, not of who is standing nearby. */
+    int charmed_faction = -1;
+    if (charm_source) {
+        NpcQueryHit charmer;
+        if (npc_query_lookup(charm_source, &charmer))
+            charmed_faction = npc_faction_of_type(charmer.npc_type_id);
+    }
+
     uint32_t best_single_id   = 0;
     float    best_single_dist = 1e9f;
 
     for (int i = 0; i < candidate_count && hit_count < MAX_CAST_TARGETS; i++) {
         const NpcQueryHit* hit = &candidates[i];
+        if (charmed_faction >= 0 &&
+            npc_faction_of_type(hit->npc_type_id) == charmed_faction) continue;
         float npc_cx = hit->pos_x;
         float npc_cy = hit->pos_y;
 
@@ -691,6 +729,18 @@ void combat_tick(NPCWorld* world, NPCTickSnapshot* npcs) {
     int expired_count = 0;
 
     pthread_mutex_lock(&g_pending_casts_lock);
+
+    /* Republish who is mid-cast for the NPC trigger evaluator, from the array
+     * that actually knows. Once per tick from the source rather than a flag set
+     * at each of the places a cast starts, cancels or resolves: a missed clear is
+     * impossible when the clear is a fresh read.
+     *
+     * This is the authoritative write of the tick and clears as well as sets;
+     * ability_tick() runs after it and adds ability casts on top. Both finish
+     * before npc_ai_tick() reads them. See player_cast_flags.h. */
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        player_cast_flag_set(i, g_pending_casts[i].is_active);
+
     for (int i = 0; i < MAX_PLAYERS; i++) {
         PendingCast* pending = &g_pending_casts[i];
         if (!pending->is_active) continue;
@@ -812,8 +862,12 @@ void combat_tick(NPCWorld* world, NPCTickSnapshot* npcs) {
                                                    a_form_power, &a_mods,
                                                    best->armor, &is_crit);
 
+                damage = npc_mitigation_apply(world, npcs->slot[c], best, damage,
+                                              origin_x, origin_y, now, NULL);
+
                 best->health -= damage;
                 if (best->health < 0) best->health = 0;
+                npc_trigger_note_damage(best, origin_x, origin_y);
 
                 uint8_t is_kill = (best->health == 0) ? 1 : 0;
                 if (is_kill) {
@@ -947,8 +1001,12 @@ void combat_tick(NPCWorld* world, NPCTickSnapshot* npcs) {
                                                a_form_power, &a_mods,
                                                npc->armor, &is_crit);
 
+            damage = npc_mitigation_apply(world, npcs->slot[c], npc, damage,
+                                          origin_x, origin_y, now, NULL);
+
             npc->health -= damage;
             if (npc->health < 0) npc->health = 0;
+            npc_trigger_note_damage(npc, origin_x, origin_y);
 
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
             if (is_kill) {
@@ -1230,9 +1288,11 @@ void combat_tick(NPCWorld* world, NPCTickSnapshot* npcs) {
             npc->ai_is_casting = 0;
             npc->ai_cast_ability_idx = -1;
             npc->ai_cast_start = 0.0;
-            for (int c = 0; c < MAX_NPC_ABILITIES_RT; c++) {
-                npc->ai_ability_cooldowns[c] = 0.0;
-            }
+            /* Clears cooldowns, and with them any effects and fired trigger
+             * latches the NPC died holding -- a respawn is a fresh enemy, not a
+             * resumed one, and that state no longer lives inside NPCEntity for
+             * the memset above to have caught. */
+            npc_world_clear_state(world, i);
             npc->ai_cd_seeded = 0; // Re-seed phases on next npc_ai_tick entry
 
             LOG_DEBUG("[COMBAT] NPC '%s' (id=%u) respawned at (%.1f, %.1f)", npc->name, npc->id, npc->spawn_x, npc->spawn_y);

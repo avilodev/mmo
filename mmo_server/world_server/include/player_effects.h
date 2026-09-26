@@ -45,6 +45,44 @@ int player_is_action_locked(const ActivePlayer* player);
  */
 int player_is_movement_locked(const ActivePlayer* player);
 
+/* --- The five effects the NPC kits introduce (V11) -------------------------
+ *
+ * Each is a predicate over a gate that already exists rather than a new
+ * subsystem. The fifth, `mark`, needs no predicate at all: it is a damage-taken
+ * modifier and player_collect_modifiers() already sums those.
+ */
+
+/** Report whether a player may change form.
+ *
+ * @return Nonzero while an EFFECT_FORM_LOCK holds, which is what Chain-breaker's
+ *         chain and Silencer's bubble both mean.
+ */
+int player_is_form_locked(const ActivePlayer* player);
+
+/** Return the widest active blind's half-angle in degrees, or 0 when unblinded.
+ *
+ * Blind scatters aim rather than preventing an attack: the swing still happens,
+ * it just may not go where it was pointed. Read at cast resolution, so a blind
+ * applied mid-cast still lands on the shot it was meant to spoil.
+ */
+float player_blind_spread(const ActivePlayer* player);
+
+/** Return the identifier a fear is running from, or 0 when unafraid.
+ *
+ * Movement toward that source is refused while it holds. That is the whole
+ * effect, and it is enforced where movement is already validated rather than by
+ * taking control of the character away from the client.
+ */
+uint32_t player_fear_source(const ActivePlayer* player);
+
+/** Return the identifier of whoever charmed this player, or 0 when uncharmed.
+ *
+ * A charmed player cannot attack the charmer's faction. Server-authoritative,
+ * legible in one sentence, and it needs nothing of the client -- which is what
+ * "charm" can honestly mean in a game where the client drives its own movement.
+ */
+uint32_t player_charm_source(const ActivePlayer* player);
+
 /** Install one effect in a player's first free slot.
  *
  * Instant effects — resource restoration and percentage-of-max healing — are applied

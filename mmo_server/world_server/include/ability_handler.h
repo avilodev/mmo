@@ -29,14 +29,33 @@ typedef struct {
     uint32_t    target_id;          // For single-target abilities
 } PendingAbilityCast;
 
-/** Bound concurrently active ability-created zones. */
-#define MAX_ZONES 64
+/** Size the ground-zone pool when a world configuration does not say.
+ *
+ * One pool serves players and, once V6 lands, NPCs -- a Firebrand lays five
+ * zones per cast and a Rot Crawler one per tick, so a fixed global array is a
+ * content limit rather than a memory decision. Heap-allocated from the world's
+ * `.conf` (`zone_capacity`).
+ *
+ * Note the client renders at most MAX_ZONES of its own (32 today). Raising this
+ * lets more zones *exist*; how many are *drawn* is a separate client bound, and
+ * a zone that is not drawn still applies its effects.
+ */
+#define ZONE_CAPACITY_DEFAULT 256
 
-/** Track one ability-created zone and its periodic effects. */
+/** Refuse absurd configured capacities rather than trying to allocate them. */
+#define ZONE_CAPACITY_MAX   16384
+
+/** Track one ability-created zone and its periodic effects.
+ *
+ * Lives here rather than in zone_owner.h so that the pool's owner and the
+ * ability path that started it agree on one struct. zone_owner.c is the only
+ * code that writes it.
+ */
 typedef struct {
     uint8_t     is_active;
     uint32_t    zone_id;            // Server-assigned
     uint32_t    caster_id;
+    uint8_t     owner_type;         /**< ZoneOwnerType: whose zone this is. */
     uint16_t    ability_id;         // Source ability (for VFX lookup)
 
     float       pos_x, pos_y;
@@ -56,8 +75,17 @@ typedef struct {
     float       tick_rate;          /**< Seconds between effect applications. */
 } ActiveZone;
 
-// initialize once after loading ability definitions
-void ability_handler_init(void);
+/** Initialize pending casts and the ground-zone pool.
+ *
+ * @param zone_capacity  Requested zone slots; 0 takes ZONE_CAPACITY_DEFAULT and
+ *                       the value is clamped to ZONE_CAPACITY_MAX.
+ * @param zone_per_owner Zones one caster may hold; 0 takes the default.
+ * @return               1 on success, or 0 when allocation fails.
+ */
+int ability_handler_init(int zone_capacity, int zone_per_owner);
+
+/** Report the zone pool's allocated capacity. */
+int ability_zone_capacity(void);
 
 // validate and queue or reject one cast intent
 void ability_handle_cast_intent(NPCWorld* world,

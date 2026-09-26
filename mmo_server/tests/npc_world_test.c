@@ -395,6 +395,93 @@ int main(void) {
         npc_world_shutdown(&world);
     }
 
+    /* --- Per-NPC state lives beside the entity, sized from content -------
+     *
+     * Ability cooldowns used to be an inline NPCEntity array sized by a #define
+     * that a second header had to match by hand. They are a parallel pool array
+     * now, so the two things worth proving are that the width comes from the
+     * caller and that a recycled slot does not inherit the previous occupant's
+     * state -- the memset of NPCEntity no longer reaches it.
+     */
+    {
+        printf("\nTEST 12: per-NPC state is sized by the caller\n");
+        NPCWorld world;
+        NPCStateSizes sizes = { .max_abilities = 7, .max_effect_slots = 12,
+                                .max_triggers = 40, .max_phases = 3 };
+        assert(npc_world_init_sized(&world, 32, &sizes));
+
+        assert(npc_world_max_abilities(&world) == 7);
+        assert(npc_world_max_effect_slots(&world) == 12);
+        assert(npc_world_latch_words(&world) == 2);   /* ceil(40 / 32) */
+        printf("  7 abilities, 12 effect slots, 2 latch words\n");
+
+        /* A default-initialised pool still works, for callers with no registry. */
+        NPCWorld plain;
+        assert(npc_world_init(&plain, 8));
+        assert(npc_world_max_abilities(&plain) == NPC_STATE_ABILITIES_DEFAULT);
+        npc_world_shutdown(&plain);
+        printf("  npc_world_init() still takes the compiled defaults\n");
+
+        uint32_t id = npc_world_spawn(&world, "First", 1, 1, 100, 8, 0, 0, 42, 0, 1);
+        assert(id != 0);
+
+        /* Write the full width of every per-slot array. Under ASan this is the
+         * assertion that matters: a stride computed wrongly lands out of bounds. */
+        int slot = -1;
+        for (int i = 0; i < npc_world_capacity(&world); i++) {
+            NPCEntity* e = npc_world_slot(&world, i);
+            if (e && e->id == id) { slot = i; break; }
+        }
+        assert(slot >= 0);
+
+        double* cds = npc_world_cooldowns(&world, slot);
+        assert(cds != NULL);
+        for (int i = 0; i < npc_world_max_abilities(&world); i++) cds[i] = 12.5;
+
+        NPCEffect* fx = npc_world_effects(&world, slot);
+        assert(fx != NULL);
+        for (int i = 0; i < npc_world_max_effect_slots(&world); i++) {
+            fx[i].active = 1;
+            fx[i].value = 7;
+        }
+        for (int t = 0; t < 40; t++) npc_world_latch_set(&world, slot, t);
+        assert(npc_world_latch_get(&world, slot, 39) == 1);
+        assert(npc_world_latch_get(&world, slot, 40) == 0);   /* past the width */
+        printf("  every slot of every per-NPC array is writable\n");
+
+        printf("TEST 13: a recycled slot inherits nothing\n");
+        npc_world_remove(&world, id);
+
+        uint32_t reused = npc_world_spawn(&world, "Second", 2, 2, 50, 8, 0, 0, 43, 0, 1);
+        assert(reused != 0);
+        assert(reused != id);
+
+        int reslot = -1;
+        for (int i = 0; i < npc_world_capacity(&world); i++) {
+            NPCEntity* e = npc_world_slot(&world, i);
+            if (e && e->id == reused) { reslot = i; break; }
+        }
+        assert(reslot == slot);   /* the freed slot is the one reclaimed */
+
+        double* cds2 = npc_world_cooldowns(&world, reslot);
+        for (int i = 0; i < npc_world_max_abilities(&world); i++) assert(cds2[i] == 0.0);
+
+        NPCEffect* fx2 = npc_world_effects(&world, reslot);
+        for (int i = 0; i < npc_world_max_effect_slots(&world); i++) {
+            assert(fx2[i].active == 0);
+            assert(fx2[i].value == 0);
+        }
+        for (int t = 0; t < 40; t++) assert(npc_world_latch_get(&world, reslot, t) == 0);
+        printf("  cooldowns, effects and latches all cleared on reuse\n");
+
+        /* Out-of-range slots answer NULL rather than computing an offset. */
+        assert(npc_world_cooldowns(&world, -1) == NULL);
+        assert(npc_world_cooldowns(&world, npc_world_capacity(&world)) == NULL);
+        printf("  out-of-range slots return NULL\n");
+
+        npc_world_shutdown(&world);
+    }
+
     printf("\nALL ASSERTIONS PASSED\n");
     return 0;
 }

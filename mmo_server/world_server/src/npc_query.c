@@ -25,6 +25,7 @@ typedef struct {
     float*    pos_x;
     float*    pos_y;
     float*    hitbox_radius;
+    uint16_t* npc_type_id;
 
     float max_hitbox_radius;
 
@@ -49,6 +50,7 @@ static void index_free(NpcIndex* index) {
     free(index->pos_x);
     free(index->pos_y);
     free(index->hitbox_radius);
+    free(index->npc_type_id);
     free(index->points);
     spatial_grid_destroy(index->grid);
     memset(index, 0, sizeof(*index));
@@ -64,6 +66,7 @@ static int index_alloc(NpcIndex* index, int capacity) {
     index->pos_x         = calloc((size_t)capacity, sizeof(*index->pos_x));
     index->pos_y         = calloc((size_t)capacity, sizeof(*index->pos_y));
     index->hitbox_radius = calloc((size_t)capacity, sizeof(*index->hitbox_radius));
+    index->npc_type_id   = calloc((size_t)capacity, sizeof(*index->npc_type_id));
     index->points        = calloc((size_t)capacity, sizeof(*index->points));
 
     float world_w = 0.0f, world_h = 0.0f;
@@ -75,7 +78,7 @@ static int index_alloc(NpcIndex* index, int capacity) {
                                       SPATIAL_GRID_DEFAULT_CELL, capacity);
 
     if (!index->slot || !index->id || !index->pos_x || !index->pos_y ||
-        !index->hitbox_radius || !index->points || !index->grid) {
+        !index->hitbox_radius || !index->npc_type_id || !index->points || !index->grid) {
         index_free(index);
         return 0;
     }
@@ -151,6 +154,7 @@ void npc_query_publish(NPCWorld* world) {
             back->pos_x[d]         = npc->pos_x;
             back->pos_y[d]         = npc->pos_y;
             back->hitbox_radius[d] = npc->hitbox_radius;
+            back->npc_type_id[d]   = npc->npc_type_id;
             back->points[d].x      = npc->pos_x;
             back->points[d].y      = npc->pos_y;
             if (npc->hitbox_radius > back->max_hitbox_radius)
@@ -175,6 +179,36 @@ void npc_query_publish(NPCWorld* world) {
  *
  * @return Number of hits written.
  */
+int npc_query_lookup(uint32_t npc_id, NpcQueryHit* out) {
+    if (!npc_id || !out) return 0;
+
+    pthread_rwlock_rdlock(&g_lock);
+
+    NpcIndex* index = g_published;
+    int found = 0;
+    if (g_ready && index) {
+        /* A linear walk, deliberately. There is no identifier index over the
+         * published copy, and this answers one question for one feared player on
+         * one movement packet -- adding a hash to save a few hundred compares on
+         * a path that already does a collision trace would be storage and
+         * invalidation for nothing. */
+        for (int i = 0; i < index->count; i++) {
+            if (index->id[i] != npc_id) continue;
+            out->slot          = index->slot[i];
+            out->id            = index->id[i];
+            out->npc_type_id   = index->npc_type_id[i];
+            out->pos_x         = index->pos_x[i];
+            out->pos_y         = index->pos_y[i];
+            out->hitbox_radius = index->hitbox_radius[i];
+            found = 1;
+            break;
+        }
+    }
+
+    pthread_rwlock_unlock(&g_lock);
+    return found;
+}
+
 int npc_query_near(float x, float y, float radius, NpcQueryHit* out, int max_out) {
     if (!out || max_out <= 0) return 0;
 
@@ -201,6 +235,7 @@ int npc_query_near(float x, float y, float radius, NpcQueryHit* out, int max_out
             if (d < 0 || d >= index->count) continue;
             out[written].slot          = index->slot[d];
             out[written].id            = index->id[d];
+            out[written].npc_type_id   = index->npc_type_id[d];
             out[written].pos_x         = index->pos_x[d];
             out[written].pos_y         = index->pos_y[d];
             out[written].hitbox_radius = index->hitbox_radius[d];

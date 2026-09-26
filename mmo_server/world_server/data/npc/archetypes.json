@@ -1,0 +1,38 @@
+{
+  "_comment": "Every number a movement shape implies, so a type row carries only what makes it that enemy. Distances are in TILES and converted once at load against the world's own tile size. move_speed is in world units per second and is never omitted: a level-1 player moves at 195-245, so an 80 default would mean a melee enemy could never reach a moving target.",
+  "_note": "Nine shapes cover seventy-seven enemies. Where one enemy needs a single field to differ -- Purge Rusher's target priority, Failed Experiment's erratic approach -- that is a type-row override rather than a tenth archetype, because forking one would duplicate every number in it.",
+  "archetypes": [
+    { "key": "melee_rusher", "movement": "follow", "move_speed": 210,
+      "aggro_tiles": 25, "leash_tiles": 56, "preferred_tiles": 0 },
+
+    { "key": "melee_lunger", "movement": "follow", "move_speed": 185,
+      "aggro_tiles": 24, "leash_tiles": 56, "preferred_tiles": 1.5 },
+
+    { "key": "melee_brute", "movement": "follow", "move_speed": 150,
+      "aggro_tiles": 22, "leash_tiles": 50, "preferred_tiles": 0, "hitbox_radius": 24 },
+
+    { "key": "ranged_kiter", "movement": "maintain_range", "move_speed": 165,
+      "aggro_tiles": 32, "leash_tiles": 62, "preferred_tiles": 6,
+      "retreat_tiles": 3 },
+
+    { "key": "turret", "movement": "stationary", "move_speed": 0,
+      "aggro_tiles": 35, "leash_tiles": 0, "preferred_tiles": 8 },
+
+    { "key": "support_caster", "movement": "maintain_range", "move_speed": 160,
+      "aggro_tiles": 30, "leash_tiles": 56, "preferred_tiles": 5,
+      "retreat_tiles": 3, "ally_affinity_tiles": 4 },
+
+    { "key": "summoner", "movement": "maintain_range", "move_speed": 175,
+      "aggro_tiles": 31, "leash_tiles": 56, "preferred_tiles": 7,
+      "retreat_tiles": 5, "flee_while_adds_alive": true },
+
+    { "key": "relentless", "movement": "follow", "move_speed": 135,
+      "aggro_tiles": 40, "leash_tiles": 0, "preferred_tiles": 0,
+      "movement_cc_immune": true, "never_leashes": true },
+
+    { "key": "skirmisher", "movement": "follow", "move_speed": 200,
+      "aggro_tiles": 26, "leash_tiles": 56, "preferred_tiles": 2,
+      "reactive_hop_tiles": 1, "reactive_hop_cooldown": 1.2,
+      "reactive_hop_threat_tiles": 2 }
+  ]
+}

@@ -4,6 +4,8 @@
  */
 
 #include "config.h"
+#include "projectile.h"
+#include "ability_handler.h"
 #include "packet_limiter.h"
 #include "limit_profiles.h"
 #include "log.h"
@@ -184,6 +186,52 @@ int main(void) {
         printf("  (a max_players ceiling error is expected here)\n");
         assert(set_config(wrapped) == 0);
         printf("  70000 is refused instead of becoming 4464\n");
+    }
+
+    printf("\nTEST 8: pool capacities are configured, not compiled\n");
+    {
+        /* These sized fixed arrays until Tier 0. The point of the keys is that a
+         * shard tuned for dense combat is a deployment decision, so the thing
+         * worth asserting is that a value in the file actually reaches the field
+         * -- a key that parses and stores nowhere is the failure mode. */
+        const char* sized = write_conf("limits_pools.conf",
+            "# Server Name\nPools\n# Region\nNorth America\n"
+            "# IP:Port\n127.0.0.1:7784\n# Max Players\n100\n# Hardcore\n0\n"
+            "projectile_capacity = 2048\n"
+            "npc_effect_slots = 12\n"
+            "zone_capacity = 512\n"
+            "max_npcs = 4096\n");
+        assert(set_config(sized) == 1);
+        assert(g_server.projectile_capacity == 2048);
+        assert(g_server.npc_effect_slots == 12);
+        assert(g_server.zone_capacity == 512);
+        assert(g_server.max_npcs == 4096);
+        printf("  projectile_capacity=2048, npc_effect_slots=12, zone_capacity=512, "
+               "max_npcs=4096\n");
+
+        /* Unset means "take the compiled default", which is what 0 encodes --
+         * distinct from a configured 0, which the pools clamp up. */
+        const char* unset = write_conf("limits_pools_unset.conf",
+            "# Server Name\nUnset\n# Region\nNorth America\n"
+            "# IP:Port\n127.0.0.1:7785\n# Max Players\n100\n# Hardcore\n0\n");
+        assert(set_config(unset) == 1);
+        assert(g_server.projectile_capacity == 0);
+        assert(g_server.npc_effect_slots == 0);
+        assert(g_server.zone_capacity == 0);
+        printf("  unset leaves 0, meaning 'use the compiled default'\n");
+
+        /* Past the ceiling the previous value is kept and said out loud, rather
+         * than the allocation being attempted. */
+        char body[320];
+        snprintf(body, sizeof(body),
+            "# Server Name\nHuge\n# Region\nNorth America\n"
+            "# IP:Port\n127.0.0.1:7786\n# Max Players\n100\n# Hardcore\n0\n"
+            "projectile_capacity = %d\n", PROJECTILE_CAPACITY_MAX + 1);
+        const char* huge = write_conf("limits_pools_huge.conf", body);
+        printf("  (a projectile_capacity ceiling error is expected here)\n");
+        assert(set_config(huge) == 1);      /* the file still loads */
+        assert(g_server.projectile_capacity == 0);   /* but the value is refused */
+        printf("  a capacity past the ceiling is refused, not allocated\n");
     }
 
     printf("\nALL ASSERTIONS PASSED\n");

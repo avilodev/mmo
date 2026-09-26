@@ -15,8 +15,22 @@
 #include <stdint.h>
 #include <pthread.h>
 
-/** Bound active projectiles and their visibility range in world units. */
-#define MAX_PROJECTILES           128
+/** Size the projectile pool when a world configuration does not say.
+ *
+ * The pool used to be a fixed 128-entry array. A pack of five Volleys firing
+ * three-arrow bursts puts fifteen in flight from one group, so the ceiling was
+ * a content limit wearing a constant's clothes: past it, spawns simply failed,
+ * and the enemy that fired looked like it had missed.
+ *
+ * It is heap-allocated from the world's `.conf` (`projectile_capacity`) now, so
+ * a shard tuned for dense combat is a deployment decision rather than a rebuild.
+ */
+#define PROJECTILE_CAPACITY_DEFAULT  512
+
+/** Refuse absurd configured capacities rather than trying to allocate them. */
+#define PROJECTILE_CAPACITY_MAX    16384
+
+/** Bound projectile visibility in world units. */
 #define PROJECTILE_VIEW_RANGE    2000.0f
 
 /** Identify whether a player or NPC owns a projectile. */
@@ -96,7 +110,16 @@ typedef struct {
     uint8_t     effect_count;
 } ProjectileSpawnInfo;
 
-void projectile_init(void);
+/** Allocate the projectile pool.
+ *
+ * @param capacity  Requested slots; 0 takes PROJECTILE_CAPACITY_DEFAULT and the
+ *                  value is clamped to PROJECTILE_CAPACITY_MAX.
+ * @return          1 on success, or 0 when allocation fails.
+ */
+int projectile_init(int capacity);
+
+/** Report the pool's allocated capacity. */
+int projectile_capacity(void);
 
 void projectile_cleanup(void);
 

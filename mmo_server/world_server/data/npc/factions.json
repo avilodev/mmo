@@ -1,0 +1,13 @@
+{
+  "_comment": "Faction picks the hue; role picks the value and the box size (archetypes.json, and the client table generated from both). Eight hues and eight role values mean a player learns sixteen things and can read any of the 77 enemies on sight.",
+  "factions": [
+    { "key": "fang",      "id": 1, "name": "The Fang",      "color": [0.75, 0.22, 0.16] },
+    { "key": "hunt",      "id": 2, "name": "The Hunt",      "color": [0.34, 0.55, 0.76] },
+    { "key": "vessane",   "id": 3, "name": "Vessane",       "color": [0.60, 0.26, 0.72] },
+    { "key": "unpara",    "id": 4, "name": "Unpara",        "color": [0.82, 0.79, 0.70] },
+    { "key": "choir",     "id": 5, "name": "The Choir",     "color": [0.34, 0.66, 0.32] },
+    { "key": "feral",     "id": 6, "name": "The Feral",     "color": [0.55, 0.40, 0.22] },
+    { "key": "sundered",  "id": 7, "name": "The Sundered",  "color": [0.44, 0.72, 0.68] },
+    { "key": "forgotten", "id": 8, "name": "The Forgotten", "color": [0.86, 0.46, 0.14] }
+  ]
+}

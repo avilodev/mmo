@@ -19,6 +19,14 @@ typedef struct {
     float    pos_y[MAX_PLAYERS];
     uint8_t  is_dead[MAX_PLAYERS];
     int      client_fd[MAX_PLAYERS];
+    /** What NPC target priority needs to choose between candidates (V13).
+     *
+     * Copied rather than looked up per candidate for the reason the rest of this
+     * struct exists: a Purge Rusher asking "who here is Blessed" would otherwise
+     * take a player lock per candidate, per NPC, per tick. */
+    uint8_t  form[MAX_PLAYERS];          /**< PlayerForm; FORM_ANIMAL is "Blessed". */
+    int32_t  health[MAX_PLAYERS];
+    int32_t  max_health[MAX_PLAYERS];
     int      count;
 
     /** Map active-player slots to dense indices, using -1 when absent. */

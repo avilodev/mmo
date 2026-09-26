@@ -40,6 +40,64 @@
 /** Refuse absurd configured capacities rather than trying to allocate them. */
 #define NPC_CAPACITY_MAX 65536
 
+/* --- Per-NPC variable-length state ---------------------------------------
+ *
+ * Ability cooldowns, status effects and trigger latches are all per-NPC state
+ * whose width is a property of the *content*, not of the code. They used to be
+ * inline arrays on NPCEntity sized by a #define -- and ability cooldowns were
+ * sized by a second #define in another header that a comment asked you to keep
+ * in step by hand. Raising one and not the other was not a truncation; it was an
+ * out-of-bounds write into the pool on the gameplay thread.
+ *
+ * They live here instead, as arrays parallel to `npcs`, allocated once at init
+ * to the widths the loaded content actually needs and indexed [slot * stride + i].
+ * Each is guarded by the slot mutex that already guards that NPC, so this adds
+ * storage without adding a lock or touching the lock order.
+ *
+ * NPCEntity stays plain data, which is what keeps it memset- and copy-safe and
+ * keeps the tick snapshot cheap -- the snapshot copies scalars and never this.
+ */
+
+/** Fall back to these when a caller does not size state from loaded content. */
+#define NPC_STATE_ABILITIES_DEFAULT     4
+#define NPC_STATE_EFFECT_SLOTS_DEFAULT  8
+
+/** Refuse absurd configured widths rather than allocating them. */
+#define NPC_STATE_ABILITIES_MAX     64
+#define NPC_STATE_EFFECT_SLOTS_MAX  64
+
+/** Track one status effect on an NPC.
+ *
+ * Deliberately field-for-field the player's active_effects slot in
+ * server_types.h: the two are the same mechanic, and npc_effects.c is meant to
+ * mirror player_effects.c closely enough that a reader of one can read the other.
+ */
+typedef struct {
+    uint8_t  active;
+    uint8_t  effect_type;      /**< StatusEffectType. */
+    uint8_t  buff_stat;
+    uint8_t  _pad;
+    int      value;
+    float    duration_remaining;
+    float    tick_remaining;
+    float    tick_rate;
+    uint32_t source_id;
+} NPCEffect;
+
+/** Size the per-NPC state arrays from what the content actually needs.
+ *
+ * Every field may be 0, which takes the compiled default. Startup fills this from
+ * npc_registry_max_abilities() and friends, so a shard whose widest enemy has
+ * three abilities allocates three -- and a seven-ability mini-boss needs no code
+ * change, only a registry that reports seven.
+ */
+typedef struct {
+    int max_abilities;     /**< Cooldown slots per NPC. */
+    int max_effect_slots;  /**< Status effect slots per NPC. */
+    int max_triggers;      /**< Trigger latches per NPC; stored as a bitset. */
+    int max_phases;        /**< Phases per NPC; 0 when no type declares any. */
+} NPCStateSizes;
+
 /** Hold the world's NPC storage, its per-slot locks, and its id index.
  *
  * Treat every field as private. The pool is only correct when reached through
@@ -79,6 +137,37 @@ typedef struct {
     int* live_slots;
     /** Slot -> position in live_slots, or -1. Makes removal O(1). */
     int* live_position;
+
+    /* --- Per-NPC variable-length state, indexed [slot * stride + i]. ------
+     *
+     * Guarded by that slot's mutex, like the NPCEntity it belongs to. Cleared
+     * when a slot is claimed and when it is released, so a recycled slot never
+     * inherits the previous occupant's cooldowns, buffs or fired latches. */
+
+    double*    ability_cooldowns;  /**< capacity * max_abilities. */
+    /** Per-slot ability redirection, capacity * max_abilities.
+     *
+     * Zero means "use the ability this type declares in that slot"; anything else
+     * is a registry ability index biased by one, written by a fired
+     * `swap_ability` trigger. Alpha Wolf's Double Bite swaps its lunge for the
+     * two-shot `serial_burst`, which is not in its own ability list, so the
+     * target has to be a registry index rather than a type-local slot.
+     *
+     * A redirection table rather than a mutated ability list, because the list
+     * belongs to the registry and the registry is shared by every instance of a
+     * type -- one Alpha Wolf reaching 40% health must not rearm every other. */
+    uint16_t*  ability_swap;
+    NPCEffect* effects;            /**< capacity * max_effect_slots. */
+    uint32_t*  trigger_latches;    /**< capacity * latch_words; one bit per trigger. */
+    uint8_t*   phase_index;        /**< capacity; current phase. */
+    double*    phase_started_at;   /**< capacity; for `after` phase exits. */
+    uint16_t*  phase_uses;         /**< capacity; for `after_uses` phase exits. */
+
+    int max_abilities;
+    int max_effect_slots;
+    int max_triggers;
+    int latch_words;               /**< ceil(max_triggers / 32); 0 when no triggers. */
+    int max_phases;
 } NPCWorld;
 
 /** Allocate a pool of the given capacity.
@@ -88,6 +177,20 @@ typedef struct {
  * @return  1 on success, or 0 when allocation fails.
  */
 int npc_world_init(NPCWorld* world, int capacity);
+
+/** Allocate a pool whose per-NPC state is sized from the loaded content.
+ *
+ * The sizing counterpart to npc_world_init(), which is this with `sizes` NULL.
+ * Prefer this at startup: passing npc_registry_max_abilities() here is what makes
+ * the widest enemy in the data file a fact the pool is built around, rather than
+ * a number two headers have to agree on.
+ *
+ * @param world     Pool to initialize; must not already be initialized.
+ * @param capacity  Requested slots; clamped to [1, NPC_CAPACITY_MAX].
+ * @param sizes     Per-NPC state widths; NULL or zeroed fields take the defaults.
+ * @return          1 on success, or 0 when allocation fails.
+ */
+int npc_world_init_sized(NPCWorld* world, int capacity, const NPCStateSizes* sizes);
 
 /** Release every allocation owned by a pool and leave it zeroed. */
 void npc_world_shutdown(NPCWorld* world);
@@ -201,5 +304,52 @@ NPCEntity* npc_world_acquire_slot(NPCWorld* world, int slot, uint32_t expected_i
 
 /** Release an entity acquired by npc_world_acquire() or npc_world_acquire_slot(). */
 void npc_world_release(NPCWorld* world, NPCEntity* npc);
+
+/* --- Per-NPC state ------------------------------------------------------
+ *
+ * Each returns that slot's span of the parallel arrays, or NULL when the slot is
+ * out of range or the pool holds no state of that kind. The caller must already
+ * hold the slot's lock -- the same lock that guards the NPCEntity itself.
+ */
+
+/** Borrow a slot's ability cooldowns. npc_world_max_abilities() entries. */
+double* npc_world_cooldowns(NPCWorld* world, int slot);
+
+/** Read a slot's ability redirection.
+ *
+ * @return The registry ability index now standing in for that type-local slot,
+ *         or -1 when the slot still uses the ability its type declares.
+ */
+int npc_world_ability_override(NPCWorld* world, int slot, int ability);
+
+/** Redirect one of a slot's type-local abilities to a registry ability.
+ *
+ * @param registry_index  Registry ability index, or -1 to clear the redirection.
+ */
+void npc_world_ability_swap(NPCWorld* world, int slot, int ability,
+                            int registry_index);
+
+/** Borrow a slot's status effect array. npc_world_max_effect_slots() entries. */
+NPCEffect* npc_world_effects(NPCWorld* world, int slot);
+
+/** Borrow a slot's trigger latch bitset. npc_world_latch_words() words. */
+uint32_t* npc_world_latches(NPCWorld* world, int slot);
+
+/** Report whether a trigger's latch has fired for one NPC. */
+int npc_world_latch_get(NPCWorld* world, int slot, int trigger);
+
+/** Set a trigger's latch for one NPC. Ignores an out-of-range trigger. */
+void npc_world_latch_set(NPCWorld* world, int slot, int trigger);
+
+/** Clear every piece of per-NPC state for a slot.
+ *
+ * Called when a slot is claimed and when it is released. Also what a respawn
+ * wants: a returning NPC should not resume with the cooldowns it died holding.
+ */
+void npc_world_clear_state(NPCWorld* world, int slot);
+
+int npc_world_max_abilities(const NPCWorld* world);
+int npc_world_max_effect_slots(const NPCWorld* world);
+int npc_world_latch_words(const NPCWorld* world);
 
 #endif // NPC_WORLD_H

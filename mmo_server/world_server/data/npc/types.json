@@ -1,0 +1,1755 @@
+{
+  "_comment": "One row per enemy. Everything that makes it move is in its archetype; everything that makes it attack is an ability key. Adding an enemy that reuses both is exactly this many lines.",
+  "_counts": {
+    "authored": 77,
+    "summon_only": 4,
+    "total": 81
+  },
+  "id_ranges": {
+    "quest": [
+      20,
+      99
+    ],
+    "enemy": [
+      100,
+      199
+    ],
+    "summon": [
+      200,
+      255
+    ]
+  },
+  "npc_types": [
+    {
+      "key": "fang_rusher",
+      "id": 100,
+      "name": "Rusher",
+      "faction": "fang",
+      "archetype": "melee_rusher",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "abilities": [
+        "contact_hit"
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 30,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "move_speed_pct": 30,
+            "attack_speed_pct": 20
+          }
+        }
+      ],
+      "_note": "Frenzy. Costs no ability row: it is a threshold and a pair of modifiers."
+    },
+    {
+      "key": "fang_dasher",
+      "id": 101,
+      "name": "Dasher",
+      "faction": "fang",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        "dash_lunge",
+        "feint_lunge"
+      ]
+    },
+    {
+      "key": "fang_volley",
+      "id": 102,
+      "name": "Volley",
+      "faction": "fang",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "serial_burst",
+        "suppressing_shot"
+      ]
+    },
+    {
+      "key": "fang_trapper",
+      "id": 103,
+      "name": "Trapper",
+      "faction": "fang",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "snare_trap",
+        {
+          "key": "single_bolt",
+          "damage": 6,
+          "cast_time": 0.3
+        }
+      ],
+      "triggers": [
+        {
+          "when": "timer",
+          "value": 10,
+          "repeating": true,
+          "action": "cast",
+          "ability": "trap_recall"
+        }
+      ],
+      "_note": "The recall is a timed re-cast: laying a second trap retires the first through the per-caster zone cap, which is what picking one up and re-placing it means."
+    },
+    {
+      "key": "fang_smoke_thief",
+      "id": 104,
+      "name": "Smoke Thief",
+      "faction": "fang",
+      "archetype": "skirmisher",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "abilities": [
+        "blind_bomb",
+        "snatch_vanish"
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 25,
+          "once": true,
+          "action": "cast",
+          "ability": "panic_flee"
+        },
+        {
+          "when": "hp_below",
+          "value": 6,
+          "once": true,
+          "action": "flee"
+        }
+      ],
+      "_note": "Two triggers on one threshold: the blind is an ability and the running is a state, and states are what triggers set."
+    },
+    {
+      "key": "fang_brawler",
+      "id": 105,
+      "name": "Brawler",
+      "faction": "fang",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 50,
+      "armor": 1,
+      "xp_reward": 26,
+      "abilities": [
+        "wide_swing",
+        "ground_slam"
+      ]
+    },
+    {
+      "key": "fang_net_thrower",
+      "id": 106,
+      "name": "Net-thrower",
+      "faction": "fang",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        "root_shot",
+        "ally_heal",
+        "short_swing"
+      ]
+    },
+    {
+      "key": "fang_whistle_caller",
+      "id": 107,
+      "name": "Whistle-caller",
+      "faction": "fang",
+      "archetype": "summoner",
+      "role": "summoner",
+      "health": 15,
+      "armor": 0,
+      "xp_reward": 8,
+      "abilities": [
+        {
+          "key": "summon_adds",
+          "types": [
+            "fang_rusher"
+          ],
+          "count_min": 1,
+          "count_max": 2,
+          "cooldown": 8.0
+        },
+        {
+          "key": "faction_rally",
+          "cooldown": 6.0,
+          "radius_tiles": 5
+        }
+      ]
+    },
+    {
+      "key": "fang_wagon_breaker",
+      "id": 108,
+      "name": "Wagon Breaker",
+      "faction": "fang",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 80,
+      "armor": 3,
+      "xp_reward": 48,
+      "abilities": [
+        "bull_charge"
+      ],
+      "triggers": [
+        {
+          "when": "ability_missed",
+          "value": 2,
+          "once": false,
+          "repeating": true,
+          "action": "modify",
+          "modifiers": {
+            "move_speed_pct": -25,
+            "attack_speed_pct": -25
+          }
+        }
+      ],
+      "_note": "Armor Break: two charges without a hit and it slows down. The whiff is the counterplay, so the whiff is what the trigger counts."
+    },
+    {
+      "key": "hunt_bonded_wolf",
+      "id": 110,
+      "name": "Bonded Wolf",
+      "faction": "hunt",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "lunge_strike",
+        "passive_aura"
+      ]
+    },
+    {
+      "key": "hunt_handler",
+      "id": 111,
+      "name": "Handler",
+      "faction": "hunt",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "single_bolt",
+          "damage": 10,
+          "cooldown": 1.2
+        },
+        "command"
+      ]
+    },
+    {
+      "key": "hunt_alpha_wolf",
+      "id": 112,
+      "name": "Alpha Wolf",
+      "faction": "hunt",
+      "archetype": "melee_lunger",
+      "role": "miniboss",
+      "health": 150,
+      "armor": 2,
+      "xp_reward": 120,
+      "abilities": [
+        {
+          "key": "faction_rally",
+          "cast_time": 1.2
+        },
+        {
+          "key": "lunge_strike",
+          "damage": 22,
+          "range_tiles": 2,
+          "cast_time": 0.5,
+          "cooldown": 1.5
+        }
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 40,
+          "once": true,
+          "action": "swap_ability",
+          "from": "lunge_strike",
+          "to": "serial_burst"
+        }
+      ],
+      "_note": "Double Bite: below 40% its lunge becomes the two-shot serial_burst, which is not in its own ability list. That is why a swap target is a registry index rather than a type-local slot."
+    },
+    {
+      "key": "hunt_ice_slinger",
+      "id": 113,
+      "name": "Ice Slinger",
+      "faction": "hunt",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "frost_cone",
+        "reposition"
+      ]
+    },
+    {
+      "key": "hunt_mini_wolf",
+      "id": 114,
+      "name": "Mini Wolf",
+      "faction": "hunt",
+      "archetype": "melee_rusher",
+      "role": "add",
+      "health": 8,
+      "armor": 0,
+      "xp_reward": 4,
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 5,
+          "cooldown": 0.5
+        }
+      ]
+    },
+    {
+      "key": "hunt_packmaster",
+      "id": 115,
+      "name": "Packmaster",
+      "faction": "hunt",
+      "archetype": "summoner",
+      "role": "summoner",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "summon_adds",
+          "types": [
+            "hunt_mini_wolf"
+          ],
+          "count_min": 2,
+          "count_max": 3
+        },
+        "direct"
+      ]
+    },
+    {
+      "key": "hunt_skinner",
+      "id": 116,
+      "name": "Skinner",
+      "faction": "hunt",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 35,
+      "armor": 0,
+      "xp_reward": 18,
+      "abilities": [
+        "claw_rake"
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 35,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "attack_speed_pct": 25
+          }
+        }
+      ]
+    },
+    {
+      "key": "hunt_snowveil_stalker",
+      "id": 117,
+      "name": "Snowveil Stalker",
+      "faction": "hunt",
+      "archetype": "skirmisher",
+      "role": "melee",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "stealth": {
+        "damageable": true,
+        "revealed_seconds": 3
+      },
+      "abilities": [
+        "vanish",
+        "ambush_strike"
+      ]
+    },
+    {
+      "key": "hunt_bone_caller",
+      "id": 118,
+      "name": "Bone Caller",
+      "faction": "hunt",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "faction_rally",
+          "cooldown": 5.0,
+          "cast_time": 0.6,
+          "radius_tiles": 4
+        },
+        "figure8_sweep"
+      ]
+    },
+    {
+      "key": "hunt_frost_warden",
+      "id": 119,
+      "name": "Frost Warden",
+      "faction": "hunt",
+      "archetype": "melee_brute",
+      "role": "elite",
+      "health": 100,
+      "armor": 2,
+      "xp_reward": 60,
+      "abilities": [
+        "ice_slam",
+        "exposed_bite"
+      ],
+      "mitigation": {
+        "shield": {
+          "damage_taken_pct": -60,
+          "broken_damage_taken_pct": 0,
+          "down_seconds": 6,
+          "recharge": "timed",
+          "break": {
+            "mode": "hits_in_window",
+            "hits": 4,
+            "window": 3.0
+          }
+        }
+      },
+      "_note": "Four hits inside three seconds break it for six. Burst it down, then use the window -- which is what exposed_bite exists to reward."
+    },
+    {
+      "key": "vessane_zealot",
+      "id": 120,
+      "name": "Zealot",
+      "faction": "vessane",
+      "archetype": "melee_rusher",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 10
+        }
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 20,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "move_speed_pct": 20
+          }
+        }
+      ]
+    },
+    {
+      "key": "vessane_ritualist",
+      "id": 121,
+      "name": "Ritualist",
+      "faction": "vessane",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        {
+          "key": "spread_shot",
+          "count": 4,
+          "spread_angle": 45,
+          "cast_time": 0.6
+        }
+      ]
+    },
+    {
+      "key": "vessane_fanatic",
+      "id": 122,
+      "name": "Fox-bonded Fanatic",
+      "faction": "vessane",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        "zigzag_dash"
+      ]
+    },
+    {
+      "key": "vessane_cult_enforcer",
+      "id": 123,
+      "name": "Cult Enforcer",
+      "faction": "vessane",
+      "archetype": "melee_brute",
+      "role": "elite",
+      "health": 60,
+      "armor": 2,
+      "xp_reward": 34,
+      "abilities": [
+        {
+          "key": "guard_arc",
+          "damage": 18,
+          "cast_time": 0.7,
+          "cooldown": 1.2
+        }
+      ],
+      "mitigation": {
+        "shield": {
+          "damage_taken_pct": -70,
+          "broken_damage_taken_pct": 0,
+          "down_seconds": 2.5,
+          "recharge": "timed",
+          "break": {
+            "mode": "parry_frame"
+          }
+        }
+      },
+      "_note": "The one shield the source document fully specifies: it is down while the Enforcer is committed to its own swing, so the answer is to attack into the cast rather than between them."
+    },
+    {
+      "key": "vessane_charm_singer",
+      "id": 124,
+      "name": "Charm Singer",
+      "faction": "vessane",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "charm_circle"
+      ]
+    },
+    {
+      "key": "vessane_vault_guardian",
+      "id": 125,
+      "name": "Vault Guardian",
+      "faction": "vessane",
+      "archetype": "turret",
+      "role": "brute",
+      "health": 80,
+      "armor": 3,
+      "xp_reward": 48,
+      "abilities": [
+        {
+          "key": "heavy_arc",
+          "cast_time": 0.8,
+          "cooldown": 1.3
+        }
+      ],
+      "mitigation": {
+        "positional": {
+          "radius_tiles": 2,
+          "damage_taken_pct": 80
+        }
+      },
+      "_note": "Anchored to its ritual site: fight it from behind, where its own anchor gives it no cover, and it takes 80% more."
+    },
+    {
+      "key": "vessane_ashen_acolyte",
+      "id": 126,
+      "name": "Ashen Acolyte",
+      "faction": "vessane",
+      "archetype": "summoner",
+      "role": "summoner",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        {
+          "key": "summon_decoys",
+          "types": [
+            "vessane_decoy"
+          ]
+        },
+        "decoy_swap"
+      ]
+    },
+    {
+      "key": "vessane_blood_ritualist",
+      "id": 127,
+      "name": "Blood Ritualist",
+      "faction": "vessane",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "blood_channel",
+        {
+          "key": "short_swing",
+          "cast_time": 0.4
+        }
+      ]
+    },
+    {
+      "key": "vessane_high_zealot",
+      "id": 128,
+      "name": "High Zealot",
+      "faction": "vessane",
+      "archetype": "ranged_kiter",
+      "role": "miniboss",
+      "health": 150,
+      "armor": 2,
+      "xp_reward": 120,
+      "abilities": [
+        {
+          "key": "spread_shot",
+          "damage": 8,
+          "spread_angle": 30,
+          "cast_time": 0.6
+        },
+        {
+          "key": "lunge_strike",
+          "damage": 20,
+          "range_tiles": 2,
+          "cast_time": 0.4,
+          "cooldown": 1.0
+        }
+      ],
+      "phases": [
+        {
+          "key": "cast",
+          "abilities": [
+            "spread_shot"
+          ],
+          "exit": {
+            "after": 4.0
+          }
+        },
+        {
+          "key": "dash",
+          "abilities": [
+            "lunge_strike"
+          ],
+          "exit": {
+            "after_uses": 3
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 50,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "phase_duration_pct": -40
+          }
+        }
+      ],
+      "_note": "Phase Break stops being a special case and becomes an ordinary trigger: it shortens every phase this Zealot will ever enter, which is what 'the cycle speeds up' means."
+    },
+    {
+      "key": "unpara_purge_rusher",
+      "id": 130,
+      "name": "Purge Rusher",
+      "faction": "unpara",
+      "archetype": "melee_rusher",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "target_priority": "blessed_first",
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 10
+        }
+      ],
+      "_note": "It shares melee_rusher's movement with five enemies that hunt nobody in particular, so who it hunts is an override on the type rather than a forked archetype."
+    },
+    {
+      "key": "unpara_hunter",
+      "id": 131,
+      "name": "Hunter",
+      "faction": "unpara",
+      "archetype": "turret",
+      "role": "ranged",
+      "health": 40,
+      "armor": 0,
+      "xp_reward": 20,
+      "abilities": [
+        {
+          "key": "serial_burst",
+          "damage": 15,
+          "range_tiles": 20,
+          "cast_time": 1.2,
+          "cooldown": 3.0,
+          "interval": 0.2
+        }
+      ]
+    },
+    {
+      "key": "unpara_preacher",
+      "id": 132,
+      "name": "Preacher",
+      "faction": "unpara",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        "passive_aura",
+        {
+          "key": "single_bolt",
+          "cast_time": 0.5,
+          "cooldown": 2.0
+        }
+      ]
+    },
+    {
+      "key": "unpara_enforcer",
+      "id": 133,
+      "name": "Enforcer",
+      "faction": "unpara",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 45,
+      "armor": 1,
+      "xp_reward": 24,
+      "abilities": [
+        "guard_arc"
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 40,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "move_speed_pct": 25,
+            "attack_speed_pct": 20,
+            "damage_pct": 15
+          }
+        }
+      ]
+    },
+    {
+      "key": "unpara_chain_breaker",
+      "id": 134,
+      "name": "Chain-breaker",
+      "faction": "unpara",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        "chain_throw",
+        {
+          "key": "short_swing",
+          "damage": 12,
+          "cast_time": 0.4,
+          "cooldown": 0.8
+        }
+      ]
+    },
+    {
+      "key": "unpara_iron_zealot",
+      "id": 135,
+      "name": "Iron Zealot",
+      "faction": "unpara",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 50,
+      "armor": 2,
+      "xp_reward": 26,
+      "abilities": [
+        {
+          "key": "short_swing",
+          "damage": 14,
+          "cast_time": 0.6
+        }
+      ],
+      "mitigation": {
+        "frontal_block": {
+          "arc_degrees": 150,
+          "blocked_damage_pct": 35
+        }
+      },
+      "_note": "Not from the front. This is the enemy that requires facing to exist at all, which is why V9 waited for it."
+    },
+    {
+      "key": "unpara_firebrand",
+      "id": 136,
+      "name": "Firebrand",
+      "faction": "unpara",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "molotov_spread"
+      ]
+    },
+    {
+      "key": "unpara_silencer",
+      "id": 137,
+      "name": "Silencer",
+      "faction": "unpara",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "silence_bubble"
+      ]
+    },
+    {
+      "key": "unpara_watch_captain",
+      "id": 138,
+      "name": "Watch Captain",
+      "faction": "unpara",
+      "archetype": "summoner",
+      "role": "miniboss",
+      "health": 150,
+      "armor": 2,
+      "xp_reward": 120,
+      "abilities": [
+        {
+          "key": "summon_adds",
+          "types": [
+            "unpara_purge_rusher",
+            "unpara_enforcer"
+          ],
+          "count_min": 2,
+          "count_max": 2,
+          "cast_time": 1.0,
+          "cooldown": 12.0,
+          "delay": 1.5
+        },
+        {
+          "key": "guard_arc",
+          "damage": 20
+        }
+      ]
+    },
+    {
+      "key": "unpara_purifier",
+      "id": 139,
+      "name": "Purifier",
+      "faction": "unpara",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "target_priority": "cluster",
+      "abilities": [
+        {
+          "key": "serial_burst",
+          "damage": 8,
+          "range_tiles": 2,
+          "interval": 0.2,
+          "cooldown": 2.0
+        }
+      ],
+      "_note": "Standing together is the mistake. It picks whoever has the most company, which is a per-type override for the same reason Purge Rusher's is."
+    },
+    {
+      "key": "choir_cultist",
+      "id": 140,
+      "name": "Cultist",
+      "faction": "choir",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "single_bolt"
+      ]
+    },
+    {
+      "key": "choir_experimenter",
+      "id": 141,
+      "name": "Experimenter",
+      "faction": "choir",
+      "archetype": "summoner",
+      "role": "summoner",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "summon_adds",
+          "types": [
+            "choir_small_add"
+          ],
+          "count_min": 1,
+          "count_max": 2
+        }
+      ]
+    },
+    {
+      "key": "choir_cult_guard",
+      "id": 142,
+      "name": "Cult Guard",
+      "faction": "choir",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 60,
+      "armor": 2,
+      "xp_reward": 34,
+      "abilities": [
+        {
+          "key": "guard_arc",
+          "damage": 18,
+          "cast_time": 0.7
+        }
+      ]
+    },
+    {
+      "key": "choir_failed_experiment",
+      "id": 143,
+      "name": "Failed Experiment",
+      "faction": "choir",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 35,
+      "armor": 0,
+      "xp_reward": 18,
+      "movement_noise": 1.5,
+      "abilities": [
+        "erratic_strike"
+      ],
+      "_note": "Erratic movement as well as an erratic cast. A property of this creature rather than of melee_lunger, so it is an override rather than a ninth archetype."
+    },
+    {
+      "key": "choir_bio_caster",
+      "id": 144,
+      "name": "Bio-Caster",
+      "faction": "choir",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "corrosive_spread"
+      ]
+    },
+    {
+      "key": "choir_grafted_horror",
+      "id": 145,
+      "name": "Grafted Horror",
+      "faction": "choir",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 40,
+      "armor": 1,
+      "xp_reward": 20,
+      "abilities": [
+        "mutant_swipe"
+      ]
+    },
+    {
+      "key": "choir_cage_keeper",
+      "id": 146,
+      "name": "Cage-Keeper",
+      "faction": "choir",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "short_swing",
+          "cast_time": 0.4,
+          "cooldown": 0.8
+        }
+      ],
+      "triggers": [
+        {
+          "when": "on_death",
+          "action": "summon",
+          "ability": "death_release"
+        }
+      ]
+    },
+    {
+      "key": "choir_vein_binder",
+      "id": 147,
+      "name": "Vein-Binder",
+      "faction": "choir",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "tether",
+        {
+          "key": "short_swing",
+          "damage": 12,
+          "cast_time": 0.4
+        }
+      ]
+    },
+    {
+      "key": "choir_overseer",
+      "id": 148,
+      "name": "Overseer",
+      "faction": "choir",
+      "archetype": "ranged_kiter",
+      "role": "miniboss",
+      "health": 180,
+      "armor": 3,
+      "xp_reward": 150,
+      "abilities": [
+        {
+          "key": "faction_rally",
+          "radius_tiles": 12
+        },
+        {
+          "key": "spread_shot",
+          "damage": 8,
+          "spread_angle": 30
+        },
+        {
+          "key": "heavy_arc",
+          "cast_time": 0.7,
+          "cooldown": 1.5
+        }
+      ],
+      "phases": [
+        {
+          "key": "ranged",
+          "abilities": [
+            "faction_rally",
+            "spread_shot"
+          ],
+          "exit": {
+            "target_within": 3
+          }
+        },
+        {
+          "key": "melee",
+          "abilities": [
+            "heavy_arc"
+          ],
+          "exit": {
+            "target_beyond": 4
+          }
+        }
+      ],
+      "_note": "Cycles on player proximity rather than on a timer, which is what target_within and target_beyond are for."
+    },
+    {
+      "key": "choir_husk",
+      "id": 149,
+      "name": "Husk",
+      "faction": "choir",
+      "archetype": "relentless",
+      "role": "brute",
+      "health": 100,
+      "armor": 2,
+      "xp_reward": 60,
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 6,
+          "cooldown": 0.3
+        }
+      ]
+    },
+    {
+      "key": "feral_wolf",
+      "id": 150,
+      "name": "Wolf",
+      "faction": "feral",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "abilities": [
+        "lunge_strike"
+      ]
+    },
+    {
+      "key": "feral_bear",
+      "id": 151,
+      "name": "Bear",
+      "faction": "feral",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 55,
+      "armor": 2,
+      "xp_reward": 30,
+      "abilities": [
+        "heavy_arc"
+      ]
+    },
+    {
+      "key": "feral_boar",
+      "id": 152,
+      "name": "Boar",
+      "faction": "feral",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 35,
+      "armor": 1,
+      "xp_reward": 18,
+      "abilities": [
+        "charge"
+      ]
+    },
+    {
+      "key": "feral_hawk",
+      "id": 153,
+      "name": "Hawk",
+      "faction": "feral",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 15,
+      "armor": 0,
+      "xp_reward": 8,
+      "abilities": [
+        "dive_bomb"
+      ]
+    },
+    {
+      "key": "feral_snake",
+      "id": 154,
+      "name": "Snake",
+      "faction": "feral",
+      "archetype": "skirmisher",
+      "role": "melee",
+      "health": 10,
+      "armor": 0,
+      "xp_reward": 5,
+      "stealth": {
+        "damageable": false,
+        "revealed_seconds": 4
+      },
+      "abilities": [
+        "ambush_bite"
+      ],
+      "triggers": [
+        {
+          "when": "proximity",
+          "value_tiles": 1,
+          "once": false,
+          "action": "cast",
+          "ability": "ambush_bite"
+        }
+      ]
+    },
+    {
+      "key": "feral_blessed_wolf",
+      "id": 155,
+      "name": "Feral Blessed (Wolf)",
+      "faction": "feral",
+      "archetype": "melee_lunger",
+      "role": "elite",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 20,
+      "abilities": [
+        "lunge_strike"
+      ],
+      "triggers": [
+        {
+          "when": "timer",
+          "value": 10,
+          "repeating": true,
+          "once": false,
+          "action": "modify",
+          "modifiers": {
+            "damage_pct": 5,
+            "attack_speed_pct": 5
+          }
+        }
+      ],
+      "_note": "Escalation is the one trigger in the roster that stacks forever, which is why fired modifiers accumulate on the NPC rather than being recomputed from its latches."
+    },
+    {
+      "key": "feral_blessed_bear",
+      "id": 156,
+      "name": "Feral Blessed (Bear)",
+      "faction": "feral",
+      "archetype": "melee_brute",
+      "role": "elite",
+      "health": 70,
+      "armor": 2,
+      "xp_reward": 45,
+      "abilities": [
+        "heavy_arc"
+      ],
+      "mitigation": {
+        "shield": {
+          "damage_taken_pct": -50,
+          "broken_damage_taken_pct": 25,
+          "recharge": "never",
+          "down_seconds": 0,
+          "break": {
+            "mode": "shield_pool",
+            "pool_hp": 40
+          }
+        }
+      }
+    },
+    {
+      "key": "feral_swarm_critter",
+      "id": 157,
+      "name": "Swarm Critter",
+      "faction": "feral",
+      "archetype": "melee_rusher",
+      "role": "add",
+      "health": 5,
+      "armor": 0,
+      "xp_reward": 3,
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 3,
+          "cooldown": 0.4
+        }
+      ]
+    },
+    {
+      "key": "feral_alpha_predator",
+      "id": 158,
+      "name": "Alpha Predator",
+      "faction": "feral",
+      "archetype": "melee_lunger",
+      "role": "miniboss",
+      "health": 150,
+      "armor": 2,
+      "xp_reward": 120,
+      "abilities": [
+        {
+          "key": "lunge_strike",
+          "damage": 25,
+          "range_tiles": 2,
+          "cast_time": 0.6
+        }
+      ],
+      "triggers": [
+        {
+          "when": "proximity",
+          "value_tiles": 8,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "damage_pct": 20,
+            "move_speed_pct": 20
+          }
+        }
+      ],
+      "_note": "Territorial: it fights harder once you are inside its den, which is a proximity trigger and not a stat."
+    },
+    {
+      "key": "sundered_risen_soldier",
+      "id": 160,
+      "name": "Risen Soldier",
+      "faction": "sundered",
+      "archetype": "melee_rusher",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "move_speed": 165,
+      "abilities": [
+        "short_swing"
+      ],
+      "_note": "melee_rusher, not melee_lunger: Sword Swing reaches 1 tile and a lunger holds at 1.5, so a lunging Risen Soldier would stand just outside its own reach and never attack. The move_speed override keeps it shambling rather than sprinting."
+    },
+    {
+      "key": "sundered_wailing_spirit",
+      "id": 161,
+      "name": "Wailing Spirit",
+      "faction": "sundered",
+      "archetype": "turret",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "wail"
+      ]
+    },
+    {
+      "key": "sundered_ancient_guardian",
+      "id": 162,
+      "name": "Ancient Guardian",
+      "faction": "sundered",
+      "archetype": "melee_brute",
+      "role": "elite",
+      "health": 80,
+      "armor": 3,
+      "xp_reward": 48,
+      "abilities": [
+        {
+          "key": "guard_arc",
+          "damage": 20,
+          "range_tiles": 2,
+          "cast_time": 0.7
+        }
+      ]
+    },
+    {
+      "key": "sundered_bone_archer",
+      "id": 163,
+      "name": "Bone Archer",
+      "faction": "sundered",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "spread_shot"
+      ]
+    },
+    {
+      "key": "sundered_grave_caller",
+      "id": 164,
+      "name": "Grave Caller",
+      "faction": "sundered",
+      "archetype": "summoner",
+      "role": "summoner",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "summon_adds",
+          "types": [
+            "sundered_risen_soldier"
+          ],
+          "count_min": 2,
+          "count_max": 2,
+          "cast_time": 1.0,
+          "delay": 1.5
+        }
+      ]
+    },
+    {
+      "key": "sundered_rot_crawler",
+      "id": 165,
+      "name": "Rot Crawler",
+      "faction": "sundered",
+      "archetype": "relentless",
+      "role": "melee",
+      "health": 40,
+      "armor": 0,
+      "xp_reward": 20,
+      "move_speed": 81,
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 8,
+          "cooldown": 0.5
+        },
+        "poison_trail"
+      ],
+      "_note": "60% of relentless speed. Its trail is the per-caster zone cap's worst case, and the reason that cap retires the oldest rather than refusing the newest."
+    },
+    {
+      "key": "sundered_cursed_knight",
+      "id": 166,
+      "name": "Cursed Knight",
+      "faction": "sundered",
+      "archetype": "melee_brute",
+      "role": "brute",
+      "health": 40,
+      "armor": 1,
+      "xp_reward": 20,
+      "abilities": [
+        {
+          "key": "short_swing",
+          "damage": 14,
+          "range_tiles": 1.5,
+          "cast_time": 0.5,
+          "cooldown": 1.0
+        }
+      ],
+      "triggers": [
+        {
+          "when": "hp_below",
+          "value": 30,
+          "once": true,
+          "action": "modify",
+          "modifiers": {
+            "damage_pct": 30,
+            "attack_speed_pct": 15
+          }
+        }
+      ]
+    },
+    {
+      "key": "sundered_wraith",
+      "id": 167,
+      "name": "Wraith",
+      "faction": "sundered",
+      "archetype": "skirmisher",
+      "role": "melee",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        "teleport_flank"
+      ]
+    },
+    {
+      "key": "sundered_serpent_remnant",
+      "id": 168,
+      "name": "Serpent Remnant",
+      "faction": "sundered",
+      "archetype": "melee_lunger",
+      "role": "elite",
+      "health": 60,
+      "armor": 0,
+      "xp_reward": 40,
+      "abilities": [
+        "venom_coil",
+        "constrict"
+      ]
+    },
+    {
+      "key": "sundered_battlefield_revenant",
+      "id": 169,
+      "name": "Battlefield Revenant",
+      "faction": "sundered",
+      "archetype": "melee_brute",
+      "role": "miniboss",
+      "health": 150,
+      "armor": 2,
+      "xp_reward": 120,
+      "abilities": [
+        {
+          "key": "heavy_arc",
+          "damage": 20,
+          "cast_time": 0.6
+        }
+      ]
+    },
+    {
+      "key": "forgotten_rogue_wolf",
+      "id": 170,
+      "name": "Rogue Wolf",
+      "faction": "forgotten",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        {
+          "key": "lunge_strike",
+          "damage": 20,
+          "range_tiles": 2,
+          "cooldown": 1.0
+        }
+      ],
+      "_note": "The override is the whole point of the registry: Rogue Wolf's Aggressive Lunge is Wolf's Lunge Bite with different numbers, so it is one shared row rather than a second copy to retune."
+    },
+    {
+      "key": "forgotten_rogue_bear",
+      "id": 171,
+      "name": "Rogue Bear",
+      "faction": "forgotten",
+      "archetype": "melee_brute",
+      "role": "elite",
+      "health": 70,
+      "armor": 2,
+      "xp_reward": 45,
+      "abilities": [
+        {
+          "key": "heavy_arc",
+          "damage": 25,
+          "cast_time": 0.9,
+          "cooldown": 1.4
+        }
+      ],
+      "mitigation": {
+        "frontal_block": {
+          "arc_degrees": 120,
+          "blocked_damage_pct": 50
+        }
+      }
+    },
+    {
+      "key": "forgotten_rogue_fox",
+      "id": 172,
+      "name": "Rogue Fox",
+      "faction": "forgotten",
+      "archetype": "summoner",
+      "role": "ranged",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        {
+          "key": "summon_decoys",
+          "types": [
+            "forgotten_fox_decoy"
+          ]
+        },
+        {
+          "key": "spread_shot",
+          "spread_angle": 20,
+          "cast_time": 0.4,
+          "cooldown": 1.8
+        }
+      ]
+    },
+    {
+      "key": "forgotten_rogue_crow",
+      "id": 173,
+      "name": "Rogue Crow",
+      "faction": "forgotten",
+      "archetype": "skirmisher",
+      "role": "ranged",
+      "health": 15,
+      "armor": 0,
+      "xp_reward": 8,
+      "abilities": [
+        "flyby_strike"
+      ]
+    },
+    {
+      "key": "forgotten_rogue_hawk",
+      "id": 174,
+      "name": "Rogue Hawk",
+      "faction": "forgotten",
+      "archetype": "ranged_kiter",
+      "role": "ranged",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "abilities": [
+        "mark_shot"
+      ],
+      "triggers": [
+        {
+          "when": "timer",
+          "value": 3,
+          "repeating": true,
+          "once": false,
+          "action": "cast",
+          "ability": "burst_release"
+        }
+      ],
+      "_note": "The mark is the warning and three seconds is the window to clear it. Rogue Hawk's Mark and its release are one enemy's whole conversation with the player."
+    },
+    {
+      "key": "forgotten_rogue_deer",
+      "id": 175,
+      "name": "Rogue Deer",
+      "faction": "forgotten",
+      "archetype": "support_caster",
+      "role": "support",
+      "health": 25,
+      "armor": 0,
+      "xp_reward": 12,
+      "abilities": [
+        {
+          "key": "passive_aura",
+          "radius_tiles": 5
+        },
+        {
+          "key": "ally_heal",
+          "radius_tiles": 5
+        }
+      ]
+    },
+    {
+      "key": "forgotten_rogue_rabbit",
+      "id": 176,
+      "name": "Rogue Rabbit",
+      "faction": "forgotten",
+      "archetype": "skirmisher",
+      "role": "melee",
+      "health": 15,
+      "armor": 0,
+      "xp_reward": 8,
+      "abilities": [
+        {
+          "key": "short_swing",
+          "damage": 8,
+          "cast_time": 0.2,
+          "cooldown": 0.5
+        },
+        "evasive_hop"
+      ],
+      "triggers": [
+        {
+          "when": "incoming_damage",
+          "once": false,
+          "action": "cast",
+          "ability": "evasive_hop"
+        }
+      ],
+      "_note": "Evasive Hop is displacement, not evasion. An attack that reaches the Rabbit still always connects -- the hop is about not being there, resolved geometrically by the position tests the engine already runs."
+    },
+    {
+      "key": "forgotten_rogue_hyena",
+      "id": 177,
+      "name": "Rogue Hyena",
+      "faction": "forgotten",
+      "archetype": "melee_lunger",
+      "role": "melee",
+      "health": 30,
+      "armor": 0,
+      "xp_reward": 15,
+      "abilities": [
+        "lunge_strike"
+      ],
+      "triggers": [
+        {
+          "when": "on_kill",
+          "once": false,
+          "action": "cast",
+          "ability": "finisher_heal"
+        }
+      ]
+    },
+    {
+      "key": "forgotten_rogue_cat",
+      "id": 178,
+      "name": "Rogue Cat",
+      "faction": "forgotten",
+      "archetype": "skirmisher",
+      "role": "melee",
+      "health": 20,
+      "armor": 0,
+      "xp_reward": 10,
+      "stealth": {
+        "damageable": true,
+        "revealed_seconds": 3
+      },
+      "abilities": [
+        "vanish",
+        {
+          "key": "ambush_strike",
+          "damage": 18
+        }
+      ]
+    },
+    {
+      "key": "forgotten_renegade_cell_leader",
+      "id": 179,
+      "name": "Renegade Cell Leader",
+      "faction": "forgotten",
+      "archetype": "melee_lunger",
+      "role": "miniboss",
+      "health": 180,
+      "armor": 2,
+      "xp_reward": 150,
+      "abilities": [
+        {
+          "key": "lunge_strike",
+          "damage": 22,
+          "range_tiles": 2,
+          "cooldown": 1.0
+        },
+        "ally_heal",
+        {
+          "key": "summon_decoys",
+          "types": [
+            "forgotten_fox_decoy"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "choir_caged_monstrosity",
+      "id": 200,
+      "name": "Caged Monstrosity",
+      "faction": "choir",
+      "archetype": "melee_brute",
+      "role": "add",
+      "health": 60,
+      "armor": 1,
+      "xp_reward": 0,
+      "summon_only": true,
+      "loot_table": "none",
+      "abilities": [
+        "heavy_arc"
+      ]
+    },
+    {
+      "key": "choir_small_add",
+      "id": 201,
+      "name": "Choir Add",
+      "faction": "choir",
+      "archetype": "melee_rusher",
+      "role": "add",
+      "health": 12,
+      "armor": 0,
+      "xp_reward": 0,
+      "summon_only": true,
+      "loot_table": "none",
+      "abilities": [
+        {
+          "key": "contact_hit",
+          "damage": 6
+        }
+      ]
+    },
+    {
+      "key": "vessane_decoy",
+      "id": 202,
+      "name": "Acolyte Decoy",
+      "faction": "vessane",
+      "archetype": "melee_lunger",
+      "role": "add",
+      "health": 1,
+      "armor": 0,
+      "xp_reward": 0,
+      "summon_only": true,
+      "loot_table": "none",
+      "abilities": [],
+      "_note": "No abilities at all. Decoys mimic movement and die in one hit; they exist as types purely so the client is told to draw them and the server has something to spawn."
+    },
+    {
+      "key": "forgotten_fox_decoy",
+      "id": 203,
+      "name": "Fox Decoy",
+      "faction": "forgotten",
+      "archetype": "melee_lunger",
+      "role": "add",
+      "health": 1,
+      "armor": 0,
+      "xp_reward": 0,
+      "summon_only": true,
+      "loot_table": "none",
+      "abilities": []
+    }
+  ]
+}

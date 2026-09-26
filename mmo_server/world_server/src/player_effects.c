@@ -70,6 +70,13 @@ void player_collect_modifiers(const ActivePlayer* player, int ally_count,
             case EFFECT_DAMAGE_DEALT:
                 damage_mods_add_dealt(out, effect_permille_to_fraction(value));
                 break;
+            case EFFECT_MARK:
+                /* A mark raises damage taken, so it is a negative reduction --
+                 * the same sign convention npc_effects.c states. Rogue Hawk's
+                 * whole design is that the mark is worth removing before the
+                 * burst lands. */
+                damage_mods_add_taken(out, -effect_permille_to_fraction(value));
+                break;
             default:
                 break;
         }
@@ -106,6 +113,62 @@ int player_is_movement_locked(const ActivePlayer* player) {
 
         uint8_t type = player->active_effects[i].effect_type;
         if (type == EFFECT_ROOT || type == EFFECT_CHANNEL || type == EFFECT_STUN) return 1;
+    }
+    return 0;
+}
+
+/* --- The five effects the NPC kits introduce -------------------------------
+ *
+ * Each is a predicate over a gate that already exists rather than a new
+ * subsystem, which is what V11 claimed and what these four functions are.
+ */
+
+/** Report whether a player may change form.
+ *
+ * Chain-breaker's chain and Silencer's bubble both mean "stay as you are" --
+ * which is the harshest thing either faction can say to a Blessed, and the
+ * reason form-lock is a distinct effect rather than a stun.
+ */
+int player_is_form_locked(const ActivePlayer* player) {
+    if (!player) return 0;
+    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
+        if (!player->active_effects[i].active) continue;
+        if (player->active_effects[i].effect_type == EFFECT_FORM_LOCK) return 1;
+    }
+    return 0;
+}
+
+float player_blind_spread(const ActivePlayer* player) {
+    if (!player) return 0.0f;
+    float widest = 0.0f;
+    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
+        if (!player->active_effects[i].active) continue;
+        if (player->active_effects[i].effect_type != EFFECT_BLIND) continue;
+        /* `value` is the half-angle in degrees; a blind with no value stated is
+         * still a blind, so it takes a usable default rather than none. */
+        float v = player->active_effects[i].value > 0
+                ? (float)player->active_effects[i].value : 30.0f;
+        if (v > widest) widest = v;
+    }
+    return widest;
+}
+
+uint32_t player_fear_source(const ActivePlayer* player) {
+    if (!player) return 0;
+    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
+        if (!player->active_effects[i].active) continue;
+        if (player->active_effects[i].effect_type == EFFECT_FEAR)
+            return player->active_effects[i].source_id;
+    }
+    return 0;
+}
+
+uint32_t player_charm_source(const ActivePlayer* player) {
+    if (!player) return 0;
+    for (int i = 0; i < MAX_ACTIVE_EFFECTS; i++) {
+        if (!player->active_effects[i].active) continue;
+        if (player->active_effects[i].effect_type == EFFECT_CHARM)
+            return player->active_effects[i].source_id;
     }
     return 0;
 }

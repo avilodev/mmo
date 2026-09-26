@@ -330,6 +330,10 @@ int world_collision_is_loaded(void) {
  * @param out_width   Receives width in pixels; may be NULL.
  * @param out_height  Receives height in pixels; may be NULL.
  */
+float world_tile_size(void) {
+    return g_tile_size;
+}
+
 void world_collision_extent(float* out_width, float* out_height) {
     if (out_width)  *out_width  = g_loaded ? (float)g_width  * g_tile_size : 0.0f;
     if (out_height) *out_height = g_loaded ? (float)g_height * g_tile_size : 0.0f;

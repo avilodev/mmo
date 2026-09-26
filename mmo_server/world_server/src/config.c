@@ -3,6 +3,11 @@
  * Load world-server identity, endpoint, capacity, and packet-budget settings.
  */
 #include "config.h"
+#include "npc_world.h"
+#include "projectile.h"
+#include "ability_handler.h"
+#include "zone_owner.h"
+#include "npc_summon.h"
 #include "log.h"
 #include "str_fixed.h"
 
@@ -122,6 +127,79 @@ static int apply_keyed_setting(const char* key, const char* value) {
         return 1;
     }
 
+    // How many ground zones can exist at once. See ability_handler.h.
+    if (strcmp(key, "zone_capacity") == 0) {
+        int requested = atoi(value);
+        if (requested < 0 || requested > ZONE_CAPACITY_MAX) {
+            LOG_ERROR("zone_capacity is %d but must be 0..%d; keeping %d",
+                      requested, ZONE_CAPACITY_MAX, g_server.zone_capacity);
+        } else {
+            g_server.zone_capacity = requested;
+        }
+        return 1;
+    }
+
+    // How many projectiles can be in flight at once. See projectile.h.
+    if (strcmp(key, "projectile_capacity") == 0) {
+        int requested = atoi(value);
+        if (requested < 0 || requested > PROJECTILE_CAPACITY_MAX) {
+            LOG_ERROR("projectile_capacity is %d but must be 0..%d; keeping %d",
+                      requested, PROJECTILE_CAPACITY_MAX, g_server.projectile_capacity);
+        } else {
+            g_server.projectile_capacity = requested;
+        }
+        return 1;
+    }
+
+    // Status effect slots carried per NPC, matching the eight a player has.
+    if (strcmp(key, "npc_effect_slots") == 0) {
+        int requested = atoi(value);
+        if (requested < 0 || requested > NPC_STATE_EFFECT_SLOTS_MAX) {
+            LOG_ERROR("npc_effect_slots is %d but must be 0..%d; keeping %d",
+                      requested, NPC_STATE_EFFECT_SLOTS_MAX, g_server.npc_effect_slots);
+        } else {
+            g_server.npc_effect_slots = requested;
+        }
+        return 1;
+    }
+
+    // How many ground zones one caster may hold at once. See zone_owner.h.
+    if (strcmp(key, "zone_per_owner") == 0) {
+        int requested = atoi(value);
+        if (requested < 0 || requested > ZONE_PER_OWNER_MAX) {
+            LOG_ERROR("zone_per_owner is %d but must be 0..%d; keeping %d",
+                      requested, ZONE_PER_OWNER_MAX, g_server.zone_per_owner);
+        } else {
+            g_server.zone_per_owner = requested;
+        }
+        return 1;
+    }
+
+    // How many live summons one NPC may own. See npc_summon.h.
+    if (strcmp(key, "summon_per_parent") == 0) {
+        int requested = atoi(value);
+        if (requested < 0 || requested > SUMMON_PER_PARENT_MAX) {
+            LOG_ERROR("summon_per_parent is %d but must be 0..%d; keeping %d",
+                      requested, SUMMON_PER_PARENT_MAX, g_server.summon_per_parent);
+        } else {
+            g_server.summon_per_parent = requested;
+        }
+        return 1;
+    }
+
+    /* How many NPCs one player is told about per tick. Zero means every one in
+     * range, which is what a world small enough not to need the bound wants. */
+    if (strcmp(key, "npc_view_limit") == 0) {
+        int requested = atoi(value);
+        if (requested < 0 || requested > NPC_CAPACITY_MAX) {
+            LOG_ERROR("npc_view_limit is %d but must be 0..%d; keeping %d",
+                      requested, NPC_CAPACITY_MAX, g_server.npc_view_limit);
+        } else {
+            g_server.npc_view_limit = requested;
+        }
+        return 1;
+    }
+
     // How many NPCs this world's pool can hold. See npc_world.h.
     if (strcmp(key, "max_npcs") == 0) {
         g_server.max_npcs = atoi(value);
@@ -217,6 +295,12 @@ int set_config(const char* filepath) {
     g_server.max_players = 0;
     g_server.hardcore = false;
     g_server.max_npcs = 0;   // 0 means "use the compiled default"; see npc_world.h
+    g_server.projectile_capacity = 0;   // see projectile.h
+    g_server.zone_capacity = 0;         // see ability_handler.h
+    g_server.npc_effect_slots = 0;      // see npc_world.h
+    g_server.zone_per_owner = 0;        // see zone_owner.h
+    g_server.summon_per_parent = 0;     // see npc_summon.h
+    g_server.npc_view_limit = 0;        // 0 = tell a player about every NPC in range
     memset(&g_server.limits, 0, sizeof(g_server.limits));
     ip_allowlist_reset(&g_server.realm_allow);
     g_server.realm_max_handlers = REALM_MAX_HANDLERS_DEFAULT;

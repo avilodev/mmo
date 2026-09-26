@@ -4,6 +4,11 @@
  */
 
 #include "ability_handler.h"
+#include "zone_owner.h"
+#include "player_cast_flags.h"
+#include "npc_effects.h"
+#include "npc_mitigation.h"
+#include "npc_triggers.h"
 #include "log.h"
 #include "npc_snapshot.h"
 #include "npc_world.h"
@@ -62,9 +67,6 @@ static pthread_mutex_t    g_ability_casts_lock = PTHREAD_MUTEX_INITIALIZER;
  */
 static PendingAbilityCast g_due_casts[MAX_PLAYERS];
 
-static ActiveZone         g_zones[MAX_ZONES];
-static pthread_mutex_t    g_zones_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t           g_next_zone_id = 1;
 
 // Per-player mana regen accumulator (fractional mana between ticks)
 /** Carry the fractional part of resource regeneration between ticks.
@@ -226,67 +228,6 @@ static void send_mana_update(int client_fd, uint32_t player_id,
     server_send(client_fd, &pkt, sizeof(pkt));
 }
 
-/** Bound one zone broadcast's recipient list. A zone cannot interest more
- * players than can be online, and the buffer is 4 KB of stack for one call. */
-#define ZONE_BROADCAST_RECIPIENTS MAX_PLAYERS
-
-/** Widen an event radius so a zone stays visible from its own edge.
- *
- * Interest is measured from the zone's centre, but a large zone reaches players
- * standing well outside that centre's view radius — and they are precisely the
- * players standing in it.
- */
-static float zone_interest_radius(float zone_radius) {
-    return INTEREST_EVENT_RADIUS + (zone_radius > 0.0f ? zone_radius : 0.0f);
-}
-
-/**
- * Broadcast an active-zone spawn to every player who can see where it landed.
- *
- * Previously sent to the casting player alone, which made every zone in the game
- * invisible to everyone else standing in it — while the matching removal below
- * went to the entire world. Both now address the same set.
- */
-static void broadcast_spawn_zone(uint32_t zone_id, uint32_t caster_id,
-                                 uint16_t ability_id, float px, float py,
-                                 float duration, float radius, uint8_t has_collision) {
-    SpawnZonePacket pkt = {0};
-    pkt.header.type         = PACKET_SPAWN_ZONE;
-    pkt.header.player_id    = htonl(caster_id);
-    pkt.header.payload_size = htons(sizeof(SpawnZonePacket) - sizeof(PacketHeader));
-    pkt.zone_id          = htonl(zone_id);
-    pkt.caster_id        = htonl(caster_id);
-    pkt.ability_id       = htons(ability_id);
-    pkt.pos_x            = px;
-    pkt.pos_y            = py;
-    pkt.duration         = duration;
-    pkt.radius           = radius;
-    pkt.has_collision     = has_collision;
-
-    int fds[ZONE_BROADCAST_RECIPIENTS];
-    int count = interest_collect_fds(px, py, zone_interest_radius(radius),
-                                     fds, ZONE_BROADCAST_RECIPIENTS);
-    for (int i = 0; i < count; i++)
-        server_send(fds[i], &pkt, sizeof(pkt));
-}
-
-/**
- * Broadcast an active-zone removal to every player who could see it.
- */
-static void broadcast_remove_zone(uint32_t zone_id, float px, float py, float radius) {
-    RemoveZonePacket pkt = {0};
-    pkt.header.type         = PACKET_REMOVE_ZONE;
-    pkt.header.player_id    = 0;
-    pkt.header.payload_size = htons(sizeof(RemoveZonePacket) - sizeof(PacketHeader));
-    pkt.zone_id          = htonl(zone_id);
-
-    int fds[ZONE_BROADCAST_RECIPIENTS];
-    int count = interest_collect_fds(px, py, zone_interest_radius(radius),
-                                     fds, ZONE_BROADCAST_RECIPIENTS);
-    for (int i = 0; i < count; i++)
-        server_send(fds[i], &pkt, sizeof(pkt));
-}
-
 /**
  * Install an ability effect in a player's first free effect slot.
  *
@@ -300,79 +241,46 @@ static void apply_effect_to_player(ActivePlayer* player, const AbilityEffectDef*
 /**
  * Apply one ability effect to an NPC.
  *
- * The caller must hold the NPC world's lock.
+ * This used to log the effect and drop it: NPCs had no effect storage, so a
+ * player's bleed, slow or root against an enemy did nothing but produce a line.
+ * They have storage now (npc_world.h) and npc_effects.c resolves it, so a slow
+ * on an enemy slows it and a root roots it.
+ *
+ * The caller must hold that NPC's slot lock.
  */
-static void apply_effect_to_npc(NPCEntity* npc, const AbilityEffectDef* effect,
+static void apply_effect_to_npc(NPCWorld* world, int slot, NPCEntity* npc,
+                                const AbilityEffectDef* effect,
                                 uint32_t source_id) {
-    if (effect->type == EFFECT_TAUNT) {
-        npc->taunt_source_id  = source_id;
-        npc->taunt_expires_at = get_time() + effect->duration;
-        npc->ai_target_id     = source_id;
-        LOG_INFO("[EFFECT] NPC %u taunted by %u for %.1fs",
-                 npc->id, source_id, effect->duration);
-        return;
-    }
-
-    LOG_INFO("[EFFECT] Applied %d to NPC %u (val=%d, dur=%.1fs)",
-             effect->type, npc->id, effect->value, effect->duration);
+    npc_effect_apply(world, slot, npc, effect, source_id);
 }
 
 /**
- * Allocate an active zone and announce it to everyone who can see it.
+ * Place a player-cast ability's zone into the world's zone pool.
+ *
+ * The pool, its capacity, its per-caster cap and its lifetime all live in
+ * zone_owner.c now: players and NPCs cast into one pool with one budget, which
+ * is what V6 needed and what keeps this file under the size ceiling.
  */
 static void spawn_zone(const AbilityDef* ability, uint32_t caster_id,
                        float pos_x, float pos_y) {
-    pthread_mutex_lock(&g_zones_lock);
+    ZoneSpawnInfo info = {0};
+    info.owner_type       = ZONE_OWNER_PLAYER;
+    info.caster_id        = caster_id;
+    info.ability_id       = ability->id;
+    info.pos_x            = pos_x;
+    info.pos_y            = pos_y;
+    info.radius           = ability->aoe.radius;
+    info.duration         = ability->spawn.duration;
+    info.has_collision    = ability->spawn.has_collision;
+    info.hp               = ability->spawn.hp;
+    info.healing_per_tick = ability->healing;
+    info.effects          = ability->effects;
+    info.effect_count     = ability->effect_count;
 
-    int slot = -1;
-    for (int i = 0; i < MAX_ZONES; i++) {
-        if (!g_zones[i].is_active) { slot = i; break; }
-    }
-
-    if (slot == -1) {
-        pthread_mutex_unlock(&g_zones_lock);
-        LOG_INFO("[ZONE] No free zone slots");
-        return;
-    }
-
-    ActiveZone* zone = &g_zones[slot];
-    memset(zone, 0, sizeof(ActiveZone));
-
-    zone->is_active          = 1;
-    zone->zone_id            = g_next_zone_id++;
-    zone->caster_id          = caster_id;
-    zone->ability_id         = ability->id;
-    zone->pos_x              = pos_x;
-    zone->pos_y              = pos_y;
-    zone->has_collision       = ability->spawn.has_collision;
-    zone->hp                 = ability->spawn.hp;
-    zone->max_hp             = ability->spawn.hp;
-    zone->duration_remaining = ability->spawn.duration;
-    zone->radius             = ability->aoe.radius;
-    zone->healing_per_tick   = ability->healing;
-
-    zone->effect_count = ability->effect_count;
-    for (int i = 0; i < ability->effect_count && i < MAX_ABILITY_EFFECTS; i++) {
-        zone->effects[i] = ability->effects[i];
-    }
-
-    zone->tick_rate = 1.0f;
-    for (int i = 0; i < zone->effect_count; i++) {
-        if (zone->effects[i].tick_rate > 0.0f) {
-            zone->tick_rate = zone->effects[i].tick_rate;
-            break;
-        }
-    }
-    zone->tick_timer = zone->tick_rate;
-
-    pthread_mutex_unlock(&g_zones_lock);
-
-    broadcast_spawn_zone(zone->zone_id, caster_id, ability->id,
-                         pos_x, pos_y, ability->spawn.duration, zone->radius,
-                         zone->has_collision);
-
-    LOG_INFO("[ZONE] Spawned zone %u ('%s') at (%.1f, %.1f) dur=%.1fs",
-             zone->zone_id, ability->name, pos_x, pos_y, ability->spawn.duration);
+    uint32_t id = zone_create(&info);
+    if (id)
+        LOG_INFO("[ZONE] Spawned zone %u ('%s') at (%.1f, %.1f) dur=%.1fs",
+                 id, ability->name, pos_x, pos_y, ability->spawn.duration);
 }
 
 /**
@@ -471,18 +379,24 @@ static int calc_ability_damage(int base_damage, const AbilityBonusDamageDef* bon
 /**
  * Initialize pending casts, active zones, and mana accumulators.
  */
-void ability_handler_init(void) {
+int ability_handler_init(int zone_capacity, int zone_per_owner) {
     memset(g_ability_casts, 0, sizeof(g_ability_casts));
-    memset(g_zones, 0, sizeof(g_zones));
     memset(g_mana_accum, 0, sizeof(g_mana_accum));
-    g_next_zone_id = 1;
-    LOG_INFO("[ABILITY] Handler initialized");
+
+    if (!zone_pool_init(zone_capacity, zone_per_owner)) return 0;
+
+    LOG_INFO("[ABILITY] Handler initialized: %d zone slots, %d per caster",
+             zone_pool_capacity(), zone_pool_per_owner());
+    return 1;
 }
+
+int ability_zone_capacity(void) { return zone_pool_capacity(); }
 
 /**
  * Log ability-handler shutdown.
  */
 void ability_handler_cleanup(void) {
+    zone_pool_shutdown();
     LOG_INFO("[ABILITY] Handler cleaned up");
 }
 
@@ -624,6 +538,15 @@ void ability_handle_form_swap(int client_fd, uint32_t caster_id, uint8_t request
     if (!player) return;
 
     if (requested_form >= FORM_COUNT || requested_form == player->form) {
+        send_form_swap_ack(client_fd, player, 0);
+        player_release(player);
+        return;
+    }
+
+    /* Form-locked: Chain-breaker's chain and Silencer's bubble both mean "stay
+     * as you are", which is the harshest thing either faction can say to a
+     * Blessed and the reason it is a distinct effect rather than a stun. */
+    if (player_is_form_locked(player)) {
         send_form_swap_ack(client_fd, player, 0);
         player_release(player);
         return;
@@ -921,12 +844,11 @@ static int*               g_ability_candidates;
 static AbilityHitResult*  g_ability_hits;
 static int                g_ability_scratch_capacity;
 
-/* The zone tick's NPC query, kept separate from the cast scratch above rather
- * than sharing it. Both are reached from ability_tick() and today they run in
- * sequence, so sharing would work -- and would silently stop working the first
- * time a zone effect resolved a cast. */
-static int*               g_zone_npc_candidates;
-static int                g_zone_npc_capacity;
+/* The zone tick's own NPC scratch moved to zone_owner.c along with the pool it
+ * serves. It was always kept separate from the cast scratch above rather than
+ * shared: both are reached from ability_tick() and today they run in sequence,
+ * so sharing would work -- and would silently stop working the first time a zone
+ * effect resolved a cast. */
 
 /**
  * Grow an int scratch buffer in place.
@@ -1312,8 +1234,16 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world,
                     (int)ability->damage_stat, &condition_held, &is_crit);
                 if (condition_held) any_condition_held = 1;
 
+                /* The shield, the facing and the weak point, in one place. Every
+                 * path that writes NPC health consults this; a gate some
+                 * abilities bypass is a shield the player defeats by pressing a
+                 * different button, which cannot be explained or balanced. */
+                damage = npc_mitigation_apply(world, npcs->slot[c], npc, damage,
+                                              origin_x, origin_y, get_time(), NULL);
+
                 npc->health -= damage;
                 if (npc->health < 0) npc->health = 0;
+                npc_trigger_note_damage(npc, origin_x, origin_y);
             }
 
             uint8_t is_kill = (npc->health == 0) ? 1 : 0;
@@ -1329,7 +1259,8 @@ static void resolve_cast(PendingAbilityCast* cast, NPCWorld* world,
                  * self-directed effects belong to the caster, not the target. */
                 if (ability->effects[e].on_condition && !condition_held) continue;
                 if (ability->effects[e].self) continue;
-                apply_effect_to_npc(npc, &ability->effects[e], caster_id);
+                apply_effect_to_npc(world, npcs->slot[c], npc,
+                                    &ability->effects[e], caster_id);
             }
 
             hits[hit_count].npc_id     = npc->id;
@@ -1430,11 +1361,11 @@ void ability_tick(NPCWorld* world, TickSnapshot* players,
     float dt = (float)delta_time;
     double now = get_time();
 
-    /* Bounds the zone tick's NPC query below at the NPC pool, so a zone cannot
-     * silently stop applying its effects partway through a dense spawn. */
-    const int zone_npc_cap = g_zone_npc_capacity =
-        grow_int_scratch(&g_zone_npc_candidates, g_zone_npc_capacity,
-                         npc_world_capacity(world), "zone NPC candidates");
+    /* Republish who is mid-cast for the NPC trigger evaluator, from the array
+     * that actually knows -- the ability half of what combat_tick() does for
+     * basic attacks. See player_cast_flags.h. */
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        if (g_ability_casts[i].is_active) player_cast_flag_set(i, 1);
 
     /* Resolve completed casts, with the cast lock released.
      *
@@ -1536,96 +1467,7 @@ void ability_tick(NPCWorld* world, TickSnapshot* players,
     }
     player_registry_unlock();
 
-    // tick zones
-    pthread_mutex_lock(&g_zones_lock);
-    for (int z = 0; z < MAX_ZONES; z++) {
-        if (!g_zones[z].is_active) continue;
-
-        g_zones[z].duration_remaining -= dt;
-        if (g_zones[z].duration_remaining <= 0.0f) {
-            broadcast_remove_zone(g_zones[z].zone_id, g_zones[z].pos_x,
-                                  g_zones[z].pos_y, g_zones[z].radius);
-            g_zones[z].is_active = 0;
-            continue;
-        }
-
-        g_zones[z].tick_timer -= dt;
-        if (g_zones[z].tick_timer <= 0.0f) {
-            g_zones[z].tick_timer = g_zones[z].tick_rate;
-
-            /* Ask the tick grid who is standing in the zone.
-             *
-             * This used to walk all MAX_PLAYERS slots and take every slot mutex,
-             * once per active zone, per zone tick -- 64,000 lock round-trips at
-             * capacity, and the same 1,000 iterations whether five players were
-             * online or none. It is the player-side twin of the NPC query
-             * directly below, which was converted and this was not. */
-            /* Sized to the player table, which is what the snapshot draws
-             * from, so the query cannot truncate. This was [64]: the 65th
-             * player standing in a healing zone was not healed, was not logged,
-             * and had no way to tell that from the heal being on cooldown. A
-             * zone is not a view radius -- everyone inside it is a real result,
-             * not a distant one that can be dropped. */
-            int in_zone_p[MAX_PLAYERS];
-            int in_zone_p_count = players
-                ? tick_snapshot_query(players, g_zones[z].pos_x, g_zones[z].pos_y,
-                                      g_zones[z].radius,
-                                      in_zone_p, MAX_PLAYERS)
-                : 0;
-
-            for (int k = 0; k < in_zone_p_count; k++) {
-                int d_idx = in_zone_p[k];
-
-                /* Revalidates the slot as it locks it: a player who logged out
-                 * since the snapshot was taken is skipped rather than applied to
-                 * whoever took the slot next. */
-                ActivePlayer* target = player_acquire_slot(players->slot[d_idx],
-                                                          players->character_id[d_idx]);
-                if (!target) continue;
-
-                if (g_zones[z].healing_per_tick > 0) {
-                    target->health += g_zones[z].healing_per_tick;
-                    if (target->health > target->max_health)
-                        target->health = target->max_health;
-                }
-                for (int e = 0; e < g_zones[z].effect_count; e++) {
-                    if (g_zones[z].effects[e].reapply) {
-                        apply_effect_to_player(target, &g_zones[z].effects[e],
-                                               g_zones[z].caster_id);
-                    }
-                }
-
-                player_release(target);
-            }
-
-            /* A zone has a centre and a radius, which is exactly what the tick
-             * grid answers. This used to scan the whole NPC pool once per active
-             * zone, per tick. */
-            int* in_zone = g_zone_npc_candidates;
-            int in_zone_count = npc_snapshot_query(
-                npcs, g_zones[z].pos_x, g_zones[z].pos_y,
-                g_zones[z].radius + (npcs ? npcs->max_hitbox_radius : 0.0f),
-                in_zone, zone_npc_cap);
-
-            for (int k = 0; k < in_zone_count; k++) {
-                int c = in_zone[k];
-                float d = dist2d(g_zones[z].pos_x, g_zones[z].pos_y,
-                                 npcs->pos_x[c], npcs->pos_y[c]);
-                if (d > g_zones[z].radius) continue;
-
-                NPCEntity* npc = npc_world_acquire_slot(world, npcs->slot[c], npcs->id[c]);
-                if (!npc) continue;
-                if (npc->is_alive) {
-                    for (int e = 0; e < g_zones[z].effect_count; e++) {
-                        apply_effect_to_npc(npc, &g_zones[z].effects[e],
-                                            g_zones[z].caster_id);
-                    }
-                }
-                npc_world_release(world, npc);
-            }
-        }
-    }
-    pthread_mutex_unlock(&g_zones_lock);
+    zone_tick(world, players, npcs, delta_time);
 
     /* Regenerate the resource pool. Mana and stamina refill toward their maximum;
      * rage runs the other way, building through combat and decaying out of it, so it

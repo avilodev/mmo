@@ -13,6 +13,18 @@ int world_collision_is_loaded(void);
 // report pixel extent or zero both outputs before initialization
 void world_collision_extent(float* out_width, float* out_height);
 
+/** Report the loaded world's tile size in world units.
+ *
+ * Content authors reach in tiles -- enemy_types.txt specifies every range that
+ * way -- and the conversion has to happen against the world's own tile size
+ * rather than against 16, which is only the fallback when world.dat does not say.
+ * This is the one place that answers the question, so a converter cannot drift
+ * from the collision layer it is converting for.
+ *
+ * @return The tile size, or the 16.0 default before a world is loaded.
+ */
+float world_tile_size(void);
+
 // return whether coordinates are finite and inside the world extent
 int world_coord_is_valid(float x, float y);
 
