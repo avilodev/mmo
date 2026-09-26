@@ -530,8 +530,7 @@ void HandleRegisterCommand(HWND hwnd, WORD controlId) {
         if (success) {
             char successMsg[512];
             snprintf(successMsg, sizeof(successMsg), 
-                     "Registration successful!\nPlayer ID: %u\n\nYou can now log in.", 
-                     playerId);
+                     "Registration successful\n");
             MessageBox(hwnd, successMsg, "Success", MB_OK | MB_ICONINFORMATION);
             
             // Switch back to login panel
