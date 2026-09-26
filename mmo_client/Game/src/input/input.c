@@ -32,21 +32,33 @@ void input_update(InputState* input, GLFWwindow* window,
     static int prev_keys[GLFW_KEY_LAST + 1] = {0};
     static int prev_mouse_left = 0;
     static int prev_mouse_right = 0;
+    static int have_prev_mouse = 0;
     
     // Update mouse position with viewport scaling
     double raw_x, raw_y;
     glfwGetCursorPos(window, &raw_x, &raw_y);
     
+    float prev_x = input->mouse_x;
+    float prev_y = input->mouse_y;
     input->mouse_x = (float)(raw_x * ((double)viewport_width / (double)window_width));
     input->mouse_y = (float)(raw_y * ((double)viewport_height / (double)window_height));
+
+    /* The first sample has nothing to be relative to; a jump from (0,0) to
+     * wherever the cursor starts would spin the camera on the first drag. */
+    input->mouse_dx = have_prev_mouse ? input->mouse_x - prev_x : 0.0f;
+    input->mouse_dy = have_prev_mouse ? input->mouse_y - prev_y : 0.0f;
+    have_prev_mouse = 1;
     
     // Mouse buttons (edge triggered + held)
     int mouse_left = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
     int mouse_right = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+    input->mouse_middle_down =
+        (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
     
     input->mouse_left_clicked = (mouse_left && !prev_mouse_left);
     input->mouse_left_down = mouse_left;  // Held state for dragging
     input->mouse_right_clicked = (mouse_right && !prev_mouse_right);
+    input->mouse_right_down = mouse_right;
     
     prev_mouse_left = mouse_left;
     prev_mouse_right = mouse_right;

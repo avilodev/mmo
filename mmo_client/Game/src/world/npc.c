@@ -4,23 +4,38 @@
  */
 #include "npc.h"
 #include "renderer.h"
+#include "camera/camera.h"
+#include "world/npc_types.h"
 #include "ui/quest_tracker.h"
 
 #include <stdio.h>
 #include <math.h>
 
-/**
- * Render one living NPC with its category styling and health display.
- */
-void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type) {
-    if (!npc->is_alive) return;
+/** The Kingdom Slime draws as a wide, low blob rather than a box. */
+#define NPC_TYPE_KINGDOM_SLIME 5
 
+float npc_body_half_height(const VisibleNPC* npc, int tile_size) {
+    float npc_size = (float)(tile_size * 2);
+    if (npc->npc_type_id == NPC_TYPE_KINGDOM_SLIME) return npc_size * 0.75f / 2.0f;
+
+    float style_rgb[3];
+    float size_scale = 1.0f;
+    if (!npc_type_get_style(npc->npc_type_id, style_rgb, &size_scale)) size_scale = 1.0f;
+    int scaled = (int)(npc_size * size_scale);
+    if (scaled < 4) scaled = 4;
+    return (float)scaled / 2.0f;
+}
+
+/**
+ * Draw one NPC's body, bars and badges in its own 2D coordinates.
+ */
+static void npc_render_card(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type) {
     int npc_size = tile_size * 2;
     float x = npc->pos_x;
     float y = npc->pos_y + npc->visual_y_offset;
 
     // Kingdom Slime — unique green blob appearance
-    if (npc->npc_type_id == 5) {
+    if (npc->npc_type_id == NPC_TYPE_KINGDOM_SLIME) {
         float sw = (float)npc_size * 1.4f;
         float sh = (float)npc_size * 0.75f;
         float half_w = sw / 2.0f;
@@ -58,19 +73,48 @@ void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type)
         return;
     }
 
-    // category selects passive, hostile, or quest coloring
+    /* Faction picks the hue, role picks the value and the box size -- both
+     * resolved by the generator and read from the display table, so the client
+     * never decides what an enemy looks like.
+     *
+     * Category is the fallback, not the default: a type the table does not carry
+     * is either a client older than the content it is talking to or an NPC added
+     * since the table was generated, and red/gold/blue keeps both legible. */
     float cr, cg, cb;
-    switch (npc->category) {
-        case 1:  cr = 0.85f; cg = 0.20f; cb = 0.20f; break; // hostile - red
-        case 2:  cr = 0.90f; cg = 0.75f; cb = 0.10f; break; // quest   - gold
-        default: cr = 0.20f; cg = 0.55f; cb = 0.80f; break; // passive - blue
+    float style_rgb[3];
+    float size_scale = 1.0f;
+
+    if (npc_type_get_style(npc->npc_type_id, style_rgb, &size_scale)) {
+        cr = style_rgb[0];
+        cg = style_rgb[1];
+        cb = style_rgb[2];
+    } else {
+        switch (npc->category) {
+            case 1:  cr = 0.85f; cg = 0.20f; cb = 0.20f; break; // hostile - red
+            case 2:  cr = 0.90f; cg = 0.75f; cb = 0.10f; break; // quest   - gold
+            default: cr = 0.20f; cg = 0.55f; cb = 0.80f; break; // passive - blue
+        }
     }
+
+    npc_size = (int)((float)npc_size * size_scale);
+    if (npc_size < 4) npc_size = 4;   // a swarm critter still has to be clickable
 
     // Thin dark outline for legibility
     float half = (float)npc_size / 2.0f;
     renderer_draw_rect(x - half - 1, y - half - 1,
                        (float)npc_size + 2, (float)npc_size + 2,
                        0.0f, 0.0f, 0.0f, 0.6f);
+
+    /* Elites and mini-bosses carry a second, brighter outline. It is the one cue
+     * that survives at a distance with no art, which is why the scheme spends it
+     * on "this one is different" rather than on anything a player can read up
+     * close anyway. */
+    float outline_rgb[3];
+    if (npc_type_get_outline(npc->npc_type_id, outline_rgb)) {
+        renderer_draw_rect(x - half - 3, y - half - 3,
+                           (float)npc_size + 6, (float)npc_size + 6,
+                           outline_rgb[0], outline_rgb[1], outline_rgb[2], 0.9f);
+    }
 
     // Body fill
     renderer_draw_rect(x - half, y - half,
@@ -105,6 +149,17 @@ void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type)
     } else if (npc->is_interactable && npc->category == 2) {
         renderer_draw_rect(x - 4.0f, bar_y - 18.0f, 8.0f, 13.0f, 0.62f, 0.55f, 0.20f, 0.75f);
     }
+}
+
+/**
+ * Render one living NPC with its category styling and health display, standing
+ * on its position in the 3D view.
+ */
+void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type) {
+    if (!npc->is_alive) return;
+    camera_billboard_begin(npc->pos_x, npc->pos_y, npc_body_half_height(npc, tile_size), 0.0f);
+    npc_render_card(npc, tile_size, tracked_npc_type);
+    camera_billboard_end();
 }
 
 /**
@@ -166,6 +221,8 @@ void npc_render_target_indicator(const VisibleNPC* npcs, int count, int tile_siz
     float bsize = half + 6.0f; // slightly larger than NPC body
     float blen  = 8.0f;        // length of each bracket arm
 
+    camera_billboard_begin(x, y, npc_body_half_height(npc, tile_size), 0.0f);
+
     // Top-left
     renderer_draw_rect(x - bsize,        y - bsize,        blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
     renderer_draw_rect(x - bsize,        y - bsize,        t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
@@ -178,4 +235,6 @@ void npc_render_target_indicator(const VisibleNPC* npcs, int count, int tile_siz
     // Bottom-right
     renderer_draw_rect(x + bsize - blen, y + bsize - t,    blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
     renderer_draw_rect(x + bsize - t,    y + bsize - blen, t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
+
+    camera_billboard_end();
 }

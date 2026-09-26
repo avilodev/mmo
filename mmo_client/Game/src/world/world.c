@@ -7,8 +7,12 @@
 #include "renderer.h"
 #include "texture/texture.h"
 #include "world/world_overview.h"
+#include "world/chunk_mesh.h"
+#include "render/ground_renderer.h"
 #include "world_format.h"
 #include <GLFW/glfw3.h>
+#include <math.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -171,7 +175,11 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         world->tilesets[slot].cols = cols;
         world->tilesets[slot].rows = rows;
 
-        world->tileset_textures[slot] = texture_load(path);
+        TilesetLayout layout = { 0, 0, 0 };
+        world->tileset_textures[slot] = texture_load_tileset(path, cols, rows, &layout);
+        world->tilesets[slot].tile_w = layout.tile_w;
+        world->tilesets[slot].tile_h = layout.tile_h;
+        world->tilesets[slot].pad    = layout.pad;
         if (!world->tileset_textures[slot])
             CLOG_ERROR("[WORLD] Warning: failed to load tileset %s", path);
         else
@@ -237,18 +245,16 @@ void world_update_modifications(WorldState* world, float delta_time) {
     }
 }
 
-static void chunk_free_display_lists(Chunk* c) {
-    if (c->dl_base)             { glDeleteLists(c->dl_base,             1); c->dl_base             = 0; }
-    if (c->dl_overlay_floor)    { glDeleteLists(c->dl_overlay_floor,    1); c->dl_overlay_floor    = 0; }
-    if (c->dl_overlay_interior) { glDeleteLists(c->dl_overlay_interior, 1); c->dl_overlay_interior = 0; }
-    if (c->dl_overlay_above)    { glDeleteLists(c->dl_overlay_above,    1); c->dl_overlay_above    = 0; }
-    c->dl_dirty = 1;
+static void chunk_free_gpu(Chunk* c) {
+    for (int layer = 0; layer < CHUNK_LAYER_COUNT; layer++)
+        ground_renderer_release(&c->gpu[layer]);
+    c->gpu_dirty = 1;
 }
 
 /**
- * Close the world file and release chunk display lists and tileset textures.
+ * Close the world file and release chunk vertex buffers and tileset textures.
  *
- * A current OpenGL context must exist while display lists and textures are released.
+ * A current OpenGL context must exist while buffers and textures are released.
  */
 void world_cleanup(WorldState* world) {
     if (world->world_file) {
@@ -257,7 +263,7 @@ void world_cleanup(WorldState* world) {
     }
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
         if (world->chunks[i].is_loaded)
-            chunk_free_display_lists(&world->chunks[i]);
+            chunk_free_gpu(&world->chunks[i]);
     for (int i = 1; i < MAX_TILESETS; i++) {
         if (world->tileset_textures[i]) {
             texture_unload(world->tileset_textures[i]);
@@ -345,14 +351,20 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
             }
         }
     } else {
-        int oldest = world->current_frame;
+        /* The least recently used chunk, even if that was this frame. Only
+         * taking chunks from earlier frames dead-ended whenever one frame
+         * touched more than MAX_LOADED_CHUNKS -- e.g. a respawn, when chunks are
+         * streamed round the new position while the camera, still gliding over,
+         * draws round the old one -- and those chunks then did not draw.
+         * Evicting one already drawn this frame just means reloading it later. */
+        int oldest = INT_MAX;
         for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
             if (world->chunks[i].last_access_frame < oldest) {
                 oldest = world->chunks[i].last_access_frame;
                 target = &world->chunks[i];
             }
         }
-        if (target) chunk_free_display_lists(target);  // evict old display lists
+        if (target) chunk_free_gpu(target);  // evict the old chunk's vertex buffers
     }
     if (!target) {
         CLOG_WARN("[WORLD] No chunk slot available!");
@@ -363,11 +375,8 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     target->chunk_y           = chunk_y;
     target->is_loaded         = 1;
     target->last_access_frame = world->current_frame;
-    target->dl_base             = 0;
-    target->dl_overlay_floor    = 0;
-    target->dl_overlay_interior = 0;
-    target->dl_overlay_above    = 0;
-    target->dl_dirty            = 1;
+    /* An evicted slot was released above; a slot never used holds zeroes. */
+    target->gpu_dirty         = 1;
 
     int tx0 = chunk_x * CHUNK_SIZE;
     int ty0 = chunk_y * CHUNK_SIZE;
@@ -492,7 +501,7 @@ void tile_to_world(const WorldState* world, int tx, int ty, float* wx, float* wy
     *wy = ty * world->tile_size + world->tile_size / 2.0f;
 }
 
-// Mark the chunk containing (tile_x, tile_y) as needing a display list rebuild.
+// Mark the chunk containing (tile_x, tile_y) as needing its vertex buffers rebuilt.
 static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
     int cx = tile_x / CHUNK_SIZE;
     int cy = tile_y / CHUNK_SIZE;
@@ -500,7 +509,7 @@ static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
         if (world->chunks[i].is_loaded &&
             world->chunks[i].chunk_x == cx &&
             world->chunks[i].chunk_y == cy) {
-            world->chunks[i].dl_dirty = 1;
+            world->chunks[i].gpu_dirty = 1;
             break;
         }
     }
@@ -555,28 +564,31 @@ void world_remove_modification(WorldState* world, int tile_x, int tile_y) {
 }
 
 /**
- * Clear every dynamic tile override and invalidate resident display lists.
+ * Clear every dynamic tile override and invalidate resident vertex buffers.
  */
 void world_clear_modifications(WorldState* world) {
     // Mark all loaded chunks dirty since any could have had modifications
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
         if (world->chunks[i].is_loaded)
-            world->chunks[i].dl_dirty = 1;
+            world->chunks[i].gpu_dirty = 1;
     world->modification_count = 0;
 }
 
 /**
- * Compute the inclusive chunk range intersecting the camera viewport.
+ * Compute the inclusive chunk range holding every ground point on screen.
+ *
+ * Tilted and turned, what the camera sees is not a screen-aligned rectangle,
+ * so this bounds the ground the view actually covers (D14).
  */
 static void visible_chunk_range(const WorldState* world, const Camera* camera,
                                  int* sc_x, int* ec_x, int* sc_y, int* ec_y) {
-    float half_w = camera->viewport_width  / (2.0f * camera->zoom);
-    float half_h = camera->viewport_height / (2.0f * camera->zoom);
+    float x0, y0, x1, y1;
+    camera_visible_ground(camera, &x0, &y0, &x1, &y1);
 
-    int sx = (int)((camera->x - half_w) / world->tile_size) - 1;
-    int ex = (int)((camera->x + half_w) / world->tile_size) + 1;
-    int sy = (int)((camera->y - half_h) / world->tile_size) - 1;
-    int ey = (int)((camera->y + half_h) / world->tile_size) + 1;
+    int sx = (int)floorf(x0 / world->tile_size) - 1;
+    int ex = (int)floorf(x1 / world->tile_size) + 1;
+    int sy = (int)floorf(y0 / world->tile_size) - 1;
+    int ey = (int)floorf(y1 / world->tile_size) + 1;
 
     if (sx < 0) sx = 0;
     if (sy < 0) sy = 0;
@@ -589,287 +601,143 @@ static void visible_chunk_range(const WorldState* world, const Camera* camera,
     *ec_y = ey / CHUNK_SIZE;
 }
 
-/**
- * Compile one chunk layer into its OpenGL display list.
- *
- * @param layer  Layer index: zero base, one floor, two interior, or three above.
- */
-static void chunk_build_display_list(WorldState* world, Chunk* chunk, int layer) {
-    unsigned int* dl_id = (layer == 0) ? &chunk->dl_base
-                        : (layer == 1) ? &chunk->dl_overlay_floor
-                        : (layer == 2) ? &chunk->dl_overlay_interior
-                                       : &chunk->dl_overlay_above;
-
-    if (*dl_id == 0)
-        *dl_id = glGenLists(1);
-
-    int tx0 = chunk->chunk_x * CHUNK_SIZE;
-    int ty0 = chunk->chunk_y * CHUNK_SIZE;
-
-    glNewList(*dl_id, GL_COMPILE);
-    glEnable(GL_TEXTURE_2D);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-    unsigned int bound_tex = 0;
-
-    for (int ly = 0; ly < CHUNK_SIZE; ly++) {
-        for (int lx = 0; lx < CHUNK_SIZE; lx++) {
-            int wx = tx0 + lx;
-            int wy = ty0 + ly;
-            if (wx >= world->world_width || wy >= world->world_height) continue;
-
-            int slot = ly * CHUNK_SIZE + lx;
-            uint16_t packed = (layer == 0) ? chunk->tiles[slot]
-                            : (layer == 1) ? chunk->overlay_floor_tiles[slot]
-                            : (layer == 2) ? chunk->overlay_interior_tiles[slot]
-                                           : chunk->overlay_above_tiles[slot];
-
-            // Check dynamic modifications (bake them into the compiled list)
-            if (layer == 0) {
-                for (int m = 0; m < world->modification_count; m++) {
-                    if (world->modifications[m].tile_x == wx &&
-                        world->modifications[m].tile_y == wy) {
-                        packed = world->modifications[m].modified_tile;
-                        break;
-                    }
-                }
-            }
-
-            if (packed == TILE_EMPTY) continue;
-
-            float dx = (float)(wx * world->tile_size);
-            float dy = (float)(wy * world->tile_size);
-            float ds = (float)world->tile_size;
-
-            if (world->flat_color_mode) {
-                const float* rgb = tile_palette_rgb(packed);
-                if (!rgb) continue;
-
-                glDisable(GL_TEXTURE_2D);
-                glColor3f(rgb[0], rgb[1], rgb[2]);
-                glBegin(GL_QUADS);
-                    glVertex2f(dx,      dy);
-                    glVertex2f(dx + ds, dy);
-                    glVertex2f(dx + ds, dy + ds);
-                    glVertex2f(dx,      dy + ds);
-                glEnd();
-                continue;
-            }
-
-            int ts_id  = (packed >> 12) & 0xF;
-            int ts_idx =  packed        & 0xFFF;
-
-            unsigned int tex = world->tileset_textures[ts_id];
-            if (!tex) continue;
-
-            int cols = world->tilesets[ts_id].cols;
-            int rows = world->tilesets[ts_id].rows;
-            if (cols == 0 || rows == 0) continue;
-
-            int src_col = ts_idx % cols;
-            int src_row = ts_idx / cols;
-
-            float u0 = (float) src_col      / cols;
-            float v0 = (float) src_row      / rows;
-            float u1 = (float)(src_col + 1) / cols;
-            float v1 = (float)(src_row + 1) / rows;
-
-            if (tex != bound_tex) {
-                glBindTexture(GL_TEXTURE_2D, tex);
-                bound_tex = tex;
-            }
-
-            glEnable(GL_TEXTURE_2D);
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-            glBegin(GL_QUADS);
-                glTexCoord2f(u0, v0); glVertex2f(dx,      dy);
-                glTexCoord2f(u1, v0); glVertex2f(dx + ds, dy);
-                glTexCoord2f(u1, v1); glVertex2f(dx + ds, dy + ds);
-                glTexCoord2f(u0, v1); glVertex2f(dx,      dy + ds);
-            glEnd();
-        }
+/** The tiles one layer of a chunk draws. */
+static const uint16_t* layer_tiles(const Chunk* chunk, int layer) {
+    switch (layer) {
+        case CHUNK_LAYER_BASE:     return chunk->tiles;
+        case CHUNK_LAYER_FLOOR:    return chunk->overlay_floor_tiles;
+        case CHUNK_LAYER_INTERIOR: return chunk->overlay_interior_tiles;
+        default:                   return chunk->overlay_above_tiles;
     }
-
-    glEndList();
 }
 
 /**
- * Render visible chunks for one cached tile layer.
+ * Build and upload every layer of a chunk.
+ *
+ * Live tile modifications are baked into the base layer only, which is what
+ * the display lists this replaced did.
  */
-static void render_tile_layer(const WorldState* world, const Camera* camera, int layer) {
+static void chunk_build_gpu(const WorldState* world, Chunk* chunk) {
+    static ChunkVertex scratch[CHUNK_MESH_MAX_VERTS];
+
+    ChunkMeshInput in;
+    memset(&in, 0, sizeof(in));
+    in.chunk_x    = chunk->chunk_x;
+    in.chunk_y    = chunk->chunk_y;
+    in.world_w    = world->world_width;
+    in.world_h    = world->world_height;
+    in.tile_size  = world->tile_size;
+    in.flat_color = world->flat_color_mode;
+    for (int t = 1; t < MAX_TILESETS; t++) {
+        in.tilesets[t].present = world->tileset_textures[t] != 0;
+        in.tilesets[t].cols    = world->tilesets[t].cols;
+        in.tilesets[t].rows    = world->tilesets[t].rows;
+        in.tilesets[t].tile_w  = world->tilesets[t].tile_w;
+        in.tilesets[t].tile_h  = world->tilesets[t].tile_h;
+        in.tilesets[t].pad     = world->tilesets[t].pad;
+    }
+
+    ChunkMesh mesh;
+    mesh.verts = scratch;
+    for (int layer = 0; layer < CHUNK_LAYER_COUNT; layer++) {
+        in.tiles     = layer_tiles(chunk, layer);
+        in.mods      = (layer == CHUNK_LAYER_BASE) ? world->modifications : NULL;
+        in.mod_count = (layer == CHUNK_LAYER_BASE) ? world->modification_count : 0;
+        chunk_mesh_build(&mesh, &in);
+        ground_renderer_upload(&chunk->gpu[layer], &mesh);
+    }
+    chunk->gpu_dirty = 0;
+}
+
+/**
+ * Render one layer of every visible chunk, building any that are stale.
+ */
+static void render_tile_layer(const WorldState* world, const Camera* camera, int layer,
+                              const GroundPassOptions* options) {
     int sc_x, ec_x, sc_y, ec_y;
     visible_chunk_range(world, camera, &sc_x, &ec_x, &sc_y, &ec_y);
+
+    CameraView view;
+    camera_get_view(camera, &view);
+    ground_renderer_begin(&view);
+    if (options) ground_renderer_set_options(options);
 
     for (int cy = sc_y; cy <= ec_y; cy++) {
         for (int cx = sc_x; cx <= ec_x; cx++) {
             Chunk* chunk = world_get_chunk((WorldState*)world, cx, cy);
             if (!chunk) continue;
-
-            unsigned int dl = (layer == 0) ? chunk->dl_base
-                            : (layer == 1) ? chunk->dl_overlay_floor
-                            : (layer == 2) ? chunk->dl_overlay_interior
-                                           : chunk->dl_overlay_above;
-
-            // Build or rebuild all four lists together when dirty
-            if (chunk->dl_dirty || dl == 0) {
-                chunk_build_display_list((WorldState*)world, chunk, 0);
-                chunk_build_display_list((WorldState*)world, chunk, 1);
-                chunk_build_display_list((WorldState*)world, chunk, 2);
-                chunk_build_display_list((WorldState*)world, chunk, 3);
-                chunk->dl_dirty = 0;
-                dl = (layer == 0) ? chunk->dl_base
-                   : (layer == 1) ? chunk->dl_overlay_floor
-                   : (layer == 2) ? chunk->dl_overlay_interior
-                                  : chunk->dl_overlay_above;
-            }
-
-            if (dl) glCallList(dl);
+            if (chunk->gpu_dirty) chunk_build_gpu(world, chunk);
+            ground_renderer_draw(&chunk->gpu[layer], world->tileset_textures);
         }
     }
+
+    ground_renderer_end();
 }
 
 /**
  * Render the visible base tile layer.
  */
 void world_render(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, 0);
+    render_tile_layer(world, camera, CHUNK_LAYER_BASE, NULL);
 }
 
 /**
  * Render the visible floor overlay layer.
  */
 void world_render_overlay_floor(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, 1);
+    render_tile_layer(world, camera, CHUNK_LAYER_FLOOR, NULL);
 }
 
 /**
  * Render the visible interior overlay layer.
  */
 void world_render_overlay_interior(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, 2);
+    render_tile_layer(world, camera, CHUNK_LAYER_INTERIOR, NULL);
 }
 
 /**
- * Render all visible above-player overlay tiles from display lists.
+ * Render all visible above-player overlay tiles.
  */
 void world_render_overlay_above(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, 3);
+    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, NULL);
 }
 
 /**
- * Render one Y-partition of the above-player overlay without display lists.
+ * Render the above-player overlay with a hole faded out around a point.
  *
- * @param player_ty  Player tile row used as the partition boundary.
- * @param north_half  Nonzero for rows north of the boundary; zero for remaining rows.
+ * For the 3D view indoors: roofs stay flat on the ground, and the ones over the
+ * player fade so the room they are in shows through (D13).
  */
-static void render_overlay_above_half(const WorldState* world, const Camera* camera,
-                                       int player_ty, int north_half) {
-    int sc_x, ec_x, sc_y, ec_y;
-    visible_chunk_range(world, camera, &sc_x, &ec_x, &sc_y, &ec_y);
-
-    glEnable(GL_TEXTURE_2D);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    unsigned int bound_tex = 0;
-    int in_begin = 0;
-
-    for (int cy = sc_y; cy <= ec_y; cy++) {
-        for (int cx = sc_x; cx <= ec_x; cx++) {
-            Chunk* chunk = world_get_chunk((WorldState*)world, cx, cy);
-            if (!chunk) continue;
-
-            int tx0 = cx * CHUNK_SIZE;
-            int ty0 = cy * CHUNK_SIZE;
-
-            for (int ly = 0; ly < CHUNK_SIZE; ly++) {
-                int wy = ty0 + ly;
-                if (wy >= world->world_height) continue;
-                if ( north_half && wy >= player_ty) continue;
-                if (!north_half && wy <  player_ty) continue;
-
-                for (int lx = 0; lx < CHUNK_SIZE; lx++) {
-                    int wx = tx0 + lx;
-                    if (wx >= world->world_width) continue;
-
-                    uint16_t packed = chunk->overlay_above_tiles[ly * CHUNK_SIZE + lx];
-                    if (packed == TILE_EMPTY) continue;
-
-                    if (world->flat_color_mode) {
-                        const float* rgb = tile_palette_rgb(packed);
-                        if (!rgb) continue;
-
-                        if (in_begin) { glEnd(); in_begin = 0; }
-
-                        float fdx = (float)(wx * world->tile_size);
-                        float fdy = (float)(wy * world->tile_size);
-                        float fds = (float)world->tile_size;
-
-                        glDisable(GL_TEXTURE_2D);
-                        glColor3f(rgb[0], rgb[1], rgb[2]);
-                        glBegin(GL_QUADS);
-                            glVertex2f(fdx,       fdy);
-                            glVertex2f(fdx + fds, fdy);
-                            glVertex2f(fdx + fds, fdy + fds);
-                            glVertex2f(fdx,       fdy + fds);
-                        glEnd();
-                        continue;
-                    }
-
-                    int ts_id  = (packed >> 12) & 0xF;
-                    int ts_idx =  packed        & 0xFFF;
-                    unsigned int tex = world->tileset_textures[ts_id];
-                    if (!tex) continue;
-
-                    int cols = world->tilesets[ts_id].cols;
-                    int rows = world->tilesets[ts_id].rows;
-                    if (cols == 0 || rows == 0) continue;
-
-                    int src_col = ts_idx % cols;
-                    int src_row = ts_idx / cols;
-
-                    float u0 = (float) src_col      / cols;
-                    float v0 = (float) src_row      / rows;
-                    float u1 = (float)(src_col + 1) / cols;
-                    float v1 = (float)(src_row + 1) / rows;
-
-                    float dx = (float)(wx * world->tile_size);
-                    float dy = (float)(wy * world->tile_size);
-                    float ds = (float)world->tile_size;
-
-                    if (tex != bound_tex) {
-                        if (in_begin) { glEnd(); in_begin = 0; }
-                        glBindTexture(GL_TEXTURE_2D, tex);
-                        bound_tex = tex;
-                        glBegin(GL_QUADS);
-                        in_begin = 1;
-                    }
-
-                    glTexCoord2f(u0, v0); glVertex2f(dx,      dy);
-                    glTexCoord2f(u1, v0); glVertex2f(dx + ds, dy);
-                    glTexCoord2f(u1, v1); glVertex2f(dx + ds, dy + ds);
-                    glTexCoord2f(u0, v1); glVertex2f(dx,      dy + ds);
-                }
-            }
-        }
-    }
-    if (in_begin) glEnd();
-    // The flat-colour branch toggles texturing and colour per tile; restore the
-    // defaults so later passes are unaffected.
-    glEnable(GL_TEXTURE_2D);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+void world_render_overlay_above_faded(const WorldState* world, const Camera* camera,
+                                      float center_x, float center_y,
+                                      float inner_radius, float outer_radius) {
+    GroundPassOptions options = { 0 };
+    options.fade       = 1;
+    options.fade_x     = center_x;
+    options.fade_y     = center_y;
+    options.fade_inner = inner_radius;
+    options.fade_outer = outer_radius;
+    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, &options);
 }
 
 /**
  * Render above-player overlay rows north of the player.
  */
 void world_render_overlay_above_north(const WorldState* world, const Camera* camera, int player_ty) {
-    render_overlay_above_half(world, camera, player_ty, 1);
+    GroundPassOptions options = { 0 };
+    options.split   = GROUND_SPLIT_NORTH;
+    options.split_y = (float)(player_ty * world->tile_size);
+    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, &options);
 }
 
 /**
  * Render above-player overlay rows at or south of the player.
  */
 void world_render_overlay_above_south(const WorldState* world, const Camera* camera, int player_ty) {
-    render_overlay_above_half(world, camera, player_ty, 0);
+    GroundPassOptions options = { 0 };
+    options.split   = GROUND_SPLIT_SOUTH;
+    options.split_y = (float)(player_ty * world->tile_size);
+    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, &options);
 }
 
 /**

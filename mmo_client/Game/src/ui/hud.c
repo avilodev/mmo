@@ -8,6 +8,7 @@
 #include "renderer.h"
 #include "core/game_types.h"
 #include "world/npc.h"
+#include "camera/camera_tuning.h"
 #include "network/network.h"
 #include <stdio.h>
 #include <math.h>
@@ -129,6 +130,24 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
     renderer_end_screen_space();
 }
 
+void hud_draw_view_cone(const Camera* camera, float center_x, float center_y, float radius) {
+    if (camera->mode != CAMERA_MODE_3D) return;
+
+    /* On the ground the camera looks along (-sin yaw, -cos yaw); maps are
+     * north-up with y down, the same axes as the world. */
+    float dir_x = -sinf(camera->yaw);
+    float dir_y = -cosf(camera->yaw);
+
+    /* The horizontal field of view, from the vertical one and the aspect. */
+    float aspect = (camera->viewport_height > 0)
+                 ? (float)camera->viewport_width / (float)camera->viewport_height : 1.0f;
+    float half_v = CAMERA_FOVY_DEG * 0.5f * 3.14159265f / 180.0f;
+    float fov_h_deg = 2.0f * atanf(aspect * tanf(half_v)) * 180.0f / 3.14159265f;
+
+    renderer_draw_cone(center_x, center_y, dir_x, dir_y, radius, fov_h_deg,
+                       1.0f, 1.0f, 0.85f, 0.22f, 16);
+}
+
 /**
  * Render nearby entities and zone information on the minimap.
  */
@@ -188,6 +207,9 @@ void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
 
         renderer_draw_rect(dot_x, dot_y, 6.0f, 6.0f, 0.25f, 0.90f, 0.45f, 1.0f);
     }
+
+    // --- Which way the camera faces ---
+    hud_draw_view_cone(&game->camera, cx, cy, size * 0.3f);
 
     // --- Player dot (always at center, drawn last so it's on top) ---
     renderer_draw_rect(cx - 5.0f, cy - 5.0f, 10.0f, 10.0f, 1.0f, 1.0f, 0.25f, 1.0f);

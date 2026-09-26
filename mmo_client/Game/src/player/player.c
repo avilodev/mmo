@@ -8,6 +8,7 @@
 #include "input.h"
 #include "renderer.h"
 #include "core/keybinds.h"
+#include "camera/camera.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -65,7 +66,7 @@ void player_reset_position(PlayerState* player, float x, float y) {
  * @return      Nonzero when movement remains after collision resolution; otherwise zero.
  */
 int player_update_movement(PlayerState* player, const InputState* input,
-                           const WorldState* world, float delta_time) {
+                           const WorldState* world, float delta_time, float input_yaw) {
     float move_x = 0.0f;
     float move_y = 0.0f;
     float speed = player->speed * delta_time;
@@ -88,6 +89,18 @@ int player_update_movement(PlayerState* player, const InputState* input,
         float inv_sqrt2 = 0.70710678f; // 1/sqrt(2)
         move_x *= inv_sqrt2;
         move_y *= inv_sqrt2;
+    }
+
+    /* The keys are screen directions; turn them into the world direction that
+     * looks the same way from where the camera now stands (D22). A rotation,
+     * so the speed the server validates against is unchanged. */
+    camera_math_rotate_input(input_yaw, move_x, move_y, &move_x, &move_y);
+
+    // Face the way the player walks, League-style (D23)
+    float move_len = sqrtf(move_x * move_x + move_y * move_y);
+    if (move_len > 0.0f) {
+        player->facing_x = move_x / move_len;
+        player->facing_y = move_y / move_len;
     }
 
     // Player is 2 tiles wide
@@ -264,6 +277,9 @@ void player_load_info(PlayerState* player, const CharacterInfo* info) {
 void player_render(const PlayerState* player, const Paperdoll* doll, int tile_size) {
     int size = tile_size * 2;
 
+    /* Stood up on the player's position in the 3D view; unchanged top-down. */
+    camera_billboard_begin(player->x, player->y, (float)size / 2.0f, 0.0f);
+
     if (doll && doll->loaded > 0) {
         paperdoll_render(doll, player->x, player->y, (float)size);
     } else {
@@ -286,6 +302,8 @@ void player_render(const PlayerState* player, const Paperdoll* doll, int tile_si
         float label_y = player->y - size / 2.0f - 20.0f;
         renderer_draw_text_centered(label_x, label_y, label_w, 0.0f, label);
     }
+
+    camera_billboard_end();
 }
 
 /**

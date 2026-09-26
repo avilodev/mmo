@@ -18,6 +18,13 @@ int hud_check_character_button_clicked(const HUDLayout* hud, float mouse_x, floa
 void hud_render(const HUDLayout* hud, const GameState* game);
 
 // Individual render functions
+/** Draw the camera's view cone on a north-up map, centred on the player.
+ *
+ * The maps never rotate (D17); the cone is what says which way the camera
+ * faces. Draws nothing in the top-down view, which always faces north.
+ */
+void hud_draw_view_cone(const Camera* camera, float center_x, float center_y, float radius);
+
 void hud_render_minimap(const HUDLayout* hud, const GameState* game);
 void hud_render_health_bar(const HUDLayout* hud, const GameState* game);
 void hud_render_mana_bar(const HUDLayout* hud, const GameState* game);

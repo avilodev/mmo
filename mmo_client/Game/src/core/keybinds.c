@@ -39,6 +39,7 @@ static const KeyEntry KEY_TABLE[] = {
     {"TAB",       GLFW_KEY_TAB},
     {"BACKSPACE", GLFW_KEY_BACKSPACE},
     {"ESCAPE",    GLFW_KEY_ESCAPE},
+    {"HOME",      GLFW_KEY_HOME},
     {"LEFT",      GLFW_KEY_LEFT},
     {"RIGHT",     GLFW_KEY_RIGHT},
     {"UP",        GLFW_KEY_UP},
@@ -93,6 +94,10 @@ void keybinds_defaults(void) {
     g_keybinds.ability[2]       = GLFW_KEY_3;
     g_keybinds.ability[3]       = GLFW_KEY_4;
     g_keybinds.ability[4]       = GLFW_KEY_5;
+    g_keybinds.camera_rotate_left  = GLFW_KEY_Q;
+    g_keybinds.camera_rotate_right = GLFW_KEY_E;
+    g_keybinds.camera_reset        = GLFW_KEY_HOME;
+    g_keybinds.camera_toggle_view  = GLFW_KEY_F9;
 }
 
 /**
@@ -149,6 +154,10 @@ void keybinds_load(const char* path) {
         else if (strcmp(key_str, "ability_3")        == 0) g_keybinds.ability[2]       = key;
         else if (strcmp(key_str, "ability_4")        == 0) g_keybinds.ability[3]       = key;
         else if (strcmp(key_str, "ability_5")        == 0) g_keybinds.ability[4]       = key;
+        else if (strcmp(key_str, "camera_rotate_left")  == 0) g_keybinds.camera_rotate_left  = key;
+        else if (strcmp(key_str, "camera_rotate_right") == 0) g_keybinds.camera_rotate_right = key;
+        else if (strcmp(key_str, "camera_reset")        == 0) g_keybinds.camera_reset        = key;
+        else if (strcmp(key_str, "camera_toggle_view")  == 0) g_keybinds.camera_toggle_view  = key;
     }
 
     fclose(f);
@@ -168,7 +177,7 @@ void keybinds_save(const char* path) {
     }
 
     fprintf(f, "# Game keybinds — edit and restart to apply\n");
-    fprintf(f, "# Valid key names: A-Z, 0-9, F1-F12, SPACE, ENTER, TAB, ESCAPE,\n");
+    fprintf(f, "# Valid key names: A-Z, 0-9, F1-F12, SPACE, ENTER, TAB, ESCAPE, HOME,\n");
     fprintf(f, "#   LEFT, RIGHT, UP, DOWN, LSHIFT, RSHIFT, LCTRL, RCTRL, LALT, RALT, KP0-KP9\n\n");
     fprintf(f, "move_up=%s\n",          name_from_key(g_keybinds.move_up));
     fprintf(f, "move_down=%s\n",        name_from_key(g_keybinds.move_down));
@@ -187,6 +196,10 @@ void keybinds_save(const char* path) {
     fprintf(f, "ability_3=%s\n",        name_from_key(g_keybinds.ability[2]));
     fprintf(f, "ability_4=%s\n",        name_from_key(g_keybinds.ability[3]));
     fprintf(f, "ability_5=%s\n",        name_from_key(g_keybinds.ability[4]));
+    fprintf(f, "camera_rotate_left=%s\n",  name_from_key(g_keybinds.camera_rotate_left));
+    fprintf(f, "camera_rotate_right=%s\n", name_from_key(g_keybinds.camera_rotate_right));
+    fprintf(f, "camera_reset=%s\n",        name_from_key(g_keybinds.camera_reset));
+    fprintf(f, "camera_toggle_view=%s\n",  name_from_key(g_keybinds.camera_toggle_view));
 
     fclose(f);
     CLOG_INFO("[KEYBINDS] Saved to %s", path);

@@ -24,6 +24,8 @@
 #include "ui/quest_tracker.h"
 #include "ui/shop_ui.h"
 
+#include "camera/camera_tuning.h"
+
 #include <math.h>
 
 /**
@@ -34,6 +36,8 @@ void playing_render_nearby_players(GameState* game) {
     for (int i = 0; i < game->playing->nearby_player_count; i++) {
         NearbyPlayer* p = &game->playing->nearby_players[i];
         if (p->is_dead) continue;
+
+        camera_billboard_begin(p->pos_x, p->pos_y, (float)size / 2.0f, 0.0f);
 
         /* Everyone wears the one character stack there is art for, so a
          * player's race does not change how they look yet -- only the label
@@ -72,6 +76,8 @@ void playing_render_nearby_players(GameState* game) {
             renderer_draw_text_centered(p->pos_x - label_w / 2.0f,
                                         bar_y - 18.0f, label_w, 0.0f, label);
         }
+
+        camera_billboard_end();
     }
 }
 
@@ -79,8 +85,11 @@ void playing_render_projectiles(GameState* game) {
     for (int i = 0; i < MAX_VISIBLE_PROJECTILES; i++) {
         if (!game->playing->projectiles[i].active) continue;
         VisibleProjectile* proj = &game->playing->projectiles[i];
+        /* In flight at chest height, not skidding along the ground. */
+        camera_billboard_begin(proj->pos_x, proj->pos_y, 0.0f, CAMERA_PROJECTILE_HEIGHT);
         renderer_draw_rect(proj->pos_x - 3, proj->pos_y - 3,
                           6.0f, 6.0f, 1.0f, 0.8f, 0.2f, 1.0f);
+        camera_billboard_end();
     }
 }
 
@@ -215,20 +224,35 @@ void playing_render(GameState* game) {
     world_render(&game->world, &game->camera);
     world_render_overlay_floor(&game->world, &game->camera);
 
+    const int view_3d = (game->camera.mode == CAMERA_MODE_3D);
     int player_inside = world_is_inside(&game->world, game->player.x, game->player.y);
     int player_ty = (int)(game->player.y / game->world.tile_size);
 
-    if (player_inside) {
+    if (view_3d) {
+        /* Every tile layer lies flat, under everything that stands. Roofs over
+         * an indoor player fade so the room shows (D12, D13). */
+        if (player_inside) {
+            world_render_overlay_interior(&game->world, &game->camera);
+            world_render_overlay_above_faded(&game->world, &game->camera,
+                                             game->player.x, game->player.y,
+                                             CAMERA_ROOF_FADE_INNER, CAMERA_ROOF_FADE_OUTER);
+        } else {
+            world_render_overlay_above(&game->world, &game->camera);
+        }
+    } else if (player_inside) {
         world_render_overlay_interior(&game->world, &game->camera);
     } else {
         world_render_overlay_above_north(&game->world, &game->camera, player_ty);
     }
 
-    // World-space entities
+    // Ground-space effects: flat on the floor, under anything standing
     playing_render_zones(game);
     playing_render_heal_vfxs(game);
     playing_render_telegraphs(game);
     playing_render_ground_items(game);
+    combat_render_indicator(&game->playing->combat);
+
+    // Standing entities: billboards in 3D, depth-sorted against each other
     /* One lookup for the whole pass: the badge and the map marker must agree
      * about which NPC the player is being sent to. */
     QuestTrackedStep tracked = quest_log_tracked_step(&game->playing->quest_log);
@@ -242,14 +266,17 @@ void playing_render(GameState* game) {
                                  game->world.tile_size, game->playing->target_npc_id);
     playing_render_nearby_players(game);
     playing_render_projectiles(game);
-    combat_render_indicator(&game->playing->combat);
     combat_render_damage_numbers(&game->playing->combat);
     player_render(&game->player, paperdoll_shared(), game->world.tile_size);
 
-    if (player_inside)
-        world_render_overlay_above(&game->world, &game->camera);
-    else
-        world_render_overlay_above_south(&game->world, &game->camera, player_ty);
+    /* Top-down only: roofs south of the player draw over them, the trick that
+     * made a flat map read as having height. The 3D view does not need it. */
+    if (!view_3d) {
+        if (player_inside)
+            world_render_overlay_above(&game->world, &game->camera);
+        else
+            world_render_overlay_above_south(&game->world, &game->camera, player_ty);
+    }
 
     renderer_end_2d();
 

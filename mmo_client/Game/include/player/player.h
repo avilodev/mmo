@@ -15,8 +15,15 @@ void player_init(PlayerState* player);
 
 void player_reset_position(PlayerState* player, float x, float y);
 
+/** Walk the player from the movement keys, resolving collision per axis.
+ *
+ * @param input_yaw  Camera yaw in radians: the keys are relative to the camera,
+ *                   so W walks away from it. Zero reproduces the fixed
+ *                   north-up controls of the top-down view.
+ * @return Nonzero when the player moved.
+ */
 int player_update_movement(PlayerState* player, const InputState* input, 
-                           const WorldState* world, float delta_time);
+                           const WorldState* world, float delta_time, float input_yaw);
 
 /** Record a position proposal so a correction naming it can be reconciled.
  *

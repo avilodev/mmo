@@ -4,6 +4,8 @@
  */
 #include "combat_render.h"
 #include "renderer.h"
+#include "camera/camera.h"
+#include "camera/camera_tuning.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -348,6 +350,9 @@ void combat_render_damage_numbers(CombatState* combat) {
         // Background shadow
         float text_x = evt->world_x;
         float text_y = evt->world_y + offset_y;
+
+        /* Upright over the target in 3D, rising from mid-body. */
+        camera_billboard_begin(evt->world_x, evt->world_y, CAMERA_DAMAGE_TEXT_RISE, 0.0f);
         
         renderer_draw_rect(text_x - 20 * scale, text_y - 8 * scale,
                           40 * scale, 18 * scale,
@@ -367,6 +372,8 @@ void combat_render_damage_numbers(CombatState* combat) {
         
         // Draw colored indicator square next to number
         renderer_draw_rect(text_x + 15, text_y - 5, 8, 8, r, g, b, alpha);
+
+        camera_billboard_end();
     }
 }
 

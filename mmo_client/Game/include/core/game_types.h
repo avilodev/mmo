@@ -170,6 +170,10 @@ typedef struct {
     int mouse_left_clicked;      /**< Nonzero only on the press frame. */
     int mouse_left_down;         /**< Nonzero while held. */
     int mouse_right_clicked;
+    int mouse_right_down;        /**< Nonzero while held (camera drag). */
+    int mouse_middle_down;       /**< Nonzero while held (camera drag). */
+    float mouse_dx;              /**< Logical-pixel movement since last frame. */
+    float mouse_dy;
     int keys_pressed[GLFW_KEY_LAST + 1];
     int keys_just_pressed[GLFW_KEY_LAST + 1];
 } InputState;
@@ -199,6 +203,8 @@ typedef struct {
     float y;
     float vel_x;
     float vel_y;
+    float facing_x;      /**< Unit direction of the last movement (D23); 0,0 until the first step. */
+    float facing_y;
     float speed;
     int needs_position_reset;
     CharacterInfo info;

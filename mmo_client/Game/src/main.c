@@ -11,6 +11,8 @@
 
 #include "game.h"
 #include "renderer.h"
+#include "render/gl_loader.h"
+#include "render/ground_renderer.h"
 #include "fps.h"
 #include "network/network.h"
 #include "network/net_connect.h"
@@ -45,9 +47,7 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
         if (game->playing->map_zoom < MAP_ZOOM_MIN) game->playing->map_zoom = MAP_ZOOM_MIN;
         if (game->playing->map_zoom > MAP_ZOOM_MAX) game->playing->map_zoom = MAP_ZOOM_MAX;
     } else {
-        game->camera.zoom *= (1.0f + (float)yoffset * 0.1f);
-        if (game->camera.zoom < 1.0f) game->camera.zoom = 1.0f;
-        if (game->camera.zoom > 2.0f) game->camera.zoom = 2.0f;
+        camera_zoom_by(&game->camera, (float)yoffset);
     }
 }
 
@@ -245,6 +245,7 @@ int main(int argc, char* argv[]) {
     glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
     glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
     glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+    gl_loader_window_hints();
 
     // Calculate window size (90% of monitor size)
     int window_width = (int)(mode->width * 0.9f);
@@ -254,7 +255,9 @@ int main(int argc, char* argv[]) {
 
     GLFWwindow* window = glfwCreateWindow(window_width, window_height, "MMO Game", NULL, NULL);
     if (!window) {
-        CLOG_ERROR("Failed to create window");
+        /* The usual cause is a driver without an OpenGL 3.3 compatibility
+         * context, which gl_loader_window_hints() asked for. */
+        CLOG_ERROR("Failed to create window (OpenGL 3.3 compatibility context unavailable?)");
         glfwTerminate();
         return -1;
     }
@@ -268,6 +271,16 @@ int main(int argc, char* argv[]) {
 
     glfwMakeContextCurrent(window);
     g_window = window;
+
+    /* The ground draws through a shader, so OpenGL 3.3 is the floor. Say so
+     * plainly rather than opening a window that draws nothing. */
+    if (!gl_loader_init() || !ground_renderer_init()) {
+        CLOG_ERROR("This computer's graphics driver does not provide OpenGL 3.3, "
+                   "which the game needs. Updating the graphics driver usually fixes this.");
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
 
     /* VSync and the frame cap are settings now, applied by
      * game_settings_apply() below once the loaded settings exist. This used to
@@ -493,6 +506,7 @@ int main(int argc, char* argv[]) {
     game_cleanup(&game);
 
     CLOG_INFO("[SHUTDOWN] renderer...");
+    ground_renderer_shutdown();
     renderer_cleanup();
 
     CLOG_INFO("[SHUTDOWN] glfw...");

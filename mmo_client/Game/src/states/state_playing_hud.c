@@ -16,6 +16,7 @@
 #include "world/world_overview.h"
 #include "ui/quest_tracker.h"
 #include "ui/settings_panel.h"
+#include "hud.h"
 
 #include <math.h>
 
@@ -496,7 +497,8 @@ void playing_render_big_map(GameState* game) {
                                     mx, my, mw, mh, mcx, mcy,
                                     player_wx, player_wy, scale);
 
-    // Own player dot — always at center
+    // Which way the camera faces, then the player dot over it
+    hud_draw_view_cone(&game->camera, mcx, mcy, 60.0f);
     renderer_draw_rect(mcx - 6.0f, mcy - 6.0f, 12.0f, 12.0f, 1.0f, 1.0f, 0.25f, 1.0f);
 
     // Bottom bar: coords + zoom

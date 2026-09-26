@@ -20,6 +20,14 @@ void npc_render_all(const VisibleNPC* npcs, int count, int tile_size,
 
 void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type);
 
+/** Half the height of an NPC's drawn body, in world units.
+ *
+ * The body is drawn centred on the NPC's position in the top-down view; in 3D
+ * it stands on it, so this is how far above the feet its centre sits. Drawing
+ * and click-testing both use it, so they cannot disagree.
+ */
+float npc_body_half_height(const VisibleNPC* npc, int tile_size);
+
 const VisibleNPC* npc_find_by_id(const VisibleNPC* npcs, int count, uint32_t npc_id);
 
 int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id,

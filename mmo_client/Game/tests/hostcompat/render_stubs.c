@@ -19,6 +19,12 @@
 #include <stddef.h>
 
 void renderer_begin_screen_space(void) {}
+
+/* Billboards change the matrices, not what is drawn; a model test has neither. */
+void camera_billboard_begin(float anchor_x, float anchor_y, float foot_dy, float lift) {
+    (void)anchor_x; (void)anchor_y; (void)foot_dy; (void)lift;
+}
+void camera_billboard_end(void) {}
 void renderer_end_screen_space(void) {}
 
 void renderer_draw_rect(float x, float y, float width, float height,

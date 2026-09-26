@@ -7,9 +7,11 @@
 #include "stb_image.h"
 
 #include "texture.h"
+#include "texture/texture_atlas.h"
 #include <windows.h>
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
+#include "render/gl_loader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "core/client_log.h"
@@ -61,6 +63,68 @@ unsigned int texture_load(const char* filepath) {
     
     stbi_image_free(data);
     
+    return texture_id;
+}
+
+/** Gutter width for ground tilesets: two mip levels before it drops under a
+ *  texel, which is as far as a 55-degree view minifies nearby ground. */
+#define TILESET_PAD 4
+
+/** Anisotropy asked for on ground textures, capped by what the driver allows. */
+#define TILESET_ANISOTROPY 8.0f
+
+unsigned int texture_load_tileset(const char* filepath, int cols, int rows,
+                                  TilesetLayout* layout) {
+    int width, height, channels;
+    unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);
+    if (!data) {
+        CLOG_ERROR("Failed to load tileset: %s (%s)", filepath, stbi_failure_reason());
+        return 0;
+    }
+
+    int pad = TILESET_PAD;
+    int out_w = width, out_h = height;
+    unsigned char* padded = NULL;
+    if (cols > 0 && rows > 0)
+        padded = texture_atlas_pad(data, width, height, 4, cols, rows, pad, &out_w, &out_h);
+    if (!padded) {
+        /* Not a whole number of tiles: draw it as it is rather than not at
+         * all, and without mips, since there is no gutter to protect. */
+        CLOG_WARN("[TEXTURE] %s (%dx%d) is not %dx%d whole tiles; loading unpadded",
+                  filepath, width, height, cols, rows);
+        pad = 0;
+    }
+
+    layout->tile_w = (cols > 0) ? width / cols : width;
+    layout->tile_h = (rows > 0) ? height / rows : height;
+    layout->pad    = pad;
+
+    unsigned int texture_id;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, out_w, out_h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 padded ? padded : data);
+
+    int levels = texture_atlas_mip_levels(pad);
+    if (levels > 0) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+        float aniso = gl_loader_max_anisotropy();
+        if (aniso > TILESET_ANISOTROPY) aniso = TILESET_ANISOTROPY;
+        if (aniso > 1.0f)
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, aniso);
+    } else {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    }
+
+    free(padded);
+    stbi_image_free(data);
+    CLOG_DEBUG("Loaded tileset: %s (%dx%d tiles of %dx%d, pad %d, %d mips)",
+               filepath, cols, rows, layout->tile_w, layout->tile_h, pad, levels);
     return texture_id;
 }
 

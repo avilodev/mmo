@@ -23,6 +23,11 @@ typedef struct {
     int basic_attack;
     int swap_form;          /**< Toggle between Human and Animal Form. */
     int ability[5];         /**< The five hotbar slots, whichever form fills them. */
+
+    int camera_rotate_left;   /**< Held: turn the camera one way (Q). */
+    int camera_rotate_right;  /**< Held: turn it the other (E). */
+    int camera_reset;         /**< Back to north-up, default zoom (Home). */
+    int camera_toggle_view;   /**< 3D <-> top-down, for development (F9). */
 } KeyBinds;
 
 extern KeyBinds g_keybinds;

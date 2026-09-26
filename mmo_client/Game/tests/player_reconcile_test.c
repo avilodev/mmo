@@ -55,9 +55,6 @@ void texture_unload(unsigned int id) { (void)id; }
 void renderer_draw_sprite(float x, float y, float w, float h, unsigned int t) {
     (void)x; (void)y; (void)w; (void)h; (void)t;
 }
-void renderer_draw_text_centered(float x, float y, float w, float h, const char* s) {
-    (void)x; (void)y; (void)w; (void)h; (void)s;
-}
 
 KeyBinds g_keybinds;
 

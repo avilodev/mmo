@@ -4,12 +4,17 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "camera/camera.h"
 #include "world/tile_palette.h"
 
 /** Configure chunk dimensions and fixed world-cache capacities. */
 #define CHUNK_SIZE        32
 #define MAX_LOADED_CHUNKS 64
-#define LOAD_RADIUS_CHUNKS 2
+/** Three, not two: the tilted camera sees further than the top-down one did,
+ *  and at full zoom-out, turned 45 degrees, its far corners reach past two
+ *  chunks from the player (camera_math_test TEST 7, decision D15). 7x7 = 49
+ *  resident chunks, inside MAX_LOADED_CHUNKS. */
+#define LOAD_RADIUS_CHUNKS 3
 #define MAX_MODIFICATIONS 256
 #define MAX_TILESETS      16
 
@@ -21,9 +26,36 @@ typedef struct {
     char     path[128];   /**< Path relative to the client working directory. */
     uint16_t cols;        /**< Tileset width in tiles. */
     uint16_t rows;        /**< Tileset height in tiles. */
+    int      tile_w;      /**< Tile size in texels, known once the texture loads. */
+    int      tile_h;
+    int      pad;         /**< Gutter texels the loaded atlas carries (texture_atlas.h). */
 } TilesetInfo;
 
-/** Cache one world chunk's tile layers, collision, and OpenGL display lists. */
+/** The tile layers a chunk draws, in draw order. */
+enum {
+    CHUNK_LAYER_BASE = 0,
+    CHUNK_LAYER_FLOOR,
+    CHUNK_LAYER_INTERIOR,
+    CHUNK_LAYER_ABOVE,
+    CHUNK_LAYER_COUNT
+};
+
+/** A contiguous run of a chunk layer's vertices that share one tileset. */
+typedef struct {
+    int tileset;   /**< Tileset slot; 0 in a flat-colour world. */
+    int first;     /**< First vertex. */
+    int count;     /**< Vertex count, a multiple of six. */
+} ChunkDrawRange;
+
+/** One chunk layer uploaded to the GPU. */
+typedef struct {
+    unsigned int   vbo;           /**< Vertex buffer, or 0 until built. */
+    int            vert_count;
+    ChunkDrawRange ranges[MAX_TILESETS];
+    int            range_count;
+} ChunkLayerGpu;
+
+/** Cache one world chunk's tile layers, collision, and GPU vertex buffers. */
 typedef struct {
     uint16_t tiles[CHUNK_SIZE * CHUNK_SIZE];
     uint16_t overlay_floor_tiles[CHUNK_SIZE * CHUNK_SIZE];
@@ -31,11 +63,8 @@ typedef struct {
     uint16_t overlay_above_tiles[CHUNK_SIZE * CHUNK_SIZE];
     uint8_t  collision[CHUNK_SIZE * CHUNK_SIZE];
 
-    unsigned int dl_base;             /**< OpenGL display list, or 0 until compiled. */
-    unsigned int dl_overlay_floor;
-    unsigned int dl_overlay_interior;
-    unsigned int dl_overlay_above;
-    int          dl_dirty;
+    ChunkLayerGpu gpu[CHUNK_LAYER_COUNT];
+    int           gpu_dirty;       /**< Rebuild every layer before the next draw. */
 
     int chunk_x;
     int chunk_y;
@@ -111,6 +140,11 @@ void world_render_overlay_floor(const WorldState* world, const Camera* camera);
 void world_render_overlay_interior(const WorldState* world, const Camera* camera);
 
 void world_render_overlay_above(const WorldState* world, const Camera* camera);
+
+/** Draw the roof layer with a faded hole around a point (3D view, indoors). */
+void world_render_overlay_above_faded(const WorldState* world, const Camera* camera,
+                                      float center_x, float center_y,
+                                      float inner_radius, float outer_radius);
 
 void world_render_overlay_above_north(const WorldState* world, const Camera* camera, int player_ty);
 void world_render_overlay_above_south(const WorldState* world, const Camera* camera, int player_ty);

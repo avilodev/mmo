@@ -440,7 +440,10 @@ TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/name_cache_test \
         $(TEST_BIN)/client_log_test \
         $(TEST_BIN)/player_reconcile_test \
-        $(TEST_BIN)/paperdoll_test
+        $(TEST_BIN)/paperdoll_test \
+        $(TEST_BIN)/camera_math_test \
+        $(TEST_BIN)/texture_atlas_test \
+        $(TEST_BIN)/chunk_mesh_test
 
 # ---------------------------------------------------------------------------
 # Host builds of the network sources
@@ -506,6 +509,7 @@ $(TEST_BIN)/race_registry_test: $(TEST_DIR)/race_registry_test.c Game/src/core/r
 $(TEST_BIN)/player_reconcile_test: $(TEST_DIR)/player_reconcile_test.c \
                                    Game/src/player/player.c \
                                    Game/src/player/paperdoll.c \
+                                   Game/src/camera/camera_math.c \
                                    Game/src/core/client_log.c | $(TEST_BIN)
 	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
 	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
@@ -518,6 +522,22 @@ $(TEST_BIN)/paperdoll_test: $(TEST_DIR)/paperdoll_test.c \
                             Game/src/player/paperdoll.c \
                             Game/src/core/client_log.c | $(TEST_BIN)
 	$(CC) -Wall -Wextra -std=c11 -g -DGLFW_INCLUDE_NONE $(GAME_INCLUDES) -o $@ $^
+
+# The 3D camera's projection, picking, culling bounds and movement rotation.
+# Pure math over cglm, so it runs headless like the generator tests.
+$(TEST_BIN)/camera_math_test: $(TEST_DIR)/camera_math_test.c Game/src/camera/camera_math.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -I$(GAME_INCLUDE_DIR)/camera -o $@ $^ -lm
+
+# Tileset gutter padding, so mipmapped ground tiles do not bleed into each other.
+$(TEST_BIN)/texture_atlas_test: $(TEST_DIR)/texture_atlas_test.c Game/src/texture/texture_atlas.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The vertex data a chunk layer becomes for the ground shader. world.h pulls in
+# camera.h and, through it, glfw3.h; GLFW_INCLUDE_NONE keeps that from needing
+# <GL/gl.h>, which a headless build does not have.
+$(TEST_BIN)/chunk_mesh_test: $(TEST_DIR)/chunk_mesh_test.c Game/src/world/chunk_mesh.c \
+                             Game/src/texture/texture_atlas.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -DGLFW_INCLUDE_NONE $(GLFW_CFLAGS) -I$(GAME_INCLUDE_DIR)/camera -o $@ $^ -lm
 
 $(TEST_BIN)/net_dispatch_test: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c | $(TEST_BIN)
 	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm -pthread
