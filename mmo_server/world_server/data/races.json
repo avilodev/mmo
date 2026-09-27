@@ -1,8 +1,8 @@
 {
   "_comment": "The single source of race truth. Race and class fuse into one identifier: a character's class_id and race_id both hold the id below. Adding a race is one more block in this array plus its abilities in abilities.json - no code change, no recompile, no protocol bump, no migration.",
-  "_playable_comment": "Only races with a designed kit set playable. The other seven load, hold their identity and stat curve, and are simply not offered at character creation - which keeps them out of the client without special-casing anything in C.",
+  "_playable_comment": "Only races with a designed kit set playable. The other six load, hold their identity and stat curve, and are simply not offered at character creation - which keeps them out of the client without special-casing anything in C.",
   "_stats_comment": "base is whole points at level 1. per_level is tenths of a point per level, so growth can be fractional without floats: strength 30 means +3.0 per level. Every race must list all eleven stats in both blocks.",
-  "_passive_comment": "A passive's modifiers are its mechanics, and they resolve in Animal Form only - Human Form applies no passive for any race, which is what makes Human Form identical across all ten. value applies unconditionally; per_ally adds once per nearby ally up to max_allies. Passives whose effect is not a damage modifier, such as Herd Instinct's regeneration aura, carry no entries here.",
+  "_passive_comment": "A passive's modifiers are its mechanics, and they resolve in Animal Form only - Human Form applies no passive for any race, which is what makes Human Form identical across all nine. value applies unconditionally; per_ally adds once per nearby ally up to max_allies. Passives whose effect is not a damage modifier, such as Herd Instinct's regeneration aura, carry no entries here.",
   "_ferality_comment": "Ferality is identical across every race on purpose. It is the Animal Form power scalar - one value tuning the whole Human/Animal gap - not a way to make one race stronger. Tune the gap in progression.json via animal_power_per_ferality.",
   "_spec_b_comment": "Spec B is out of scope for this milestone everywhere, including Wolf Tank. Each one is declared with its role and level gate so the registry shape is final, and carries no abilities until its kit is designed.",
   "races": [
@@ -375,62 +375,6 @@
           "precision": 15,
           "ferality": 15,
           "armor": 15
-        }
-      }
-    },
-    {
-      "id": 7,
-      "key": "snake",
-      "name": "Snake",
-      "latin": "Ophidian",
-      "playable": false,
-      "passive": {
-        "key": "",
-        "name": "",
-        "description": "Undesigned. The world bible flags this passive as unfixed; nothing is assumed here.",
-        "modifiers": []
-      },
-      "specs": [
-        {
-          "id": "a",
-          "role": "dps",
-          "default": true,
-          "abilities": []
-        },
-        {
-          "id": "b",
-          "role": "dps",
-          "unlock_level": 20,
-          "abilities": []
-        }
-      ],
-      "base_move_speed": 205.0,
-      "stats": {
-        "base": {
-          "strength": 8,
-          "dexterity": 10,
-          "vitality": 6,
-          "intelligence": 8,
-          "focus": 6,
-          "endurance": 4,
-          "ferocity": 10,
-          "stamina_capacity": 10,
-          "precision": 9,
-          "ferality": 10,
-          "armor": 5
-        },
-        "per_level": {
-          "strength": 20,
-          "dexterity": 24,
-          "vitality": 15,
-          "intelligence": 20,
-          "focus": 14,
-          "endurance": 8,
-          "ferocity": 26,
-          "stamina_capacity": 24,
-          "precision": 22,
-          "ferality": 15,
-          "armor": 12
         }
       }
     },

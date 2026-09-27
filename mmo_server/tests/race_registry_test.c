@@ -39,12 +39,12 @@ static const char* races_path(void) {
     return NULL;
 }
 
-/** Verify the shipped registry loads and holds the ten races the bible names. */
+/** Verify the shipped registry loads and holds the nine races the bible names. */
 static void test_shipped_registry_loads(const char* path) {
     printf("TEST 1: the shipped registry loads\n");
 
     int count = race_registry_init(path);
-    check(count == 10, "all ten races load");
+    check(count == 9, "all nine races load");
 
     const RaceDef* wolf = race_get_by_key("wolf");
     check(wolf != NULL, "wolf resolves by key");
@@ -57,8 +57,8 @@ static void test_shipped_registry_loads(const char* path) {
 }
 
 /** Verify identifiers are unique and dense, which the client's race list relies on. */
-static void test_ids_are_unique_and_dense(void) {
-    printf("TEST 2: identifiers are unique and dense\n");
+static void test_ids_are_unique_and_in_range(void) {
+    printf("TEST 2: identifiers are unique and in range\n");
 
     int seen[MAX_RACES + 1];
     memset(seen, 0, sizeof(seen));
@@ -71,11 +71,14 @@ static void test_ids_are_unique_and_dense(void) {
     }
     check(duplicates == 0, "no two races share an identifier");
 
-    int gaps = 0;
-    for (int id = 1; id <= count; id++) {
-        if (!seen[id]) gaps++;
+    /* Ids may have gaps: a removed race keeps its id retired (Snake held 7) so
+     * the ids derived from the others, such as quest and dialogue ids, stay put. */
+    int out_of_range = 0;
+    for (int i = 0; i < count; i++) {
+        if (race_at(i)->id < 1 || race_at(i)->id > MAX_RACES) out_of_range++;
     }
-    check(gaps == 0, "identifiers run 1..count with no gaps");
+    check(out_of_range == 0, "every identifier lies in 1..MAX_RACES");
+    check(race_get(7) == NULL, "the retired Snake id 7 resolves to nothing");
     check(race_at(count) == NULL, "enumerating past the end yields nothing");
 }
 
@@ -92,7 +95,7 @@ static void test_playability(void) {
     check(race_is_playable(race_get_by_key("wolf")->id), "wolf is playable");
     check(race_is_playable(race_get_by_key("bear")->id), "bear is playable");
     check(race_is_playable(race_get_by_key("deer")->id), "deer is playable");
-    check(!race_is_playable(race_get_by_key("snake")->id), "snake is not playable");
+    check(!race_is_playable(race_get_by_key("fox")->id), "fox is not playable");
     check(!race_is_playable(0), "an unknown id is not playable");
     check(!race_is_playable(9999), "an out-of-range id is not playable");
 }
@@ -224,7 +227,7 @@ static void test_passives(void) {
     for (int i = 0; i < race_registry_count(); i++) {
         if (race_at(i)->passive.key[0]) named++;
     }
-    check(named == 9, "nine races name a passive; only snake's is undesigned");
+    check(named == 9, "every race names a passive");
 }
 
 /**
@@ -343,7 +346,7 @@ int main(void) {
     }
 
     test_shipped_registry_loads(path);
-    test_ids_are_unique_and_dense();
+    test_ids_are_unique_and_in_range();
     test_playability();
     test_specs();
     test_stat_blocks_are_total();

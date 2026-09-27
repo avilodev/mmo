@@ -45,8 +45,7 @@ def leader_dialogue(race_id): return DIALOGUE_LEADER_BASE + race_id
 def quest_called(race_id):    return QUEST_CALLED_BASE + race_id
 
 # --- The races that take part -------------------------------------------
-# race_id matches races.json. Snake is absent on purpose: the world bible flags
-# its passive as undesigned, so it has no leader to be sent to yet.
+# race_id matches races.json, which no longer has a Snake race (id 7 is unused).
 RACES = [
     dict(id=1,  key="wolf",   name="Wolf",
          leader="God of the Hunt",  domain="the Hunt"),

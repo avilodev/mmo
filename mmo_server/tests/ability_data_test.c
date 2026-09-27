@@ -101,7 +101,7 @@ static void test_human_form_kit(void) {
             differing++;
         }
     }
-    check(differing == 0, "and is byte-identical for all ten races");
+    check(differing == 0, "and is byte-identical for all nine races");
 }
 
 /** Verify every spec's ability keys resolve, and to the race that names them. */
@@ -191,7 +191,7 @@ static void test_bars_fill(void) {
 
     /* A non-playable race has no kit, and asking for one must not invent anything. */
     uint16_t bar[MAX_ABILITY_SLOTS];
-    check(ability_get_form_abilities((uint8_t)race_get_by_key("snake")->id, FORM_ANIMAL,
+    check(ability_get_form_abilities((uint8_t)race_get_by_key("fox")->id, FORM_ANIMAL,
                                      bar, MAX_ABILITY_SLOTS) == 0,
           "and a race with no designed kit yields an empty animal bar");
 }

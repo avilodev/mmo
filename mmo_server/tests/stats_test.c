@@ -98,7 +98,7 @@ static void test_every_race_covers_every_stat(void) {
 
 /** Verify the role-to-resource mapping is total over every race and spec. */
 static void test_role_mapping_is_total(void) {
-    printf("TEST 3: role selects a resource for all ten races and both specs\n");
+    printf("TEST 3: role selects a resource for all nine races and both specs\n");
 
     int pairs = 0, unmapped = 0, stat_mismatch = 0;
 
@@ -122,7 +122,7 @@ static void test_role_mapping_is_total(void) {
         }
     }
 
-    check(pairs == 20, "ten races with two specs each is twenty pairs");
+    check(pairs == 18, "nine races with two specs each is eighteen pairs");
     check(unmapped == 0, "every pair maps to a real resource");
     check(stat_mismatch == 0, "and to the stat that sizes that resource");
 }

@@ -82,16 +82,6 @@
       "projectile_damage_type": "spirit"
     },
     {
-      "race": "snake",
-      "base_damage": 15,
-      "damage_variance": 25,
-      "cast_time": 0.4,
-      "cooldown": 0.8,
-      "range": 60,
-      "attack_type": "single",
-      "damage_stat": "ferocity"
-    },
-    {
       "race": "rabbit",
       "base_damage": 8,
       "damage_variance": 15,

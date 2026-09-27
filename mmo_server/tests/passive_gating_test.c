@@ -102,7 +102,7 @@ static void test_human_form_is_uniform(void) {
     printf("TEST 2: every race's human form carries no passive contribution\n");
 
     int races = race_registry_count();
-    check(races == 10, "all ten races are loaded");
+    check(races == 9, "all nine races are loaded");
 
     int with_contribution = 0;
     int animal_passives = 0;

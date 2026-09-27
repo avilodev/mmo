@@ -543,7 +543,7 @@ static void abandon_quest(int fd, uint32_t character_id, uint32_t quest_id) {
 static uint32_t race_id_for(const char* key) {
     static const struct { const char* key; uint32_t id; } RACES[] = {
         { "wolf", 1 }, { "bear", 2 }, { "fox", 3 }, { "crow", 4 }, { "hawk", 5 },
-        { "deer", 6 }, { "snake", 7 }, { "rabbit", 8 }, { "hyena", 9 }, { "cat", 10 },
+        { "deer", 6 }, { "rabbit", 8 }, { "hyena", 9 }, { "cat", 10 },
     };
     for (size_t i = 0; i < sizeof(RACES) / sizeof(RACES[0]); i++)
         if (strcmp(RACES[i].key, key) == 0) return RACES[i].id;
