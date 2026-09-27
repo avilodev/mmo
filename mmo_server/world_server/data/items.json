@@ -1,4 +1,75 @@
 {
-  "items": [],
+  "items": [
+    {
+      "id": 1001,
+      "name": "Wolfhide Cap",
+      "type": "armor",
+      "slot": "helmet",
+      "rarity": "common",
+      "defense": 3,
+      "bonus_vitality": 2,
+      "value": 15
+    },
+    {
+      "id": 1002,
+      "name": "Swiftpaw Boots",
+      "type": "armor",
+      "slot": "boots",
+      "rarity": "uncommon",
+      "defense": 2,
+      "bonus_dexterity": 4,
+      "level_req": 3,
+      "value": 40
+    },
+    {
+      "id": 1003,
+      "name": "Fang Knuckles",
+      "type": "weapon",
+      "slot": "main_hand",
+      "rarity": "uncommon",
+      "damage": 6,
+      "bonus_strength": 3,
+      "bonus_precision": 2,
+      "level_req": 2,
+      "value": 45
+    },
+    {
+      "id": 1004,
+      "name": "Bearhide Vest",
+      "type": "armor",
+      "slot": "chest",
+      "rarity": "rare",
+      "defense": 8,
+      "bonus_vitality": 5,
+      "bonus_endurance": 2,
+      "level_req": 5,
+      "bind_on_equip": 1,
+      "value": 120
+    },
+    {
+      "id": 1005,
+      "name": "Feral Totem",
+      "type": "shield",
+      "slot": "off_hand",
+      "rarity": "epic",
+      "defense": 0,
+      "bonus_ferality": 6,
+      "bonus_ferocity": 3,
+      "level_req": 8,
+      "bind_on_pickup": 1,
+      "value": 300
+    },
+    {
+      "id": 1101,
+      "name": "Health Tonic",
+      "type": "consumable",
+      "rarity": "common",
+      "max_stack": 20,
+      "use_effect": "restore_health",
+      "use_value": 40,
+      "use_cooldown": 10.0,
+      "value": 5
+    }
+  ],
   "loot_tables": []
 }
