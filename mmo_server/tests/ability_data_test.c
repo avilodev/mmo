@@ -50,9 +50,9 @@ static const char* find_data(char* out, size_t out_size, const char* leaf) {
 
 /** Verify the whole set loads and splits between the two forms as designed. */
 static void test_all_abilities_load(void) {
-    printf("TEST 1: twenty abilities load, five human and fifteen animal\n");
+    printf("TEST 1: fifty abilities load, five human and forty-five animal\n");
 
-    check(abilities_get_count() == 20, "twenty abilities parsed");
+    check(abilities_get_count() == 50, "fifty abilities parsed");
 
     int human = 0, animal = 0;
     for (int i = 1; i < MAX_ABILITIES; i++) {
@@ -61,7 +61,7 @@ static void test_all_abilities_load(void) {
         if (ability->form == FORM_HUMAN) human++; else animal++;
     }
     check(human == 5, "five are human form");
-    check(animal == 15, "fifteen are animal form");
+    check(animal == 45, "forty-five are animal form");
 
     check(ability_get(0) == NULL, "identifier 0 names no ability");
     check(ability_get_by_key("cleave") == NULL, "the retired class abilities are gone");
@@ -128,7 +128,7 @@ static void test_spec_keys_resolve(void) {
     check(wrong_form == 0, "and is an animal-form ability");
 }
 
-/** Verify every ability's race exists and is one of the playable three. */
+/** Verify every ability's race exists and is playable. */
 static void test_no_ability_orphans(void) {
     printf("TEST 4: no ability references a race that cannot use it\n");
 
@@ -189,11 +189,12 @@ static void test_bars_fill(void) {
     check(short_animal == 0, "every playable race has five animal abilities");
     check(short_human == 0, "and five human abilities");
 
-    /* A non-playable race has no kit, and asking for one must not invent anything. */
+    /* A race the registry does not hold has no kit, and asking for one must not
+     * invent anything. Id 7 is the retired Snake race's. */
     uint16_t bar[MAX_ABILITY_SLOTS];
-    check(ability_get_form_abilities((uint8_t)race_get_by_key("fox")->id, FORM_ANIMAL,
-                                     bar, MAX_ABILITY_SLOTS) == 0,
-          "and a race with no designed kit yields an empty animal bar");
+    check(race_get(7) == NULL, "id 7 names no race");
+    check(ability_get_form_abilities(7, FORM_ANIMAL, bar, MAX_ABILITY_SLOTS) == 0,
+          "and a race that does not exist yields an empty animal bar");
 }
 
 /** Verify unlock levels sit inside the level range the curve actually reaches. */
@@ -328,8 +329,8 @@ static void test_every_ability_delivers_something(void) {
     }
 
     check(inert == 0, "every ability has damage, healing, an effect, or a movement");
-    check(effect_only_ally == 2, "two ally abilities carry an effect and no healing");
-    check(effect_only_enemy == 2, "two enemy abilities carry an effect and no damage");
+    check(effect_only_ally == 3, "three ally abilities carry an effect and no healing");
+    check(effect_only_enemy == 7, "seven enemy abilities carry an effect and no damage");
 }
 
 /** Verify scaling and buff targets resolve to the eleven attributes. */

@@ -1,5 +1,5 @@
 {
-  "_comment": "Twenty abilities: five universal Human Form actions plus three animal kits of five. Adding one is an entry here and an icon in Game/Sprites/Abilities. The only thing that ever needs code is a genuinely new effect verb.",
+  "_comment": "Fifty abilities: five universal Human Form actions plus nine animal kits of five. Adding one is an entry here and an icon in Game/Sprites/Abilities. The only thing that ever needs code is a genuinely new effect verb.",
 
   "_form_comment": "form is 'human' or 'animal'. Human Form is cooldown-only and has no resource pool, so a resourceCost there is refused by the loader rather than silently charged. Animal abilities name the race that owns them; human abilities name none, which is what makes them universal.",
 
@@ -410,6 +410,671 @@
       "sfx": "bounty.wav",
       "vfx": "bounty",
       "image": "deer_bounty.png"
+    },
+
+    "fox_snap": {
+      "name": "Snap",
+      "race": "fox",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 8,
+      "cooldown": 2.5,
+      "castTime": 0.0,
+      "range": 55.0,
+      "targetType": "enemy",
+      "damage": 15,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "animation": "bite",
+      "sfx": "bite.wav",
+      "vfx": "bite",
+      "image": "fox_snap.png"
+    },
+
+    "fox_foxfire": {
+      "_comment": "The fox's reach: a slow-burning spirit flame that keeps ticking after the fox has moved on. Scales with Intelligence, the fox's secondary attribute.",
+      "name": "Foxfire",
+      "race": "fox",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 12,
+      "cooldown": 4.0,
+      "castTime": 0.3,
+      "range": 380.0,
+      "targetType": "enemy",
+      "damage": 11,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "projectile": { "type": "linear", "speed": 650.0, "width": 24.0 },
+      "statusEffects": [
+        { "type": "dot", "value": 3, "duration": 4.0, "tickRate": 1.0 }
+      ],
+      "animation": "shoot",
+      "sfx": "foxfire.wav",
+      "vfx": "wisp",
+      "image": "fox_foxfire.png"
+    },
+
+    "fox_feint": {
+      "_comment": "A darting pass through the target that leaves it slowed and the fox sharper for the follow-up. The self modifier fires once per cast, not per enemy passed.",
+      "name": "Feint",
+      "race": "fox",
+      "form": "animal",
+      "unlockLevel": 3,
+      "resourceCost": 18,
+      "cooldown": 10.0,
+      "castTime": 0.0,
+      "range": 200.0,
+      "targetType": "enemy",
+      "damage": 12,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "movement": { "type": "dash", "distance": 200.0 },
+      "aoe": { "shape": "circle", "radius": 70.0 },
+      "statusEffects": [
+        { "type": "slow", "value": 30, "duration": 2.0 },
+        { "type": "damage_dealt", "value": 150, "duration": 4.0, "self": true }
+      ],
+      "animation": "dash",
+      "sfx": "dash.wav",
+      "vfx": "streak",
+      "image": "fox_feint.png"
+    },
+
+    "fox_riddle": {
+      "_comment": "The God of Secrets answers with a question: the target stops to puzzle it out and is left open. A negative damage_taken is a vulnerability, not a reduction.",
+      "name": "Riddle",
+      "race": "fox",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 20,
+      "cooldown": 18.0,
+      "castTime": 0.0,
+      "range": 250.0,
+      "targetType": "enemy",
+      "statusEffects": [
+        { "type": "stun", "duration": 1.5 },
+        { "type": "damage_taken", "value": -100, "duration": 6.0 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "riddle.wav",
+      "vfx": "question",
+      "image": "fox_riddle.png"
+    },
+
+    "fox_vanishing_strike": {
+      "name": "Vanishing Strike",
+      "race": "fox",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 40,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 30,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "statusEffects": [
+        { "type": "buff", "stat": "move_speed", "value": 80, "duration": 3.0, "self": true }
+      ],
+      "animation": "claw",
+      "sfx": "vanish.wav",
+      "vfx": "smoke",
+      "image": "fox_vanishing_strike.png"
+    },
+
+    "crow_omen": {
+      "_comment": "The crow is the Intelligence striker: its damage is spirit, thrown from range.",
+      "name": "Omen",
+      "race": "crow",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 8,
+      "cooldown": 2.5,
+      "castTime": 0.4,
+      "range": 420.0,
+      "targetType": "enemy",
+      "damage": 13,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "projectile": { "type": "linear", "speed": 700.0, "width": 24.0 },
+      "animation": "shoot",
+      "sfx": "omen.wav",
+      "vfx": "feather_bolt",
+      "image": "crow_omen.png"
+    },
+
+    "crow_murder": {
+      "name": "Murder of Crows",
+      "race": "crow",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 20,
+      "cooldown": 10.0,
+      "castTime": 0.0,
+      "range": 350.0,
+      "targetType": "enemy",
+      "damage": 6,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "aoe": { "shape": "circle", "radius": 110.0 },
+      "statusEffects": [
+        { "type": "dot", "value": 3, "duration": 6.0, "tickRate": 1.0 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "murder.wav",
+      "vfx": "flock",
+      "image": "crow_murder.png"
+    },
+
+    "crow_scatter": {
+      "_comment": "Windborne in combat terms: a burst of flight through the enemy line. The passive itself stays travel-only.",
+      "name": "Scatter",
+      "race": "crow",
+      "form": "animal",
+      "unlockLevel": 3,
+      "resourceCost": 18,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 260.0,
+      "targetType": "enemy",
+      "damage": 8,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "movement": { "type": "dash", "distance": 260.0 },
+      "aoe": { "shape": "circle", "radius": 80.0 },
+      "statusEffects": [
+        { "type": "slow", "value": 40, "duration": 2.0 },
+        { "type": "buff", "stat": "move_speed", "value": 60, "duration": 3.0, "self": true }
+      ],
+      "animation": "dash",
+      "sfx": "wings.wav",
+      "vfx": "feathers",
+      "image": "crow_scatter.png"
+    },
+
+    "crow_ill_omen": {
+      "name": "Ill Omen",
+      "race": "crow",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 20,
+      "cooldown": 20.0,
+      "castTime": 0.0,
+      "range": 400.0,
+      "targetType": "enemy",
+      "statusEffects": [
+        { "type": "damage_taken", "value": -150, "duration": 8.0 },
+        { "type": "slow", "value": 20, "duration": 4.0 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "ill_omen.wav",
+      "vfx": "curse",
+      "image": "crow_ill_omen.png"
+    },
+
+    "crow_eclipse": {
+      "name": "Eclipse",
+      "race": "crow",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 45,
+      "cooldown": 14.0,
+      "castTime": 0.0,
+      "range": 220.0,
+      "targetType": "enemy",
+      "damage": 26,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "aoe": { "shape": "cone", "radius": 220.0, "angle": 70.0 },
+      "statusEffects": [
+        { "type": "knockup", "duration": 1.0 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "eclipse.wav",
+      "vfx": "eclipse",
+      "image": "crow_eclipse.png"
+    },
+
+    "hawk_talon": {
+      "name": "Talon",
+      "race": "hawk",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 8,
+      "cooldown": 2.5,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 15,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "animation": "claw",
+      "sfx": "claws.wav",
+      "vfx": "rake",
+      "image": "hawk_talon.png"
+    },
+
+    "hawk_mark_prey": {
+      "_comment": "Marked Prey as an ability: the marked target takes more damage from everyone. The 'mark' verb belongs to NPC kits, so the same result is a negative damage_taken, which the client does not yet draw over the target.",
+      "name": "Mark Prey",
+      "race": "hawk",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 10,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 450.0,
+      "targetType": "enemy",
+      "statusEffects": [
+        { "type": "damage_taken", "value": -100, "duration": 10.0 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "mark.wav",
+      "vfx": "mark",
+      "image": "hawk_mark_prey.png"
+    },
+
+    "hawk_stoop": {
+      "name": "Stoop",
+      "race": "hawk",
+      "form": "animal",
+      "unlockLevel": 4,
+      "resourceCost": 20,
+      "cooldown": 10.0,
+      "castTime": 0.0,
+      "range": 300.0,
+      "targetType": "enemy",
+      "damage": 22,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "movement": { "type": "dash", "distance": 300.0 },
+      "aoe": { "shape": "circle", "radius": 60.0 },
+      "statusEffects": [
+        { "type": "root", "duration": 1.0 }
+      ],
+      "animation": "pounce",
+      "sfx": "dive.wav",
+      "vfx": "impact",
+      "image": "hawk_stoop.png"
+    },
+
+    "hawk_patience": {
+      "_comment": "Waits, then strikes: the channel locks the hawk's actions for 1.5s, and the damage window outlasts it so the payoff comes after the wait.",
+      "name": "Patience",
+      "race": "hawk",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 10,
+      "cooldown": 25.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "channel", "duration": 1.5, "self": true },
+        { "type": "damage_dealt", "value": 300, "duration": 8.0, "self": true }
+      ],
+      "animation": "brace",
+      "sfx": "patience.wav",
+      "vfx": "focus",
+      "image": "hawk_patience.png"
+    },
+
+    "hawk_skyfall": {
+      "name": "Skyfall",
+      "race": "hawk",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 40,
+      "cooldown": 12.0,
+      "castTime": 1.0,
+      "range": 520.0,
+      "targetType": "enemy",
+      "damage": 34,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "projectile": { "type": "linear", "speed": 1100.0, "width": 30.0 },
+      "statusEffects": [
+        { "type": "stun", "duration": 0.75 }
+      ],
+      "animation": "shoot",
+      "sfx": "skyfall.wav",
+      "vfx": "streak",
+      "image": "hawk_skyfall.png"
+    },
+
+    "rabbit_thump": {
+      "_comment": "The healer's filler, centred on the rabbit: a warning thump that slows whatever is close.",
+      "name": "Thump",
+      "race": "rabbit",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 6,
+      "cooldown": 3.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "enemy",
+      "damage": 8,
+      "damageType": "spirit",
+      "damageStat": "intelligence",
+      "aoe": { "shape": "circle", "radius": 90.0 },
+      "statusEffects": [
+        { "type": "slow", "value": 30, "duration": 1.5 }
+      ],
+      "animation": "roar",
+      "sfx": "thump.wav",
+      "vfx": "ground_ring",
+      "image": "rabbit_thump.png"
+    },
+
+    "rabbit_tend": {
+      "_comment": "Faster and cheaper than the deer's Mend, and smaller: the rabbit heals in quick, frequent touches.",
+      "name": "Tend",
+      "race": "rabbit",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 18,
+      "cooldown": 2.0,
+      "castTime": 0.8,
+      "range": 380.0,
+      "targetType": "ally",
+      "healing": 24,
+      "statusEffects": [
+        { "type": "hot", "value": 5, "duration": 4.0, "tickRate": 1.0 }
+      ],
+      "animation": "cast_heal",
+      "sfx": "tend.wav",
+      "vfx": "heal_single",
+      "image": "rabbit_tend.png"
+    },
+
+    "rabbit_burrow": {
+      "name": "Burrow",
+      "race": "rabbit",
+      "form": "animal",
+      "unlockLevel": 4,
+      "resourceCost": 25,
+      "cooldown": 18.0,
+      "castTime": 0.0,
+      "range": 380.0,
+      "targetType": "ally",
+      "statusEffects": [
+        { "type": "damage_taken", "value": 200, "duration": 5.0 }
+      ],
+      "animation": "cast_utility",
+      "sfx": "burrow.wav",
+      "vfx": "shield",
+      "image": "rabbit_burrow.png"
+    },
+
+    "rabbit_warren": {
+      "_comment": "Survival over glory: a group heal that also gets everyone moving out of danger.",
+      "name": "Warren",
+      "race": "rabbit",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 45,
+      "cooldown": 14.0,
+      "castTime": 1.0,
+      "range": 300.0,
+      "targetType": "ally",
+      "healing": 18,
+      "aoe": { "shape": "circle", "radius": 220.0 },
+      "statusEffects": [
+        { "type": "buff", "stat": "move_speed", "value": 60, "duration": 3.0 }
+      ],
+      "animation": "cast_heal",
+      "sfx": "warren.wav",
+      "vfx": "heal_area",
+      "image": "rabbit_warren.png"
+    },
+
+    "rabbit_vigil": {
+      "_comment": "The emergency save: a flat heal plus 25% of the target's maximum health, instant, on a long cooldown.",
+      "name": "Vigil of the Fallen",
+      "race": "rabbit",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 50,
+      "cooldown": 60.0,
+      "castTime": 0.0,
+      "range": 380.0,
+      "targetType": "ally",
+      "healing": 30,
+      "healPercent": 250,
+      "animation": "cast_heal",
+      "sfx": "vigil.wav",
+      "vfx": "heal_single",
+      "image": "rabbit_vigil.png"
+    },
+
+    "hyena_maul": {
+      "_comment": "The tank's builder. Like the bear's, it costs nothing: rage comes from fighting, not from a pool that starts full.",
+      "name": "Maul",
+      "race": "hyena",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 0,
+      "cooldown": 3.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 17,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "healPercent": 20,
+      "healSelf": true,
+      "animation": "bite",
+      "sfx": "bite.wav",
+      "vfx": "bite",
+      "image": "hyena_maul.png"
+    },
+
+    "hyena_cackle": {
+      "_comment": "The hyena's taunt comes at level 1, not 6 like the bear's Roar, and trades the bear's size for a weakening laugh. Range and radius match so the circle lands where the hyena aims it.",
+      "name": "Cackle",
+      "race": "hyena",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 0,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 200.0,
+      "targetType": "enemy",
+      "aoe": { "shape": "circle", "radius": 200.0 },
+      "statusEffects": [
+        { "type": "taunt", "duration": 4.0 },
+        { "type": "damage_dealt", "value": -100, "duration": 6.0 }
+      ],
+      "animation": "growl",
+      "sfx": "cackle.wav",
+      "vfx": "roar_ring",
+      "image": "hyena_cackle.png"
+    },
+
+    "hyena_scavengers_hide": {
+      "name": "Scavenger's Hide",
+      "race": "hyena",
+      "form": "animal",
+      "unlockLevel": 4,
+      "resourceCost": 0,
+      "cooldown": 20.0,
+      "castTime": 0.0,
+      "range": 0.0,
+      "targetType": "self",
+      "statusEffects": [
+        { "type": "damage_taken", "value": 150, "duration": 6.0, "self": true },
+        { "type": "hot_percent", "value": 10, "duration": 6.0, "tickRate": 1.0, "self": true }
+      ],
+      "animation": "brace",
+      "sfx": "tough_hide.wav",
+      "vfx": "hide",
+      "image": "hyena_scavengers_hide.png"
+    },
+
+    "hyena_hamstring": {
+      "_comment": "Creates the opening the God of Opportunity teaches you to wait for.",
+      "name": "Hamstring",
+      "race": "hyena",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 20,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 14,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "statusEffects": [
+        { "type": "slow", "value": 50, "duration": 3.0 },
+        { "type": "damage_taken", "value": -100, "duration": 6.0 }
+      ],
+      "animation": "bite",
+      "sfx": "hamstring.wav",
+      "vfx": "gore",
+      "image": "hyena_hamstring.png"
+    },
+
+    "hyena_feeding_frenzy": {
+      "_comment": "The execute branch heals the hyena, which is the closest the current verbs come to Bloodlust. The passive itself still needs code.",
+      "name": "Feeding Frenzy",
+      "race": "hyena",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 35,
+      "cooldown": 14.0,
+      "castTime": 0.0,
+      "range": 110.0,
+      "targetType": "enemy",
+      "damage": 26,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "aoe": { "shape": "cone", "radius": 110.0, "angle": 100.0 },
+      "bonusDamage": {
+        "condition": "target_below_hp_percent",
+        "threshold": 30.0,
+        "multiplier": 2.0
+      },
+      "statusEffects": [
+        { "type": "hot_percent", "value": 30, "duration": 3.0, "tickRate": 1.0,
+          "self": true, "onCondition": true }
+      ],
+      "animation": "rend",
+      "sfx": "frenzy.wav",
+      "vfx": "gore",
+      "image": "hyena_feeding_frenzy.png"
+    },
+
+    "cat_swipe": {
+      "name": "Swipe",
+      "race": "cat",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 8,
+      "cooldown": 2.5,
+      "castTime": 0.0,
+      "range": 55.0,
+      "targetType": "enemy",
+      "damage": 15,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "animation": "claw",
+      "sfx": "claws.wav",
+      "vfx": "rake",
+      "image": "cat_swipe.png"
+    },
+
+    "cat_hiss": {
+      "name": "Hiss",
+      "race": "cat",
+      "form": "animal",
+      "unlockLevel": 1,
+      "resourceCost": 12,
+      "cooldown": 14.0,
+      "castTime": 0.0,
+      "range": 120.0,
+      "targetType": "enemy",
+      "aoe": { "shape": "cone", "radius": 120.0, "angle": 90.0 },
+      "statusEffects": [
+        { "type": "slow", "value": 40, "duration": 2.0 },
+        { "type": "damage_dealt", "value": -150, "duration": 4.0 }
+      ],
+      "animation": "growl",
+      "sfx": "hiss.wav",
+      "vfx": "arc",
+      "image": "cat_hiss.png"
+    },
+
+    "cat_leap": {
+      "_comment": "Predator's Pounce as an ability: the landing sharpens the cat. +20 Precision is +10% critical strike chance for four seconds.",
+      "name": "Leap",
+      "race": "cat",
+      "form": "animal",
+      "unlockLevel": 3,
+      "resourceCost": 18,
+      "cooldown": 10.0,
+      "castTime": 0.0,
+      "range": 220.0,
+      "targetType": "enemy",
+      "damage": 16,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "movement": { "type": "dash", "distance": 220.0 },
+      "aoe": { "shape": "circle", "radius": 60.0 },
+      "statusEffects": [
+        { "type": "buff", "stat": "precision", "value": 20, "duration": 4.0, "self": true }
+      ],
+      "animation": "pounce",
+      "sfx": "pounce.wav",
+      "vfx": "impact",
+      "image": "cat_leap.png"
+    },
+
+    "cat_toy": {
+      "name": "Toy With Prey",
+      "race": "cat",
+      "form": "animal",
+      "unlockLevel": 6,
+      "resourceCost": 20,
+      "cooldown": 10.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 10,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "statusEffects": [
+        { "type": "dot", "value": 5, "duration": 5.0, "tickRate": 1.0 }
+      ],
+      "animation": "claw",
+      "sfx": "claws.wav",
+      "vfx": "gore",
+      "image": "cat_toy.png"
+    },
+
+    "cat_hubris": {
+      "_comment": "The god's lesson, as a button: the biggest hit in the cat's kit, paid for by taking 20% more damage for five seconds afterwards.",
+      "name": "Hubris",
+      "race": "cat",
+      "form": "animal",
+      "unlockLevel": 10,
+      "resourceCost": 40,
+      "cooldown": 12.0,
+      "castTime": 0.0,
+      "range": 60.0,
+      "targetType": "enemy",
+      "damage": 40,
+      "damageType": "physical",
+      "damageStat": "strength",
+      "statusEffects": [
+        { "type": "damage_taken", "value": -200, "duration": 5.0, "self": true }
+      ],
+      "animation": "rend",
+      "sfx": "hubris.wav",
+      "vfx": "gore",
+      "image": "cat_hubris.png"
     }
   }
 }

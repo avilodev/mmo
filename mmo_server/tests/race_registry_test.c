@@ -82,20 +82,20 @@ static void test_ids_are_unique_and_in_range(void) {
     check(race_at(count) == NULL, "enumerating past the end yields nothing");
 }
 
-/** Verify exactly the three designed races are offered at character creation. */
+/** Verify every race, each now with a designed kit, is offered at character creation. */
 static void test_playability(void) {
-    printf("TEST 3: only the designed races are playable\n");
+    printf("TEST 3: every designed race is playable\n");
 
     int playable = 0;
     for (int i = 0; i < race_registry_count(); i++) {
         if (race_at(i)->playable) playable++;
     }
-    check(playable == 3, "exactly three races are playable");
+    check(playable == 9, "all nine races are playable");
 
     check(race_is_playable(race_get_by_key("wolf")->id), "wolf is playable");
     check(race_is_playable(race_get_by_key("bear")->id), "bear is playable");
     check(race_is_playable(race_get_by_key("deer")->id), "deer is playable");
-    check(!race_is_playable(race_get_by_key("fox")->id), "fox is not playable");
+    check(race_is_playable(race_get_by_key("fox")->id), "fox is playable");
     check(!race_is_playable(0), "an unknown id is not playable");
     check(!race_is_playable(9999), "an out-of-range id is not playable");
 }

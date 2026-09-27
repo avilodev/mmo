@@ -1,6 +1,6 @@
 {
   "_comment": "The single source of race truth. Race and class fuse into one identifier: a character's class_id and race_id both hold the id below. Adding a race is one more block in this array plus its abilities in abilities.json - no code change, no recompile, no protocol bump, no migration.",
-  "_playable_comment": "Only races with a designed kit set playable. The other six load, hold their identity and stat curve, and are simply not offered at character creation - which keeps them out of the client without special-casing anything in C.",
+  "_playable_comment": "Only races with a designed kit set playable. A race without one still loads, holds its identity and stat curve, and is simply not offered at character creation - which keeps it out of the client without special-casing anything in C. All nine have a kit today.",
   "_stats_comment": "base is whole points at level 1. per_level is tenths of a point per level, so growth can be fractional without floats: strength 30 means +3.0 per level. Every race must list all eleven stats in both blocks.",
   "_passive_comment": "A passive's modifiers are its mechanics, and they resolve in Animal Form only - Human Form applies no passive for any race, which is what makes Human Form identical across all nine. value applies unconditionally; per_ally adds once per nearby ally up to max_allies. Passives whose effect is not a damage modifier, such as Herd Instinct's regeneration aura, carry no entries here.",
   "_ferality_comment": "Ferality is identical across every race on purpose. It is the Animal Form power scalar - one value tuning the whole Human/Animal gap - not a way to make one race stronger. Tune the gap in progression.json via animal_power_per_ferality.",
@@ -153,7 +153,7 @@
       "key": "fox",
       "name": "Fox",
       "latin": "Vulpine",
-      "playable": false,
+      "playable": true,
       "passive": {
         "key": "keen_senses",
         "name": "Keen Senses",
@@ -165,7 +165,13 @@
           "id": "a",
           "role": "dps",
           "default": true,
-          "abilities": []
+          "abilities": [
+            "fox_snap",
+            "fox_foxfire",
+            "fox_feint",
+            "fox_riddle",
+            "fox_vanishing_strike"
+          ]
         },
         {
           "id": "b",
@@ -209,7 +215,7 @@
       "key": "crow",
       "name": "Crow",
       "latin": "Corvine",
-      "playable": false,
+      "playable": true,
       "passive": {
         "key": "windborne",
         "name": "Windborne",
@@ -221,7 +227,13 @@
           "id": "a",
           "role": "dps",
           "default": true,
-          "abilities": []
+          "abilities": [
+            "crow_omen",
+            "crow_murder",
+            "crow_scatter",
+            "crow_ill_omen",
+            "crow_eclipse"
+          ]
         },
         {
           "id": "b",
@@ -265,7 +277,7 @@
       "key": "hawk",
       "name": "Hawk",
       "latin": "Accipitrine",
-      "playable": false,
+      "playable": true,
       "passive": {
         "key": "marked_prey",
         "name": "Marked Prey",
@@ -277,7 +289,13 @@
           "id": "a",
           "role": "dps",
           "default": true,
-          "abilities": []
+          "abilities": [
+            "hawk_talon",
+            "hawk_mark_prey",
+            "hawk_stoop",
+            "hawk_patience",
+            "hawk_skyfall"
+          ]
         },
         {
           "id": "b",
@@ -383,7 +401,7 @@
       "key": "rabbit",
       "name": "Rabbit",
       "latin": "Leporine",
-      "playable": false,
+      "playable": true,
       "passive": {
         "key": "startle_reflex",
         "name": "Startle Reflex",
@@ -395,7 +413,13 @@
           "id": "a",
           "role": "healer",
           "default": true,
-          "abilities": []
+          "abilities": [
+            "rabbit_thump",
+            "rabbit_tend",
+            "rabbit_burrow",
+            "rabbit_warren",
+            "rabbit_vigil"
+          ]
         },
         {
           "id": "b",
@@ -439,7 +463,7 @@
       "key": "hyena",
       "name": "Hyena",
       "latin": "Hyaenine",
-      "playable": false,
+      "playable": true,
       "passive": {
         "key": "bloodlust",
         "name": "Bloodlust",
@@ -451,7 +475,13 @@
           "id": "a",
           "role": "tank",
           "default": true,
-          "abilities": []
+          "abilities": [
+            "hyena_maul",
+            "hyena_cackle",
+            "hyena_scavengers_hide",
+            "hyena_hamstring",
+            "hyena_feeding_frenzy"
+          ]
         },
         {
           "id": "b",
@@ -495,7 +525,7 @@
       "key": "cat",
       "name": "Cat",
       "latin": "Feline",
-      "playable": false,
+      "playable": true,
       "passive": {
         "key": "predators_pounce",
         "name": "Predator's Pounce",
@@ -507,7 +537,13 @@
           "id": "a",
           "role": "dps",
           "default": true,
-          "abilities": []
+          "abilities": [
+            "cat_swipe",
+            "cat_hiss",
+            "cat_leap",
+            "cat_toy",
+            "cat_hubris"
+          ]
         },
         {
           "id": "b",
