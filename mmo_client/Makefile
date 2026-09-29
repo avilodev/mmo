@@ -151,6 +151,7 @@ GAME_SOURCES = \
     $(wildcard $(GAME_SRC_DIR)/core/*.c) \
     $(wildcard $(GAME_SRC_DIR)/game/*.c) \
     $(wildcard $(GAME_SRC_DIR)/input/*.c) \
+    $(wildcard $(GAME_SRC_DIR)/model/*.c) \
     $(wildcard $(GAME_SRC_DIR)/network/*.c) \
     $(wildcard $(GAME_SRC_DIR)/player/*.c) \
     $(wildcard $(GAME_SRC_DIR)/render/*.c) \
@@ -177,6 +178,7 @@ GAME_OBJECTS = \
     $(patsubst $(GAME_SRC_DIR)/combat/%.c,$(GAME_OBJ_DIR)/combat_%.o,$(wildcard $(GAME_SRC_DIR)/combat/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/game/%.c,$(GAME_OBJ_DIR)/game_%.o,$(wildcard $(GAME_SRC_DIR)/game/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/input/%.c,$(GAME_OBJ_DIR)/input_%.o,$(wildcard $(GAME_SRC_DIR)/input/*.c)) \
+    $(patsubst $(GAME_SRC_DIR)/model/%.c,$(GAME_OBJ_DIR)/model_%.o,$(wildcard $(GAME_SRC_DIR)/model/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/network/%.c,$(GAME_OBJ_DIR)/network_%.o,$(wildcard $(GAME_SRC_DIR)/network/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/player/%.c,$(GAME_OBJ_DIR)/player_%.o,$(wildcard $(GAME_SRC_DIR)/player/*.c)) \
     $(patsubst $(GAME_SRC_DIR)/render/%.c,$(GAME_OBJ_DIR)/render_%.o,$(wildcard $(GAME_SRC_DIR)/render/*.c)) \
@@ -311,6 +313,10 @@ $(GAME_OBJ_DIR)/game_%.o: $(GAME_SRC_DIR)/game/%.c
 $(GAME_OBJ_DIR)/input_%.o: $(GAME_SRC_DIR)/input/%.c
 	$(CC) $(CFLAGS) $(GAME_INCLUDES) -c $< -o $@
 
+# Model module (glTF loading, posing and skinning; no GL)
+$(GAME_OBJ_DIR)/model_%.o: $(GAME_SRC_DIR)/model/%.c
+	$(CC) $(CFLAGS) $(GAME_INCLUDES) -c $< -o $@
+
 # Network module
 $(GAME_OBJ_DIR)/network_%.o: $(GAME_SRC_DIR)/network/%.c
 	$(CC) $(CFLAGS) $(GAME_INCLUDES) -c $< -o $@
@@ -423,7 +429,8 @@ TEST_BIN = Game/tests/bin
 TEST_CFLAGS = -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR) -I$(COMMON_DIR)
 
 WORLDGEN_SRC = Game/data/src/worldgen_noise.c Game/data/src/worldgen_biome.c \
-               Game/data/src/worldgen_city.c Game/data/src/worldgen_tile.c \
+               Game/data/src/worldgen_city.c Game/data/src/worldgen_courtyard.c \
+               Game/data/src/worldgen_tile.c \
                Game/data/src/worldgen_write.c Game/data/src/worldgen_overview.c
 
 TESTS = $(TEST_BIN)/tile_palette_test \
@@ -432,6 +439,7 @@ TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/worldgen_tile_test \
         $(TEST_BIN)/worldgen_format_test \
         $(TEST_BIN)/worldgen_overview_test \
+        $(TEST_BIN)/worldgen_courtyard_test \
         $(TEST_BIN)/cert_pin_test \
         $(TEST_BIN)/cert_pin_digest_test \
         $(TEST_BIN)/net_dispatch_test \
@@ -440,10 +448,14 @@ TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/name_cache_test \
         $(TEST_BIN)/client_log_test \
         $(TEST_BIN)/player_reconcile_test \
-        $(TEST_BIN)/paperdoll_test \
         $(TEST_BIN)/camera_math_test \
         $(TEST_BIN)/texture_atlas_test \
-        $(TEST_BIN)/chunk_mesh_test
+        $(TEST_BIN)/chunk_mesh_test \
+        $(TEST_BIN)/model_test \
+        $(TEST_BIN)/obj_mesh_test \
+        $(TEST_BIN)/character_motion_test \
+        $(TEST_BIN)/structure_mesh_test \
+        $(TEST_BIN)/locomotion_test
 
 # ---------------------------------------------------------------------------
 # Host builds of the network sources
@@ -508,20 +520,31 @@ $(TEST_BIN)/race_registry_test: $(TEST_DIR)/race_registry_test.c Game/src/core/r
 # headless build does not have and this does not need.
 $(TEST_BIN)/player_reconcile_test: $(TEST_DIR)/player_reconcile_test.c \
                                    Game/src/player/player.c \
-                                   Game/src/player/paperdoll.c \
+                                   Game/src/player/locomotion.c \
                                    Game/src/camera/camera_math.c \
                                    Game/src/core/client_log.c | $(TEST_BIN)
 	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
 	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
 
-# The character layer stack. Checks the asset contract the scheme depends on --
-# every layer the same untrimmed square -- by reading PNG headers directly, so
-# it needs neither OpenGL nor an image decoder. The test supplies the texture
-# and renderer stubs paperdoll.c links against.
-$(TEST_BIN)/paperdoll_test: $(TEST_DIR)/paperdoll_test.c \
-                            Game/src/player/paperdoll.c \
-                            Game/src/core/client_log.c | $(TEST_BIN)
-	$(CC) -Wall -Wextra -std=c11 -g -DGLFW_INCLUDE_NONE $(GAME_INCLUDES) -o $@ $^
+# The character model: loads the shipped .glb, checks every clip the renderer
+# plays is present, and skins a frame. Pure arithmetic, no GL; stb_image's
+# implementation comes from the test itself, not texture.c.
+$(TEST_BIN)/model_test: $(TEST_DIR)/model_test.c Game/src/model/json.c Game/src/model/glb.c \
+                        Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The OBJ loader behind the city scene, on a small scene the test writes itself
+# (the real export is untracked), including its binary cache.
+$(TEST_BIN)/obj_mesh_test: $(TEST_DIR)/obj_mesh_test.c Game/src/model/obj_mesh.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The local player's GTA-style locomotion: walk/run, acceleration, turning.
+$(TEST_BIN)/locomotion_test: $(TEST_DIR)/locomotion_test.c Game/src/player/locomotion.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# How a body picks, times and blends its clip from its drawn movement.
+$(TEST_BIN)/character_motion_test: $(TEST_DIR)/character_motion_test.c Game/src/render/character_motion.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 # The 3D camera's projection, picking, culling bounds and movement rotation.
 # Pure math over cglm, so it runs headless like the generator tests.
@@ -537,6 +560,12 @@ $(TEST_BIN)/texture_atlas_test: $(TEST_DIR)/texture_atlas_test.c Game/src/textur
 # <GL/gl.h>, which a headless build does not have.
 $(TEST_BIN)/chunk_mesh_test: $(TEST_DIR)/chunk_mesh_test.c Game/src/world/chunk_mesh.c \
                              Game/src/texture/texture_atlas.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -DGLFW_INCLUDE_NONE $(GLFW_CFLAGS) -I$(GAME_INCLUDE_DIR)/camera -o $@ $^ -lm
+
+# The 3D structures raised from the collision layer: that they stand exactly on
+# the solid tiles, and have the shape they should. Same headless setup as the
+# chunk mesh test.
+$(TEST_BIN)/structure_mesh_test: $(TEST_DIR)/structure_mesh_test.c Game/src/world/structure_mesh.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -DGLFW_INCLUDE_NONE $(GLFW_CFLAGS) -I$(GAME_INCLUDE_DIR)/camera -o $@ $^ -lm
 
 $(TEST_BIN)/net_dispatch_test: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c | $(TEST_BIN)

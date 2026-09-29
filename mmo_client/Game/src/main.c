@@ -13,6 +13,8 @@
 #include "renderer.h"
 #include "render/gl_loader.h"
 #include "render/ground_renderer.h"
+#include "render/character_renderer.h"
+#include "render/city_renderer.h"
 #include "fps.h"
 #include "network/network.h"
 #include "network/net_connect.h"
@@ -282,6 +284,16 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    /* Players and NPCs are 3D models. A missing or broken model file is not
+     * fatal: characters then draw as flat placeholder cards. */
+    if (!character_renderer_init())
+        CLOG_ERROR("[CHARACTER] Characters will draw as placeholders");
+
+    /* The authored city scene. Also not fatal: without it the world is the
+     * one grown from world.dat alone. */
+    if (!city_renderer_init())
+        CLOG_ERROR("[CITY] The city scene will not be drawn");
+
     /* VSync and the frame cap are settings now, applied by
      * game_settings_apply() below once the loaded settings exist. This used to
      * be an unconditional glfwSwapInterval(0) with nothing limiting the loop
@@ -506,6 +518,8 @@ int main(int argc, char* argv[]) {
     game_cleanup(&game);
 
     CLOG_INFO("[SHUTDOWN] renderer...");
+    character_renderer_shutdown();
+    city_renderer_shutdown();
     ground_renderer_shutdown();
     renderer_cleanup();
 

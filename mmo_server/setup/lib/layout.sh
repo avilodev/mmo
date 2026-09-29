@@ -63,6 +63,7 @@ generate_world_dat() {
         "$CLIENT_ROOT/Game/data/src/worldgen_noise.c"
         "$CLIENT_ROOT/Game/data/src/worldgen_biome.c"
         "$CLIENT_ROOT/Game/data/src/worldgen_city.c"
+        "$CLIENT_ROOT/Game/data/src/worldgen_courtyard.c"
         "$CLIENT_ROOT/Game/data/src/worldgen_tile.c"
         "$CLIENT_ROOT/Game/data/src/worldgen_write.c"
         "$CLIENT_ROOT/Game/data/src/worldgen_overview.c"

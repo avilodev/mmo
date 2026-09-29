@@ -141,6 +141,9 @@ BuildingPart worldgen_building_at(int x, int y) {
     if (worldgen_is_road(x, y) || worldgen_is_city_wall(x, y))
         return BUILDING_NONE;
     if (worldgen_district_at(x, y) == DISTRICT_COURTYARD) return BUILDING_NONE;
+    if (abs(x - ENNARA_X) <= COURTYARD_COMMONS_RADIUS &&
+        abs(y - ENNARA_Y) <= COURTYARD_COMMONS_RADIUS)
+        return BUILDING_NONE;
 
     // Locate the grid cell and its jittered building rectangle.
     int cell_x = x / BUILDING_CELL;

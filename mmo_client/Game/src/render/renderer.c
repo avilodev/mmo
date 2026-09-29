@@ -322,6 +322,20 @@ void renderer_draw_circle(float cx, float cy, float radius,
  * @param angle_deg  Full cone angle in degrees.
  * @param segments  Positive number of arc subdivisions.
  */
+void renderer_draw_ring(float cx, float cy, float inner_radius, float outer_radius,
+                        float r, float g, float b, float a, int segments) {
+    set_texture_enabled(0);
+    glColor4f(r, g, b, a);
+    glBegin(GL_TRIANGLE_STRIP);
+    for (int i = 0; i <= segments; i++) {
+        float angle = 2.0f * 3.14159265f * (float)i / (float)segments;
+        float c = cosf(angle), s = sinf(angle);
+        glVertex2f(cx + c * outer_radius, cy + s * outer_radius);
+        glVertex2f(cx + c * inner_radius, cy + s * inner_radius);
+    }
+    glEnd();
+}
+
 void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
                         float radius, float angle_deg,
                         float r, float g, float b, float a, int segments) {

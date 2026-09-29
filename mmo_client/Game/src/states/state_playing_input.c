@@ -22,6 +22,7 @@
 #include "ui/friends_panel.h"
 #include "core/keybinds.h"
 #include "camera/camera_tuning.h"
+#include "render/character_tuning.h"
 
 #include <string.h>
 #include "core/client_log.h"
@@ -29,7 +30,7 @@
 static float deg_to_rad(float deg) { return deg * 3.14159265359f / 180.0f; }
 
 /**
- * Turn, reset, and switch the camera (D8, D10, D28).
+ * Turn and reset the camera (D8, D10).
  *
  * Called after the chat early-out, so Q and E type into chat rather than spin
  * the view, and before the death early-out, so a dead player can still look
@@ -38,24 +39,23 @@ static float deg_to_rad(float deg) { return deg * 3.14159265359f / 180.0f; }
 static void playing_input_camera(GameState* game, float delta_time) {
     Camera* camera = &game->camera;
 
-    if (input_key_just_pressed(&game->input, g_keybinds.camera_toggle_view))
-        camera_toggle_mode(camera);
     if (input_key_just_pressed(&game->input, g_keybinds.camera_reset))
         camera_reset_view(camera);
-
-    if (camera->mode != CAMERA_MODE_3D) return;
 
     float step = deg_to_rad(CAMERA_ROTATE_DEG_PER_SEC) * delta_time;
     if (input_key_pressed(&game->input, g_keybinds.camera_rotate_left))  camera_rotate(camera, -step);
     if (input_key_pressed(&game->input, g_keybinds.camera_rotate_right)) camera_rotate(camera,  step);
 
-    /* Dragging right with the middle or right button held turns the world the
-     * same way E does. Only sideways motion counts: pitch is fixed (D6). The
-     * right button's press still targets/interacts as before; the drag only
-     * turns the view while it stays held. */
+    /* Dragging with the middle or right button held orbits the camera,
+     * FF14-style: the view follows the mouse. Drag right and the view turns
+     * right (the eye swings left round the player, the way Q turns it); drag
+     * up and it looks up (the eye drops). The right button's press still
+     * targets/interacts as before; the drag only moves the view while held. */
     int dragging = game->input.mouse_middle_down || game->input.mouse_right_down;
     if (dragging && game->input.mouse_dx != 0.0f)
-        camera_rotate(camera, deg_to_rad(CAMERA_DRAG_DEG_PER_PIXEL) * game->input.mouse_dx);
+        camera_rotate(camera, -deg_to_rad(CAMERA_DRAG_DEG_PER_PIXEL) * game->input.mouse_dx);
+    if (dragging && game->input.mouse_dy != 0.0f)
+        camera_pitch_by(camera, deg_to_rad(CAMERA_DRAG_PITCH_DEG_PER_PIXEL) * game->input.mouse_dy);
 }
 
 /**
@@ -322,14 +322,14 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
 
     // NPC interaction/attack with right-click
     if (game->input.mouse_right_clicked && !dialogue_is_active()) {
-        // Check if clicked on an NPC -- on its body, which in 3D stands above its feet
+        // Check if clicked on an NPC -- on its body, which stands above its feet
         for (int i = 0; i < game->playing->visible_npc_count; i++) {
             VisibleNPC* npc = &game->playing->visible_npcs[i];
             if (!npc->is_alive) continue;
 
-            if (camera_hit_billboard(&game->camera, npc->pos_x, npc->pos_y,
-                                     npc_body_half_height(npc, game->world.tile_size),
-                                     32.0f, game->input.mouse_x, game->input.mouse_y)) {
+            if (camera_hit_standing(&game->camera, npc->pos_x, npc->pos_y,
+                                    npc_body_height(npc), CHARACTER_PICK_RADIUS,
+                                    game->input.mouse_x, game->input.mouse_y)) {
                 if (npc->category == 1) {
                     // Hostile NPC: target + basic attack
                     game->playing->target_npc_id = npc->npc_id;
@@ -551,8 +551,8 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         for (int i = 0; i < game->playing->nearby_player_count; i++) {
             const NearbyPlayer* np = &game->playing->nearby_players[i];
             if (np->is_dead) continue;
-            if (camera_hit_billboard(&game->camera, np->pos_x, np->pos_y,
-                                     (float)game->world.tile_size, 32.0f, mx, my)) {
+            if (camera_hit_standing(&game->camera, np->pos_x, np->pos_y,
+                                    CHARACTER_HEIGHT, CHARACTER_PICK_RADIUS, mx, my)) {
                 game->playing->target_player_id = np->player_id;
                 game->playing->target_npc_id    = 0;  // Clear NPC target
                 hit_target = 1;
@@ -565,9 +565,8 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
             for (int i = 0; i < game->playing->visible_npc_count; i++) {
                 VisibleNPC* npc = &game->playing->visible_npcs[i];
                 if (!npc->is_alive) continue;
-                if (camera_hit_billboard(&game->camera, npc->pos_x, npc->pos_y,
-                                         npc_body_half_height(npc, game->world.tile_size),
-                                         32.0f, mx, my)) {
+                if (camera_hit_standing(&game->camera, npc->pos_x, npc->pos_y,
+                                        npc_body_height(npc), CHARACTER_PICK_RADIUS, mx, my)) {
                     game->playing->target_npc_id    = npc->npc_id;
                     game->playing->target_player_id = 0;  // Clear player target
                     hit_target = 1;
@@ -605,9 +604,8 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         network_send_party_leave();
     }
 
-    /* In the top-down view the keys stay north-up, as they always were. */
-    float input_yaw = (game->camera.mode == CAMERA_MODE_3D) ? game->camera.yaw : 0.0f;
-    player_update_movement(&game->player, &game->input, &game->world, delta_time, input_yaw);
+    player_update_movement(&game->player, &game->input, &game->world, delta_time,
+                           game->camera.yaw);
 
     /* Form swap. The request is fire-and-forget: the server answers with the
      * authoritative form either way, and refuses while the shared swap cooldown is

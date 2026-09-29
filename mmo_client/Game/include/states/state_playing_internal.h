@@ -48,7 +48,6 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time);
 
 /* --- The world-space pass (state_playing_render.c) ----------------------- */
 
-void playing_render_nearby_players(GameState* game);
 void playing_render_projectiles(GameState* game);
 void playing_render_telegraphs(GameState* game);
 void playing_render_zones(GameState* game);

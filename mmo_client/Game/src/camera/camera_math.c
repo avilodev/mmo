@@ -9,12 +9,10 @@
 
 #include "camera/camera_math.h"
 #include "camera/cglm_config.h"
+#include "camera/camera_tuning.h"
 
 #include <math.h>
 #include <string.h>
-
-/** Eye height of the top-down camera; anything above the ground works. */
-#define TOP_DOWN_EYE_HEIGHT 1000.0f
 
 /** Map (x, y, h) to GL (x, h, y). */
 static void ground_matrix(mat4 g) {
@@ -40,13 +38,13 @@ static void finish(CameraView* out, mat4 view, mat4 proj) {
     memcpy(out->ground_mvp,   gmvp,     sizeof(out->ground_mvp));
 }
 
-void camera_view_build(CameraView* out, float target_x, float target_y,
+void camera_view_build(CameraView* out, float target_x, float target_y, float target_h,
                        float yaw, float pitch, float distance, float fovy,
                        int viewport_w, int viewport_h) {
-    vec3 target = { target_x, 0.0f, target_y };
+    vec3 target = { target_x, target_h, target_y };
     vec3 eye = {
         target_x + distance * sinf(yaw) * cosf(pitch),
-        distance * sinf(pitch),
+        target_h + distance * sinf(pitch),
         target_y + distance * cosf(yaw) * cosf(pitch)
     };
     vec3 up = { 0.0f, 1.0f, 0.0f };
@@ -55,34 +53,13 @@ void camera_view_build(CameraView* out, float target_x, float target_y,
     glm_lookat(eye, target, up, view);
 
     float aspect = (viewport_h > 0) ? (float)viewport_w / (float)viewport_h : 1.0f;
-    /* Near and far scale with distance so depth precision follows the zoom.
-     * Everything drawn sits within a few distances of the target. */
-    glm_perspective(fovy, aspect, distance * 0.05f, distance * 8.0f, proj);
+    /* The near plane follows the zoom, so depth precision does too. The far
+     * plane reaches past the fog wherever the camera is: a low camera looks
+     * along the ground to the edge of what is streamed. */
+    glm_perspective(fovy, aspect, distance * 0.05f, distance + CAMERA_VIEW_RANGE, proj);
 
     out->viewport_w = viewport_w;
     out->viewport_h = viewport_h;
-    out->top_down   = 0;
-    finish(out, view, proj);
-}
-
-void camera_view_build_2d(CameraView* out, float center_x, float center_y,
-                          float zoom, int viewport_w, int viewport_h) {
-    if (zoom <= 0.0f) zoom = 1.0f;
-
-    vec3 target = { center_x, 0.0f, center_y };
-    vec3 eye    = { center_x, TOP_DOWN_EYE_HEIGHT, center_y };
-    vec3 up     = { 0.0f, 0.0f, -1.0f };   /* north is up the screen */
-
-    mat4 view, proj;
-    glm_lookat(eye, target, up, view);
-
-    float hw = (float)viewport_w / (2.0f * zoom);
-    float hh = (float)viewport_h / (2.0f * zoom);
-    glm_ortho(-hw, hw, -hh, hh, 1.0f, TOP_DOWN_EYE_HEIGHT * 2.0f, proj);
-
-    out->viewport_w = viewport_w;
-    out->viewport_h = viewport_h;
-    out->top_down   = 1;
     finish(out, view, proj);
 }
 
@@ -180,6 +157,15 @@ void camera_math_rotate_input(float yaw, float ix, float iy, float* wx, float* w
     float c = cosf(yaw), s = sinf(yaw);
     *wx =  ix * c + iy * s;
     *wy = -ix * s + iy * c;
+}
+
+float camera_math_floor_distance(float pitch, float target_h, float distance, float min_eye_h) {
+    float drop = -sinf(pitch);                 /* eye height lost per unit of distance */
+    if (drop <= 1e-6f) return distance;        /* level or above: never reaches the floor */
+    float room = target_h - min_eye_h;
+    if (room <= 0.0f) return 0.0f;
+    float limit = room / drop;
+    return distance < limit ? distance : limit;
 }
 
 float camera_math_distance_for_zoom(float zoom, int viewport_h, float fovy) {

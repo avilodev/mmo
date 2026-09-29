@@ -30,8 +30,14 @@ typedef ptrdiff_t mmo_GLsizeiptr;
 #ifndef GL_ARRAY_BUFFER
 #define GL_ARRAY_BUFFER                 0x8892
 #endif
+#ifndef GL_ELEMENT_ARRAY_BUFFER
+#define GL_ELEMENT_ARRAY_BUFFER         0x8893
+#endif
 #ifndef GL_STATIC_DRAW
 #define GL_STATIC_DRAW                  0x88E4
+#endif
+#ifndef GL_STREAM_DRAW
+#define GL_STREAM_DRAW                  0x88E0
 #endif
 #ifndef GL_FRAGMENT_SHADER
 #define GL_FRAGMENT_SHADER              0x8B30
@@ -77,6 +83,7 @@ typedef ptrdiff_t mmo_GLsizeiptr;
                                         GLboolean normalized, GLsizei stride,                \
                                         const void* pointer))                                \
     X(void,   EnableVertexAttribArray, (GLuint index))                                       \
+    X(void,   DisableVertexAttribArray,(GLuint index))                                       \
     X(GLuint, CreateShader,            (GLenum type))                                        \
     X(void,   ShaderSource,            (GLuint shader, GLsizei count,                        \
                                         const mmo_GLchar* const* string,                     \
@@ -102,6 +109,7 @@ typedef ptrdiff_t mmo_GLsizeiptr;
     X(void,   Uniform1i,               (GLint location, GLint v0))                           \
     X(void,   Uniform1f,               (GLint location, GLfloat v0))                         \
     X(void,   Uniform2f,               (GLint location, GLfloat v0, GLfloat v1))             \
+    X(void,   Uniform3f,               (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
     X(void,   ActiveTexture,           (GLenum texture))                                     \
     X(void,   GenerateMipmap,          (GLenum target))
 
@@ -120,6 +128,7 @@ MMO_GL_FUNCTIONS(MMO_GL_DECLARE)
 #define glBindVertexArray         mmo_glBindVertexArray
 #define glVertexAttribPointer     mmo_glVertexAttribPointer
 #define glEnableVertexAttribArray mmo_glEnableVertexAttribArray
+#define glDisableVertexAttribArray mmo_glDisableVertexAttribArray
 #define glCreateShader            mmo_glCreateShader
 #define glShaderSource            mmo_glShaderSource
 #define glCompileShader           mmo_glCompileShader
@@ -139,6 +148,7 @@ MMO_GL_FUNCTIONS(MMO_GL_DECLARE)
 #define glUniform1i               mmo_glUniform1i
 #define glUniform1f               mmo_glUniform1f
 #define glUniform2f               mmo_glUniform2f
+#define glUniform3f               mmo_glUniform3f
 #define glActiveTexture           mmo_glActiveTexture
 #define glGenerateMipmap          mmo_glGenerateMipmap
 

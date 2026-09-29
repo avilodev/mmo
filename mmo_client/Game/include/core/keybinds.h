@@ -12,6 +12,7 @@ typedef struct {
     int move_down;
     int move_left;
     int move_right;
+    int toggle_walk;        /**< Switch between walking and running (Ctrl). */
 
     int toggle_inventory;
     int toggle_character;
@@ -27,7 +28,6 @@ typedef struct {
     int camera_rotate_left;   /**< Held: turn the camera one way (Q). */
     int camera_rotate_right;  /**< Held: turn it the other (E). */
     int camera_reset;         /**< Back to north-up, default zoom (Home). */
-    int camera_toggle_view;   /**< 3D <-> top-down, for development (F9). */
 } KeyBinds;
 
 extern KeyBinds g_keybinds;

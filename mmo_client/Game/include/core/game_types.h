@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #include "protocol.h"
+#include "player/locomotion.h"
 #include "ability_bar.h"
 #include "camera.h"
 #include "combat_state.h"
@@ -203,9 +204,11 @@ typedef struct {
     float y;
     float vel_x;
     float vel_y;
-    float facing_x;      /**< Unit direction of the last movement (D23); 0,0 until the first step. */
+    float facing_x;      /**< Unit direction the body faces (D23); follows loco.heading. */
     float facing_y;
-    float speed;
+    float speed;         /**< Running speed, from the server; walking is a fraction of it. */
+    Locomotion loco;     /**< Heading, current speed, pivoting (player/locomotion.h). */
+    LocoMode   move_mode; /**< Walk, run or sprint; Ctrl toggles walk and run. */
     int needs_position_reset;
     CharacterInfo info;
     int info_loaded;
@@ -294,8 +297,8 @@ typedef struct {
 
 /** Own persistent OpenGL textures shared across client screens. */
 typedef struct {
-    /* No player texture here: characters are drawn from a layer stack owned by
-     * player/paperdoll.h, not from one flat sprite. */
+    /* No character textures here: characters are 3D models owned by
+     * render/character_renderer.h. */
     unsigned int background;
     unsigned int session_panel_bg;
     unsigned int session_entry_bg;
@@ -623,6 +626,9 @@ typedef struct {
 
     /** Buff icon the cursor is over, or -1. Set by input, read by the tooltip. */
     int               hovered_effect;
+
+    /** Seconds the last update covered; the render pass animates characters by it. */
+    float             frame_dt;
 } PlayingState;
 
 /** Own the client lifecycle, screen state, network identity, and gameplay allocation. */

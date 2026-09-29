@@ -80,6 +80,9 @@ void worldgen_tile_at(int x, int y, WorldGenTile* out) {
         return;
     }
 
+    // The courtyard is laid out as a whole: paths, lawns and what stands.
+    if (worldgen_courtyard_at(x, y, out)) return;
+
     if (worldgen_is_road(x, y)) {
         // The courtyard centre reads as plaza rather than road surface.
         int dx = x - ENNARA_X, dy = y - ENNARA_Y;

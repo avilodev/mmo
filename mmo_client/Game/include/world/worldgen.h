@@ -75,6 +75,14 @@ BiomeId worldgen_biome_at(int x, int y);
 #define BUILDING_MAX     WG_SCALE(48)
 #define COURTYARD_RADIUS WG_SCALE(220)
 
+/** Open ground kept clear of buildings around the courtyard, in tiles.
+ *
+ * Story/gen_opening.py rings the hostile camps 1600 px (100 tiles) from the
+ * courtyard centre, fixed rather than scaled; buildings on that ring put an NPC
+ * inside a wall (the Fox-bonded Fanatic spawned in one). The band reaches past
+ * the furthest camp member. */
+#define COURTYARD_COMMONS_RADIUS 116
+
 /** Identify an Ennara district. */
 typedef enum {
     DISTRICT_NONE = 0,
@@ -109,6 +117,10 @@ typedef struct {
 } WorldGenTile;
 
 void worldgen_tile_at(int x, int y, WorldGenTile* out);
+
+/** Compose a tile inside the Ennara courtyard (worldgen_courtyard.c).
+ *  @return 1 when (x, y) is in the courtyard and `out` was filled, else 0. */
+int  worldgen_courtyard_at(int x, int y, WorldGenTile* out);
 void worldgen_spawn_point(float* out_x, float* out_y);
 
 int worldgen_write(const char* path, int width, int height);

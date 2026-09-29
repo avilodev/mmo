@@ -5,170 +5,147 @@
 #include "npc.h"
 #include "renderer.h"
 #include "camera/camera.h"
+#include "render/character_renderer.h"
+#include "render/character_tuning.h"
 #include "world/npc_types.h"
+#include "ui/npc_dialogue.h"
 #include "ui/quest_tracker.h"
 
 #include <stdio.h>
 #include <math.h>
 
-/** The Kingdom Slime draws as a wide, low blob rather than a box. */
-#define NPC_TYPE_KINGDOM_SLIME 5
+#define NPC_CATEGORY_HOSTILE 1
+#define NPC_CATEGORY_QUEST   2
 
-float npc_body_half_height(const VisibleNPC* npc, int tile_size) {
-    float npc_size = (float)(tile_size * 2);
-    if (npc->npc_type_id == NPC_TYPE_KINGDOM_SLIME) return npc_size * 0.75f / 2.0f;
+/** A swarm critter still has to be visible and clickable. */
+#define NPC_MIN_SCALE 0.35f
 
-    float style_rgb[3];
-    float size_scale = 1.0f;
-    if (!npc_type_get_style(npc->npc_type_id, style_rgb, &size_scale)) size_scale = 1.0f;
-    int scaled = (int)(npc_size * size_scale);
-    if (scaled < 4) scaled = 4;
-    return (float)scaled / 2.0f;
+/** Radius of the body for rings and clicks, at scale 1, in world units. */
+#define NPC_BODY_RADIUS 14.0f
+
+static float npc_scale(const VisibleNPC* npc) {
+    float rgb[3], scale = 1.0f;
+    if (!npc_type_get_style(npc->npc_type_id, rgb, &scale)) scale = 1.0f;
+    return scale < NPC_MIN_SCALE ? NPC_MIN_SCALE : scale;
+}
+
+float npc_body_height(const VisibleNPC* npc) {
+    return CHARACTER_HEIGHT * npc_scale(npc);
 }
 
 /**
- * Draw one NPC's body, bars and badges in its own 2D coordinates.
+ * Body colour. Faction picks the hue and role the value, both resolved by the
+ * generator into the display table, so the client never decides what an enemy
+ * looks like. Category is the fallback for a type the table does not carry,
+ * and red/gold/blue keeps those legible.
  */
-static void npc_render_card(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type) {
-    int npc_size = tile_size * 2;
+static void npc_tint(const VisibleNPC* npc, float out[3]) {
+    float scale;
+    if (npc_type_get_style(npc->npc_type_id, out, &scale)) return;
+    switch (npc->category) {
+        case NPC_CATEGORY_HOSTILE: out[0] = 0.85f; out[1] = 0.20f; out[2] = 0.20f; break;
+        case NPC_CATEGORY_QUEST:   out[0] = 0.90f; out[1] = 0.75f; out[2] = 0.10f; break;
+        default:                   out[0] = 0.20f; out[1] = 0.55f; out[2] = 0.80f; break;
+    }
+}
+
+void npc_render_ground_marks(const VisibleNPC* npcs, int count, uint32_t target_npc_id) {
+    for (int i = 0; i < count; i++) {
+        const VisibleNPC* npc = &npcs[i];
+        if (!npc->is_alive) continue;
+        float r = NPC_BODY_RADIUS * npc_scale(npc);
+
+        /* The shadow shrinks as the body leaves the ground (a jump). */
+        float lift = -npc->visual_y_offset;
+        float shrink = (lift > 0.0f) ? CHARACTER_HEIGHT / (CHARACTER_HEIGHT + lift) : 1.0f;
+        character_draw_shadow(npc->pos_x, npc->pos_y, npc_scale(npc) * shrink);
+
+        /* Elites and mini-bosses keep the one cue that survives at a distance:
+         * "this one is different". Once a box outline, now a ring at the feet. */
+        float outline[3];
+        if (npc_type_get_outline(npc->npc_type_id, outline))
+            renderer_draw_ring(npc->pos_x, npc->pos_y, r + 2.0f, r + 5.0f,
+                               outline[0], outline[1], outline[2], 0.85f, 32);
+
+        if (npc->npc_id == target_npc_id)
+            renderer_draw_ring(npc->pos_x, npc->pos_y, r + 6.0f, r + 9.0f,
+                               1.0f, 0.9f, 0.1f, 0.95f, 32);
+    }
+}
+
+void npc_render_bodies(const VisibleNPC* npcs, int count, float player_x, float player_y) {
+    uint32_t talking_to = dialogue_is_active() ? dialogue_get_current_npc() : 0;
+
+    for (int i = 0; i < count; i++) {
+        const VisibleNPC* npc = &npcs[i];
+        if (!npc->is_alive) continue;
+
+        /* visual_y_offset is a jump, negative upward (the slime's slam). */
+        CharacterStyle style = { { 0 }, npc_scale(npc), -npc->visual_y_offset, { 0 } };
+        npc_tint(npc, style.tint);
+
+        /* People who give quests notice the player walking up, and talk while
+         * the player is reading them. Hostiles face the way they move. */
+        if (npc->category != NPC_CATEGORY_HOSTILE) {
+            float dx = player_x - npc->pos_x, dy = player_y - npc->pos_y;
+            if (dx * dx + dy * dy < CHARACTER_NOTICE_RADIUS * CHARACTER_NOTICE_RADIUS) {
+                style.hints.has_look = 1;
+                style.hints.look_x   = player_x;
+                style.hints.look_y   = player_y;
+            }
+            style.hints.talking = (talking_to != 0 && npc->npc_id == talking_to);
+        }
+
+        character_renderer_draw(CHARACTER_KIND_NPC, npc->npc_id, npc->pos_x, npc->pos_y, &style);
+    }
+}
+
+/**
+ * Draw one NPC's bars and badges on a card whose point (x, y) is the top of
+ * its head.
+ */
+static void npc_render_label(const VisibleNPC* npc, uint32_t tracked_npc_type) {
     float x = npc->pos_x;
-    float y = npc->pos_y + npc->visual_y_offset;
+    float y = npc->pos_y;
 
-    // Kingdom Slime — unique green blob appearance
-    if (npc->npc_type_id == NPC_TYPE_KINGDOM_SLIME) {
-        float sw = (float)npc_size * 1.4f;
-        float sh = (float)npc_size * 0.75f;
-        float half_w = sw / 2.0f;
-        float half_h = sh / 2.0f;
-
-        // Outline
-        renderer_draw_rect(x - half_w - 1, y - half_h - 1,
-                           sw + 2, sh + 2, 0.0f, 0.0f, 0.0f, 0.6f);
-        // Body — lime green
-        renderer_draw_rect(x - half_w, y - half_h, sw, sh, 0.15f, 0.80f, 0.25f, 1.0f);
-        // Darker highlight on top
-        renderer_draw_rect(x - half_w * 0.6f, y - half_h + 2.0f,
-                           sw * 0.6f, sh * 0.3f, 0.3f, 1.0f, 0.45f, 0.5f);
-        // Eyes
-        renderer_draw_rect(x - half_w * 0.35f - 3, y - 2.0f, 5, 5, 0.05f, 0.1f, 0.05f, 1.0f);
-        renderer_draw_rect(x + half_w * 0.35f - 2, y - 2.0f, 5, 5, 0.05f, 0.1f, 0.05f, 1.0f);
-
-        // Health bar
-        float bar_width  = 44.0f;
-        float bar_height = 4.0f;
-        float bar_x = x - bar_width / 2.0f;
-        float bar_y = y - half_h - 10.0f;
-        renderer_draw_rect(bar_x, bar_y, bar_width, bar_height, 0.15f, 0.15f, 0.15f, 0.9f);
-        if (npc->max_health > 0) {
-            float pct = (float)npc->health / (float)npc->max_health;
-            float hr = (pct < 0.5f) ? 1.0f : (2.0f - pct * 2.0f);
-            float hg = (pct > 0.5f) ? 1.0f : (pct * 2.0f);
-            renderer_draw_rect(bar_x, bar_y, bar_width * pct, bar_height, hr, hg, 0.05f, 1.0f);
-        }
-        if (npc->name[0] != '\0') {
-            renderer_draw_text(x - 24.0f, bar_y - 2.0f, npc->name);
-        }
-        if (tracked_npc_type != 0 && npc->npc_type_id == tracked_npc_type)
-            quest_tracker_render_world_badge(x, bar_y - 20.0f);
-        return;
-    }
-
-    /* Faction picks the hue, role picks the value and the box size -- both
-     * resolved by the generator and read from the display table, so the client
-     * never decides what an enemy looks like.
-     *
-     * Category is the fallback, not the default: a type the table does not carry
-     * is either a client older than the content it is talking to or an NPC added
-     * since the table was generated, and red/gold/blue keeps both legible. */
-    float cr, cg, cb;
-    float style_rgb[3];
-    float size_scale = 1.0f;
-
-    if (npc_type_get_style(npc->npc_type_id, style_rgb, &size_scale)) {
-        cr = style_rgb[0];
-        cg = style_rgb[1];
-        cb = style_rgb[2];
-    } else {
-        switch (npc->category) {
-            case 1:  cr = 0.85f; cg = 0.20f; cb = 0.20f; break; // hostile - red
-            case 2:  cr = 0.90f; cg = 0.75f; cb = 0.10f; break; // quest   - gold
-            default: cr = 0.20f; cg = 0.55f; cb = 0.80f; break; // passive - blue
-        }
-    }
-
-    npc_size = (int)((float)npc_size * size_scale);
-    if (npc_size < 4) npc_size = 4;   // a swarm critter still has to be clickable
-
-    // Thin dark outline for legibility
-    float half = (float)npc_size / 2.0f;
-    renderer_draw_rect(x - half - 1, y - half - 1,
-                       (float)npc_size + 2, (float)npc_size + 2,
-                       0.0f, 0.0f, 0.0f, 0.6f);
-
-    /* Elites and mini-bosses carry a second, brighter outline. It is the one cue
-     * that survives at a distance with no art, which is why the scheme spends it
-     * on "this one is different" rather than on anything a player can read up
-     * close anyway. */
-    float outline_rgb[3];
-    if (npc_type_get_outline(npc->npc_type_id, outline_rgb)) {
-        renderer_draw_rect(x - half - 3, y - half - 3,
-                           (float)npc_size + 6, (float)npc_size + 6,
-                           outline_rgb[0], outline_rgb[1], outline_rgb[2], 0.9f);
-    }
-
-    // Body fill
-    renderer_draw_rect(x - half, y - half,
-                       (float)npc_size, (float)npc_size,
-                       cr, cg, cb, 1.0f);
-
-    // Health bar (sits just above the body)
     float bar_width  = 40.0f;
     float bar_height = 4.0f;
     float bar_x = x - bar_width / 2.0f;
-    float bar_y = y - half - 10.0f;
+    float bar_y = y - 10.0f;
 
     renderer_draw_rect(bar_x, bar_y, bar_width, bar_height, 0.15f, 0.15f, 0.15f, 0.9f);
     if (npc->max_health > 0) {
         float pct = (float)npc->health / (float)npc->max_health;
-        // Color shifts red->yellow->green based on health
+        // Colour shifts red->yellow->green with health
         float hr = (pct < 0.5f) ? 1.0f : (2.0f - pct * 2.0f);
         float hg = (pct > 0.5f) ? 1.0f : (pct * 2.0f);
         renderer_draw_rect(bar_x, bar_y, bar_width * pct, bar_height, hr, hg, 0.05f, 1.0f);
     }
 
-    // Name label (centered above health bar)
     if (npc->name[0] != '\0') {
-        renderer_draw_text(x - 20.0f, bar_y - 2.0f, npc->name);
+        float label_w = 160.0f;
+        renderer_draw_text_centered(x - label_w / 2.0f, bar_y - 16.0f, label_w, 0.0f, npc->name);
     }
 
     /* The tracked objective's target gets the loud badge; any other quest giver
      * gets the quiet one, so "somebody here has work" and "this is your next
      * step" do not look the same. */
     if (tracked_npc_type != 0 && npc->npc_type_id == tracked_npc_type) {
-        quest_tracker_render_world_badge(x, bar_y - 12.0f);
-    } else if (npc->is_interactable && npc->category == 2) {
-        renderer_draw_rect(x - 4.0f, bar_y - 18.0f, 8.0f, 13.0f, 0.62f, 0.55f, 0.20f, 0.75f);
+        quest_tracker_render_world_badge(x, bar_y - 28.0f);
+    } else if (npc->is_interactable && npc->category == NPC_CATEGORY_QUEST) {
+        renderer_draw_rect(x - 4.0f, bar_y - 36.0f, 8.0f, 13.0f, 0.62f, 0.55f, 0.20f, 0.75f);
     }
 }
 
-/**
- * Render one living NPC with its category styling and health display, standing
- * on its position in the 3D view.
- */
-void npc_render(const VisibleNPC* npc, int tile_size, uint32_t tracked_npc_type) {
-    if (!npc->is_alive) return;
-    camera_billboard_begin(npc->pos_x, npc->pos_y, npc_body_half_height(npc, tile_size), 0.0f);
-    npc_render_card(npc, tile_size, tracked_npc_type);
-    camera_billboard_end();
-}
-
-/**
- * Render every NPC in a visible-NPC array.
- */
-void npc_render_all(const VisibleNPC* npcs, int count, int tile_size,
-                    uint32_t tracked_npc_type) {
+void npc_render_labels(const VisibleNPC* npcs, int count, uint32_t tracked_npc_type) {
     for (int i = 0; i < count; i++) {
-        npc_render(&npcs[i], tile_size, tracked_npc_type);
+        const VisibleNPC* npc = &npcs[i];
+        if (!npc->is_alive) continue;
+        if (character_renderer_fog_at(npc->pos_x, npc->pos_y) > 0.5f) continue;   /* lost in the fog */
+        camera_billboard_begin(npc->pos_x, npc->pos_y, 0.0f,
+                               npc_body_height(npc) - npc->visual_y_offset);
+        npc_render_label(npc, tracked_npc_type);
+        camera_billboard_end();
     }
 }
 
@@ -200,41 +177,4 @@ int npc_get_position(const VisibleNPC* npcs, int count, uint32_t npc_id,
         return 1;
     }
     return 0;
-}
-
-/**
- * Render selection brackets around the targeted living NPC.
- */
-void npc_render_target_indicator(const VisibleNPC* npcs, int count, int tile_size,
-                                  uint32_t target_npc_id) {
-    if (target_npc_id == 0) return;
-
-    const VisibleNPC* npc = npc_find_by_id(npcs, count, target_npc_id);
-    if (!npc || !npc->is_alive) return;
-
-    float half = (float)(tile_size * 2) / 2.0f;
-    float x    = npc->pos_x;
-    float y    = npc->pos_y;
-    float t    = 2.5f; // bracket thickness
-
-    // Draw four corner brackets in yellow as a selection indicator
-    float bsize = half + 6.0f; // slightly larger than NPC body
-    float blen  = 8.0f;        // length of each bracket arm
-
-    camera_billboard_begin(x, y, npc_body_half_height(npc, tile_size), 0.0f);
-
-    // Top-left
-    renderer_draw_rect(x - bsize,        y - bsize,        blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
-    renderer_draw_rect(x - bsize,        y - bsize,        t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
-    // Top-right
-    renderer_draw_rect(x + bsize - blen, y - bsize,        blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
-    renderer_draw_rect(x + bsize - t,    y - bsize,        t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
-    // Bottom-left
-    renderer_draw_rect(x - bsize,        y + bsize - t,    blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
-    renderer_draw_rect(x - bsize,        y + bsize - blen, t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
-    // Bottom-right
-    renderer_draw_rect(x + bsize - blen, y + bsize - t,    blen, t,    1.0f, 0.9f, 0.1f, 1.0f);
-    renderer_draw_rect(x + bsize - t,    y + bsize - blen, t,    blen, 1.0f, 0.9f, 0.1f, 1.0f);
-
-    camera_billboard_end();
 }

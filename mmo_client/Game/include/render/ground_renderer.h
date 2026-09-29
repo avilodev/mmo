@@ -3,32 +3,15 @@
 
 /**
  * @file
- * Draw chunk tile layers from GPU vertex buffers with one small shader.
+ * Draw the world's chunk geometry from GPU vertex buffers with one small shader.
  *
- * This replaced per-chunk display lists (Next_steps/3d_refactor.md, step 7).
- * The shader also does the two things the layers need per pixel: fading the
- * roof layer around an indoor player, and splitting the roof layer at the
- * player's row for the top-down camera.
+ * Two kinds of chunk geometry share it: the flat ground (every vertex at
+ * height 0) and the raised structures of structure_mesh.h, whose lighting is
+ * baked into their vertex colours. Only the depth rules differ.
  */
 
 #include "camera/camera_math.h"
 #include "world/chunk_mesh.h"
-
-/** Which part of a layer a draw keeps, by world y. */
-typedef enum {
-    GROUND_SPLIT_NONE = 0,
-    GROUND_SPLIT_NORTH,    /**< Keep y < split_y. */
-    GROUND_SPLIT_SOUTH     /**< Keep y >= split_y. */
-} GroundSplit;
-
-/** Per-draw options; zero-initialized means "draw everything, opaque". */
-typedef struct {
-    GroundSplit split;
-    float       split_y;
-    int         fade;                    /**< Fade out around (fade_x, fade_y). */
-    float       fade_x, fade_y;
-    float       fade_inner, fade_outer;  /**< Hidden inside inner, full past outer. */
-} GroundPassOptions;
 
 /** Compile the shader and create the vertex array. Needs gl_loader_init().
  *  @return Nonzero on success; failures are logged. */
@@ -41,10 +24,15 @@ void ground_renderer_upload(ChunkLayerGpu* layer, const ChunkMesh* mesh);
 /** Free a layer's vertex buffer. Safe on a layer that was never uploaded. */
 void ground_renderer_release(ChunkLayerGpu* layer);
 
-/** Start drawing ground under a camera. Pair with ground_renderer_end(). */
-void ground_renderer_begin(const CameraView* view);
-
-void ground_renderer_set_options(const GroundPassOptions* options);
+/** Start drawing chunk geometry under a camera. Pair with ground_renderer_end().
+ *
+ * @param solid  Zero for the ground: drawn in order, no depth test or write
+ *               (D12). Nonzero for structures: depth-tested and written, so
+ *               what is drawn after is hidden behind them.
+ * @param fog_x, fog_y  The point the camera orbits; the world fades into the
+ *               sky with distance from it (world_light.h).
+ */
+void ground_renderer_begin(const CameraView* view, int solid, float fog_x, float fog_y);
 
 /** Draw one uploaded layer, binding each tileset texture its ranges need. */
 void ground_renderer_draw(const ChunkLayerGpu* layer, const unsigned int* tileset_textures);

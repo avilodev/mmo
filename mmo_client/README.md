@@ -147,13 +147,14 @@ You can also build first and launch the executable directly:
 ./Launcher/bin/Launcher.exe
 ```
 
-Keep the repository root as the current working directory. The game loads fonts, sprites, maps, JSON data, audio, and settings through paths under `Game/`.
+Keep the repository root as the current working directory. The game loads fonts, 3D models, UI images, JSON data, audio, and settings through paths under `Game/`.
 
 Register or sign in through the launcher, then select **Start Game**. The launcher requests a session from the server and passes it to the game process. Starting `Game.exe` by itself does not create an authenticated session.
 
 ## Default controls
 
-- `W`, `A`, `S`, and `D` move the character.
+- `W`, `A`, `S`, and `D` move, relative to the camera. You run by default; `Left Ctrl` toggles walking. The character turns toward the keys, and turns on the spot before walking the other way.
+- `Q` and `E` turn the camera. Dragging with the middle or right mouse button orbits it freely: sideways to turn, up and down to tilt. The mouse wheel zooms from far overhead down to over the shoulder; `Home` resets the view.
 - `Space` performs the basic attack.
 - `1` through `5` activate abilities.
 - `I` opens the inventory.
@@ -172,8 +173,8 @@ common/          Shared client protocol and version definitions
 Launcher/        Native Windows launcher source and headers
 Game/src/        Game source, grouped by system
 Game/include/    Game headers and vendored headers
-Game/Sprites/    Fonts, sprites, and other visual resources
-Game/assets/     UI atlas data
-Game/data/       Maps, gameplay data, and local settings
+Game/Sprites/    Fonts, ability icons, and UI images
+Game/assets/     3D models (assets/models) and UI atlas data
+Game/data/       World generator source, gameplay data, and local settings
 Game/lib/        Vendored GLFW libraries
 ```

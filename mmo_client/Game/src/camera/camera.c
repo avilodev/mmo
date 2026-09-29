@@ -1,7 +1,7 @@
 /**
  * @file
  * Track the client camera, load it into OpenGL, and convert between screen and
- * world coordinates in either view.
+ * world coordinates.
  */
 
 #include "camera.h"
@@ -35,7 +35,7 @@ void camera_init(Camera* camera, int viewport_width, int viewport_height) {
     camera->viewport_height = viewport_height;
     camera->zoom = CAMERA_ZOOM_DEFAULT;
     camera->yaw = deg_to_rad(CAMERA_YAW_DEFAULT_DEG);
-    camera->mode = CAMERA_MODE_3D;
+    camera->pitch = deg_to_rad(CAMERA_PITCH_DEFAULT_DEG);
 
     CLOG_INFO("Camera initialized: viewport %dx%d", viewport_width, viewport_height);
 }
@@ -69,6 +69,13 @@ void camera_rotate(Camera* camera, float delta_radians) {
     if (camera->yaw < 0.0f) camera->yaw += TWO_PI;
 }
 
+void camera_pitch_by(Camera* camera, float delta_radians) {
+    float lo = deg_to_rad(CAMERA_PITCH_MIN_DEG), hi = deg_to_rad(CAMERA_PITCH_MAX_DEG);
+    camera->pitch += delta_radians;
+    if (camera->pitch < lo) camera->pitch = lo;
+    if (camera->pitch > hi) camera->pitch = hi;
+}
+
 void camera_zoom_by(Camera* camera, float notches) {
     camera->zoom *= 1.0f + notches * CAMERA_ZOOM_STEP;
     if (camera->zoom < CAMERA_ZOOM_MIN) camera->zoom = CAMERA_ZOOM_MIN;
@@ -76,24 +83,18 @@ void camera_zoom_by(Camera* camera, float notches) {
 }
 
 void camera_reset_view(Camera* camera) {
-    camera->yaw  = deg_to_rad(CAMERA_YAW_DEFAULT_DEG);
-    camera->zoom = CAMERA_ZOOM_DEFAULT;
-}
-
-void camera_toggle_mode(Camera* camera) {
-    camera->mode = (camera->mode == CAMERA_MODE_3D) ? CAMERA_MODE_TOP_DOWN : CAMERA_MODE_3D;
-    CLOG_INFO("[CAMERA] %s view", camera->mode == CAMERA_MODE_3D ? "3D" : "top-down");
+    camera->yaw   = deg_to_rad(CAMERA_YAW_DEFAULT_DEG);
+    camera->pitch = deg_to_rad(CAMERA_PITCH_DEFAULT_DEG);
+    camera->zoom  = CAMERA_ZOOM_DEFAULT;
 }
 
 void camera_get_view(const Camera* camera, CameraView* out) {
-    if (camera->mode == CAMERA_MODE_TOP_DOWN) {
-        camera_view_build_2d(out, camera->x, camera->y, camera->zoom,
-                             camera->viewport_width, camera->viewport_height);
-        return;
-    }
     float fovy = deg_to_rad(CAMERA_FOVY_DEG);
-    camera_view_build(out, camera->x, camera->y, camera->yaw, deg_to_rad(CAMERA_PITCH_DEG),
-                      camera_math_distance_for_zoom(camera->zoom, camera->viewport_height, fovy),
+    float distance = camera_math_distance_for_zoom(camera->zoom, camera->viewport_height, fovy);
+    distance = camera_math_floor_distance(camera->pitch, CAMERA_TARGET_HEIGHT, distance,
+                                          CAMERA_MIN_EYE_HEIGHT);
+    camera_view_build(out, camera->x, camera->y, CAMERA_TARGET_HEIGHT, camera->yaw, camera->pitch,
+                      distance,
                       fovy, camera->viewport_width, camera->viewport_height);
 }
 
@@ -115,9 +116,9 @@ void camera_apply(const Camera* camera) {
 /**
  * Convert logical screen coordinates to world coordinates.
  *
- * In the 3D view this is the ground point under the cursor. A cursor above the
- * horizon cannot happen at the fixed pitch, but if it did the look-at point is
- * the least surprising answer.
+ * The ground point under the cursor. A cursor above the horizon (a low camera
+ * looking out) has no ground under it; the look-at point is the least
+ * surprising answer.
  *
  * @param world_x  Destination for the converted world X coordinate.
  * @param world_y  Destination for the converted world Y coordinate.
@@ -157,12 +158,15 @@ void camera_visible_ground(const Camera* camera, float* min_x, float* min_y,
 }
 
 void camera_billboard_begin(float anchor_x, float anchor_y, float foot_dy, float lift) {
-    if (!g_applied_valid || g_applied.top_down) return;
+    if (!g_applied_valid) return;
 
     float sx = -10000.0f, sy = -10000.0f, depth = 1.0f;
     float scale = 0.0f;
     if (camera_view_project(&g_applied, anchor_x, anchor_y, lift, &sx, &sy, &depth))
         scale = camera_view_pixels_per_unit(&g_applied, anchor_x, anchor_y, lift);
+    /* Cards shrink with distance but stop growing up close: a name plate
+     * over someone beside a close camera stays a name plate, not a banner. */
+    if (scale > CAMERA_CARD_MAX_SCALE) scale = CAMERA_CARD_MAX_SCALE;
 
     /* Screen space, with the card at the anchor's depth. glOrtho's -1..1 range
      * maps eye z to NDC z negated, hence -depth. */
@@ -185,7 +189,7 @@ void camera_billboard_begin(float anchor_x, float anchor_y, float foot_dy, float
 }
 
 void camera_billboard_end(void) {
-    if (!g_applied_valid || g_applied.top_down) return;
+    if (!g_applied_valid) return;
 
     glDisable(GL_ALPHA_TEST);
     glDisable(GL_DEPTH_TEST);
@@ -196,24 +200,22 @@ void camera_billboard_end(void) {
     glPopMatrix();
 }
 
-int camera_hit_billboard(const Camera* camera, float entity_x, float entity_y,
-                         float foot_dy, float radius, float screen_x, float screen_y) {
+int camera_hit_standing(const Camera* camera, float entity_x, float entity_y,
+                        float height, float radius, float screen_x, float screen_y) {
     CameraView view;
     camera_get_view(camera, &view);
 
-    if (view.top_down) {
-        /* The body is drawn centred on the position, as it always was. */
-        float wx, wy;
-        if (!camera_view_pick_ground(&view, screen_x, screen_y, &wx, &wy)) return 0;
-        float dx = wx - entity_x, dy = wy - entity_y;
-        return dx * dx + dy * dy < radius * radius;
-    }
+    float fx, fy, hx, hy, depth;
+    if (!camera_view_project(&view, entity_x, entity_y, 0.0f, &fx, &fy, &depth)) return 0;
+    if (!camera_view_project(&view, entity_x, entity_y, height, &hx, &hy, &depth)) return 0;
+    float r = radius * camera_view_pixels_per_unit(&view, entity_x, entity_y, height * 0.5f);
 
-    float sx, sy, depth;
-    if (!camera_view_project(&view, entity_x, entity_y, 0.0f, &sx, &sy, &depth)) return 0;
-    float scale = camera_view_pixels_per_unit(&view, entity_x, entity_y, 0.0f);
-    float cx = sx, cy = sy - foot_dy * scale;   /* body centre, above the feet */
-    float dx = screen_x - cx, dy = screen_y - cy;
-    float r = radius * scale;
+    /* Distance from the cursor to the projected feet-to-head segment. */
+    float sx = hx - fx, sy = hy - fy;
+    float len2 = sx * sx + sy * sy;
+    float t = (len2 > 1e-6f) ? ((screen_x - fx) * sx + (screen_y - fy) * sy) / len2 : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float dx = screen_x - (fx + t * sx), dy = screen_y - (fy + t * sy);
     return dx * dx + dy * dy < r * r;
 }

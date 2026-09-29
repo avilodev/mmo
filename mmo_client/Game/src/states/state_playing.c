@@ -12,7 +12,6 @@
  */
 #include "states/state_playing_internal.h"
 #include "texture/texture.h"
-#include "player/paperdoll.h"
 #include "state_handler.h"
 #include "network.h"
 #include "combat_system.h"
@@ -52,13 +51,6 @@ void playing_enter(GameState* game) {
     game->textures.session_panel_bg  = texture_load("Game/Sprites/UI/session_panel_bg.png");
     game->textures.session_entry_bg  = texture_load("Game/Sprites/UI/session_entry_bg.png");
 
-    /* Characters are drawn from a layer stack rather than one flat sprite, and
-     * there is one set of that art so far -- so every race and class wears it.
-     * Loaded once here and shared by the local player and everyone nearby;
-     * nothing about a character selects its appearance yet. */
-    if (paperdoll_load_shared() == 0)
-        CLOG_ERROR("[GAME] Warning: no character layers loaded");
-
     ability_bar_init(&game->playing->ability_bar,
                      game->camera.viewport_width,
                      game->camera.viewport_height);
@@ -88,7 +80,6 @@ void playing_exit(GameState* game) {
     }
 
     // Unload gameplay-only textures
-    paperdoll_unload_shared();
     if (game->textures.session_panel_bg) { texture_unload(game->textures.session_panel_bg); game->textures.session_panel_bg = 0; }
     if (game->textures.session_entry_bg) { texture_unload(game->textures.session_entry_bg); game->textures.session_entry_bg = 0; }
     // World tileset textures are unloaded by world_cleanup

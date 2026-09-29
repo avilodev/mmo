@@ -75,3 +75,7 @@ desktop.ini
 
 # Agent scratch directories. See the note in mmo_server/.gitignore: these were
 # held back by a local .git/info/exclude, which no other clone has.
+
+# Parsed copy of a large OBJ, rebuilt by the client (render/city_renderer.c)
+*.objcache
+*.objcache.tmp

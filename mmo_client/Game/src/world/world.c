@@ -8,6 +8,7 @@
 #include "texture/texture.h"
 #include "world/world_overview.h"
 #include "world/chunk_mesh.h"
+#include "world/structure_mesh.h"
 #include "render/ground_renderer.h"
 #include "world_format.h"
 #include <GLFW/glfw3.h>
@@ -186,13 +187,13 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
             CLOG_INFO("[WORLD] Tileset [%d] loaded: %s (%dx%d tiles)", slot, path, cols, rows);
     }
 
-    // Record file offsets for the five data layers
-    world->base_layer_offset      = ftell(world->world_file);
-    long total_tiles              = (long)world->world_width * world->world_height;
-    world->overlay_floor_offset    = world->base_layer_offset       + total_tiles * (long)sizeof(uint16_t);
-    world->overlay_interior_offset = world->overlay_floor_offset    + total_tiles * (long)sizeof(uint16_t);
-    world->overlay_above_offset    = world->overlay_interior_offset + total_tiles * (long)sizeof(uint16_t);
-    world->collision_offset        = world->overlay_above_offset    + total_tiles * (long)sizeof(uint16_t);
+    /* Record file offsets for the layers the 3D view reads. The layers are
+     * stored base, floor, interior, above, then collision; floor and interior
+     * drew the flat top-down roofs and are skipped. */
+    world->base_layer_offset    = ftell(world->world_file);
+    long layer_bytes            = (long)world->world_width * world->world_height * (long)sizeof(uint16_t);
+    world->overlay_above_offset = world->base_layer_offset + 3 * layer_bytes;
+    world->collision_offset     = world->base_layer_offset + 4 * layer_bytes;
 
     for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
         world->chunks[i].is_loaded = 0;
@@ -217,6 +218,9 @@ void world_update_chunks(WorldState* world, float player_x, float player_y) {
 
     int player_chunk_x = (int)(player_x / world->tile_size) / CHUNK_SIZE;
     int player_chunk_y = (int)(player_y / world->tile_size) / CHUNK_SIZE;
+    world->center_chunk_x = player_chunk_x;
+    world->center_chunk_y = player_chunk_y;
+    world->has_center     = 1;
 
     for (int cy = player_chunk_y - LOAD_RADIUS_CHUNKS;
          cy <= player_chunk_y + LOAD_RADIUS_CHUNKS; cy++) {
@@ -246,9 +250,19 @@ void world_update_modifications(WorldState* world, float delta_time) {
 }
 
 static void chunk_free_gpu(Chunk* c) {
-    for (int layer = 0; layer < CHUNK_LAYER_COUNT; layer++)
-        ground_renderer_release(&c->gpu[layer]);
+    ground_renderer_release(&c->ground);
+    ground_renderer_release(&c->structures);
     c->gpu_dirty = 1;
+}
+
+/** Find a resident chunk without loading it. */
+static Chunk* peek_chunk(const WorldState* world, int chunk_x, int chunk_y) {
+    for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
+        const Chunk* c = &world->chunks[i];
+        if (c->is_loaded && c->chunk_x == chunk_x && c->chunk_y == chunk_y)
+            return (Chunk*)c;
+    }
+    return NULL;
 }
 
 /**
@@ -381,17 +395,11 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
     int tx0 = chunk_x * CHUNK_SIZE;
     int ty0 = chunk_y * CHUNK_SIZE;
 
-    // Base layer
+    // Base layer: the ground
     load_layer_rows(world, world->base_layer_offset, tx0, ty0, target->tiles, TILE_EMPTY);
 
-    // Overlay floor (always visible)
-    load_layer_rows(world, world->overlay_floor_offset,    tx0, ty0, target->overlay_floor_tiles,    TILE_EMPTY);
-
-    // Overlay interior (only visible when inside)
-    load_layer_rows(world, world->overlay_interior_offset, tx0, ty0, target->overlay_interior_tiles, TILE_EMPTY);
-
-    // Overlay above (wall, roof — in front of player when inside)
-    load_layer_rows(world, world->overlay_above_offset,    tx0, ty0, target->overlay_above_tiles,    TILE_EMPTY);
+    // Roof layer: which solid tiles are buildings (structure_mesh.h)
+    load_layer_rows(world, world->overlay_above_offset, tx0, ty0, target->overlay_above_tiles, TILE_EMPTY);
 
     // Collision layer
     for (int ly = 0; ly < CHUNK_SIZE; ly++) {
@@ -414,6 +422,16 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
         size_t got = fread(&target->collision[ly * CHUNK_SIZE], sizeof(uint8_t),
                            (size_t)n, world->world_file);
         memset(&target->collision[ly * CHUNK_SIZE + got], 1, (size_t)CHUNK_SIZE - got);
+    }
+
+    /* A building or wall that crosses into this chunk was built by its
+     * neighbours without seeing this side of it; rebuild them now that they
+     * can (structure_mesh.h reads across chunk borders). */
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            Chunk* n = (dx || dy) ? peek_chunk(world, chunk_x + dx, chunk_y + dy) : NULL;
+            if (n) n->gpu_dirty = 1;
+        }
     }
 
     return target;
@@ -501,16 +519,16 @@ void tile_to_world(const WorldState* world, int tx, int ty, float* wx, float* wy
     *wy = ty * world->tile_size + world->tile_size / 2.0f;
 }
 
-// Mark the chunk containing (tile_x, tile_y) as needing its vertex buffers rebuilt.
+/* Mark the chunk containing (tile_x, tile_y) as needing its vertex buffers
+ * rebuilt, and its neighbours too: their structures read across the border
+ * (a roof's slope, a wall's side), so a changed tile can change them. */
 static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
     int cx = tile_x / CHUNK_SIZE;
     int cy = tile_y / CHUNK_SIZE;
-    for (int i = 0; i < MAX_LOADED_CHUNKS; i++) {
-        if (world->chunks[i].is_loaded &&
-            world->chunks[i].chunk_x == cx &&
-            world->chunks[i].chunk_y == cy) {
-            world->chunks[i].gpu_dirty = 1;
-            break;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            Chunk* c = peek_chunk(world, cx + dx, cy + dy);
+            if (c) c->gpu_dirty = 1;
         }
     }
 }
@@ -585,10 +603,13 @@ static void visible_chunk_range(const WorldState* world, const Camera* camera,
     float x0, y0, x1, y1;
     camera_visible_ground(camera, &x0, &y0, &x1, &y1);
 
-    int sx = (int)floorf(x0 / world->tile_size) - 1;
-    int ex = (int)floorf(x1 / world->tile_size) + 1;
-    int sy = (int)floorf(y0 / world->tile_size) - 1;
-    int ey = (int)floorf(y1 / world->tile_size) + 1;
+    /* The margin covers what stands: a roof just off the near edge of the
+     * ground footprint still rises into the bottom of the screen. */
+    const int margin = VISIBLE_STRUCTURE_MARGIN_TILES;
+    int sx = (int)floorf(x0 / world->tile_size) - margin;
+    int ex = (int)floorf(x1 / world->tile_size) + margin;
+    int sy = (int)floorf(y0 / world->tile_size) - margin;
+    int ey = (int)floorf(y1 / world->tile_size) + margin;
 
     if (sx < 0) sx = 0;
     if (sy < 0) sy = 0;
@@ -599,26 +620,51 @@ static void visible_chunk_range(const WorldState* world, const Camera* camera,
     *ec_x = ex / CHUNK_SIZE;
     *sc_y = sy / CHUNK_SIZE;
     *ec_y = ey / CHUNK_SIZE;
-}
 
-/** The tiles one layer of a chunk draws. */
-static const uint16_t* layer_tiles(const Chunk* chunk, int layer) {
-    switch (layer) {
-        case CHUNK_LAYER_BASE:     return chunk->tiles;
-        case CHUNK_LAYER_FLOOR:    return chunk->overlay_floor_tiles;
-        case CHUNK_LAYER_INTERIOR: return chunk->overlay_interior_tiles;
-        default:                   return chunk->overlay_above_tiles;
+    /* A low camera sees to the horizon; draw only what is streamed around
+     * the player, and let the fog (world_light.h) hide where it ends.
+     * Loading every chunk out to the horizon would thrash the cache. */
+    if (world->has_center) {
+        int r = LOAD_RADIUS_CHUNKS;
+        if (*sc_x < world->center_chunk_x - r) *sc_x = world->center_chunk_x - r;
+        if (*ec_x > world->center_chunk_x + r) *ec_x = world->center_chunk_x + r;
+        if (*sc_y < world->center_chunk_y - r) *sc_y = world->center_chunk_y - r;
+        if (*ec_y > world->center_chunk_y + r) *ec_y = world->center_chunk_y + r;
     }
 }
 
+/** Classify a resident tile for the structure builder, without loading. */
+static StructureTile structure_at(void* ctx, int tx, int ty) {
+    const WorldState* world = (const WorldState*)ctx;
+    const Chunk* c = peek_chunk(world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
+    if (!c) {
+        StructureTile none = { STRUCTURE_NONE, 0 };
+        return none;
+    }
+    int slot = (ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE);
+
+    uint8_t  collision = c->collision[slot];
+    uint16_t base      = c->tiles[slot];
+    for (int i = 0; i < world->modification_count; i++) {
+        const TileModification* m = &world->modifications[i];
+        if (m->tile_x == tx && m->tile_y == ty) {
+            collision = m->modified_collision;
+            base      = m->modified_tile;
+            break;
+        }
+    }
+    return structure_tile_of(base, c->overlay_above_tiles[slot], collision);
+}
+
 /**
- * Build and upload every layer of a chunk.
+ * Build and upload a chunk's ground and structures.
  *
- * Live tile modifications are baked into the base layer only, which is what
- * the display lists this replaced did.
+ * Live tile modifications are baked into the ground, as the display lists
+ * this replaced did.
  */
 static void chunk_build_gpu(const WorldState* world, Chunk* chunk) {
-    static ChunkVertex scratch[CHUNK_MESH_MAX_VERTS];
+    static ChunkVertex scratch[STRUCTURE_MESH_MAX_VERTS > CHUNK_MESH_MAX_VERTS
+                               ? STRUCTURE_MESH_MAX_VERTS : CHUNK_MESH_MAX_VERTS];
 
     ChunkMeshInput in;
     memset(&in, 0, sizeof(in));
@@ -636,122 +682,72 @@ static void chunk_build_gpu(const WorldState* world, Chunk* chunk) {
         in.tilesets[t].tile_h  = world->tilesets[t].tile_h;
         in.tilesets[t].pad     = world->tilesets[t].pad;
     }
+    in.tiles     = chunk->tiles;
+    in.mods      = world->modifications;
+    in.mod_count = world->modification_count;
 
     ChunkMesh mesh;
     mesh.verts = scratch;
-    for (int layer = 0; layer < CHUNK_LAYER_COUNT; layer++) {
-        in.tiles     = layer_tiles(chunk, layer);
-        in.mods      = (layer == CHUNK_LAYER_BASE) ? world->modifications : NULL;
-        in.mod_count = (layer == CHUNK_LAYER_BASE) ? world->modification_count : 0;
-        chunk_mesh_build(&mesh, &in);
-        ground_renderer_upload(&chunk->gpu[layer], &mesh);
+    chunk_mesh_build(&mesh, &in);
+    ground_renderer_upload(&chunk->ground, &mesh);
+
+    /* Structures are classified by palette index, so only a flat-colour world
+     * has them; a textured one would need its own tile-to-structure table. */
+    ChunkMesh solid;
+    memset(&solid, 0, sizeof(solid));
+    solid.verts = scratch;
+    if (world->flat_color_mode) {
+        StructureMeshInput sin = {
+            chunk->chunk_x, chunk->chunk_y, world->world_width, world->world_height,
+            world->tile_size, structure_at, (void*)world
+        };
+        solid.vert_count = structure_mesh_build(scratch, &sin);
+        if (solid.vert_count > STRUCTURE_MESH_MAX_VERTS - 3)
+            CLOG_WARN("[WORLD] Chunk (%d, %d) filled its structure budget; "
+                      "some geometry was dropped", chunk->chunk_x, chunk->chunk_y);
+        if (solid.vert_count > 0) {
+            solid.range_count = 1;
+            solid.ranges[0].tileset = 0;
+            solid.ranges[0].first   = 0;
+            solid.ranges[0].count   = solid.vert_count;
+        }
     }
+    ground_renderer_upload(&chunk->structures, &solid);
     chunk->gpu_dirty = 0;
 }
 
 /**
- * Render one layer of every visible chunk, building any that are stale.
+ * Draw one kind of chunk geometry for every visible chunk, building any that
+ * are stale.
  */
-static void render_tile_layer(const WorldState* world, const Camera* camera, int layer,
-                              const GroundPassOptions* options) {
+static void render_chunks(const WorldState* world, const Camera* camera, int solid) {
     int sc_x, ec_x, sc_y, ec_y;
     visible_chunk_range(world, camera, &sc_x, &ec_x, &sc_y, &ec_y);
 
     CameraView view;
     camera_get_view(camera, &view);
-    ground_renderer_begin(&view);
-    if (options) ground_renderer_set_options(options);
+    ground_renderer_begin(&view, solid, camera->x, camera->y);
 
     for (int cy = sc_y; cy <= ec_y; cy++) {
         for (int cx = sc_x; cx <= ec_x; cx++) {
-            Chunk* chunk = world_get_chunk((WorldState*)world, cx, cy);
+            /* Structures are drawn from what the ground pass already made
+             * resident; loading here would evict chunks mid-frame. */
+            Chunk* chunk = solid ? peek_chunk(world, cx, cy)
+                                 : world_get_chunk((WorldState*)world, cx, cy);
             if (!chunk) continue;
             if (chunk->gpu_dirty) chunk_build_gpu(world, chunk);
-            ground_renderer_draw(&chunk->gpu[layer], world->tileset_textures);
+            ground_renderer_draw(solid ? &chunk->structures : &chunk->ground,
+                                 world->tileset_textures);
         }
     }
 
     ground_renderer_end();
 }
 
-/**
- * Render the visible base tile layer.
- */
 void world_render(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, CHUNK_LAYER_BASE, NULL);
+    render_chunks(world, camera, 0);
 }
 
-/**
- * Render the visible floor overlay layer.
- */
-void world_render_overlay_floor(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, CHUNK_LAYER_FLOOR, NULL);
-}
-
-/**
- * Render the visible interior overlay layer.
- */
-void world_render_overlay_interior(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, CHUNK_LAYER_INTERIOR, NULL);
-}
-
-/**
- * Render all visible above-player overlay tiles.
- */
-void world_render_overlay_above(const WorldState* world, const Camera* camera) {
-    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, NULL);
-}
-
-/**
- * Render the above-player overlay with a hole faded out around a point.
- *
- * For the 3D view indoors: roofs stay flat on the ground, and the ones over the
- * player fade so the room they are in shows through (D13).
- */
-void world_render_overlay_above_faded(const WorldState* world, const Camera* camera,
-                                      float center_x, float center_y,
-                                      float inner_radius, float outer_radius) {
-    GroundPassOptions options = { 0 };
-    options.fade       = 1;
-    options.fade_x     = center_x;
-    options.fade_y     = center_y;
-    options.fade_inner = inner_radius;
-    options.fade_outer = outer_radius;
-    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, &options);
-}
-
-/**
- * Render above-player overlay rows north of the player.
- */
-void world_render_overlay_above_north(const WorldState* world, const Camera* camera, int player_ty) {
-    GroundPassOptions options = { 0 };
-    options.split   = GROUND_SPLIT_NORTH;
-    options.split_y = (float)(player_ty * world->tile_size);
-    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, &options);
-}
-
-/**
- * Render above-player overlay rows at or south of the player.
- */
-void world_render_overlay_above_south(const WorldState* world, const Camera* camera, int player_ty) {
-    GroundPassOptions options = { 0 };
-    options.split   = GROUND_SPLIT_SOUTH;
-    options.split_y = (float)(player_ty * world->tile_size);
-    render_tile_layer(world, camera, CHUNK_LAYER_ABOVE, &options);
-}
-
-/**
- * Check whether a world position has an interior floor overlay.
- *
- * @return      Nonzero for an interior tile; otherwise zero.
- */
-int world_is_inside(const WorldState* world, float wx, float wy) {
-    int tx = (int)(wx / world->tile_size);
-    int ty = (int)(wy / world->tile_size);
-    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
-        return 0;
-    Chunk* chunk = world_get_chunk((WorldState*)world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
-    if (!chunk) return 0;
-    int slot = (ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE);
-    return chunk->overlay_floor_tiles[slot] != TILE_EMPTY;
+void world_render_structures(const WorldState* world, const Camera* camera) {
+    render_chunks(world, camera, 1);
 }

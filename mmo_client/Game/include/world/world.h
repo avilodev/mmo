@@ -12,9 +12,12 @@
 #define MAX_LOADED_CHUNKS 64
 /** Three, not two: the tilted camera sees further than the top-down one did,
  *  and at full zoom-out, turned 45 degrees, its far corners reach past two
- *  chunks from the player (camera_math_test TEST 7, decision D15). 7x7 = 49
+ *  chunks from the player (camera_math_test TEST 6, decision D15). 7x7 = 49
  *  resident chunks, inside MAX_LOADED_CHUNKS. */
 #define LOAD_RADIUS_CHUNKS 3
+/** Tiles drawn beyond the ground footprint on every side, so a roof or wall
+ *  standing just off the near edge still rises into view. */
+#define VISIBLE_STRUCTURE_MARGIN_TILES 8
 #define MAX_MODIFICATIONS 256
 #define MAX_TILESETS      16
 
@@ -31,15 +34,6 @@ typedef struct {
     int      pad;         /**< Gutter texels the loaded atlas carries (texture_atlas.h). */
 } TilesetInfo;
 
-/** The tile layers a chunk draws, in draw order. */
-enum {
-    CHUNK_LAYER_BASE = 0,
-    CHUNK_LAYER_FLOOR,
-    CHUNK_LAYER_INTERIOR,
-    CHUNK_LAYER_ABOVE,
-    CHUNK_LAYER_COUNT
-};
-
 /** A contiguous run of a chunk layer's vertices that share one tileset. */
 typedef struct {
     int tileset;   /**< Tileset slot; 0 in a flat-colour world. */
@@ -55,16 +49,20 @@ typedef struct {
     int            range_count;
 } ChunkLayerGpu;
 
-/** Cache one world chunk's tile layers, collision, and GPU vertex buffers. */
+/** Cache one world chunk's tiles, collision, and GPU vertex buffers.
+ *
+ *  Only the layers the 3D view uses are kept: the base layer is the ground,
+ *  and the roof layer plus collision say what stands on it (structure_mesh.h).
+ *  The file's floor and interior layers belonged to the flat top-down roofs
+ *  and are skipped. */
 typedef struct {
     uint16_t tiles[CHUNK_SIZE * CHUNK_SIZE];
-    uint16_t overlay_floor_tiles[CHUNK_SIZE * CHUNK_SIZE];
-    uint16_t overlay_interior_tiles[CHUNK_SIZE * CHUNK_SIZE];
     uint16_t overlay_above_tiles[CHUNK_SIZE * CHUNK_SIZE];
     uint8_t  collision[CHUNK_SIZE * CHUNK_SIZE];
 
-    ChunkLayerGpu gpu[CHUNK_LAYER_COUNT];
-    int           gpu_dirty;       /**< Rebuild every layer before the next draw. */
+    ChunkLayerGpu ground;          /**< The base layer, flat at height 0. */
+    ChunkLayerGpu structures;      /**< Buildings, walls and rock (structure_mesh.h). */
+    int           gpu_dirty;       /**< Rebuild both before the next draw. */
 
     int chunk_x;
     int chunk_y;
@@ -96,15 +94,16 @@ typedef struct WorldState {
     TilesetInfo  tilesets[MAX_TILESETS];            /**< Index 0 is reserved for empty tiles. */
     unsigned int tileset_textures[MAX_TILESETS];
 
-    /** Byte offsets for fixed-size layer payloads in world_file. */
+    /** Byte offsets for the layer payloads read from world_file. */
     long base_layer_offset;
-    long overlay_floor_offset;
-    long overlay_interior_offset;
     long overlay_above_offset;
     long collision_offset;
 
     Chunk chunks[MAX_LOADED_CHUNKS];
     int   loaded_chunk_count;
+    int   center_chunk_x;       /**< The chunk streamed around (the player's). */
+    int   center_chunk_y;
+    int   has_center;           /**< Set by the first world_update_chunks(). */
     int   current_frame;
 
     TileModification modifications[MAX_MODIFICATIONS];
@@ -133,22 +132,12 @@ int  world_add_modification(WorldState* world, int tile_x, int tile_y,
 void world_remove_modification(WorldState* world, int tile_x, int tile_y);
 void world_clear_modifications(WorldState* world);
 
+/** Draw the visible ground, flat, without writing depth. World-space drawing
+ *  after this (telegraphs, zones) lies on it and is hidden by what stands. */
 void world_render(const WorldState* world, const Camera* camera);
 
-void world_render_overlay_floor(const WorldState* world, const Camera* camera);
-
-void world_render_overlay_interior(const WorldState* world, const Camera* camera);
-
-void world_render_overlay_above(const WorldState* world, const Camera* camera);
-
-/** Draw the roof layer with a faded hole around a point (3D view, indoors). */
-void world_render_overlay_above_faded(const WorldState* world, const Camera* camera,
-                                      float center_x, float center_y,
-                                      float inner_radius, float outer_radius);
-
-void world_render_overlay_above_north(const WorldState* world, const Camera* camera, int player_ty);
-void world_render_overlay_above_south(const WorldState* world, const Camera* camera, int player_ty);
-
-int world_is_inside(const WorldState* world, float wx, float wy);
+/** Draw the visible buildings, walls and rock, depth-tested and written, so
+ *  characters and cards drawn afterwards are hidden behind them. */
+void world_render_structures(const WorldState* world, const Camera* camera);
 
 #endif // WORLD_H

@@ -85,6 +85,10 @@ int renderer_measure_text_wrapped(float max_width, const char* text);
 void renderer_draw_circle(float cx, float cy, float radius,
                           float r, float g, float b, float a, int segments);
 
+// Draw a flat ring between two radii (selection markers on the ground)
+void renderer_draw_ring(float cx, float cy, float inner_radius, float outer_radius,
+                        float r, float g, float b, float a, int segments);
+
 // Draw a filled cone (for telegraph cones)
 void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
                         float radius, float angle_deg,

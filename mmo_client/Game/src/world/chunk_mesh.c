@@ -39,10 +39,10 @@ static void emit_quad(ChunkVertex* v, float x, float y, float s,
                       float u0, float v0, float u1, float v1,
                       uint8_t r, uint8_t g, uint8_t b) {
     const ChunkVertex corners[4] = {
-        { x,     y,     u0, v0, r, g, b, 255 },
-        { x + s, y,     u1, v0, r, g, b, 255 },
-        { x + s, y + s, u1, v1, r, g, b, 255 },
-        { x,     y + s, u0, v1, r, g, b, 255 },
+        { x,     y,     0.0f, u0, v0, r, g, b, 255 },
+        { x + s, y,     0.0f, u1, v0, r, g, b, 255 },
+        { x + s, y + s, 0.0f, u1, v1, r, g, b, 255 },
+        { x,     y + s, 0.0f, u0, v1, r, g, b, 255 },
     };
     v[0] = corners[0]; v[1] = corners[1]; v[2] = corners[2];
     v[3] = corners[0]; v[4] = corners[2]; v[5] = corners[3];

@@ -27,6 +27,7 @@
  * @param delta_time  Elapsed frame time in seconds.
  */
 void playing_update(GameState* game, float delta_time) {
+    game->playing->frame_dt = delta_time;
     double now = glfwGetTime();
 
     /* The friends panel's result line, which is the only thing in it that

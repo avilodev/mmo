@@ -40,7 +40,7 @@ static const float YAWS_DEG[] = { 0.0f, 45.0f, 90.0f, 180.0f, 270.0f, 333.0f };
 static float rad(float deg) { return deg * 3.14159265f / 180.0f; }
 
 static void build_3d(CameraView* v, float tx, float ty, float yaw_deg, float zoom) {
-    camera_view_build(v, tx, ty, rad(yaw_deg), rad(CAMERA_PITCH_DEG),
+    camera_view_build(v, tx, ty, 0.0f, rad(yaw_deg), rad(CAMERA_PITCH_DEFAULT_DEG),
                       camera_math_distance_for_zoom(zoom, VH, rad(CAMERA_FOVY_DEG)),
                       rad(CAMERA_FOVY_DEG), VW, VH);
 }
@@ -48,29 +48,7 @@ static void build_3d(CameraView* v, float tx, float ty, float yaw_deg, float zoo
 int main(void) {
     printf("=== camera math ===\n");
 
-    printf("\nTEST 1: the top-down view matches the old camera exactly\n");
-    {
-        CameraView v;
-        camera_view_build_2d(&v, 1000.0f, 500.0f, 1.5f, VW, VH);
-        float sx, sy, depth;
-        int ok = camera_view_project(&v, 1100.0f, 450.0f, 0.0f, &sx, &sy, &depth);
-        /* camera_world_to_screen was (world - camera) * zoom + viewport / 2. */
-        CHECK(ok && fabsf(sx - (100.0f * 1.5f + VW / 2.0f)) < 0.01f,
-              "x projects by the old formula");
-        CHECK(ok && fabsf(sy - (-50.0f * 1.5f + VH / 2.0f)) < 0.01f,
-              "y projects by the old formula (y down)");
-
-        float wx, wy;
-        ok = camera_view_pick_ground(&v, 300.0f, 200.0f, &wx, &wy);
-        CHECK(ok && fabsf(wx - ((300.0f - VW / 2.0f) / 1.5f + 1000.0f)) < 0.01f,
-              "picking x inverts the old formula");
-        CHECK(ok && fabsf(wy - ((200.0f - VH / 2.0f) / 1.5f + 500.0f)) < 0.01f,
-              "picking y inverts the old formula");
-        CHECK(fabsf(camera_view_pixels_per_unit(&v, 1000.0f, 500.0f, 0.0f) - 1.5f) < 0.01f,
-              "a world unit is zoom pixels wide");
-    }
-
-    printf("\nTEST 2: the target is always the centre of the screen\n");
+    printf("\nTEST 1: the target is always the centre of the screen\n");
     {
         int all = 1;
         for (int i = 0; i < YAW_COUNT; i++) {
@@ -86,7 +64,7 @@ int main(void) {
         CHECK(all, "the player sits mid-screen at every yaw and zoom");
     }
 
-    printf("\nTEST 3: picking undoes projecting\n");
+    printf("\nTEST 2: picking undoes projecting\n");
     {
         int screen_ok = 1, world_ok = 1;
         for (int i = 0; i < YAW_COUNT; i++) {
@@ -105,7 +83,11 @@ int main(void) {
                 for (float wx = 1700.0f; wx < 2400.0f; wx += 97.0f) {
                     for (float wy = 800.0f; wy < 1250.0f; wy += 83.0f) {
                         float sx, sy, depth, px, py;
-                        if (!camera_view_project(&v, wx, wy, 0.0f, &sx, &sy, &depth)) { world_ok = 0; continue; }
+                        /* Only what is on screen can be clicked. Zoomed in
+                         * close, most of this grid is not, and some of it is
+                         * behind the eye. */
+                        if (!camera_view_project(&v, wx, wy, 0.0f, &sx, &sy, &depth)) continue;
+                        if (sx < 0.0f || sx > VW || sy < 0.0f || sy > VH) continue;
                         if (!camera_view_pick_ground(&v, sx, sy, &px, &py)) { world_ok = 0; continue; }
                         if (fabsf(px - wx) > 0.5f || fabsf(py - wy) > 0.5f) world_ok = 0;
                     }
@@ -116,7 +98,7 @@ int main(void) {
         CHECK(world_ok,  "world -> screen -> world lands within half a unit");
     }
 
-    printf("\nTEST 4: north is up and east is right before the camera turns\n");
+    printf("\nTEST 3: north is up and east is right before the camera turns\n");
     {
         CameraView v;
         build_3d(&v, 1000.0f, 1000.0f, 0.0f, 1.0f);
@@ -129,7 +111,7 @@ int main(void) {
         CHECK(sy < VH / 2.0f, "height goes up the screen");
     }
 
-    printf("\nTEST 5: the movement keys agree with the screen at every yaw\n");
+    printf("\nTEST 4: the movement keys agree with the screen at every yaw\n");
     {
         int forward_ok = 1, right_ok = 1, unit_ok = 1;
         for (int i = 0; i < YAW_COUNT; i++) {
@@ -159,7 +141,7 @@ int main(void) {
               "at yaw 0 the input passes through unchanged");
     }
 
-    printf("\nTEST 6: zoom keeps the old pixel scale at the player\n");
+    printf("\nTEST 5: zoom keeps the old pixel scale at the player\n");
     {
         CameraView v;
         build_3d(&v, 800.0f, 800.0f, 30.0f, 1.0f);
@@ -175,7 +157,7 @@ int main(void) {
         CHECK(far_ppu < 1.0f && near_ppu > 1.0f, "things further away are drawn smaller");
     }
 
-    printf("\nTEST 7: the ground bounds cover the screen and fit what is streamed\n");
+    printf("\nTEST 6: the ground bounds cover the screen and fit what is streamed\n");
     {
         int covers = 1, fits = 1;
         /* A player at a chunk corner has LOAD_RADIUS_CHUNKS whole chunks
@@ -206,7 +188,7 @@ int main(void) {
         CHECK(fits,   "the furthest visible ground is always streamed in");
     }
 
-    printf("\nTEST 8: depth orders what is nearer the camera first\n");
+    printf("\nTEST 7: depth orders what is nearer the camera first\n");
     {
         CameraView v;
         build_3d(&v, 500.0f, 500.0f, 0.0f, 1.0f);
@@ -215,6 +197,57 @@ int main(void) {
         camera_view_project(&v, 500.0f, 440.0f, 0.0f, &sx, &sy, &far_d);
         CHECK(near_d < far_d, "south of the player is nearer at yaw 0");
         CHECK(near_d > -1.0f && far_d < 1.0f, "both sit inside the depth range");
+    }
+
+    printf("\nTEST 8: the free camera frames the body and stays above ground\n");
+    {
+        int centred = 1, above = 1, sees_player = 1;
+        const float pitches[] = { CAMERA_PITCH_MIN_DEG, -10.0f, 0.0f, 30.0f,
+                                  CAMERA_PITCH_DEFAULT_DEG, CAMERA_PITCH_MAX_DEG };
+        const int pitch_count = (int)(sizeof(pitches) / sizeof(pitches[0]));
+        const float zooms[] = { CAMERA_ZOOM_MIN, CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX };
+        for (int p = 0; p < pitch_count; p++) {
+            for (int z = 0; z < 3; z++) {
+                for (int i = 0; i < YAW_COUNT; i++) {
+                    float fovy = rad(CAMERA_FOVY_DEG);
+                    float dist = camera_math_floor_distance(
+                        rad(pitches[p]), CAMERA_TARGET_HEIGHT,
+                        camera_math_distance_for_zoom(zooms[z], VH, fovy), CAMERA_MIN_EYE_HEIGHT);
+                    CameraView v;
+                    camera_view_build(&v, 700.0f, 900.0f, CAMERA_TARGET_HEIGHT, rad(YAWS_DEG[i]),
+                                      rad(pitches[p]), dist, fovy, VW, VH);
+                    float sx, sy, d;
+                    if (!camera_view_project(&v, 700.0f, 900.0f, CAMERA_TARGET_HEIGHT, &sx, &sy, &d) ||
+                        fabsf(sx - VW / 2.0f) > 0.5f || fabsf(sy - VH / 2.0f) > 0.5f)
+                        centred = 0;
+                    if (CAMERA_TARGET_HEIGHT + dist * sinf(rad(pitches[p])) <
+                        CAMERA_MIN_EYE_HEIGHT - 0.01f)
+                        above = 0;
+                    /* The feet and the head are both on screen and in depth
+                     * -- from above. Looking up from the floor, close in, the
+                     * body can overfill the view, as it does in FF14. */
+                    for (int h = 0; h <= 1 && pitches[p] >= 0.0f; h++) {
+                        if (!camera_view_project(&v, 700.0f, 900.0f, h ? 40.0f : 0.0f, &sx, &sy, &d) ||
+                            sx < 0.0f || sx > VW || sy < 0.0f || sy > VH || d <= -1.0f || d >= 1.0f)
+                            sees_player = 0;
+                    }
+                }
+            }
+        }
+        CHECK(centred, "the chest of the character is the centre of the screen");
+        CHECK(above, "the eye never goes under the ground, at any tilt or zoom");
+        CHECK(sees_player, "the whole character is in view at every pitch and zoom");
+        float wide = camera_math_distance_for_zoom(CAMERA_ZOOM_MIN, VH, rad(CAMERA_FOVY_DEG));
+        float close = camera_math_distance_for_zoom(CAMERA_ZOOM_MAX, VH, rad(CAMERA_FOVY_DEG));
+        CHECK(close < 100.0f && wide > 1000.0f, "zoom runs from over the shoulder to far overhead");
+        CHECK(CAMERA_PITCH_MIN_DEG < 0.0f, "the camera can tilt below the character, looking up");
+        float slid = camera_math_floor_distance(rad(-30.0f), 24.0f, 500.0f, 4.0f);
+        CHECK(fabsf(24.0f - slid * 0.5f - 4.0f) < 0.01f,
+              "tilted below, a far camera slides in until it rests on the floor");
+        CHECK(camera_math_floor_distance(rad(-30.0f), 24.0f, 20.0f, 4.0f) == 20.0f,
+              "a close one already above the floor is left where it is");
+        CHECK(camera_math_floor_distance(rad(40.0f), 24.0f, 900.0f, 4.0f) == 900.0f,
+              "and looking down, distance is never shortened");
     }
 
     printf("\n");

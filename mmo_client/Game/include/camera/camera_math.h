@@ -7,9 +7,7 @@
  *
  * The world the server simulates is a flat plane of (x, y). The client draws it
  * in 3D with Y up, so a world point (x, y) at height h sits at GL (x, h, y)
- * (decision D1 in Next_steps/3d_refactor.md). Both cameras -- the tilted,
- * rotating 3D one and the old top-down one -- are described by the same
- * CameraView, so projecting, picking and culling have one implementation.
+ * (decision D1 in Next_steps/3d_refactor.md).
  *
  * Kept free of GL so it can be unit-tested headless (D27).
  */
@@ -24,23 +22,20 @@ typedef struct {
     float ground_mvp[16];    /**< proj * view * ground. */
     int   viewport_w;        /**< Logical viewport the screen coordinates refer to. */
     int   viewport_h;
-    int   top_down;          /**< Nonzero for the orthographic top-down camera. */
 } CameraView;
 
-/** Build the tilted perspective camera orbiting a ground target.
+/** Build the perspective camera orbiting a target point.
  *
+ * @param target_h  Height of the point looked at: the ground (0) or, to frame
+ *                  a character, part-way up their body.
  * @param yaw       Rotation about the vertical axis, radians. 0 is north-up.
  * @param pitch     Angle below the horizon, radians.
  * @param distance  Eye distance from the target, world units.
  * @param fovy      Vertical field of view, radians.
  */
-void camera_view_build(CameraView* out, float target_x, float target_y,
+void camera_view_build(CameraView* out, float target_x, float target_y, float target_h,
                        float yaw, float pitch, float distance, float fovy,
                        int viewport_w, int viewport_h);
-
-/** Build the top-down orthographic camera the client has always used. */
-void camera_view_build_2d(CameraView* out, float center_x, float center_y,
-                          float zoom, int viewport_w, int viewport_h);
 
 /** Project a world point at a height to logical screen pixels (y down).
  *
@@ -71,6 +66,11 @@ float camera_view_pixels_per_unit(const CameraView* v, float wx, float wy, float
  * the same length as the input.
  */
 void camera_math_rotate_input(float yaw, float ix, float iy, float* wx, float* wy);
+
+/** The orbit distance actually used: `distance`, shortened when the eye
+ *  would otherwise sit lower than `min_eye_h` above the ground -- a camera
+ *  tilted below the target slides in along the floor rather than through it. */
+float camera_math_floor_distance(float pitch, float target_h, float distance, float min_eye_h);
 
 /** Eye distance at which a world unit at the target is `zoom` pixels tall. */
 float camera_math_distance_for_zoom(float zoom, int viewport_h, float fovy);

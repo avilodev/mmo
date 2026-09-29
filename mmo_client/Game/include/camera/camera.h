@@ -4,7 +4,7 @@
 /**
  * @file
  * The game camera: a tilted 3D view the player can rotate around their
- * character, plus the old top-down view behind a development toggle.
+ * character.
  *
  * Positions stay 2D world (x, y) everywhere outside this module. The camera
  * decides how that flat world is shown; the server never hears about it.
@@ -13,12 +13,6 @@
  */
 
 #include "camera/camera_math.h"
-
-/** How the world is viewed. */
-typedef enum {
-    CAMERA_MODE_3D = 0,     /**< Tilted, rotatable perspective (the game). */
-    CAMERA_MODE_TOP_DOWN    /**< The original orthographic view (F9, development). */
-} CameraMode;
 
 /** Track a smoothed follow target, zoom, rotation and viewport. */
 typedef struct {
@@ -31,7 +25,7 @@ typedef struct {
     int viewport_height;
     float zoom;         /**< Pixel scale at the look-at point (camera_tuning.h limits). */
     float yaw;          /**< Rotation about the vertical axis, radians; 0 is north-up. */
-    CameraMode mode;
+    float pitch;        /**< Tilt below the horizon, radians, within the tuning limits. */
 } Camera;
 
 void camera_init(Camera* camera, int viewport_width, int viewport_height);
@@ -47,14 +41,14 @@ void camera_set_position(Camera* camera, float x, float y);
  */
 void camera_rotate(Camera* camera, float delta_radians);
 
+/** Tilt the camera: positive raises it toward looking straight down. Clamped. */
+void camera_pitch_by(Camera* camera, float delta_radians);
+
 /** Zoom by scroll notches (positive zooms in), clamped to the tuning limits. */
 void camera_zoom_by(Camera* camera, float notches);
 
-/** Back to north-up at the default zoom. */
+/** Back to north-up at the default pitch and zoom. */
 void camera_reset_view(Camera* camera);
-
-/** Switch between the 3D and top-down views. */
-void camera_toggle_mode(Camera* camera);
 
 /** This frame's matrices for the camera as it stands. */
 void camera_get_view(const Camera* camera, CameraView* out);
@@ -86,19 +80,18 @@ void camera_visible_ground(const Camera* camera, float* min_x, float* min_y,
  * lands on the ground at (anchor_x, anchor_y). `lift` raises the whole card
  * above the ground, for things that fly.
  *
- * In the top-down view this does nothing, so the drawing is exactly what it
- * always was. Uses the view from the last camera_apply().
+ * Uses the view from the last camera_apply().
  */
 void camera_billboard_begin(float anchor_x, float anchor_y, float foot_dy, float lift);
 void camera_billboard_end(void);
 
-/** Whether a screen point is over an entity drawn with camera_billboard_begin.
+/** Whether a screen point is over a figure standing at a ground point.
  *
- * @param foot_dy  As passed to camera_billboard_begin: the body's centre is
- *                 foot_dy above its feet.
- * @param radius   Hit radius around the body centre, in world units.
+ * The figure is treated as an upright capsule: the segment from its feet to
+ * `height` above them, thickened by `radius`, all in world units. That is what
+ * a 3D character covers on screen at any camera angle.
  */
-int camera_hit_billboard(const Camera* camera, float entity_x, float entity_y,
-                         float foot_dy, float radius, float screen_x, float screen_y);
+int camera_hit_standing(const Camera* camera, float entity_x, float entity_y,
+                        float height, float radius, float screen_x, float screen_y);
 
 #endif // CAMERA_H

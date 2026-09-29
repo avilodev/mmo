@@ -18,6 +18,7 @@
 *.a     binary
 *.piskel binary
 *.dat   binary
+*.glb   binary
 
 # Vendored third-party code keeps its upstream formatting; the pre-commit
 # whitespace check does not apply to it.

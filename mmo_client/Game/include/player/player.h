@@ -2,7 +2,6 @@
 #define PLAYER_H
 
 #include "core/game_types.h"
-#include "player/paperdoll.h"
 
 #include <stdint.h>
 
@@ -56,14 +55,6 @@ int player_apply_correction(PlayerState* player, const WorldState* world,
                             uint32_t sequence, float x, float y);
 
 void player_load_info(PlayerState* player, const CharacterInfo* info);
-
-/** Draw the local player's character stack and its name label.
- *
- * @param doll  Appearance to draw; NULL or unloaded falls back to a plain box
- *              so a missing asset is a visible placeholder, not an invisible
- *              player.
- */
-void player_render(const PlayerState* player, const Paperdoll* doll, int tile_size);
 
 float player_get_half_size(const PlayerState* player, int tile_size);
 

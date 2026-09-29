@@ -63,7 +63,11 @@ int worldgen_write(const char* path, int width, int height) {
             rows[1][x]       = t.overlay_floor;
             rows[2][x]       = t.overlay_interior;
             rows[3][x]       = t.overlay_above;
-            collision_row[x] = t.collision;
+            /* Nothing is solid while the world is the authored city scene
+             * (3d_refactor.md D42): the layout's walls and props are no
+             * longer drawn, so they must not block anyone either. The
+             * layout still says what would be solid (t.collision). */
+            collision_row[x] = 0;
         }
 
         for (int l = 0; l < TILE_LAYERS; l++) {

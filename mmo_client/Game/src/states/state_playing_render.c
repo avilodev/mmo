@@ -3,8 +3,8 @@
  * Draw the world-space pass, and run the frame's drawing order.
  *
  * Two things live here: the entities drawn inside the camera transform -- the
- * ones whose position is a world position -- and playing_render(), which is
- * the running order of the whole frame. The screen-space overlays it calls
+ * ones whose position is a world position, standing in 3D -- and
+ * playing_render(), which is the running order of the whole frame. The screen-space overlays it calls
  * into are in state_playing_hud.c; keeping the order here and the panels there
  * means changing what a panel looks like and changing what it sits on top of
  * are edits to different files.
@@ -18,67 +18,124 @@
 #include "combat_render.h"
 #include "hud.h"
 #include "inventory.h"
-#include "player/paperdoll.h"
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
 #include "ui/quest_tracker.h"
 #include "ui/shop_ui.h"
 
 #include "camera/camera_tuning.h"
+#include "render/character_renderer.h"
+#include "render/city_renderer.h"
+#include "render/character_tuning.h"
+#include "render/world_light.h"
 
 #include <math.h>
 
+/** A player's body colour: their race's, from the registry the server sent. */
+static void player_tint(uint32_t race_id, float out[3]) {
+    client_race_color(race_id, &out[0], &out[1], &out[2]);
+}
+
 /**
- * Draw nearby players as character stacks, with health and identity labels.
+ * Stand-in body when the character model did not load: a coloured card, so a
+ * missing asset is a visible placeholder, not an invisible player.
  */
-void playing_render_nearby_players(GameState* game) {
-    int size = game->world.tile_size * 2;
+static void render_fallback_body(float x, float y, const float rgb[3]) {
+    const float w = 20.0f, h = CHARACTER_HEIGHT;
+    camera_billboard_begin(x, y, 0.0f, 0.0f);
+    renderer_draw_rect(x - w / 2.0f, y - h, w, h, rgb[0], rgb[1], rgb[2], 1.0f);
+    camera_billboard_end();
+}
+
+static void render_player_body(CharacterKind kind, uint32_t id, float x, float y,
+                               uint32_t race_id, const CharacterHints* hints) {
+    CharacterStyle style = { { 0 }, 1.0f, 0.0f, { 0 } };
+    player_tint(race_id, style.tint);
+    if (hints) style.hints = *hints;
+    if (character_renderer_ready())
+        character_renderer_draw(kind, id, x, y, &style);
+    else
+        render_fallback_body(x, y, style.tint);
+}
+
+/**
+ * Draw the 3D bodies of the local player and everyone nearby. Called between
+ * character_renderer_begin() and character_renderer_end().
+ */
+static void playing_render_player_bodies(GameState* game) {
     for (int i = 0; i < game->playing->nearby_player_count; i++) {
-        NearbyPlayer* p = &game->playing->nearby_players[i];
+        const NearbyPlayer* p = &game->playing->nearby_players[i];
         if (p->is_dead) continue;
+        render_player_body(CHARACTER_KIND_PLAYER, p->player_id, p->pos_x, p->pos_y,
+                           p->player_race, NULL);
+    }
 
-        camera_billboard_begin(p->pos_x, p->pos_y, (float)size / 2.0f, 0.0f);
+    /* The local body is told which way it faces and whether it is pivoting,
+     * straight from its locomotion, rather than guessing from its path. */
+    CharacterHints own = { 0 };
+    own.has_facing = 1;
+    own.facing_yaw = game->player.loco.heading;
+    own.pivoting   = game->player.loco.pivoting;
+    render_player_body(CHARACTER_KIND_LOCAL, 0, game->player.x, game->player.y,
+                       game->player.info_loaded ? game->player.info.race_id : 0, &own);
+}
 
-        /* Everyone wears the one character stack there is art for, so a
-         * player's race does not change how they look yet -- only the label
-         * and the registry know it. */
-        const Paperdoll* doll = paperdoll_shared();
-        if (doll->loaded > 0) {
-            paperdoll_render(doll, p->pos_x, p->pos_y, (float)size);
-        } else {
-            /* Fallback when no layer loaded: a coloured box, so a player is
-             * still visible and still identifiable. Colour comes from the race
-             * registry the server sent, not from a table -- this was a switch
-             * over classes 1-4, so the fifth race drew in the default green
-             * and the client had to be edited to add a race the server
-             * already knew about. */
-            float r, g, b;
-            client_race_color(p->player_race, &r, &g, &b);
-            renderer_draw_rect(p->pos_x - size/2, p->pos_y - size/2,
-                              (float)size, (float)size, r, g, b, 1.0f);
-        }
+/**
+ * Draw "level - name", and a health bar when one is given, on a card whose
+ * point (x, y) is the top of the head.
+ */
+static void render_player_label(float x, float y, unsigned level, const char* name,
+                                int32_t health, int32_t max_health, int show_bar) {
+    if (character_renderer_fog_at(x, y) > 0.5f) return;   /* lost in the fog */
+    camera_billboard_begin(x, y, 0.0f, CHARACTER_HEIGHT);
 
-        // Health bar
+    float label_y = y - 18.0f;
+    if (show_bar) {
         float bar_w = 40.0f, bar_h = 4.0f;
-        float bar_x = p->pos_x - bar_w/2;
-        float bar_y = p->pos_y - size/2 - 8;
+        float bar_x = x - bar_w / 2.0f;
+        float bar_y = y - 10.0f;
         renderer_draw_rect(bar_x, bar_y, bar_w, bar_h, 0.2f, 0.2f, 0.2f, 1.0f);
-        if (p->max_health > 0) {
-            float pct = (float)p->health / (float)p->max_health;
+        if (max_health > 0) {
+            float pct = (float)health / (float)max_health;
             renderer_draw_rect(bar_x, bar_y, bar_w * pct, bar_h, 0.2f, 0.8f, 0.2f, 1.0f);
         }
-
-        // Name + level label above the health bar
-        if (p->name[0] != '\0') {
-            char label[48];
-            snprintf(label, sizeof(label), "%u - %s", (unsigned)p->level, p->name);
-            float label_w = 120.0f;
-            renderer_draw_text_centered(p->pos_x - label_w / 2.0f,
-                                        bar_y - 18.0f, label_w, 0.0f, label);
-        }
-
-        camera_billboard_end();
+        label_y = bar_y - 18.0f;
     }
+
+    if (name && name[0] != '\0') {
+        char label[48];
+        snprintf(label, sizeof(label), "%u - %s", level, name);
+        float label_w = 160.0f;
+        renderer_draw_text_centered(x - label_w / 2.0f, label_y, label_w, 0.0f, label);
+    }
+
+    camera_billboard_end();
+}
+
+/** Name plates for everyone nearby (with health) and for the local player. */
+static void playing_render_player_labels(GameState* game) {
+    for (int i = 0; i < game->playing->nearby_player_count; i++) {
+        const NearbyPlayer* p = &game->playing->nearby_players[i];
+        if (p->is_dead) continue;
+        render_player_label(p->pos_x, p->pos_y, p->level, p->name,
+                            p->health, p->max_health, 1);
+    }
+    if (game->player.info_loaded)
+        render_player_label(game->player.x, game->player.y, game->player.info.level,
+                            game->player.info.name, 0, 0, 0);
+}
+
+/** Shadows under every player, and the selection ring under a targeted one. */
+static void playing_render_player_ground_marks(GameState* game) {
+    uint32_t target = game->playing->target_player_id;
+    for (int i = 0; i < game->playing->nearby_player_count; i++) {
+        const NearbyPlayer* p = &game->playing->nearby_players[i];
+        if (p->is_dead) continue;
+        character_draw_shadow(p->pos_x, p->pos_y, 1.0f);
+        if (p->player_id == target)
+            renderer_draw_ring(p->pos_x, p->pos_y, 20.0f, 23.0f, 1.0f, 0.9f, 0.1f, 0.95f, 32);
+    }
+    character_draw_shadow(game->player.x, game->player.y, 1.0f);
 }
 
 void playing_render_projectiles(GameState* game) {
@@ -218,41 +275,39 @@ void playing_render_ground_items(GameState* game) {
  * Render the ordered world layers, entities, HUD, panels, and overlays.
  */
 void playing_render(GameState* game) {
+    /* The sky: what the fog fades the world into, when the camera looks out. */
+    renderer_clear(WORLD_SKY_R, WORLD_SKY_G, WORLD_SKY_B);
+    character_renderer_set_focus(game->camera.x, game->camera.y);
     renderer_begin_2d();
     camera_apply(&game->camera);
 
-    world_render(&game->world, &game->camera);
-    world_render_overlay_floor(&game->world, &game->camera);
+    /* The world is the authored city scene alone (D40, D41): world.dat's
+     * ground and the structures grown from it are no longer drawn, though its
+     * collision still decides where anyone can walk. The city goes before the
+     * ground marks, so shadows, rings and telegraphs still show on its paving;
+     * the catch is that they also show through its walls. */
+    CameraView view;
+    camera_get_view(&game->camera, &view);
+    city_renderer_draw(&view, game->camera.x, game->camera.y);
 
-    const int view_3d = (game->camera.mode == CAMERA_MODE_3D);
-    int player_inside = world_is_inside(&game->world, game->player.x, game->player.y);
-    int player_ty = (int)(game->player.y / game->world.tile_size);
-
-    if (view_3d) {
-        /* Every tile layer lies flat, under everything that stands. Roofs over
-         * an indoor player fade so the room shows (D12, D13). */
-        if (player_inside) {
-            world_render_overlay_interior(&game->world, &game->camera);
-            world_render_overlay_above_faded(&game->world, &game->camera,
-                                             game->player.x, game->player.y,
-                                             CAMERA_ROOF_FADE_INNER, CAMERA_ROOF_FADE_OUTER);
-        } else {
-            world_render_overlay_above(&game->world, &game->camera);
-        }
-    } else if (player_inside) {
-        world_render_overlay_interior(&game->world, &game->camera);
-    } else {
-        world_render_overlay_above_north(&game->world, &game->camera, player_ty);
-    }
-
-    // Ground-space effects: flat on the floor, under anything standing
     playing_render_zones(game);
     playing_render_heal_vfxs(game);
     playing_render_telegraphs(game);
     playing_render_ground_items(game);
     combat_render_indicator(&game->playing->combat);
+    npc_render_ground_marks(game->playing->visible_npcs, game->playing->visible_npc_count,
+                            game->playing->target_npc_id);
+    playing_render_player_ground_marks(game);
 
-    // Standing entities: billboards in 3D, depth-sorted against each other
+    /* The characters, depth-tested against the city. */
+    character_renderer_begin(&view, game->camera.x, game->camera.y, game->playing->frame_dt);
+    npc_render_bodies(game->playing->visible_npcs, game->playing->visible_npc_count,
+                      game->player.x, game->player.y);
+    playing_render_player_bodies(game);
+    character_renderer_end();
+
+    /* Cards above heads, projectiles and damage numbers: screen-aligned, and
+     * still hidden behind a building that stands in front of them. */
     /* One lookup for the whole pass: the badge and the map marker must agree
      * about which NPC the player is being sent to. */
     QuestTrackedStep tracked = quest_log_tracked_step(&game->playing->quest_log);
@@ -260,23 +315,11 @@ void playing_render(GameState* game) {
         (tracked.valid && tracked.objective_type != QUEST_OBJECTIVE_COLLECT)
             ? tracked.target_id : 0;
 
-    npc_render_all(game->playing->visible_npcs, game->playing->visible_npc_count,
-                   game->world.tile_size, tracked_npc_type);
-    npc_render_target_indicator(game->playing->visible_npcs, game->playing->visible_npc_count,
-                                 game->world.tile_size, game->playing->target_npc_id);
-    playing_render_nearby_players(game);
+    npc_render_labels(game->playing->visible_npcs, game->playing->visible_npc_count,
+                      tracked_npc_type);
+    playing_render_player_labels(game);
     playing_render_projectiles(game);
     combat_render_damage_numbers(&game->playing->combat);
-    player_render(&game->player, paperdoll_shared(), game->world.tile_size);
-
-    /* Top-down only: roofs south of the player draw over them, the trick that
-     * made a flat map read as having height. The 3D view does not need it. */
-    if (!view_3d) {
-        if (player_inside)
-            world_render_overlay_above(&game->world, &game->camera);
-        else
-            world_render_overlay_above_south(&game->world, &game->camera, player_ty);
-    }
 
     renderer_end_2d();
 

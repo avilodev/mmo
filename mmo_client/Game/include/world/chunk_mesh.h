@@ -16,9 +16,12 @@
 /** Two triangles for every tile of a chunk. */
 #define CHUNK_MESH_MAX_VERTS (CHUNK_SIZE * CHUNK_SIZE * 6)
 
-/** One ground vertex: world position, atlas UV, and an RGBA8 tint. */
+/** One world vertex: world position and height, atlas UV, and an RGBA8 tint.
+ *
+ *  Tile layers lie flat (h = 0); 3D structures (structure_mesh.h) use the same
+ *  vertex with a height, so one shader draws both. */
 typedef struct {
-    float   x, y;
+    float   x, y, h;
     float   u, v;
     uint8_t r, g, b, a;
 } ChunkVertex;

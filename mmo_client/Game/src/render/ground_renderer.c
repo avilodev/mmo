@@ -5,13 +5,14 @@
 
 #include "render/gl_loader.h"
 #include "render/ground_renderer.h"
+#include "render/world_light.h"
 #include "core/client_log.h"
 
 #include <stddef.h>
 
 static const char* VERTEX_SRC =
     "#version 330 core\n"
-    "layout(location = 0) in vec2 a_pos;\n"
+    "layout(location = 0) in vec3 a_pos;\n"
     "layout(location = 1) in vec2 a_uv;\n"
     "layout(location = 2) in vec4 a_color;\n"
     "uniform mat4 u_mvp;\n"
@@ -21,8 +22,8 @@ static const char* VERTEX_SRC =
     "void main() {\n"
     "    v_uv = a_uv;\n"
     "    v_color = a_color;\n"
-    "    v_world = a_pos;\n"
-    "    gl_Position = u_mvp * vec4(a_pos, 0.0, 1.0);\n"
+    "    v_world = a_pos.xy;\n"
+    "    gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
     "}\n";
 
 static const char* FRAGMENT_SRC =
@@ -32,27 +33,22 @@ static const char* FRAGMENT_SRC =
     "in vec2 v_world;\n"
     "uniform sampler2D u_tex;\n"
     "uniform int   u_use_tex;\n"
-    "uniform int   u_split;\n"
-    "uniform float u_split_y;\n"
-    "uniform int   u_fade;\n"
-    "uniform vec2  u_fade_center;\n"
-    "uniform vec2  u_fade_radii;\n"
+    "uniform vec2  u_fog_center;\n"
+    "uniform vec2  u_fog_range;\n"
+    "uniform vec3  u_fog_color;\n"
     "out vec4 frag;\n"
     "void main() {\n"
-    "    if (u_split == 1 && v_world.y >= u_split_y) discard;\n"
-    "    if (u_split == 2 && v_world.y <  u_split_y) discard;\n"
     "    vec4 c = v_color;\n"
     "    if (u_use_tex == 1) c *= texture(u_tex, v_uv);\n"
-    "    if (u_fade == 1)\n"
-    "        c.a *= smoothstep(u_fade_radii.x, u_fade_radii.y,\n"
-    "                          distance(v_world, u_fade_center));\n"
     "    if (c.a <= 0.0) discard;\n"
+    "    float f = smoothstep(u_fog_range.x, u_fog_range.y, distance(v_world, u_fog_center));\n"
+    "    c.rgb = mix(c.rgb, u_fog_color, f);\n"
     "    frag = c;\n"
     "}\n";
 
 static GLuint g_program;
 static GLuint g_vao;
-static GLint  u_mvp, u_tex, u_use_tex, u_split, u_split_y, u_fade, u_fade_center, u_fade_radii;
+static GLint  u_mvp, u_tex, u_use_tex, u_fog_center, u_fog_range, u_fog_color;
 
 static GLuint compile(GLenum type, const char* src) {
     GLuint shader = glCreateShader(type);
@@ -102,11 +98,9 @@ int ground_renderer_init(void) {
     u_mvp         = glGetUniformLocation(g_program, "u_mvp");
     u_tex         = glGetUniformLocation(g_program, "u_tex");
     u_use_tex     = glGetUniformLocation(g_program, "u_use_tex");
-    u_split       = glGetUniformLocation(g_program, "u_split");
-    u_split_y     = glGetUniformLocation(g_program, "u_split_y");
-    u_fade        = glGetUniformLocation(g_program, "u_fade");
-    u_fade_center = glGetUniformLocation(g_program, "u_fade_center");
-    u_fade_radii  = glGetUniformLocation(g_program, "u_fade_radii");
+    u_fog_center  = glGetUniformLocation(g_program, "u_fog_center");
+    u_fog_range   = glGetUniformLocation(g_program, "u_fog_range");
+    u_fog_color   = glGetUniformLocation(g_program, "u_fog_color");
 
     glGenVertexArrays(1, &g_vao);
     CLOG_INFO("[GROUND] Shader ready");
@@ -139,24 +133,22 @@ void ground_renderer_release(ChunkLayerGpu* layer) {
     layer->range_count = 0;
 }
 
-void ground_renderer_begin(const CameraView* view) {
-    glDisable(GL_DEPTH_TEST);
+void ground_renderer_begin(const CameraView* view, int solid, float fog_x, float fog_y) {
+    if (solid) {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+    } else {
+        glDisable(GL_DEPTH_TEST);
+    }
     glUseProgram(g_program);
     glBindVertexArray(g_vao);
     glUniformMatrix4fv(u_mvp, 1, GL_FALSE, view->ground_mvp);
     glUniform1i(u_tex, 0);
+    glUniform2f(u_fog_center, fog_x, fog_y);
+    glUniform2f(u_fog_range, WORLD_FOG_START, WORLD_FOG_END);
+    glUniform3f(u_fog_color, WORLD_SKY_R, WORLD_SKY_G, WORLD_SKY_B);
     glActiveTexture(GL_TEXTURE0);
-
-    GroundPassOptions none = { 0 };
-    ground_renderer_set_options(&none);
-}
-
-void ground_renderer_set_options(const GroundPassOptions* o) {
-    glUniform1i(u_split, (GLint)o->split);
-    glUniform1f(u_split_y, o->split_y);
-    glUniform1i(u_fade, o->fade ? 1 : 0);
-    glUniform2f(u_fade_center, o->fade_x, o->fade_y);
-    glUniform2f(u_fade_radii, o->fade_inner, o->fade_outer);
 }
 
 void ground_renderer_draw(const ChunkLayerGpu* layer, const unsigned int* tileset_textures) {
@@ -164,7 +156,7 @@ void ground_renderer_draw(const ChunkLayerGpu* layer, const unsigned int* tilese
 
     glBindBuffer(GL_ARRAY_BUFFER, layer->vbo);
     const GLsizei stride = (GLsizei)sizeof(ChunkVertex);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(ChunkVertex, x));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(ChunkVertex, x));
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, (const void*)offsetof(ChunkVertex, u));
     glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (const void*)offsetof(ChunkVertex, r));
     glEnableVertexAttribArray(0);
@@ -184,4 +176,5 @@ void ground_renderer_end(void) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
     glUseProgram(0);
+    glDisable(GL_DEPTH_TEST);
 }

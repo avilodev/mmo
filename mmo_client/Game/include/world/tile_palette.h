@@ -40,6 +40,18 @@ enum TilePaletteIndex {
     PAL_DIST_HUMAN,
     PAL_DIST_GUILD,
 
+    /* The Ennara courtyard (worldgen_courtyard.c). The solid ones are raised
+     * into 3D by structure_mesh.c. */
+    PAL_COURTYARD_GRASS,
+    PAL_PLAZA_INLAY,
+    PAL_RIFT,
+    PAL_RIFT_GLOW,
+    PAL_COURTYARD_WALL,
+    PAL_GATE_TOWER,
+    PAL_COLUMN,
+    PAL_LAMP_POST,
+    PAL_TREE,
+
     PAL_COUNT
 };
 
@@ -75,6 +87,16 @@ static const float TILE_PALETTE[PAL_COUNT][3] = {
     { 0.725f, 0.659f, 0.769f },  /* PAL_DIST_BLESSED    #B9A8C4 */
     { 0.749f, 0.663f, 0.549f },  /* PAL_DIST_HUMAN      #BFA98C */
     { 0.659f, 0.639f, 0.561f },  /* PAL_DIST_GUILD      #A8A38F */
+
+    { 0.353f, 0.557f, 0.251f },  /* PAL_COURTYARD_GRASS #5A8E40 */
+    { 0.553f, 0.525f, 0.478f },  /* PAL_PLAZA_INLAY     #8D867A */
+    { 0.231f, 0.137f, 0.337f },  /* PAL_RIFT            #3B2356 */
+    { 0.608f, 0.420f, 0.878f },  /* PAL_RIFT_GLOW       #9B6BE0 */
+    { 0.604f, 0.584f, 0.549f },  /* PAL_COURTYARD_WALL  #9A958C */
+    { 0.541f, 0.522f, 0.490f },  /* PAL_GATE_TOWER      #8A857D */
+    { 0.890f, 0.871f, 0.827f },  /* PAL_COLUMN          #E3DED3 */
+    { 0.200f, 0.192f, 0.184f },  /* PAL_LAMP_POST       #33312F */
+    { 0.263f, 0.431f, 0.184f },  /* PAL_TREE            #436E2F */
 };
 
 /**

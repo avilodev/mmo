@@ -1,0 +1,22 @@
+# Blender 5.2.1 LTS MTL File: 'example_city.blend'
+# www.blender.org
+
+newmtl M_mond_atlas
+Ns 0.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd mond_atlas.png
+
+newmtl M_mond_floor
+Ns 0.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd mond_floor_atlas.png

@@ -308,7 +308,9 @@ def build_spawns():
             x=x, y=y, health=5000, hitbox_radius=20.0,
             dialogue_id=leader_dialogue(race["id"]), is_interactable=1,
             category="quest", respawn_time=0.0, armor=0, xp_reward=0))
-    spawns.extend(build_enemy_spawns())
+    # No enemy camps while the world is the authored city scene (3d_refactor.md
+    # D41): only the courtyard's quest NPCs stand in it. build_enemy_spawns()
+    # is kept for when enemies return.
     return spawns
 
 

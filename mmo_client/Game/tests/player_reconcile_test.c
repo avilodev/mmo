@@ -47,18 +47,13 @@ static int g_failures = 0;
 
 #include "hostcompat/render_stubs.c"
 
-/* player.c draws the character from a layer stack now, so paperdoll.c is
- * linked in; its texture loading is the OpenGL part and is stubbed too. */
-unsigned int texture_load(const char* path) { (void)path; return 0; }
-void texture_unload(unsigned int id) { (void)id; }
-
-void renderer_draw_sprite(float x, float y, float w, float h, unsigned int t) {
-    (void)x; (void)y; (void)w; (void)h; (void)t;
-}
-
 KeyBinds g_keybinds;
 
 int input_key_pressed(const InputState* input, int key) {
+    (void)input; (void)key; return 0;
+}
+
+int input_key_just_pressed(const InputState* input, int key) {
     (void)input; (void)key; return 0;
 }
 

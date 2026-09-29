@@ -131,8 +131,6 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
 }
 
 void hud_draw_view_cone(const Camera* camera, float center_x, float center_y, float radius) {
-    if (camera->mode != CAMERA_MODE_3D) return;
-
     /* On the ground the camera looks along (-sin yaw, -cos yaw); maps are
      * north-up with y down, the same axes as the world. */
     float dir_x = -sinf(camera->yaw);
