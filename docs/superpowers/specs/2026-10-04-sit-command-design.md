@@ -1,6 +1,6 @@
 # /sit command and a scalable chat command table
 
-Status: implemented (client only), uncommitted code; see "Later: everyone sees it".
+Status: implemented, client and server; see "Networked emotes" at the end.
 The sections below describe what was built; "Changes from the first draft" at the end lists where it differs.
 
 ## Goal
@@ -23,8 +23,7 @@ In scope:
 
 Not in scope:
 
-- Other players seeing the sit. Nothing is sent to the server.
-- Server-side validation of sitting.
+- (Both were later built: see "Networked emotes".)
 - `Sitting_Talking_Loop` while chatting.
 - Sitting on anything that is not a `SIT_*` marker.
 - A key binding for sit.
@@ -194,13 +193,55 @@ Compile checks only for `state_playing_render.c`, `state_playing_input.c` and
 `main.c`, since the client cannot be built or run on the development machine.
 Nothing about how it looks in the game is verified until it is run.
 
-## Later: everyone sees it
+## Networked emotes (built after the client-only version)
 
-The server needs a seated state and the interest-managed broadcast that
-carries it, and a decision on whether it validates that a sitter was near a
-seat. On the client, the incoming packet writes `SeatState` for remote bodies
-and the render code already reads `SeatState`. This design adds no protocol
-field, but keeps the seated state in one struct so that change is additive.
+Other players see an emote, and the server is the truth. The client checks
+first, the server checks again, and the client follows what the server says.
+
+Wire (`PROTOCOL_VERSION` 11, both `protocol.h` copies):
+
+- `EmoteId` (`NONE`, `SIT`, `DANCE`) and `EmoteResult` (started, stopped, five
+  refusals, three server-ended causes).
+- `PACKET_EMOTE_REQUEST` 240 (client to server): `{emote, arg}`; `arg` is the
+  seat index for a sit; `EMOTE_NONE` stops.
+- `PACKET_EMOTE_STATE` 241 (server to that client): `{emote, arg, result,
+  requested}`: the answer, and the notice when the server ends an emote itself.
+- `NearbyPlayerData` gains `emote` and `emote_arg` (the old padding byte plus
+  one), so everyone in view sees emotes, including players who arrive mid-sit.
+
+Server (`world_server/`):
+
+- `emote_validator.c`: pure rules. Unknown, dead, in combat, no such seat, too
+  far (seat reach plus slack), seat taken. Stopping is always allowed.
+  `emote_upkeep()` ends an emote on death, or on combat since it began.
+- `emote_handler.c`: copies the asker's facts, validates and commits under a
+  seat mutex (one sitter per seat), replies, and an upkeep task (5 Hz) ends
+  emotes and tells the player. A move also ends an emote (`packet_handler.c`).
+- `common/world_seats.c`, shared byte for byte with the client: the seats file,
+  installed by the client Makefile as `world_server/data/world_seats.bin`.
+- Rate limit (social class, cost 2) and a router case; the emote request is
+  deliberately not in `dead_blocked`, so the dead are told why.
+
+Client:
+
+- `player/emote.c`: the emote table (a row per emote), the pre-check, phases,
+  the slide onto a seat, following the server (`emote_observe`), and every
+  chat wording (`emote_react`). `/sit`, `/dance` come from the table; `/stand`
+  is a command.
+- A remote player's state is carried across broadcasts by id; a player first
+  seen already emoting appears mid-emote.
+- Chat: a failed check or a server refusal says `Unable to <emote>` in red;
+  a start says `<Name> Sits` / `<Name> Dances`; leaving says `<Name> Stands` /
+  `<Name> Stops Dancing`, by key, `/stand` or the server ending it.
+- A seat pins the body (keys ignored until up); a dance does not: a movement
+  key ends it and walks.
+
+Testing: `emote_validator_test`, `emote_handler_test` (stub player table),
+`world_seats_test` (both trees), `emote_test`, `chat_commands_test`, network
+tests in `net_dispatch_test`, plus the version, sync and pairing guards.
+
+Not verified: the live client and server together, and how the animations and
+the seat height look. `EMOTE_SEAT_CLIP_HEIGHT` (`player/emote.h`) is a guess.
 
 ## Changes from the first draft
 
