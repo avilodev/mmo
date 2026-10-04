@@ -1,6 +1,7 @@
 # /sit command and a scalable chat command table
 
-Status: design, awaiting review. Client only; see "Later: everyone sees it".
+Status: implemented (client only), uncommitted code; see "Later: everyone sees it".
+The sections below describe what was built; "Changes from the first draft" at the end lists where it differs.
 
 ## Goal
 
@@ -92,16 +93,16 @@ typedef struct {
 /* @return 1 when a seat is in reach and the sit began. */
 int  seat_sit(SeatState* s, float x, float y);
 void seat_stand(SeatState* s);                 /* ENTERING/SEATED -> EXITING */
-void seat_update(SeatState* s, float dt, int move_input,
-                 float enter_seconds, float exit_seconds);
+void seat_update(SeatState* s, float dt, float enter_seconds, float exit_seconds);
 int  seat_holds_body(const SeatState* s);      /* phase != SEAT_NONE */
 ```
 
 - `seat_sit` does nothing unless the phase is `SEAT_NONE` and
   `city_seats_nearest(x, y, SEAT_REACH_UNITS)` finds a seat.
 - `seat_update` moves ENTERING to SEATED when `timer >= enter_seconds`, and
-  EXITING to NONE when `timer >= exit_seconds`. A true `move_input` while
-  ENTERING or SEATED calls `seat_stand`.
+  EXITING to NONE when `timer >= exit_seconds`. If the seat has gone (the seats
+  file reloaded or failed), it frees the body.
+- `seat_draw_pose` gives the drawn x, y, height and heading (see 4).
 - Durations come from the clip lengths, passed in (as
   `character_motion_update` already does), so the state does not know clips.
 - `SeatState` lives in `PlayerState` and is the only seated state there is. A
@@ -128,20 +129,27 @@ and snap the player back. So:
 
 - `game->player.x/y` and its vertical state do not change when sitting.
   Nothing new is sent. Movement sync keeps sending the standing position.
-- While `seat_holds_body`, the local body is drawn at the seat's x, y and
-  height, facing the seat's heading, instead of at the player position.
-- The seat height is the marker's height; the body's origin is at its feet, so
-  a `SEAT_BODY_DROP` constant in `character_tuning.h` lowers it to where the
-  sit pose puts the hips on the seat. Its value cannot be checked here and is
-  tuned in the running game.
+- While `seat_holds_body`, the local body is drawn by `seat_draw_pose`: where
+  it stands at the start of `Sitting_Enter`, sliding onto the seat (and turning
+  the short way round to the seat's heading) as the clip plays, on the seat
+  while seated, and sliding back off during `Sitting_Exit`. So nothing pops
+  and the speed estimate never sees a jump.
+- The body's origin is at its feet, so it is drawn `SEAT_CLIP_SEAT_HEIGHT`
+  (0.45 m in world units, `player_seat.h`) below the seat's height: the seat
+  height the sit clips were authored for. That value is a guess and cannot be
+  checked here; it is tuned by looking at the running game.
 - The camera keeps following the real position, a few units from the seat.
-- The name label and health bar keep the real position.
+- The name label and health bar keep the real position; the shadow follows
+  the drawn body.
 
 ### 5. Getting up
 
-- While `seat_holds_body`, movement and jump input are ignored (the early-out
-  that already skips movement while typing in chat covers the same place).
-- Any movement key or `/stand` while ENTERING or SEATED starts EXITING.
+- While `seat_holds_body`, the movement and jump keys are not read: the input
+  handler passes an empty input to `player_update_movement` and
+  `player_update_vertical` (gravity still runs). It sits after the chat
+  early-out, so typing a W into chat does not stand you up.
+- A held movement or jump key, or `/stand`, while ENTERING or SEATED starts
+  EXITING.
 - When EXITING finishes, control returns at the real position.
 
 ## Data flow
@@ -171,11 +179,16 @@ Headless unit tests, in the style of `city_heights_test`:
   the expected argument text; `/leave x` and `/invite` alone are dropped;
   unknown commands are dropped; a line not starting with `/` is not handled;
   `/sit` and `/stand` reach their handlers.
-- `player_seat_test`: reach (in, out, edge); no sit with no seats loaded;
-  ENTERING to SEATED to EXITING to NONE on timers; movement input stands up;
-  `/sit` while already seated does nothing.
-- `character_motion_test` additions: a forced pose plays that clip, and a
-  one-shot clip holds its last frame.
+- `player_seat_test`: reach (in, out, edge); the nearer of two seats; no sit
+  with no seats; ENTERING to SEATED to EXITING to NONE on timers; standing from
+  either phase; no double sit; the body freed if the seats vanish; the drawn
+  pose at each phase and the short-way turn.
+- `character_motion_test` additions: a forced pose plays whatever the speed, a
+  posed body's slide is not movement, one-shot clips hold their last frame and
+  the seated idle loops.
+- `model_test` now also requires the three sit clips in the shipped model.
+- A one-off differential check (not kept) ran the original `strncmp` chain
+  against the table on 400,000 generated lines: zero differences.
 
 Compile checks only for `state_playing_render.c`, `state_playing_input.c` and
 `main.c`, since the client cannot be built or run on the development machine.
@@ -188,6 +201,16 @@ carries it, and a decision on whether it validates that a sitter was near a
 seat. On the client, the incoming packet writes `SeatState` for remote bodies
 and the render code already reads `SeatState`. This design adds no protocol
 field, but keeps the seated state in one struct so that change is additive.
+
+## Changes from the first draft
+
+- `seat_update` has no `move_input` parameter: the input handler decides when
+  a key stands you up, where the chat early-out already applies.
+- The drawn body slides on and off the seat (4) instead of snapping, which the
+  first draft would have done, popping up to 3 m on standing.
+- `SEAT_CLIP_SEAT_HEIGHT` replaces `SEAT_BODY_DROP`.
+- `character_renderer_clip_seconds()` is new, so the seat state can use the
+  clips' real lengths.
 
 ## Assumptions to confirm
 
