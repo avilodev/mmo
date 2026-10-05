@@ -1,0 +1,81 @@
+# Build output and compiled artifacts
+**/bin/
+**/obj/
+build/
+dist/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+mmo_server
+!Game/lib/*.a
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+*.secret
+*credentials*
+*secrets*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+**/certs/*
+!**/certs/*.txt
+!**/certs/*.sh
+
+# Local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+*.log.[0-9]*
+Game/logs/
+*.dump
+*.tmp
+*.swp
+*.bak
+/core
+/core.*
+
+# Editor and OS 
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# Parsed copy of a large OBJ
+*.objcache
+*.objcache.tmp
+
+# Local build captures and Blender backups
+build_out.txt
+*.blend1
+
+# Private
+Story/
+docs/
+Next_steps/
+
+# Tools
+.githooks
+.github
+.superpowers
+.claude
+.codex
