@@ -1,0 +1,215 @@
+{
+  "id": 41,
+  "name": "Doran the Armsmonger",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Mind the counter. Blades, hides and shields, all of it tested. Buy, sell, or just look -- I will not hurry you.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Let me see your wares.",
+          "next_page": -1,
+          "action": "open_shop",
+          "action_value": 2
+        },
+        {
+          "option_id": 2,
+          "text": "What kind of arms do you carry?",
+          "next_page": 1
+        },
+        {
+          "option_id": 3,
+          "text": "Never mind.",
+          "next_page": -1
+        },
+        {
+          "option_id": 4,
+          "text": "Mirela sent me.",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 5
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Any work for me?",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 5
+            }
+          ]
+        },
+        {
+          "option_id": 7,
+          "text": "I have bought the knuckles.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 6
+            }
+          ]
+        },
+        {
+          "option_id": 8,
+          "text": "What now?",
+          "next_page": 5,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 6
+            }
+          ]
+        },
+        {
+          "option_id": 10,
+          "text": "I have sold them back.",
+          "next_page": 6,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 7
+            }
+          ]
+        },
+        {
+          "option_id": 11,
+          "text": "Is that all?",
+          "next_page": 7,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Every piece on this stall was made to be used. I do not sell trophies. If you bring me something sound I will pay for it; if it is broken, I will tell you so.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Show me what you have.",
+          "next_page": -1,
+          "action": "open_shop",
+          "action_value": 2
+        },
+        {
+          "option_id": 2,
+          "text": "Another time.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "Mirela vouches for you. That counts for more than a letter.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "Buy a pair of Fang Knuckles off my counter. Pay full price. A blade you have paid for is a blade you will look after.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Good steel, and you paid without haggling. Take a little back.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 5,
+      "text": "Now sell them back to me. I will pay what they are worth. You will see what a day of owning a thing costs, and what it earns.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 6,
+      "text": "You kept your head about it. Not everyone does.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 7,
+      "text": "That is all I have. Go and tell the Warden what you did. She will want to know the market has not eaten you.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}

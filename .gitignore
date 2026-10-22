@@ -13,7 +13,7 @@ out/
 *.dylib
 *.exe
 *.pdb
-mmo_server
+/mmo_server/world_server/data/world.dat
 !Game/lib/*.a
 
 # Secrets and local config

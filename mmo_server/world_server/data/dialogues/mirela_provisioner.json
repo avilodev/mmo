@@ -1,0 +1,215 @@
+{
+  "id": 40,
+  "name": "Mirela the Provisioner",
+  "pages": [
+    {
+      "page_num": 0,
+      "text": "Welcome, traveller. Sit, if you like -- I do. Tonics, boots and caps, all honest goods, and I pay fair coin for whatever you carry in.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Let me see your wares.",
+          "next_page": -1,
+          "action": "open_shop",
+          "action_value": 1
+        },
+        {
+          "option_id": 2,
+          "text": "What do you sell, exactly?",
+          "next_page": 1
+        },
+        {
+          "option_id": 3,
+          "text": "Never mind.",
+          "next_page": -1
+        },
+        {
+          "option_id": 4,
+          "text": "The Warden sent me.",
+          "next_page": 2,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 2
+            }
+          ]
+        },
+        {
+          "option_id": 5,
+          "text": "Do you have any work?",
+          "next_page": 3,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 2
+            }
+          ]
+        },
+        {
+          "option_id": 7,
+          "text": "I have bought the tonics.",
+          "next_page": 4,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 3
+            }
+          ]
+        },
+        {
+          "option_id": 8,
+          "text": "What else needs doing?",
+          "next_page": 5,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 3
+            }
+          ]
+        },
+        {
+          "option_id": 10,
+          "text": "I have sold one back.",
+          "next_page": 6,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 4
+            }
+          ]
+        },
+        {
+          "option_id": 11,
+          "text": "Is there anything more?",
+          "next_page": 7,
+          "conditions": [
+            {
+              "type": "quest_step",
+              "value": 301,
+              "step": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_num": 1,
+      "text": "Ennara's roads are long and the rift sends folk in with nothing but their names. I keep the basics in stock so nobody has to start with less than that. Buy what you need; sell what you do not.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Show me what you have.",
+          "next_page": -1,
+          "action": "open_shop",
+          "action_value": 1
+        },
+        {
+          "option_id": 2,
+          "text": "Another time.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "text": "The Warden sends everyone. Good. Then you already know I keep honest goods, and that I do not give them away.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 3,
+      "text": "Work, of a kind. Buy two Health Tonics from me. Open my wares and pay for them. It is the one thing a newcomer must learn to do, and the sooner the better.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 4,
+      "text": "Two tonics, paid for and in your pack. See? Nothing to it. Here is a little for your trouble.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 5,
+      "text": "Now the other half. Sell one of those tonics back to me, at my price. Selling is not charity. It is how you keep your pack light and your purse heavy.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 6,
+      "text": "A fair price, fairly taken. You are quicker at this than most.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    },
+    {
+      "page_num": 7,
+      "text": "You should meet Doran, who keeps the arms stall next to mine. He is a better judge of a blade than I am of anything. Tell him I sent you.",
+      "options": [
+        {
+          "option_id": 1,
+          "text": "Anything else?",
+          "next_page": 0
+        },
+        {
+          "option_id": 2,
+          "text": "Goodbye.",
+          "next_page": -1
+        }
+      ]
+    }
+  ]
+}
