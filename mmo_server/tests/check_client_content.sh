@@ -29,10 +29,12 @@ if [ ! -f "$CLIENT_TYPES" ]; then
     exit 0
 fi
 
-python3 - "$SPAWNS" "$CLIENT_TYPES" <<'PY'
-import json, sys
+DIALOGUES="world_server/data/dialogues"
 
-spawns_path, types_path = sys.argv[1], sys.argv[2]
+python3 - "$SPAWNS" "$CLIENT_TYPES" "$DIALOGUES" <<'PY'
+import glob, json, sys
+
+spawns_path, types_path, dialogue_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 
 try:
     spawns = json.load(open(spawns_path))["spawns"]
@@ -68,6 +70,36 @@ if missing:
     for type_id, name in sorted(missing.items()):
         print(f'      {{ "id": {type_id}, "name": "{name}" }}')
     print("\n  (spawns.json is the server's; npc_types.json is the client's.)")
+    sys.exit(1)
+
+# A type whose dialogue opens a shop must be a merchant in the client's table:
+# the map and anything else that names merchants reads the role from there, and
+# nothing else tells the client who sells.
+shop_dialogues = set()
+for path in glob.glob(dialogue_dir + "/*.json"):
+    try:
+        dialogue = json.load(open(path))
+    except (OSError, ValueError) as err:
+        print(f"  could not read {path}: {err}")
+        sys.exit(1)
+    for page in dialogue.get("pages", []):
+        for option in page.get("options", []):
+            if option.get("action") == "open_shop":
+                shop_dialogues.add(dialogue.get("id"))
+
+roles = {entry.get("id"): entry.get("roles", []) for entry in known}
+unmarked = {}
+for spawn in spawns:
+    if spawn.get("dialogue_id") in shop_dialogues and \
+       "merchant" not in roles.get(spawn.get("npc_type_id"), []):
+        unmarked.setdefault(spawn["npc_type_id"], spawn.get("name", "?"))
+
+if unmarked:
+    print("  An NPC type opens a shop but is not a merchant in the client's table.\n")
+    print("  Add \"roles\": [\"merchant\"] to each of these in "
+          "../mmo_client/Game/data/npc_types.json:\n")
+    for type_id, name in sorted(unmarked.items()):
+        print(f"      {type_id}  {name}")
     sys.exit(1)
 
 spawned = {s.get("npc_type_id") for s in spawns}

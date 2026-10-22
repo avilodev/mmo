@@ -33,7 +33,6 @@ void log_init(void);
 void log_close(void);
 
 void     log_set_level(LogLevel level);
-LogLevel log_get_level(void);
 
 // avoid evaluating arguments for disabled levels
 int log_level_enabled(LogLevel level);

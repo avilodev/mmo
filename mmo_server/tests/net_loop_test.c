@@ -8,6 +8,9 @@
 #include "limit_profiles.h"
 #include "connection_io.h"
 #include "session_registry.h"
+#include "player_session.h"
+#include "world_entry_service.h"
+#include "character_record.h"
 #include "server_types.h"
 #include "protocol.h"
 #include "log.h"
@@ -30,7 +33,7 @@ static int g_listen_port = 0;
 
 static atomic_int g_packets_dispatched = 0;
 static atomic_int g_auth_calls         = 0;
-/** Tickets that reached validate_game_ticket() with no NUL inside the field. */
+/** Tickets that reached world_entry_redeem() with no NUL inside the field. */
 static atomic_int g_unterminated_tickets = 0;
 
 /** Create a loopback listener on an ephemeral port. */
@@ -70,7 +73,7 @@ static int connect_client(void) {
 
 /** Send a valid test authentication packet for one identity.
  *
- * The suffix selects who the ticket is for; see validate_game_ticket() below.
+ * The suffix selects who the ticket is for; see fixture_validate_ticket() below.
  * It matters because session_registry.c is linked for real, and the registry's
  * whole job on a duplicate is to kick the older session -- so a test that
  * wants many simultaneous connections needs many identities, and a test that
@@ -103,8 +106,9 @@ static void wait_for(atomic_int* counter, int target, int ms) {
 }
 
 /** Validate the sole ticket accepted by the event-loop fixture. */
-int validate_game_ticket(const char* t, const char* peer_ip, uint32_t expected_world,
-                         uint32_t* acct, uint32_t* chr, uint32_t* world) {
+static int fixture_validate_ticket(const char* t, const char* peer_ip,
+                                   uint32_t expected_world, uint32_t* acct,
+                                   uint32_t* chr, uint32_t* world) {
     (void)peer_ip;         /* the fixture connects over loopback; binding is covered elsewhere */
     (void)expected_world;  /* the fixture runs one world; world binding is covered elsewhere */
     atomic_fetch_add(&g_auth_calls, 1);
@@ -113,7 +117,7 @@ int validate_game_ticket(const char* t, const char* peer_ip, uint32_t expected_w
     /* The caller's obligation, checked where the obligation lands.
      *
      * game_ticket is a fixed char[64] taken straight off the wire with no
-     * guarantee of a NUL anywhere in it, and the real validate_game_ticket()
+     * guarantee of a NUL anywhere in it, and the real validate_game_ticket() behind world_entry_redeem()
      * builds a Redis key from it with "%s" -- which reads to a terminator
      * regardless of the output bound. A client that filled the field therefore
      * walked that read past it, through the rest of the packet and on into the
@@ -137,23 +141,38 @@ int validate_game_ticket(const char* t, const char* peer_ip, uint32_t expected_w
     *world = 1;
     return 1;
 }
-/** Stub recording that a character is live in a world. */
-int world_session_mark(uint32_t character_id, uint32_t world_id) {
-    (void)character_id; (void)world_id; return 1;
+/** Stub the world entry service: redeem the fixture ticket and skip storage. */
+world_entry_result world_entry_redeem(const char* ticket, const char* peer_ip,
+                                      uint32_t world_id, uint32_t* out_account_id,
+                                      uint32_t* out_character_id) {
+	uint32_t ticket_world = 0;
+
+	if(!fixture_validate_ticket(ticket, peer_ip, world_id, out_account_id,
+	                            out_character_id, &ticket_world))
+		return WORLD_ENTRY_BAD_TICKET;
+
+	return WORLD_ENTRY_OK;
 }
+
+/** Stub recording that a character is live in a world. */
+int world_entry_mark_live(uint32_t character_id, uint32_t world_id) {
+	(void)character_id;
+	(void)world_id;
+	return 1;
+}
+
 /** Stub clearing that record. */
-void world_session_clear(uint32_t character_id) { (void)character_id; }
+void world_entry_clear_live(uint32_t character_id) {
+	(void)character_id;
+}
 
 /** Stub the database pool size the worker count is derived from.
  *
  * The real one reads $MMO_DB_POOL_SIZE; this test opens no database, and what
  * it cares about is that net_loop_start() asks for a plausible worker count,
  * not which number it gets. */
-int character_database_pool_configured_size(void);
-int character_database_pool_configured_size(void) { return 4; }
-
-/** The account that owns a test character, matching validate_game_ticket(). */
-uint32_t character_get_owner(uint32_t c) { return 1000 + (c - 2000); }
+int world_entry_db_pool_size(void);
+int world_entry_db_pool_size(void) { return 4; }
 
 /* session_registry.c is linked for real rather than stubbed.
  *
@@ -248,6 +267,76 @@ static int roster_count(void) {
     return n;
 }
 
+/** How many roster entries are link-dead: still in the world, with no connection. */
+static int roster_linkdead_count(void) {
+	int n = 0;
+
+	pthread_mutex_lock(&g_roster_lock);
+	for(int i = 0; i < ROSTER_MAX; i++)
+		if(g_player_used[i] && g_players[i].client_fd < 0 && g_players[i].linkdead_at > 0.0)
+			n++;
+	pthread_mutex_unlock(&g_roster_lock);
+	return n;
+}
+
+/** Wait until the roster holds exactly this many link-dead entries. */
+static void wait_for_linkdead(int expected) {
+	for(int i = 0; i < 600 && roster_linkdead_count() != expected; i++)
+		usleep(5000);
+}
+
+/** The real contract: only the descriptor that owns the slot may park it. */
+int player_mark_linkdead(uint32_t c, int fd, double now) {
+	int marked = 0;
+
+	pthread_mutex_lock(&g_roster_lock);
+	int slot = roster_find_locked(c);
+	if(slot >= 0 && g_players[slot].client_fd == fd) {
+		g_players[slot].client_fd = -1;
+		g_players[slot].linkdead_at = now > 0.0 ? now : 0.001;
+		marked = 1;
+	}
+	pthread_mutex_unlock(&g_roster_lock);
+	return marked;
+}
+
+int player_linkdead_expired(double now, double grace, uint32_t* out_ids, int max_out) {
+	int count = 0;
+
+	pthread_mutex_lock(&g_roster_lock);
+	for(int i = 0; i < ROSTER_MAX && count < max_out; i++)
+		if(g_player_used[i] && g_players[i].linkdead_at > 0.0 &&
+		   now - g_players[i].linkdead_at >= grace)
+			out_ids[count++] = g_players[i].character_id;
+	pthread_mutex_unlock(&g_roster_lock);
+	return count;
+}
+
+int player_remove_linkdead(uint32_t c, uint32_t* out_account_id) {
+	int removed = 0;
+
+	pthread_mutex_lock(&g_roster_lock);
+	int slot = roster_find_locked(c);
+	if(slot >= 0 && g_players[slot].linkdead_at > 0.0 && g_players[slot].client_fd < 0) {
+		if(out_account_id)
+			*out_account_id = g_players[slot].account_id;
+		g_player_used[slot] = 0;
+		removed = 1;
+	}
+	pthread_mutex_unlock(&g_roster_lock);
+	return removed;
+}
+
+/** Stub snapshot release; the stubbed snapshot owns nothing. */
+void player_snapshot_release(void* s) { (void)s; }
+
+/** Stub login renewal, counting how often a drop renewed it. */
+static atomic_int g_logins_kept = 0;
+void world_entry_keep_login(uint32_t account_id) {
+	(void)account_id;
+	atomic_fetch_add(&g_logins_kept, 1);
+}
+
 /** Stub initial player-data transmission. */
 void player_send_data_response(int fd, uint32_t c) { (void)fd;(void)c; }
 
@@ -262,10 +351,14 @@ void player_send_stats_locked(int fd, ActivePlayer* p) { (void)fd;(void)p; }
 /** Stub ability-data transmission. */
 void ability_send_data(int fd, ActivePlayer* p) { (void)fd;(void)p; }
 
+/** Stub world time transmission. */
+void world_clock_send(int fd, uint32_t c) { (void)fd;(void)c; }
+
+/** Stub forecast transmission. */
+void weather_service_send(int fd, uint32_t c) { (void)fd;(void)c; }
+
 /** Stub quest-data transmission. */
 void quest_send_all(uint32_t c, int fd) { (void)c;(void)fd; }
-/** Stub successful quest persistence. */
-int  quest_player_save(uint32_t c, const void* state) { (void)c;(void)state; return 1; }
 /** Stub successful character persistence. */
 int  character_update_full_data(const void* info) { (void)info; return 1; }
 /** Stub party disconnect cleanup. */
@@ -273,7 +366,7 @@ void party_handle_disconnect(uint32_t c) { (void)c; }
 
 /* The friends hooks net_loop.c calls on entry and exit.
  *
- * The real ones are world_server/src/friends.c, which pulls in the friend bus,
+ * The real ones are world_server/systems/src/friends.c, which pulls in the friend bus,
  * the presence cache and Redis -- none of which the reactor contract this file
  * measures has anything to do with. Stubbed rather than linked for the same
  * reason party_handle_disconnect() above is.
@@ -310,8 +403,10 @@ int process_packet(int fd, uint32_t character_id, int player_slot,
 #include "config.h"
 
 /** Stub the whole-character save that commits scalars, currency and items together. */
-int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
-                       const ItemInstance* eq, int n_eq) {
+int character_save_all(const character_record* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq,
+                       const PlayerQuestState* quests) {
+	(void)quests;
     (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
 ServerConfig g_server;
@@ -461,6 +556,11 @@ int main(void) {
     for (int i = 0; i < 1000 && net_loop_connection_count() > 0; i++) usleep(5000);
     printf("  live after closing all: %d (expect 0)\n", net_loop_connection_count());
     assert(net_loop_connection_count() == 0);
+    // all 250 dropped without a logout, so all 250 are parked in the world
+    wait_for_linkdead(MANY);
+    assert(roster_count() == MANY);
+    player_session_release_linkdead();
+    assert(roster_count() == 0);
 
     printf("\nTEST 8: a bad ticket is rejected, not admitted\n");
     int c3 = connect_client();
@@ -507,9 +607,8 @@ int main(void) {
     for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
     assert(net_loop_connection_count() == 0);
 
-    printf("\nTEST 10: a clean disconnect frees the character to reconnect\n");
-    /* The ordinary case, and the baseline for TEST 11: after a socket closes,
-     * nothing about that character is left claimed. */
+    printf("\nTEST 10: a dropped connection keeps its character in the world\n");
+    // A socket that closes without a logout parks the character; the same player takes it over
     {
         int a = connect_client();
         send_auth(a);
@@ -517,14 +616,22 @@ int main(void) {
         assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
         printf("  first session admitted, roster=%d\n", roster_count());
         assert(roster_count() == 1);
+        assert(roster_linkdead_count() == 0);
 
+        int kept_before = atomic_load(&g_logins_kept);
         close(a);
         for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
-        for (int i = 0; i < 400 && roster_count() > 0; i++) usleep(5000);
-        printf("  after the close: connections=%d roster=%d (expect 0 and 0)\n",
-               net_loop_connection_count(), roster_count());
+        wait_for_linkdead(1);
+        printf("  after the close: connections=%d roster=%d linkdead=%d (expect 0, 1, 1)\n",
+               net_loop_connection_count(), roster_count(), roster_linkdead_count());
         assert(net_loop_connection_count() == 0);
-        assert(roster_count() == 0);
+        assert(roster_count() == 1);
+        assert(roster_linkdead_count() == 1);
+        assert(atomic_load(&g_logins_kept) == kept_before + 1);
+
+        // inside the grace period the sweep leaves it alone
+        player_session_sweep_linkdead();
+        assert(roster_count() == 1);
 
         int b = connect_client();
         send_auth(b);
@@ -532,10 +639,12 @@ int main(void) {
         printf("  reconnect ack success=%d (expect 1)\n", got > 0 ? ack.success : -1);
         assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
         assert(roster_count() == 1);
+        assert(roster_linkdead_count() == 0);
 
         close(b);
         for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
-        for (int i = 0; i < 400 && roster_count() > 0; i++) usleep(5000);
+        wait_for_linkdead(1);
+        player_session_release_linkdead();
         assert(roster_count() == 0);
     }
 
@@ -588,13 +697,20 @@ int main(void) {
                atomic_load(&g_packets_dispatched));
         assert(atomic_load(&g_packets_dispatched) == 1);
 
+        // the kicked connection's teardown must not park a character the new one owns
+        assert(roster_linkdead_count() == 0);
+
         close(old_c);
         close(new_c);
         for (int i = 0; i < 600 && net_loop_connection_count() > 0; i++) usleep(5000);
-        for (int i = 0; i < 600 && roster_count() > 0; i++) usleep(5000);
-        printf("  after both close: connections=%d roster=%d (expect 0 and 0)\n",
-               net_loop_connection_count(), roster_count());
+        wait_for_linkdead(1);
+        printf("  after both close: connections=%d roster=%d linkdead=%d (expect 0, 1, 1)\n",
+               net_loop_connection_count(), roster_count(), roster_linkdead_count());
         assert(net_loop_connection_count() == 0);
+        assert(roster_count() == 1);
+        assert(roster_linkdead_count() == 1);
+
+        player_session_release_linkdead();
         assert(roster_count() == 0);
     }
 
@@ -621,10 +737,13 @@ int main(void) {
 
         close(prev);
         for (int i = 0; i < 600 && net_loop_connection_count() > 0; i++) usleep(5000);
-        for (int i = 0; i < 600 && roster_count() > 0; i++) usleep(5000);
-        printf("  and after the last close: connections=%d roster=%d\n",
-               net_loop_connection_count(), roster_count());
+        wait_for_linkdead(1);
+        printf("  and after the last close: connections=%d roster=%d linkdead=%d\n",
+               net_loop_connection_count(), roster_count(), roster_linkdead_count());
         assert(net_loop_connection_count() == 0);
+        assert(roster_count() == 1);
+
+        player_session_release_linkdead();
         assert(roster_count() == 0);
     }
 
@@ -634,7 +753,7 @@ int main(void) {
      * to send the ticket lookup reading past the field, through character_id
      * and protocol_version and into whatever the reactor's buffer held next --
      * an out-of-bounds read reachable before authentication by anyone who could
-     * open the port. The fixture's validate_game_ticket() counts any ticket it
+     * open the port. The fixture's world_entry_redeem() counts any ticket it
      * is handed without a NUL inside the field; the count must stay zero.
      *
      * The connection is refused either way, so a rejection alone proves
@@ -660,6 +779,29 @@ int main(void) {
 
         close(c6);
         for (int i = 0; i < 400 && net_loop_connection_count() > 0; i++) usleep(5000);
+        assert(net_loop_connection_count() == 0);
+    }
+
+    printf("\nTEST 14: a logout leaves the world at once, a drop does not\n");
+    // A logout leaves at once; only a connection that vanished is held for the grace period
+    {
+        int kept_before = atomic_load(&g_logins_kept);
+        int d = connect_client();
+        send_auth(d);
+        got = recv_timeout(d, &ack, sizeof(ack), 2000);
+        assert(got == (ssize_t)sizeof(ack) && ack.success == 1);
+        assert(roster_count() == 1);
+
+        PacketHeader logout = { .type = PACKET_LOGOUT, .player_id = 0, .payload_size = htons(0) };
+        assert(send(d, &logout, sizeof(logout), 0) == (ssize_t)sizeof(logout));
+        for (int i = 0; i < 600 && roster_count() > 0; i++) usleep(5000);
+        printf("  after a logout: roster=%d linkdead=%d (expect 0, 0)\n",
+               roster_count(), roster_linkdead_count());
+        assert(roster_count() == 0);
+        assert(roster_linkdead_count() == 0);
+        assert(atomic_load(&g_logins_kept) == kept_before);   // nothing to reconnect to
+        close(d);
+        for (int i = 0; i < 600 && net_loop_connection_count() > 0; i++) usleep(5000);
         assert(net_loop_connection_count() == 0);
     }
 

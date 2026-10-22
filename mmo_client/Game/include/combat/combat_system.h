@@ -12,8 +12,6 @@
 
 void combat_init(CombatState* combat);
 
-void combat_reset(CombatState* combat);
-
 void combat_update(CombatState* combat, float delta_time);
 
 void combat_on_cast_start(CombatState* combat,
@@ -33,18 +31,9 @@ void combat_on_damage(CombatState* combat,
                       int is_kill,
                       int is_heal,
                       float target_x,
-                      float target_y);
+                      float target_y,
+                      float target_z);
 
 void combat_on_attack_result(CombatState* combat, uint8_t result_code, float cooldown);
-
-int combat_is_casting(const CombatState* combat);
-
-float combat_get_cast_progress(const CombatState* combat);
-
-float combat_get_cast_remaining(const CombatState* combat);
-
-int combat_is_on_cooldown(const CombatState* combat);
-
-float combat_get_cooldown_progress(const CombatState* combat);
 
 #endif // COMBAT_SYSTEM_H

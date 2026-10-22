@@ -22,14 +22,12 @@
 #include "net_notify.h"
 #include "net_reactor.h"
 #include "packet_limiter.h"
-#include "players_database.h"
 #include "protocol.h"
 #include "routes.h"
-#include "session.h"
+#include "realm_service.h"
 #include "peer_addr.h"
 #include "tls.h"
 #include "types.h"
-#include "world_database_manager.h"
 
 #include <arpa/inet.h>
 #include <string.h>
@@ -49,7 +47,7 @@
  * derived from DB_CONN_POOL_SIZE, which is that other pool's default, so
  * raising the number this actually waits on ($MMO_WORLD_POOL_SIZE) left the
  * worker count where it was and lowering it left workers to time out.
- * world_database_manager_conn_per_world() is the number in play, and it reads
+ * realm_db_worker_count() is the number in play, and it reads
  * the same environment the pools do. */
 /** Silence allowed before a connection has proved who it is. */
 #define AUTH_TIMEOUT_SECS   15
@@ -203,7 +201,7 @@ static NetReactorVerdict authenticate(NetReactorConn* conn, RealmConn* rc,
         char peer[PEER_ADDR_MAXLEN] = {0};
         peer_addr_text(fd, peer, sizeof(peer));
 
-        if (session_validate_from(account_id, pkt->header.session_key, peer)) {
+        if (realm_session_valid(account_id, pkt->header.session_key, peer)) {
             rc->account_id    = account_id;
             rc->authenticated = 1;
 
@@ -333,7 +331,7 @@ int realm_net_start(SSL_CTX* ctx, int worker_count) {
     config.name         = "REALM";
     config.worker_count = worker_count > 0
         ? worker_count
-        : world_database_manager_conn_per_world();
+        : realm_db_worker_count();
     config.buffer_size  = MAX_PACKET_SIZE * 2;
     config.user_size    = sizeof(RealmConn);
     config.transport    = &REALM_TLS;

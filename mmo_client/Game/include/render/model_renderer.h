@@ -26,21 +26,29 @@ void model_renderer_release_model(SkinnedModel* model);
 /** Delete the GL names an instance holds; call before skinned_instance_free(). */
 void model_renderer_release_instance(SkinnedInstance* instance);
 
-/** Set up depth, culling and the shader for a run of model draws. Bodies fade
- *  into the sky with distance from (fog_x, fog_y), as the world does. */
-void model_renderer_begin(float fog_x, float fog_y);
+/** Set up depth, culling and the shader for a run of model draws. */
+void model_renderer_begin(void);
 
 /** Draw one body. Streams this frame's skinned vertices to the GPU first.
  *
  * @param mvp       Column-major clip-from-model matrix.
  * @param model_mat Column-major world-from-model matrix (rotation and uniform
  *                  scale only matter; it orients the normals).
- * @param tint      Colour of the model's first material; later materials take
- *                  a darker shade of it.
+ * @param tint      A colour to tint the M_Main and M_Joints meshes with (see
+ *                  SkinnedMesh.tint_shade), or NULL to draw every mesh in its
+ *                  material's own colour, as authored.
  */
 void model_renderer_draw(const SkinnedModel* model, SkinnedInstance* instance,
                          const float mvp[16], const float model_mat[16],
                          const float tint[3]);
+
+/** Draw bodies as shadow casters into the shadow map being drawn
+ *  (render/shadow_map.h): bracket a run of model_renderer_draw_depth() calls.
+ *  A body casts the vertices its last real draw streamed. */
+void model_renderer_depth_begin(void);
+void model_renderer_draw_depth(const SkinnedModel* model, const SkinnedInstance* instance,
+                               const float mvp[16]);
+void model_renderer_depth_end(void);
 
 /** Restore the fixed-function state the rest of the client draws with. */
 void model_renderer_end(void);

@@ -4,8 +4,11 @@
  * per-tick snapshot the gameplay phases query instead of scanning.
  */
 
+#include "npc_query.h"
 #include "npc_snapshot.h"
 #include "npc_world.h"
+#include "world_spans.h"
+#include "world_spans_fixture.h"
 
 #include <assert.h>
 #include <pthread.h>
@@ -90,6 +93,9 @@ static void* churn_thread(void* arg) {
 
 int main(void) {
     printf("=== NPC pool and tick snapshot ===\n");
+
+    /* A flat span world the size of the stubbed collision extent. */
+    world_spans_init(600, 400, 16);
 
     /* ------------------------------------------------------------------ */
     printf("\nTEST 1: capacity comes from the caller, not a compiled ceiling\n");
@@ -480,6 +486,54 @@ int main(void) {
         printf("  out-of-range slots return NULL\n");
 
         npc_world_shutdown(&world);
+    }
+
+    /* ------------------------------------------------------------------ */
+    printf("\nTEST 14: an NPC takes its height from the surface it spawns on\n");
+    {
+        const char* path = "/tmp/npc_world_spans_test.bin";
+        NPCWorld world;
+        assert(npc_world_init(&world, 16));
+
+        world_spans_init(FIX_W, FIX_H, FIX_TILE);
+        fix_write_city(path);
+        assert(world_spans_load(path));
+
+        uint32_t hi = spawn_at(&world, "ramp", FIX_CX(13), FIX_CX(5) - 8.0f);
+        uint32_t flat = spawn_at(&world, "flat", FIX_CX(40), FIX_CX(40));
+        assert(hi != 0 && flat != 0);
+
+        NPCEntity* e = npc_world_acquire(&world, hi);
+        assert(e != NULL && e->pos_z == 24.0f && e->spawn_z == 24.0f);
+        npc_world_release(&world, e);
+        e = npc_world_acquire(&world, flat);
+        assert(e != NULL && e->pos_z == 0.0f && e->spawn_z == 0.0f);
+        npc_world_release(&world, e);
+
+        NPCTickSnapshot snap;
+        assert(npc_snapshot_init(&snap, &world));
+        npc_snapshot_build(&snap, &world);
+        int seen = 0;
+        for (int i = 0; i < snap.count; i++) {
+            if (snap.id[i] == hi) { assert(snap.pos_z[i] == 24.0f); seen++; }
+            if (snap.id[i] == flat) { assert(snap.pos_z[i] == 0.0f); seen++; }
+        }
+        assert(seen == 2);
+        npc_snapshot_free(&snap);
+
+        assert(npc_query_init(&world));
+        npc_query_publish(&world);
+        NpcQueryHit hit;
+        assert(npc_query_lookup(hi, &hit) && hit.pos_z == 24.0f);
+        assert(npc_query_lookup(flat, &hit) && hit.pos_z == 0.0f);
+        NpcQueryHit near_hits[4];
+        int n = npc_query_near(FIX_CX(13), FIX_CX(5) - 8.0f, 4.0f, near_hits, 4);
+        assert(n == 1 && near_hits[0].id == hi && near_hits[0].pos_z == 24.0f);
+        npc_query_shutdown();
+
+        world_spans_shutdown();
+        npc_world_shutdown(&world);
+        printf("  ramp tile -> 24, flat world -> 0, snapshot and query agree\n");
     }
 
     printf("\nALL ASSERTIONS PASSED\n");

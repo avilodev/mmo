@@ -21,6 +21,9 @@
 #include "limit_profiles.h"
 #include "npc_world.h"
 #include "player_data.h"
+#include "emote_handler.h"
+#include "inspect_handler.h"
+#include "status_handler.h"
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -70,6 +73,26 @@ void handle_player_move(int fd, uint32_t c, int slot, PlayerMovePacket* pkt) {
     (void)fd; (void)c; (void)slot;
     fz_entered("handle_player_move", PACKET_PLAYER_MOVE, sizeof(PlayerMovePacket));
     volatile float s = pkt->vel_y; (void)s;
+}
+
+void handle_emote_request(int fd, uint32_t c, int slot, const EmoteRequestPacket* pkt) {
+	volatile uint8_t s = pkt->arg;
+
+	(void)fd;
+	(void)c;
+	(void)slot;
+	(void)s;
+	fz_entered("handle_emote_request", PACKET_EMOTE_REQUEST, sizeof(EmoteRequestPacket));
+}
+
+void handle_inspect_request(int fd, uint32_t c, int slot, const InspectRequestPacket* pkt) {
+	volatile uint32_t s = pkt->target_id;
+
+	(void)fd;
+	(void)c;
+	(void)slot;
+	(void)s;
+	fz_entered("handle_inspect_request", PACKET_INSPECT_REQUEST, sizeof(InspectRequestPacket));
 }
 
 void combat_handle_attack_intent(NPCWorld* w, int fd, uint32_t c, AttackIntentPacket* pkt) {
@@ -169,6 +192,21 @@ void shop_handle_sell(uint32_t c, int fd, uint8_t* buffer, int bytes) {
     (void)c; (void)fd;
     raw_handler("shop_handle_sell", PACKET_SHOP_SELL, buffer, bytes);
 }
+// Every activity opcode reaches this first; it has no length to check.
+void status_note_activity(int fd, uint32_t c, int slot) {
+	(void)fd;
+	(void)c;
+	(void)slot;
+}
+
+void status_handle_request(int fd, uint32_t c, int slot, uint8_t status) {
+	(void)fd;
+	(void)c;
+	(void)slot;
+	(void)status;
+	fz_entered("status_handle_request", PACKET_STATUS_REQUEST, sizeof(StatusRequestPacket));
+}
+
 void handle_session_list_request(int fd, uint8_t* buffer, ssize_t bytes) {
     (void)fd;
     raw_handler("handle_session_list_request", PACKET_SESSION_LIST_REQUEST, buffer, bytes);
@@ -249,6 +287,9 @@ int main(void) {
     fz_declare(PACKET_ABILITY_CAST_INTENT,   sizeof(AbilityCastIntentPacket));
     fz_declare(PACKET_ABILITY_CAST_CANCEL,   sizeof(PacketHeader));
     fz_declare(PACKET_FORM_SWAP,             sizeof(FormSwapPacket));
+    fz_declare(PACKET_EMOTE_REQUEST,         sizeof(EmoteRequestPacket));
+	fz_declare(PACKET_INSPECT_REQUEST,       sizeof(InspectRequestPacket));
+    fz_declare(PACKET_STATUS_REQUEST,           sizeof(StatusRequestPacket));
     fz_declare(PACKET_QUEST_ABANDON,         sizeof(QuestAbandonPacket));
     fz_declare(PACKET_DIALOGUE_CLOSE,        sizeof(PacketHeader));
     fz_declare(PACKET_PARTY_ACCEPT,          sizeof(PacketHeader));

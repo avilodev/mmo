@@ -123,6 +123,39 @@ void worldgen_tile_at(int x, int y, WorldGenTile* out);
 int  worldgen_courtyard_at(int x, int y, WorldGenTile* out);
 void worldgen_spawn_point(float* out_x, float* out_y);
 
+/** Path of the baked collision footprints, relative to mmo_client/. */
+#define CITY_COLLISION_PATH "Game/assets/baked/test_town_collision.bin"
+
+/** Load the city's baked collision (worldgen_city_collision.c).
+ *  @return 1 on success; 0, with the reason on stderr, if the file is missing
+ *          or malformed. */
+int  worldgen_city_collision_load(const char* path);
+void worldgen_city_collision_free(void);
+
+/** @return 1 if the city's collision makes world tile (x, y) solid, else 0;
+ *          0 everywhere until a file is loaded. */
+int  worldgen_city_collision_solid(int x, int y);
+
+/** Path of the baked walkable spans, relative to mmo_client/. */
+#define CITY_SPANS_PATH "Game/assets/baked/test_town_spans.bin"
+
+/** Load the city's baked spans (worldgen_city_spans.c).
+ *  @return 1 on success; 0, with the reason on stderr, if the file is missing
+ *          or malformed. */
+int  worldgen_city_spans_load(const char* path);
+void worldgen_city_spans_free(void);
+
+/** @return The number of walkable spans of world tile (x, y), or -1 outside
+ *          the baked grid (and everywhere until a file is loaded). */
+int  worldgen_city_spans_count(int x, int y);
+
+/** Write the world_spans.bin sidecar beside world.dat for a world of
+ *  world_w x world_h tiles of tile_size units. Tiles outside the baked grid,
+ *  outside the world, and flat default tiles get no record.
+ *  @return 1 on success, 0 on failure (a partial file is removed). */
+int  worldgen_city_spans_write(const char* path, int world_w, int world_h,
+                               int tile_size);
+
 int worldgen_write(const char* path, int width, int height);
 
 /**

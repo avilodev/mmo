@@ -30,8 +30,8 @@ typedef enum {
 
 /** Each mode's speed as a fraction of the character's top speed -- the
  *  server's figure, which nothing may exceed. Sprint is the top speed, so run
- *  sits below it. At the default 200: walk 64, run 150, sprint 200. */
-#define LOCO_WALK_FRACTION   0.32f
+ *  sits below it. At the default 200: walk 30, run 150, sprint 200. */
+#define LOCO_WALK_FRACTION   0.15f
 #define LOCO_RUN_FRACTION    0.75f
 #define LOCO_SPRINT_FRACTION 1.00f
 
@@ -45,10 +45,10 @@ typedef enum {
 #define LOCO_WALK_TURN_DEG   540.0f
 #define LOCO_RUN_TURN_DEG    360.0f
 
-/** Turning on the spot: started when the keys point more than PIVOT_START
+/** Turning on the spot: started when the keys point PIVOT_START or more
  *  away while (nearly) standing, ended once within PIVOT_END. */
-#define LOCO_PIVOT_TURN_DEG  900.0f
-#define LOCO_PIVOT_START_DEG 100.0f
+#define LOCO_PIVOT_TURN_DEG  540.0f
+#define LOCO_PIVOT_START_DEG 45.0f
 #define LOCO_PIVOT_END_DEG   20.0f
 #define LOCO_PIVOT_SPEED     40.0f   /**< At or below this the body can pivot. */
 
@@ -57,6 +57,7 @@ typedef struct {
     float heading;    /**< Facing, radians: world direction (sin, cos). */
     float speed;      /**< Current ground speed, world units per second. */
     int   pivoting;   /**< Turning on the spot. */
+    float pivot_target; /**< Where the pivot ends: the way the keys last pointed. */
 } Locomotion;
 
 /** Advance one frame.

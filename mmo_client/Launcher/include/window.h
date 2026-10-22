@@ -8,10 +8,6 @@
 #include "ui_login.h"
 #include "ui_patch_notes.h"
 
-/** Identify the reconnect timer and its interval in milliseconds. */
-#define TIMER_RECONNECT 2
-#define RECONNECT_INTERVAL 10000
-
 /** Identify the main-window status bar. */
 #define ID_STATUS_BAR 1001
 

@@ -61,13 +61,13 @@ validate_world_table() {
 
     local max_worlds
     max_worlds=$(grep -oE '#define MAX_WORLDS[[:space:]]+[0-9]+' \
-        "$PROJECT_ROOT/realm_server/include/world_database_manager.h" 2>/dev/null \
+        "$PROJECT_ROOT/common/include/protocol.h" 2>/dev/null \
         | grep -oE '[0-9]+$')
     max_worlds=${max_worlds:-10}
 
     if [ "$count" -gt "$max_worlds" ]; then
         die "worlds.conf lists $count worlds but MAX_WORLDS is $max_worlds.
-       Raise MAX_WORLDS in realm_server/include/world_database_manager.h and rebuild,
+       Raise MAX_WORLDS in common/include/protocol.h and rebuild,
        or remove worlds from setup/worlds.conf."
     fi
 
@@ -197,9 +197,9 @@ $hardcore
 #   level, race and ping to any authenticated client, scoped to nothing: not to
 #   who is nearby, not to a party, not to a friend list. That is a complete and
 #   refreshable census of who is playing. Turn it on only if you actually want
-#   a public "who" list.
+#   a public "who" list. The shipped worlds turn it on for the O window.
 # ---------------------------------------------------------------------------
-# session_list = on
+session_list = on
 
 # realm_port = 8778
 # realm_bind = 10.0.0.5
@@ -320,7 +320,7 @@ TTL=${SERVER_KEY_TTL:-86400}
 # How long the key being replaced stays valid. Must be at least as long as the
 # realm's world-probe cycle, and is capped well below the TTL so an old key
 # never outlives the rotation that replaced it by much. Keep this in step with
-# SERVER_KEY_OVERLAP_SECONDS in common/include/realm_world_auth.h.
+# SERVER_KEY_OVERLAP_SECONDS in storage/include/realm_world_auth.h.
 OVERLAP=${SERVER_KEY_OVERLAP:-900}
 
 VERIFY_ONLY=0

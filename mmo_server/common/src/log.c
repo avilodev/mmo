@@ -149,9 +149,6 @@ void log_close(void) {
 /** Set the maximum enabled logging level. */
 void log_set_level(LogLevel level) { g_level = level; }
 
-/** Return the maximum enabled logging level. */
-LogLevel log_get_level(void) { return g_level; }
-
 /**
  * Test whether a logging level is enabled.
  *
@@ -159,7 +156,7 @@ LogLevel log_get_level(void) { return g_level; }
  */
 int log_level_enabled(LogLevel level) { return (int)level <= (int)g_level; }
 
-// Strip directories so "world_server/src/packet_handler.c" logs as
+// Strip directories so "world_server/network/src/packet_handler.c" logs as
 // "packet_handler.c" and lines stay readable.
 static const char* basename_of(const char* path) {
     const char* slash = strrchr(path, '/');

@@ -4,10 +4,8 @@
  */
 #include "types.h"
 #include "log.h"
-#include "players_database.h"
 #include "character_connect.h"
-#include "session.h"
-#include "world_database_manager.h"
+#include "realm_service.h"
 #include "race_registry.h"
 
 #include <stdio.h>
@@ -17,8 +15,6 @@
 #include <sys/socket.h>
 #include <stddef.h>
 #include "tls.h"
-
-extern PGconn* g_pg;
 
 #define MAX_CHARACTERS_PER_WORLD 10
 
@@ -80,9 +76,9 @@ void handle_race_list_request(int client_fd, uint32_t account_id) {
  * Response identifiers and numeric character fields are encoded in network byte order.
  */
 void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t world_id) {
-    CharacterInfo characters[MAX_CHARACTERS_PER_WORLD];
+    character_record characters[MAX_CHARACTERS_PER_WORLD];
 
-    int count = world_character_get_list(account_id, world_id,
+    int count = realm_character_list(account_id, world_id,
                                               characters, MAX_CHARACTERS_PER_WORLD);
 
     /* A database that could not be reached is not an account with no
@@ -91,7 +87,7 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
      * create a replacement. Say nothing instead: the client's own request
      * timeout reports "Server did not respond", which is what happened.
      *
-     * The clamp below is not reachable from world_character_get_list(), which
+     * The clamp below is not reachable from realm_character_list(), which
      * bounds its own writes; it is here because `count` becomes a uint8_t and
      * send_size is computed from it, so a negative or oversized value would
      * be a read past the end of a stack packet rather than a wrong number. */
@@ -117,6 +113,7 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
         /* Race and class fuse into one identifier, so both wire fields carry it. */
         response.characters[i].class_id = htonl(characters[i].race_id);
         response.characters[i].race_id = htonl(characters[i].race_id);
+		response.characters[i].appearance = htonl(characters[i].appearance);
     }
 
     size_t send_size = offsetof(CharacterListResponsePacket, characters) +
@@ -133,7 +130,8 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
  */
 void handle_character_create_request(int client_fd, uint32_t account_id,
                                       uint32_t world_id, const char* name,
-                                      int class_id, int race_id) {
+                                      int class_id, int race_id,
+									  uint32_t appearance) {
     CharacterCreateResponsePacket response = {0};
     response.header.type = PACKET_CHARACTER_CREATE_RESPONSE;
     response.header.player_id = htonl(account_id);
@@ -141,7 +139,7 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
     response.world_id = htonl(world_id);
 
     // Check character limit per world
-    int current_count = world_character_count(account_id, world_id);
+    int current_count = realm_character_count(account_id, world_id);
     if (current_count < 0) {
         response.success = 0;
         strncpy(response.message, "Character database unavailable", 127);
@@ -196,10 +194,21 @@ void handle_character_create_request(int client_fd, uint32_t account_id,
         return;
     }
 
+	// The look comes from the client too: refuse a body this build does not
+	// have, or reserved bits
+	if(!appearance_valid(appearance)) {
+		response.success = 0;
+		strncpy(response.message, "Invalid appearance", 127);
+		LOG_ERROR("Refused character create for account %u: appearance 0x%x is not valid for race %d",
+		          account_id, appearance, class_id);
+		tls_send(client_fd, &response, sizeof(response), 0);
+		return;
+	}
+
     // Create character
     uint32_t character_id;
-    int success = world_character_create(account_id, world_id, name,
-                                            class_id, race_id, &character_id);
+    int success = realm_character_create(account_id, world_id, name,
+                                            class_id, race_id, appearance, &character_id);
 
     if (success) {
         response.success = 1;
@@ -231,35 +240,22 @@ void handle_character_delete_request(int client_fd, uint32_t account_id,
     response.character_id = htonl(character_id);
     response.world_id = htonl(world_id);
 
-    /* Refuse while the character is live in a world.
-     *
-     * Deleting one mid-session did not stop the session: the world went on
-     * playing a character whose row was gone, its next save UPDATEd zero rows
-     * and reported success, and its item writes re-INSERTed rows for a
-     * character that no longer existed. The world records a mark with a TTL
-     * while a character is in play and renews it, so a world that stops
-     * running stops blocking deletion on its own.
-     *
-     * The check is not a lock -- a character could enter a world in the
-     * moment after it passes -- but the world's own writes fail closed now
-     * (a save that matches no row is reported as a failure), so the window
-     * costs a session rather than a corrupted database. */
-    uint32_t live_in = world_session_world(character_id);
-    if (live_in != 0) {
-        response.success = 0;
-        snprintf(response.message, sizeof(response.message),
-                 "Character is currently in a world. Log out and try again.");
-        LOG_ERROR("Refused deletion of character %u for account %u: live in world %u",
-                 character_id, account_id, live_in);
-        tls_send(client_fd, &response, sizeof(response), 0);
-        return;
-    }
+	// The service refuses while the character is being played in a world.
+	uint32_t live_in = 0;
+	realm_delete_result deleted = realm_character_delete(account_id, character_id,
+	                                                     world_id, &live_in);
 
-    /* character_items and character_currencies are removed with the character
-     * by ON DELETE CASCADE (see character_database_init), so this is the whole
-     * deletion rather than the part of it that used to leave orphans owning
-     * item-instance identifiers forever. */
-    int success = world_character_delete(account_id, character_id, world_id);
+	if(deleted == REALM_DELETE_LIVE_IN_WORLD) {
+		response.success = 0;
+		snprintf(response.message, sizeof(response.message),
+		         "Character is currently in a world. Log out and try again.");
+		LOG_ERROR("Refused deletion of character %u for account %u: live in world %u",
+		         character_id, account_id, live_in);
+		tls_send(client_fd, &response, sizeof(response), 0);
+		return;
+	}
+
+	int success = (deleted == REALM_DELETE_OK);
 
     if (success) {
         response.success = 1;

@@ -7,6 +7,7 @@
  */
 
 #include "net_internal.h"
+#include "network/net_ping_watch.h"
 #include "ability_bar.h"
 #include "combat_system.h"
 #include "combat_render.h"
@@ -15,6 +16,7 @@
 #include "core/race_registry.h"
 #include "audio/audio.h"
 #include "ui/quest_log.h"
+#include "states/join_data.h"
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
@@ -40,6 +42,33 @@ static void session_gate_open_on_ack(int accepted) {
     if (accepted) g_net.handshaking = FALSE;
 }
 
+// Takes the server's echo of a ping: proof the link is alive, and a figure.
+static void handle_ping_echo(const char* data, int length) {
+	uint32_t number;
+	double arrived;
+
+	// Any echo shows the server is there, even one for a ping since replaced
+	g_net.pending_pings = 0;
+
+	if(!ping_read_number((const uint8_t*)data, (size_t)length, &number))
+		return;
+	if(!g_net.ping_outstanding || number != g_net.ping_number)
+		return;
+	g_net.ping_outstanding = FALSE;
+
+	// The frame found the echo; the watch saw when it came. No watch, no figure.
+	if(!net_ping_watch_take(&arrived))
+		return;
+
+	ping_window_add(&g_net.ping_samples,
+			ping_one_way_ms(g_net.ping_send_time, arrived));
+
+	if(g_net.ping_report_wanted) {
+		g_net.ping_report_wanted = FALSE;
+		g_net.ping_report_ready = TRUE;
+	}
+}
+
 /**
  * Dispatch one session packet.
  *
@@ -53,29 +82,14 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
 
     switch (type) {
         case PACKET_PING:
-            // Server echoed our ping back — measure RTT
-            if (g_net.pending_pings > 0) {
-                /* Only a single outstanding ping can be attributed to a send
-                 * time. ping_send_time holds one instant and pings are not
-                 * numbered, so with two in flight the echo being answered is
-                 * the older one while the recorded time is the newer -- which
-                 * reported a latency far below the real one, on exactly the
-                 * struggling link where the number matters. */
-                int attributable = (g_net.pending_pings == 1);
-                g_net.pending_pings--;
-                if (attributable) {
-                    double rtt = (net_now() - g_net.ping_send_time) * 1000.0;
-                    if (rtt > 0.0 && rtt < 60000.0)
-                        g_net.ping_ms = (int)rtt;
-                }
-            }
+            handle_ping_echo(data, length);
             break;
 
         case PACKET_WORLD_LIST_RESPONSE: {
             size_t base_size = offsetof(WorldListResponsePacket, worlds);
 
             if (length < (int)base_size) {
-                NET_WARN("[NET] ❌ WORLD_LIST packet too small: %d < %zu\n", length, base_size);
+                NET_WARN("[NET] WORLD_LIST packet too small: %d < %zu\n", length, base_size);
                 return 1;   // handled: the packet was rejected, not unrecognized
             }
 
@@ -130,7 +144,7 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
             size_t base_size = offsetof(CharacterListResponsePacket, characters);
 
             if (length < (int)base_size) {
-                NET_WARN("[NET] ❌ CHAR_LIST packet too small: %d < %zu\n", length, base_size);
+                NET_WARN("[NET] CHAR_LIST packet too small: %d < %zu\n", length, base_size);
                 return 1;   // handled: the packet was rejected, not unrecognized
             }
 
@@ -286,6 +300,7 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
                 accepted = g_net.world_connect_ack.data.success != 0;
                 LeaveCriticalSection(&g_net.response_lock);
                 session_gate_open_on_ack(accepted);
+				net_world_forget_early_quest();
                 NET_LOG("[NET] World connect ACK received\n");
             }
             break;
@@ -381,10 +396,11 @@ int net_dispatch_session(uint8_t type, const char* data, int length) {
                 src->name[31]     = '\0';
                 memcpy(dst->name, src->name, 32);
                 dst->level        = src->level;
-                dst->player_class = src->player_class;
+                dst->status       = src->status;
                 dst->player_race  = src->player_race;
                 dst->ping_ms      = ntohs(src->ping_ms);
             }
+            join_data_note(JOIN_ONLINE_LIST);
             NET_LOG("[NET] Session list: page %u/%u, %u total players, %d on page\n",
                    g_current_game->playing->session_current_page + 1,
                    g_current_game->playing->session_total_pages,
@@ -566,7 +582,7 @@ int network_get_character_list(CharacterListResponsePacket* out) {
  * @return      Nonzero when the complete request is sent; otherwise zero.
  */
 int network_create_character(uint32_t world_id, const char* name,
-                            uint32_t class_id, uint32_t race_id) {
+                            uint32_t class_id, uint32_t race_id, uint32_t appearance) {
     if (!g_net.connected) return 0;
 
     EnterCriticalSection(&g_net.response_lock);
@@ -582,6 +598,7 @@ int network_create_character(uint32_t world_id, const char* name,
     strncpy(pkt.name, name, 31);
     pkt.class_id = htonl(class_id);
     pkt.race_id = htonl(race_id);
+	pkt.appearance = htonl(appearance);
 
     return net_send((char*)&pkt, sizeof(pkt)) == sizeof(pkt);
 }
@@ -736,6 +753,7 @@ int network_get_character_data(CharacterInfo* out) {
     /* Race and class fuse into one identifier; resource_type and form are single
      * bytes and need no conversion. */
     out->race_id = ntohl(out->race_id);
+	out->appearance = ntohl(out->appearance);
 
     for (int c = 0; c < CURRENCY_COUNT; c++)
         out->currency[c] = ntohl(out->currency[c]);

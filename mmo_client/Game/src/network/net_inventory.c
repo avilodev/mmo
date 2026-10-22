@@ -184,6 +184,7 @@ int net_dispatch_inventory(uint8_t type, const char* data, int length) {
                             g_current_game->playing->ground_items[i].quantity = pkt->quantity;
                             g_current_game->playing->ground_items[i].pos_x = pkt->pos_x;
                             g_current_game->playing->ground_items[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->ground_items[i].pos_z = pkt->pos_z;
                             g_current_game->playing->ground_items[i].active = 1;
                             break;
                         }
@@ -332,23 +333,6 @@ void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t e
 }
 
 /**
- * Send a request to unequip an equipment slot.
- */
-void network_send_unequip_item(uint8_t equip_slot) {
-    if (!g_net.connected) return;
-
-    UnequipItemPacket pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.header.type = PACKET_UNEQUIP_ITEM;
-    pkt.header.player_id = htonl(g_net.character_id);
-    pkt.header.payload_size = htons(sizeof(UnequipItemPacket) - sizeof(PacketHeader));
-    pkt.equip_slot = equip_slot;
-
-    net_send((char*)&pkt, sizeof(pkt));
-    NET_LOG("[NET] Unequip item sent: equip_slot=%u\n", equip_slot);
-}
-
-/**
  * Send a request to use an inventory slot.
  */
 void network_send_use_item(uint8_t inventory_slot) {
@@ -363,23 +347,6 @@ void network_send_use_item(uint8_t inventory_slot) {
 
     net_send((char*)&pkt, sizeof(pkt));
     NET_LOG("[NET] Use item sent: slot=%u\n", inventory_slot);
-}
-
-/**
- * Send a request to drop an inventory slot.
- */
-void network_send_drop_item(uint8_t inventory_slot) {
-    if (!g_net.connected) return;
-
-    DropItemPacket pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.header.type = PACKET_DROP_ITEM;
-    pkt.header.player_id = htonl(g_net.character_id);
-    pkt.header.payload_size = htons(sizeof(DropItemPacket) - sizeof(PacketHeader));
-    pkt.inventory_slot = inventory_slot;
-
-    net_send((char*)&pkt, sizeof(pkt));
-    NET_LOG("[NET] Drop item sent: slot=%u\n", inventory_slot);
 }
 
 /**

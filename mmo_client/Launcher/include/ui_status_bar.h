@@ -12,12 +12,8 @@
 
 void CreateStatusBar(HWND hwndParent);
 
-void UpdateStatusBar(const char* status);
-
-void SetStatusOnline(void);
 void SetStatusOffline(void);
 
 void ShowStatusBar(void);
-void HideStatusBar(void);
 
 #endif // UI_STATUS_BAR_H

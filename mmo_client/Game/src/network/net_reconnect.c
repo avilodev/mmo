@@ -21,14 +21,19 @@
  * doubles from one second up to here, so a blip is recovered almost at once
  * and a long outage is not hammered.
  */
-#define BACKOFF_MAX_SECONDS 30.0
+#define BACKOFF_MAX_SECONDS 10.0
 
-/** Attempts before the player is told to deal with it themselves.
+/** Seconds, counted from the drop, before the player is told it is over.
  *
- * Not unlimited: a client that reconnects forever against a world that has
- * been taken down is a client sitting on a frozen scene pretending otherwise.
+ * Matches how long the world server keeps a dropped character standing
+ * (LINKDEAD_GRACE_SECONDS on the server): past that the character has left the
+ * world, and though a late return still works, from the last save, there is no
+ * point showing a frozen scene for much longer than the server will wait.
+ *
+ * A time and not a count of attempts. Eight attempts took anywhere from half a
+ * minute to two, depending on how long each one spent failing.
  */
-#define MAX_ATTEMPTS 8
+#define RECONNECT_BUDGET_SECONDS 60.0
 
 /** Seconds to wait for the realm's enter-world answer before retrying. */
 #define TICKET_TIMEOUT_SECONDS 10.0
@@ -47,6 +52,8 @@ static struct {
     uint32_t character_id;
 
     int    attempts;
+    double began_at;
+    ReconnectFailure failure;
     double next_attempt_at;
     double backoff;
     double stage_deadline;
@@ -100,8 +107,32 @@ void net_reconnect_forget(void) {
     memset(&g_rc, 0, sizeof(g_rc));
 }
 
+/** Stop trying, and record why so the caller can tell the player. */
+static void give_up(ReconnectFailure failure) {
+	g_rc.phase   = RECONNECT_GIVEN_UP;
+	g_rc.failure = failure;
+	network_connect_abort();
+
+	if(failure == RECONNECT_FAIL_LOGIN) {
+		snprintf(g_rc.status, sizeof(g_rc.status),
+		         "Your login has ended. Please log in again.");
+	} else {
+		snprintf(g_rc.status, sizeof(g_rc.status),
+		         "Could not reconnect after %.0f seconds.", RECONNECT_BUDGET_SECONDS);
+	}
+
+	NET_WARN("[RECONNECT] Giving up after %d attempts (%s)\n", g_rc.attempts,
+	         failure == RECONNECT_FAIL_LOGIN ? "login ended" : "out of time");
+}
+
 /** Schedule the next attempt and grow the backoff. */
 static void schedule_retry(double now) {
+	// An attempt that failed after the budget is spent is the last one
+	if(now - g_rc.began_at >= RECONNECT_BUDGET_SECONDS) {
+		give_up(RECONNECT_FAIL_TIMEOUT);
+		return;
+	}
+
     if (g_rc.backoff <= 0.0) g_rc.backoff = BACKOFF_FIRST_SECONDS;
     else                     g_rc.backoff *= 2.0;
     if (g_rc.backoff > BACKOFF_MAX_SECONDS) g_rc.backoff = BACKOFF_MAX_SECONDS;
@@ -114,46 +145,38 @@ static void schedule_retry(double now) {
     g_rc.phase = RECONNECT_WAITING;
 
     snprintf(g_rc.status, sizeof(g_rc.status),
-             "Connection lost — retrying in %.0fs (attempt %d of %d)",
-             g_rc.backoff + jitter, g_rc.attempts + 1, MAX_ATTEMPTS);
+             "Connection lost — retrying in %.0fs (attempt %d)",
+             g_rc.backoff + jitter, g_rc.attempts + 1);
 }
 
 /** Report that the connection has dropped and recovery should begin. */
 void net_reconnect_begin(double now) {
     if (!g_rc.have_session) {
-        g_rc.phase = RECONNECT_GIVEN_UP;
+        g_rc.phase   = RECONNECT_GIVEN_UP;
+        g_rc.failure = RECONNECT_FAIL_LOGIN;
         snprintf(g_rc.status, sizeof(g_rc.status),
-                 "Connection lost. Please restart the client.");
+                 "Connection lost. Please log in again.");
         return;
     }
     if (g_rc.phase != RECONNECT_IDLE) return;   // already recovering
 
     g_rc.attempts = 0;
     g_rc.backoff  = 0.0;
+	g_rc.began_at = now;
+	g_rc.failure  = RECONNECT_FAIL_NONE;
     network_connect_abort();
     schedule_retry(now);
-}
-
-/** Give up, telling the player rather than looping silently. */
-static void give_up(void) {
-    g_rc.phase = RECONNECT_GIVEN_UP;
-    snprintf(g_rc.status, sizeof(g_rc.status),
-             "Could not reconnect after %d attempts. Please restart the client.",
-             MAX_ATTEMPTS);
-    NET_WARN("[RECONNECT] Giving up after %d attempts\n", MAX_ATTEMPTS);
 }
 
 /** Begin one attempt: back to the realm first, because the ticket is spent. */
 static void start_attempt(double now) {
     g_rc.attempts++;
-    if (g_rc.attempts > MAX_ATTEMPTS) { give_up(); return; }
 
     char binary_key[32] = {0};
     hex_to_binary(g_rc.session_key_hex, binary_key, sizeof(binary_key));
 
     snprintf(g_rc.status, sizeof(g_rc.status),
-             "Reconnecting to the realm (attempt %d of %d)...",
-             g_rc.attempts, MAX_ATTEMPTS);
+             "Reconnecting to the realm (attempt %d)...", g_rc.attempts);
 
     if (!network_begin_realm_connect(g_rc.realm_ip, g_rc.realm_port,
                                      binary_key, g_rc.account_id)) {
@@ -173,13 +196,23 @@ ReconnectPhase net_reconnect_update(double now) {
             return g_rc.phase;
 
         case RECONNECT_WAITING:
-            if (now >= g_rc.next_attempt_at) start_attempt(now);
+			if(now - g_rc.began_at >= RECONNECT_BUDGET_SECONDS)
+				give_up(RECONNECT_FAIL_TIMEOUT);
+			else if(now >= g_rc.next_attempt_at)
+				start_attempt(now);
             return g_rc.phase;
 
         case RECONNECT_REALM: {
             NetConnectPhase p = network_connect_poll();
             if (p == NET_CONNECT_PENDING) return g_rc.phase;
-            if (p != NET_CONNECT_SUCCEEDED) { schedule_retry(now); return g_rc.phase; }
+            if (p != NET_CONNECT_SUCCEEDED) {
+				// The realm answered and said the login is over: asking again cannot help
+				if(network_connect_session_refused())
+					give_up(RECONNECT_FAIL_LOGIN);
+				else
+					schedule_retry(now);
+				return g_rc.phase;
+			}
 
             /* The realm is back. The old world ticket is single-use and
              * sixty-second-lived, so ask for a new one rather than reusing it. */
@@ -264,8 +297,12 @@ void net_reconnect_cancel(void) {
     g_rc.phase    = RECONNECT_IDLE;
     g_rc.attempts = 0;
     g_rc.backoff  = 0.0;
+	g_rc.failure  = RECONNECT_FAIL_NONE;
     g_rc.status[0] = '\0';
 }
+
+/** Why recovery ended in RECONNECT_GIVEN_UP. */
+ReconnectFailure net_reconnect_failure(void) { return g_rc.failure; }
 
 /** Seconds until the next attempt, or 0 when one is in flight or none is due. */
 double net_reconnect_seconds_until_retry(double now) {

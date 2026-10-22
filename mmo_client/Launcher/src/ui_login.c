@@ -452,11 +452,14 @@ void StartGame(HWND hwnd) {
     // Build path to Game.exe relative to this launcher's location.
     // Launcher is at <root>\Launcher\bin\Launcher.exe, so strip 3 components.
     char gameExePath[MAX_PATH];
+	char gameRoot[MAX_PATH];
     GetModuleFileNameA(NULL, gameExePath, MAX_PATH);
     for (int strip = 0; strip < 3; strip++) {
         char* last = strrchr(gameExePath, '\\');
         if (last) *last = '\0';
     }
+	// The game reads its files by paths under Game/, so it runs from the root
+	snprintf(gameRoot, sizeof(gameRoot), "%s", gameExePath);
     strncat(gameExePath, "\\Game\\bin\\Game.exe", MAX_PATH - strlen(gameExePath) - 1);
     
     // Convert session key to hex string
@@ -501,7 +504,7 @@ void StartGame(HWND hwnd) {
                       NULL,
                       FALSE,
                       creationFlags,
-                      NULL, NULL, &si, &pi)) {
+                      NULL, gameRoot, &si, &pi)) {
         printf("Game launched with new console!\n");
         printf("Launcher exiting...\n");
         fflush(stdout);
@@ -601,12 +604,8 @@ void ShowLoginPanel(void) {
 
 /** Hide the authenticated-player label and start-game control. */
 void HideStartGameButton(void) {
-    if (g_hwndWelcomeLabel) ShowWindow(g_hwndWelcomeLabel, SW_HIDE);
-    if (g_hwndStartGameButton) ShowWindow(g_hwndStartGameButton, SW_HIDE);
-}
-
-/** Show the existing authenticated-player label and start-game control. */
-void ShowStartGameButtonOnly(void) {
-    if (g_hwndWelcomeLabel) ShowWindow(g_hwndWelcomeLabel, SW_SHOW);
-    if (g_hwndStartGameButton) ShowWindow(g_hwndStartGameButton, SW_SHOW);
+    if (g_hwndWelcomeLabel) 
+        ShowWindow(g_hwndWelcomeLabel, SW_HIDE);
+    if (g_hwndStartGameButton) 
+        ShowWindow(g_hwndStartGameButton, SW_HIDE);
 }

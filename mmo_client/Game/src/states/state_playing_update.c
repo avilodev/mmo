@@ -17,8 +17,19 @@
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
 #include "ui/friends_panel.h"
+#include "world/city_heights.h"
+#include "render/height_smooth.h"
+#include "states/emote_client.h"
+#include "states/status_client.h"
+#include "states/inspect_client.h"
+#include "states/chat_log.h"
+#include "states/world_loader.h"
+#include "states/join_loader.h"
+#include "network/heading_wire.h"
+#include "render/character_renderer.h"
 
 #include <math.h>
+#include <string.h>
 #include "core/client_log.h"
 
 /**
@@ -28,6 +39,12 @@
  */
 void playing_update(GameState* game, float delta_time) {
     game->playing->frame_dt = delta_time;
+
+	// Nothing plays until the world is loaded; packets still land in the state
+	if(world_loader_active()) {
+		world_loader_update();
+		return;
+	}
     double now = glfwGetTime();
 
     /* The friends panel's result line, which is the only thing in it that
@@ -38,23 +55,7 @@ void playing_update(GameState* game, float delta_time) {
     if (!game->player.info_loaded) {
         CharacterInfo info;
         if (network_get_character_data(&info)) {
-            player_load_info(&game->player, &info);
-
-            /* Seed the bar with the form and pool the character entered in. The
-             * full stat packet below confirms both; this just avoids a frame of
-             * showing the wrong bar. */
-            game->playing->ability_bar.active_form   = info.form;
-            game->playing->ability_bar.resource_type = info.resource_type;
-            ability_bar_on_resource_update(&game->playing->ability_bar,
-                                           (int32_t)info.resource, (int32_t)info.max_resource);
-
-            // Request full stats from server (includes move speed, xp_for_next, etc.)
-            network_request_player_stats();
-
-            if (game->inventory) {
-                inventory_load_from_server(game->inventory, info.inventory);
-                CLOG_INFO("[GAME] Inventory loaded from server");
-            }
+            join_apply_character(game, &info);
         }
     }
 
@@ -62,6 +63,7 @@ void playing_update(GameState* game, float delta_time) {
     if (game->player.needs_position_reset) {
         game->playing->move_sync.last_sent_x = game->player.x;
         game->playing->move_sync.last_sent_y = game->player.y;
+        game->playing->move_sync.last_sent_z = game->player.vstate.z;
         game->playing->move_sync.last_move_send = now;
         game->playing->move_sync.last_any_send = now;
         game->playing->move_sync.initialized = 1;
@@ -80,26 +82,58 @@ void playing_update(GameState* game, float delta_time) {
      * now is, so it takes the corrected position rather than the replayed one.
      * The gap between them is the replayed tail, which is exactly the thing
      * that should go out in the next move. */
-    float correction_x, correction_y;
-    uint32_t correction_seq = 0;
-    if (network_get_server_correction(&correction_x, &correction_y, &correction_seq)) {
-        player_apply_correction(&game->player, &game->world,
-                                correction_seq, correction_x, correction_y);
-        game->playing->move_sync.last_sent_x = correction_x;
-        game->playing->move_sync.last_sent_y = correction_y;
-        game->playing->move_sync.last_move_send = now;
-    }
+	move_correction correction;
+
+	// in the air the server's body has fallen on for a round trip meanwhile
+	if(network_get_server_correction(&correction)) {
+		player_apply_correction(&game->player, &game->world, &correction,
+		                        network_get_round_trip_seconds());
+		game->playing->move_sync.last_sent_x = correction.x;
+		game->playing->move_sync.last_sent_y = correction.y;
+		game->playing->move_sync.last_sent_z = correction.z;
+		game->playing->move_sync.last_move_send = now;
+	}
+
+	// The answer to /ping, once the measurement is in
+	int ping_report_ms;
+
+	if(network_take_ping_report(&ping_report_ms)) {
+		char ping_line[32];
+
+		snprintf(ping_line, sizeof(ping_line), "Ping: %dms", ping_report_ms);
+		chat_log_add(&game->playing->chat, CHAT_CHANNEL_SYSTEM, CHAT_STYLE_SYSTEM,
+				"", ping_line);
+	}
 
     // Initialize movement state if needed
     if (!game->playing->move_sync.initialized) {
         game->playing->move_sync.last_sent_x = game->player.x;
         game->playing->move_sync.last_sent_y = game->player.y;
+        game->playing->move_sync.last_sent_z = game->player.vstate.z;
         game->playing->move_sync.last_move_send = now;
         game->playing->move_sync.last_any_send = now;
         game->playing->move_sync.initialized = 1;
     }
 
-    camera_update(&game->camera, game->player.x, game->player.y, delta_time);
+	// Gravity runs every frame, even when a panel or chat skipped input
+	if(!game->playing->move_sync.vertical_ran)
+		game->playing->move_sync.jumped |=
+			player_update_vertical(&game->player, &game->world, (float)delta_time);
+    game->playing->move_sync.vertical_ran = 0;
+
+	// Follow the server on our emote, then advance every body's emote
+	emote_client_poll(game);
+	status_client_poll(game);
+	inspect_client_poll(game);
+	emote_client_update(game, (float)delta_time);
+
+    // The drawn height eases onto the true one, so stairs and ramps are climbed
+    // smoothly; the camera follows the drawn height.
+    game->player.visual_z = height_smooth_step(game->player.visual_z,
+                                               game->player.vstate.z, (float)delta_time);
+    camera_update(&game->camera, game->player.x, game->player.y, game->player.visual_z,
+                  delta_time);
+    camera_update_clearance(&game->camera, city_heights_at, NULL, delta_time);
     combat_update(&game->playing->combat, delta_time);
 
     // Update inventory
@@ -121,6 +155,12 @@ void playing_update(GameState* game, float delta_time) {
                                game->input.mouse_left_down,
                                game->input.mouse_right_clicked);
     }
+
+	// Update inspect window
+	if(game->inspect_screen)
+		character_screen_update(game->inspect_screen, game->input.mouse_x,
+		                        game->input.mouse_y, game->input.mouse_left_clicked,
+		                        game->input.mouse_left_down, game->input.mouse_right_clicked);
 
     // Check for NPC interact response (initial dialogue)
     NPCInteractResponsePacket interact_response;
@@ -152,6 +192,7 @@ void playing_update(GameState* game, float delta_time) {
             if (npc->interp_t > 1.0f) npc->interp_t = 1.0f;
             npc->pos_x = npc->prev_x + (npc->target_x - npc->prev_x) * npc->interp_t;
             npc->pos_y = npc->prev_y + (npc->target_y - npc->prev_y) * npc->interp_t;
+            npc->pos_z = npc->prev_z + (npc->target_z - npc->prev_z) * npc->interp_t;
         }
     }
 
@@ -172,6 +213,7 @@ void playing_update(GameState* game, float delta_time) {
         if (p->interp_t > 1.0f) p->interp_t = 1.0f;
         p->pos_x = p->prev_x + (p->target_x - p->prev_x) * p->interp_t;
         p->pos_y = p->prev_y + (p->target_y - p->prev_y) * p->interp_t;
+        p->pos_z = p->prev_z + (p->target_z - p->prev_z) * p->interp_t;
     }
 
     // Clear target if targeted NPC has died
@@ -285,24 +327,57 @@ void playing_update(GameState* game, float delta_time) {
     float dx = game->player.x - game->playing->move_sync.last_sent_x;
     float dy = game->player.y - game->playing->move_sync.last_sent_y;
     float dist = sqrtf(dx * dx + dy * dy);
+	/* Height changes the position too: in the air, on landing, or after a
+	 * jump that has not been told yet. */
+	int height_moved = !game->player.vstate.grounded || game->playing->move_sync.jumped ||
+	                   fabsf(game->player.vstate.z - game->playing->move_sync.last_sent_z) > MOVE_THRESHOLD;
 
-    if (dist > MOVE_THRESHOLD && (now - game->playing->move_sync.last_move_send) >= MOVE_INTERVAL) {
+	// The body has stopped but the server's last word was that it was moving
+	int stopped = game->playing->move_sync.last_sent_moving &&
+	              hypotf(game->player.vel_x, game->player.vel_y) < MOVE_STOPPED_SPEED;
+
+	// Turning on the spot, or starting or ending the idle variation, is news to everyone nearby
+	uint8_t heading = heading_to_wire(game->player.loco.heading);
+	int turned = heading_wire_steps(heading, game->playing->move_sync.last_sent_heading) >= MOVE_TURN_STEPS;
+	int fidget = character_renderer_local_fidgeting();
+	int fidget_changed = fidget != game->playing->move_sync.last_sent_fidget;
+
+    if ((dist > MOVE_THRESHOLD || height_moved || stopped || turned || fidget_changed) &&
+        (now - game->playing->move_sync.last_move_send) >= MOVE_INTERVAL) {
         /* Numbered and remembered before it goes out. The record is what a
          * refusal is reconciled against, so it has to exist by the time the
          * refusal can arrive -- which is any time after this line. */
         uint32_t sequence = network_next_move_sequence();
         player_record_sent_move(&game->player, sequence,
-                                game->player.x, game->player.y);
+                                game->player.x, game->player.y,
+                                game->player.vstate.z);
 
         network_send_player_move(
             game->player.x, game->player.y,
+            game->player.vstate.z,
+            (game->playing->move_sync.jumped ? MOVE_FLAG_JUMP : 0) |
+            (fidget ? MOVE_FLAG_FIDGET | (((fidget - 1) << MOVE_FIDGET_KIND_SHIFT) & MOVE_FIDGET_KIND_MASK) : 0),
             game->player.speed,
             game->player.vel_x, game->player.vel_y,
-            sequence
+            sequence, heading
         );
 
         game->playing->move_sync.last_sent_x = game->player.x;
         game->playing->move_sync.last_sent_y = game->player.y;
+        game->playing->move_sync.last_sent_z = game->player.vstate.z;
+        game->playing->move_sync.jumped = 0;
+        game->playing->move_sync.last_sent_heading = heading;
+        game->playing->move_sync.last_sent_fidget = fidget;
+		{
+			// TEMPORARY DIAGNOSTIC: when this client tells the server it started or stopped
+			int moving_now = hypotf(game->player.vel_x, game->player.vel_y) >= MOVE_STOPPED_SPEED;
+
+			if(moving_now != game->playing->move_sync.last_sent_moving)
+				CLOG_INFO("[DIAG] me=%s SENT %s (vel %.0f)", game->player.info.name,
+				          moving_now ? "moving" : "stopped",
+				          hypotf(game->player.vel_x, game->player.vel_y));
+			game->playing->move_sync.last_sent_moving = moving_now;
+		}
         game->playing->move_sync.last_move_send = now;
         game->playing->move_sync.last_any_send = now;
     } else if ((now - game->playing->move_sync.last_any_send) >= HEARTBEAT_INTERVAL) {

@@ -154,8 +154,6 @@ void ability_bar_on_cast_resolve(AbilityBarState* bar, uint16_t ability_id);
 
 void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id);
 
-void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown);
-
 /** Update the active form's resource pool from a server update. */
 void ability_bar_on_resource_update(AbilityBarState* bar, int32_t resource, int32_t max_resource);
 

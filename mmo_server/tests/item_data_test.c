@@ -3,7 +3,7 @@
  * Check item JSON fields and shop references, including resale-price constraints.
  */
 
-#include "items_database.h"
+#include "item_registry.h"
 #include "log.h"
 #include "shop.h"
 
@@ -18,7 +18,7 @@ struct ActivePlayer* player_acquire(unsigned int c) { (void)c; return 0; }
 /** Stub player release for linking shop validation tests. */
 void player_release(struct ActivePlayer* p) { (void)p; }
 /** Stub packet send for linking shop validation tests. */
-ssize_t server_send(int fd, void* d, size_t n) { (void)fd;(void)d;(void)n; return (ssize_t)n; }
+ssize_t outbox_send(int fd, void* d, size_t n) { (void)fd;(void)d;(void)n; return (ssize_t)n; }
 /** Stub inventory synchronization for linking shop validation tests. */
 void player_send_slot_updates(int fd, unsigned c, const unsigned short* s, int n) {
     (void)fd; (void)c; (void)s; (void)n;   // no client to notify in this test
@@ -220,6 +220,32 @@ int main(void) {
                dup->name, items_get_count());
         assert(items_get_count() == 1);
     }
+
+	printf("\nTEST 9: race_req is read from the file and gates equipping\n");
+	write_file(items_path,
+		"{\"items\":["
+		"{\"id\":60,\"name\":\"Pack Mantle\",\"type\":\"armor\",\"slot\":\"chest\",\"race_req\":[3, 5]},"
+		"{\"id\":61,\"name\":\"Plain Vest\",\"type\":\"armor\",\"slot\":\"chest\"},"
+		"{\"id\":62,\"name\":\"Crowded\",\"type\":\"armor\",\"slot\":\"chest\","
+			"\"race_req\":[1,2,3,4,5,6]}"
+		"]}");
+	assert(items_init(items_path) == 1);
+	{
+		const ItemDefinition* mantle = item_get(60);
+		assert(mantle && mantle->race_req[0] == 3 && mantle->race_req[1] == 5);
+		assert(mantle->race_req[2] == 0);
+
+		assert(item_can_equip(60, 1, 3) == 1);
+		assert(item_can_equip(60, 1, 5) == 1);
+		assert(item_can_equip(60, 1, 4) == 0);
+		assert(item_can_equip(61, 1, 4) == 1);
+
+		// A list longer than the field is cut at four rather than overrun
+		const ItemDefinition* crowded = item_get(62);
+		assert(crowded->race_req[3] == 4);
+
+		printf("  race_req gates equipping and lists are bounded\n");
+	}
 
     printf("\nALL ASSERTIONS PASSED\n");
     items_cleanup();

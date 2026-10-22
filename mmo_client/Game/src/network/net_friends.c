@@ -12,6 +12,7 @@
 
 #include "net_internal.h"
 #include "ui/friends_panel.h"
+#include "states/join_data.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +42,7 @@ static void friends_chat_notice(const char* text) {
     snprintf(chat->lines[idx].sender, sizeof(chat->lines[idx].sender), "%s", "Friends");
     snprintf(chat->lines[idx].text, sizeof(chat->lines[idx].text), "%s", text);
     chat->lines[idx].channel = CHAT_CHANNEL_LOCAL;
+	chat->lines[idx].style = CHAT_STYLE_NORMAL;
 }
 
 /** Reach the friends panel, or NULL before a session exists. */
@@ -65,14 +67,20 @@ int net_dispatch_friends(uint8_t type, const char* data, int length) {
             /* The server trims this to the entries it filled, so only the base
              * is guaranteed; the panel checks the count against the bytes. */
             if (length < (int)offsetof(FriendListResponsePacket, friends)) return 1;
-            if (fs) friends_panel_set_list(fs, (const FriendListResponsePacket*)data, length);
+            if (fs) {
+                friends_panel_set_list(fs, (const FriendListResponsePacket*)data, length);
+                join_data_note(JOIN_FRIENDS);
+            }
             NET_LOG("[NET] Friends list received\n");
             return 1;
         }
 
         case PACKET_FRIEND_REQUESTS_LIST: {
             if (length < (int)offsetof(FriendRequestsListPacket, requests)) return 1;
-            if (fs) friends_panel_set_requests(fs, (const FriendRequestsListPacket*)data, length);
+            if (fs) {
+                friends_panel_set_requests(fs, (const FriendRequestsListPacket*)data, length);
+                join_data_note(JOIN_FRIEND_REQUESTS);
+            }
             NET_LOG("[NET] Friend requests received\n");
             return 1;
         }

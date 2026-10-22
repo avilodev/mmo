@@ -88,7 +88,6 @@ uint16_t packet_limiter_retry_after_ms(int fd, uint8_t packet_type);
 
 // expose opcode classes for logging and rejection messages
 PacketLimitClass packet_limiter_class_of(uint8_t packet_type);
-const char*      packet_limiter_class_name(PacketLimitClass cls);
 
 /** Read what the limiter has done since startup. Any pointer may be NULL.
  *

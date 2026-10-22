@@ -11,7 +11,7 @@
 #   game     --> realm    game pins realm
 #   realm   <--> world    realm pins world AND world pins realm
 #
-# The game <-> world link is plaintext by design; see common/include/tls.h.
+# The game <-> world link is plaintext by design; see network/include/tls.h.
 #
 # Six files come out of this, in three pairs plus three pin lists:
 #

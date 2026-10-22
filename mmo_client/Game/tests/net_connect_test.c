@@ -191,7 +191,7 @@ static void test_idle_poll(void) {
 
 /** Recovery backs off, and gives up rather than looping forever. */
 static void test_reconnect_backoff(void) {
-    printf("recovery backs off and eventually gives up\n");
+    printf("recovery backs off and gives up when its time is spent\n");
 
     /* A refused address rather than an unroutable one: each attempt then fails
      * in milliseconds of real time, so the eight of them fit in a test while
@@ -229,10 +229,14 @@ static void test_reconnect_backoff(void) {
 
     CHECK(net_reconnect_phase() == RECONNECT_GIVEN_UP,
           "recovery gives up rather than retrying forever");
+    CHECK(net_reconnect_failure() == RECONNECT_FAIL_TIMEOUT,
+          "because it ran out of time");
+    CHECK(clock >= 60.0 && clock < 60.0 + 15.0,
+          "after the 60 second budget, not long before or after it");
     CHECK(waits_seen >= 3, "and it waited between attempts");
 
     int growing = 1;
-    for (int i = 1; i < waits_seen && i < 5; i++)
+    for (int i = 1; i < waits_seen && i < 4; i++)
         if (waits[i] <= waits[i - 1]) growing = 0;
     CHECK(growing, "each wait was longer than the one before it");
 
@@ -250,8 +254,10 @@ static void test_reconnect_without_a_session(void) {
 
     CHECK(net_reconnect_phase() == RECONNECT_GIVEN_UP,
           "it gives up immediately rather than looping on nothing");
-    CHECK(strstr(net_reconnect_status(), "restart") != NULL,
+    CHECK(strstr(net_reconnect_status(), "log in") != NULL,
           "and tells the player what to do");
+    CHECK(net_reconnect_failure() == RECONNECT_FAIL_LOGIN,
+          "as a login problem, not a timeout");
 }
 
 /** Cancelling resets the machine so a later drop starts fresh. */
@@ -778,6 +784,128 @@ static void test_world_attempt_is_not_a_realm_attempt(void) {
     network_connect_abort();
 }
 
+/**
+ * A realm that says the session is invalid ends recovery at once.
+ *
+ * Retrying cannot help: the realm answered, and the answer was that the login
+ * is over. Waiting out the rest of the budget would leave the player watching a
+ * frozen scene for a minute before being told what the first attempt already
+ * knew. A refusal for any other reason is still an outage worth retrying.
+ */
+static void refuse_realm_connect(const char* message, int expect_login_ended) {
+    network_connect_abort();
+
+    uint16_t port = 0;
+    int ls = open_listener(&port);
+    CHECK(ls >= 0, "a loopback listener came up");
+    if (ls < 0) return;
+
+    RealmSide realm = {.listen_fd = ls, .ctx = g_realm_ctx, .fd = -1, .ssl = NULL};
+    pthread_t t;
+    pthread_create(&t, NULL, realm_thread, &realm);
+
+    int started = network_begin_realm_connect("127.0.0.1", port, k_session_key, 1234);
+    CHECK(started, "the connect attempt began");
+
+    double deadline = seconds_now() + 5.0;
+    while (!g_net.handshaking && seconds_now() < deadline) network_connect_poll();
+    pthread_join(t, NULL);
+
+    CHECK(realm.ssl != NULL, "the realm completed a TLS handshake with the client");
+    if (!realm.ssl) { closesocket(ls); return; }
+
+    RealmConnectPacket got;
+    memset(&got, 0, sizeof(got));
+    SSL_read(realm.ssl, &got, sizeof(got));
+
+    RealmConnectAckPacket ack;
+    memset(&ack, 0, sizeof(ack));
+    ack.header.type         = PACKET_REALM_CONNECT_ACK;
+    ack.header.payload_size = htons(sizeof(ack) - sizeof(PacketHeader));
+    ack.success             = 0;
+    snprintf(ack.message, sizeof(ack.message), "%s", message);
+    SSL_write(realm.ssl, &ack, sizeof(ack));
+
+    NetConnectPhase r = poll_until_settled(2.0);
+    CHECK(r == NET_CONNECT_FAILED, "the refusal failed the attempt");
+    CHECK(network_connect_session_refused() == expect_login_ended,
+          expect_login_ended ? "and it is reported as a session the realm rejected"
+                             : "and it is not mistaken for a rejected session");
+
+    SSL_free(realm.ssl);
+    closesocket(realm.fd);
+    closesocket(ls);
+}
+
+static void test_a_rejected_session_ends_recovery(void) {
+    printf("\na realm that rejects the session\n");
+
+    refuse_realm_connect("Invalid session", 1);
+    refuse_realm_connect("Server busy", 0);
+}
+
+/** Recovery against a realm that rejects the session stops at the first answer. */
+static void test_recovery_stops_when_the_login_has_ended(void) {
+    printf("\nrecovery when the realm says the login is over\n");
+
+    network_connect_abort();
+
+    uint16_t port = 0;
+    int ls = open_listener(&port);
+    CHECK(ls >= 0, "a loopback listener came up");
+    if (ls < 0) return;
+
+    RealmSide realm = {.listen_fd = ls, .ctx = g_realm_ctx, .fd = -1, .ssl = NULL};
+    pthread_t t;
+    pthread_create(&t, NULL, realm_thread, &realm);
+
+    net_reconnect_remember_world("127.0.0.1", port, 1234,
+                                 "00112233445566778899aabbccddeeff"
+                                 "00112233445566778899aabbccddeeff",
+                                 3, 77);
+    double clock = 0.0;
+    net_reconnect_begin(clock);
+    CHECK(net_reconnect_phase() == RECONNECT_WAITING, "recovery begins by waiting");
+
+    // Drive it until the client is inside the realm handshake
+    double deadline = seconds_now() + 10.0;
+    while (!g_net.handshaking && seconds_now() < deadline) {
+        // only the waiting is skipped on the synthetic clock; the handshake runs in real time
+        double wait = net_reconnect_seconds_until_retry(clock);
+        if (wait > 0.0) clock += wait + 0.016;
+        net_reconnect_update(clock);
+    }
+    pthread_join(t, NULL);
+    CHECK(realm.ssl != NULL, "the realm completed a TLS handshake with the client");
+    if (!realm.ssl) { closesocket(ls); net_reconnect_forget(); return; }
+
+    RealmConnectPacket got;
+    memset(&got, 0, sizeof(got));
+    SSL_read(realm.ssl, &got, sizeof(got));
+
+    RealmConnectAckPacket ack;
+    memset(&ack, 0, sizeof(ack));
+    ack.header.type         = PACKET_REALM_CONNECT_ACK;
+    ack.header.payload_size = htons(sizeof(ack) - sizeof(PacketHeader));
+    ack.success             = 0;
+    snprintf(ack.message, sizeof(ack.message), "Invalid session");
+    SSL_write(realm.ssl, &ack, sizeof(ack));
+
+    deadline = seconds_now() + 5.0;
+    while (net_reconnect_phase() != RECONNECT_GIVEN_UP && seconds_now() < deadline)
+        net_reconnect_update(clock);
+
+    CHECK(net_reconnect_phase() == RECONNECT_GIVEN_UP, "recovery gave up");
+    CHECK(net_reconnect_failure() == RECONNECT_FAIL_LOGIN, "because the login has ended");
+    CHECK(clock < 20.0, "at the first answer, not after the time budget");
+    CHECK(strstr(net_reconnect_status(), "log in") != NULL, "and says what to do");
+
+    net_reconnect_forget();
+    SSL_free(realm.ssl);
+    closesocket(realm.fd);
+    closesocket(ls);
+}
+
 int main(void) {
     printf("=== client connection state machine ===\n");
 
@@ -807,6 +935,8 @@ int main(void) {
     test_a_refusal_reports_the_servers_reason();
     test_world_attempt_is_not_a_realm_attempt();
     test_an_unpinned_realm_is_refused();
+    test_a_rejected_session_ends_recovery();
+    test_recovery_stops_when_the_login_has_ended();
 
     network_connect_abort();
     network_cleanup();

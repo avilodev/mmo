@@ -11,16 +11,17 @@
  * appears here with no change to this file.
  */
 
+#include "ui/window_pos.h"
+
 #include <stdint.h>
 
 /** Track currency-panel visibility. */
 typedef struct {
     int is_open;
+    window_pos win;   /**< Where the panel sits; centred until dragged. */
 } CurrencyPanelState;
 
 void currency_panel_init(CurrencyPanelState* cp);
-
-void currency_panel_toggle(CurrencyPanelState* cp);
 
 /**
  * Draw the panel when open.
@@ -41,7 +42,7 @@ void currency_panel_render(const CurrencyPanelState* cp,
  * @return Nonzero when the panel consumed the click, so gameplay ignores it.
  */
 int currency_panel_handle_input(CurrencyPanelState* cp,
-                                float mx, float my, int clicked,
+                                float mx, float my, int clicked, int down,
                                 int key_toggle, int key_esc,
                                 int vw, int vh);
 

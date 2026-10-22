@@ -18,16 +18,92 @@
 #include "character_screen.h"
 #include "ui/npc_dialogue.h"
 #include "ui/shop_ui.h"
-#include "ui/settings_panel.h"
+#include "ui/settings_menu.h"
+#include "ui/pause_menu.h"
 #include "ui/friends_panel.h"
+#include "ui/map_view.h"
+#include "states/world_loader.h"
 #include "core/keybinds.h"
+#include "states/chat_commands.h"
+#include "states/chat_channels.h"
+#include "states/chat_input.h"
+#include "states/emote_client.h"
+#include "states/inspect_client.h"
+#include "player/emote.h" 
+#include "player/emote_slots.h"
+#include "ui/emote_hub.h"
+#include "ui/weather_window.h"
 #include "camera/camera_tuning.h"
 #include "render/character_tuning.h"
+#include "world/world_pick.h"
+#include "world_spans.h"
 
 #include <string.h>
 #include "core/client_log.h"
 
 static float deg_to_rad(float deg) { return deg * 3.14159265359f / 180.0f; }
+
+// The living NPC whose body is under the cursor, or NULL
+static VisibleNPC* npc_under_cursor(GameState* game) {
+	for(int i = 0; i < game->playing->visible_npc_count; i++) {
+		VisibleNPC* npc = &game->playing->visible_npcs[i];
+
+		if(!npc->is_alive)
+			continue;
+		if(camera_hit_standing(&game->camera, npc->pos_x, npc->pos_y, npc->pos_z,
+		                       npc_body_height(npc), CHARACTER_PICK_RADIUS,
+		                       game->input.mouse_x, game->input.mouse_y))
+			return npc;
+	}
+
+	return NULL;
+}
+
+// A click over an open window or a dialogue belongs to it, not the world
+static int cursor_over_panel(const GameState* game) {
+	const InventoryState* inv = game->inventory;
+	const CharacterScreenState* cs = game->character_screen;
+
+	if(dialogue_is_active())
+		return 1;
+	if(inv && inv->is_open &&
+	   input_mouse_in_rect(&game->input, inv->window_x, inv->window_y,
+	                       inv->window_width, inv->window_height))
+		return 1;
+	if(cs && cs->is_open &&
+	   input_mouse_in_rect(&game->input, cs->window_x, cs->window_y,
+	                       cs->window_width, cs->window_height))
+		return 1;
+
+	return 0;
+}
+
+/** Whether a key that walks the body is held. */
+static int movement_key_down(const GameState* game) {
+	return input_key_pressed(&game->input, g_keybinds.move_up)    ||
+	       input_key_pressed(&game->input, g_keybinds.move_down)  ||
+	       input_key_pressed(&game->input, g_keybinds.move_left)  ||
+	       input_key_pressed(&game->input, g_keybinds.move_right);
+}
+
+/**
+ * The point under the cursor: on the surface the spans give (a ramp, a bridge),
+ * else on the ground plane. Only (x, y) goes to the server, which snaps z itself.
+ */
+static void pick_cursor_point(const GameState* game, float* out_x, float* out_y) {
+	float origin[3], dir[3], hit[3];
+
+	if(world_spans_loaded()) {
+		camera_screen_ray(&game->camera, game->input.mouse_x, game->input.mouse_y, origin, dir);
+		if(world_pick_ground(origin, dir, 4000.0f, hit)) {
+			*out_x = hit[0];
+			*out_y = hit[1];
+			return;
+		}
+	}
+	camera_screen_to_world(&game->camera, game->input.mouse_x, game->input.mouse_y,
+	                       out_x, out_y);
+}
 
 /**
  * Turn and reset the camera (D8, D10).
@@ -43,15 +119,16 @@ static void playing_input_camera(GameState* game, float delta_time) {
         camera_reset_view(camera);
 
     float step = deg_to_rad(CAMERA_ROTATE_DEG_PER_SEC) * delta_time;
-    if (input_key_pressed(&game->input, g_keybinds.camera_rotate_left))  camera_rotate(camera, -step);
-    if (input_key_pressed(&game->input, g_keybinds.camera_rotate_right)) camera_rotate(camera,  step);
+    if (input_key_pressed(&game->input, g_keybinds.camera_rotate_left))  
+        camera_rotate(camera, -step);
+    if (input_key_pressed(&game->input, g_keybinds.camera_rotate_right)) 
+        camera_rotate(camera,  step);
 
-    /* Dragging with the middle or right button held orbits the camera,
-     * FF14-style: the view follows the mouse. Drag right and the view turns
-     * right (the eye swings left round the player, the way Q turns it); drag
-     * up and it looks up (the eye drops). The right button's press still
-     * targets/interacts as before; the drag only moves the view while held. */
-    int dragging = game->input.mouse_middle_down || game->input.mouse_right_down;
+    /* Dragging with the middle button held orbits the camera, FF14-style:
+     * the view follows the mouse. Drag right and the view turns right (the
+     * eye swings left round the player, the way Q turns it); drag up and it
+     * looks up (the eye drops). The right button is the basic attack. */
+    int dragging = game->input.mouse_middle_down;
     if (dragging && game->input.mouse_dx != 0.0f)
         camera_rotate(camera, -deg_to_rad(CAMERA_DRAG_DEG_PER_PIXEL) * game->input.mouse_dx);
     if (dragging && game->input.mouse_dy != 0.0f)
@@ -68,13 +145,143 @@ static void playing_input_camera(GameState* game, float delta_time) {
 static void friends_drain_pending(GameState* game) {
     char name[32];
     switch (friends_panel_take_pending(&game->playing->friends, name, sizeof(name))) {
-        case FRIEND_PENDING_ACCEPT:  network_send_friend_respond(name, 1); break;
-        case FRIEND_PENDING_DECLINE: network_send_friend_respond(name, 0); break;
-        case FRIEND_PENDING_REMOVE:  network_send_friend_remove(name);     break;
-        case FRIEND_PENDING_REFRESH: network_send_friend_list_request();   break;
+        case FRIEND_PENDING_ACCEPT:  
+            network_send_friend_respond(name, 1); 
+            break;
+        case FRIEND_PENDING_DECLINE: 
+            network_send_friend_respond(name, 0); 
+            break;
+        case FRIEND_PENDING_REMOVE:  
+            network_send_friend_remove(name);     
+            break;
+        case FRIEND_PENDING_REFRESH: 
+            network_send_friend_list_request();   
+            break;
         case FRIEND_PENDING_NONE:
-        default:                                                          break;
+        default:                                                  
+            break;
     }
+}
+
+// Carry the chat box about by its outline; returns 1 while it is held.
+static int chat_drag(GameState* game) {
+	ChatState* chat = &game->playing->chat;
+	chat_box box = chat_box_at(&chat->win, (float)game->camera.viewport_width,
+			(float)game->camera.viewport_height);
+	float x, y, w, h;
+	int on_outline;
+
+	chat_window_rect(&box, &x, &y, &w, &h);
+	on_outline = game->input.mouse_left_clicked &&
+			window_pos_on_edge(x, y, w, h, CHAT_EDGE_BAND, game->input.mouse_x,
+			game->input.mouse_y);
+
+	return window_pos_carry(&chat->win, x, y, (float)game->camera.viewport_width,
+			(float)game->camera.viewport_height, w, h, on_outline, game->input.mouse_x,
+			game->input.mouse_y, game->input.mouse_left_down);
+}
+
+// A click on the chat box opens it; a click on a message whispers its sender.
+static void chat_click(GameState* game) {
+	ChatState* chat = &game->playing->chat;
+	chat_box box = chat_box_at(&chat->win, (float)game->camera.viewport_width,
+			(float)game->camera.viewport_height);
+	chat_visible visible[CHAT_LINES];
+	float mx = game->input.mouse_x;
+	float my = game->input.mouse_y;
+	int count;
+	int line;
+
+	if(mx < box.x || mx > box.x + box.w)
+		return;
+
+	if(my >= box.input_y && my <= box.input_y + box.input_h) {
+		chat_open(chat);
+		return;
+	}
+
+	if(my < box.y || my >= box.input_y)
+		return;
+
+	count = chat_layout_visible(chat, playing_chat_measure, visible);
+	line = chat_hit_line(visible, count, &box, my);
+	if(line >= 0 && chat_line_replyable(&chat->lines[line]))
+		chat_begin_whisper(chat, chat->lines[line].sender);
+}
+
+// Sends what was typed: a command, or a message to the active channel.
+static void chat_send_typed(GameState* game) {
+	ChatState* chat = &game->playing->chat;
+	chat_outgoing out;
+
+	chat_history_add(chat, chat->input_buf);
+
+	// A slash line is a command, or a reported typo: never chat
+	if(!chat_command_dispatch(game, chat->input_buf) &&
+	   chat_input_submit(chat, &out))
+		network_send_chat(out.channel, out.target, out.text);
+
+	chat_close(chat);
+}
+
+// The keys that work while the chat input has the keyboard.
+static void chat_typing_keys(ChatState* chat, const InputState* input,
+		float delta_time) {
+	if(input_key_just_pressed(input, GLFW_KEY_ESCAPE)) {
+		chat_close(chat);
+		return;
+	}
+
+	// Backspace uses the held state so it repeats
+	chat_backspace_update(chat, input_key_just_pressed(input, GLFW_KEY_BACKSPACE),
+			input_key_pressed(input, GLFW_KEY_BACKSPACE), delta_time);
+
+	if(input_key_just_pressed(input, g_keybinds.toggle_channel))
+		chat_cycle_channel(chat);
+	if(input_key_just_pressed(input, GLFW_KEY_UP))
+		chat_history_step(chat, 1);
+	if(input_key_just_pressed(input, GLFW_KEY_DOWN))
+		chat_history_step(chat, -1);
+	if(input_key_just_pressed(input, GLFW_KEY_PAGE_UP))
+		chat_scroll_by(chat, CHAT_LINES - 1);
+	if(input_key_just_pressed(input, GLFW_KEY_PAGE_DOWN))
+		chat_scroll_by(chat, -(CHAT_LINES - 1));
+}
+
+// One frame of chat input; returns 1 while chat holds the keyboard.
+static int chat_input_frame(GameState* game, float delta_time) {
+	ChatState* chat = &game->playing->chat;
+	const InputState* input = &game->input;
+
+	if(!chat->is_typing && input_key_just_pressed(input, g_keybinds.toggle_chat))
+		chat_open(chat);
+
+	// The slash char event arrives before chat is open, so type it here
+	if(!chat->is_typing && input_key_just_pressed(input, GLFW_KEY_SLASH)) {
+		chat_open(chat);
+		chat_type(chat, '/');
+	}
+
+	// The grip takes the mouse while the box is being moved
+	if(chat_drag(game))
+		return 1;
+
+	if(!chat->is_typing && input->mouse_left_clicked)
+		chat_click(game);
+
+	if(input_key_just_pressed(input, GLFW_KEY_ENTER)) {
+		if(chat->is_typing)
+			chat_send_typed(game);
+		else
+			chat_open(chat);
+	}
+
+	if(!chat->is_typing)
+		return 0;
+
+	chat_typing_keys(chat, input, delta_time);
+
+	return 1;
 }
 
 /**
@@ -83,72 +290,53 @@ static void friends_drain_pending(GameState* game) {
  * @param delta_time  Elapsed frame time in seconds for chat key repeat.
  */
 void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
+	// While the world loads the only input is the way out of a failed load
+	if(world_loader_active()) {
+		if(world_loader_failed() && input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE))
+			game_change_state(game, GAME_MODE_MAIN_MENU);
 
+		return;
+	}
 
-    if (game->playing->is_paused) {
-        // ESC or R unpause
-        if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE) ||
-            input_key_just_pressed(&game->input, GLFW_KEY_R)) {
-            game->playing->is_paused = 0;
-            return;
-        }
-        if (game->input.mouse_left_clicked) {
-            float vw   = (float)game->camera.viewport_width;
-            float vh   = (float)game->camera.viewport_height;
-            float pw   = 340.0f, ph = 230.0f;
-            float px   = (vw - pw) * 0.5f;
-            float py   = (vh - ph) * 0.5f;
-            float bw   = 220.0f, bh = 38.0f;
-            float bx   = px + (pw - bw) * 0.5f;
-            float mx   = game->input.mouse_x;
-            float my   = game->input.mouse_y;
+	if(game->playing->is_paused) {
+		switch(pm_update(game)) {
+		case PM_RESUME:
+			game->playing->is_paused = 0;
+			break;
+		case PM_SETTINGS:
+			game->playing->is_paused = 0;
+			game->show_settings = 1;
+			sm_open(&game->settings, SF_TAB_GAMEPLAY);
+			break;
+		case PM_QUIT:
+			game->playing->is_paused = 0;
+			game_change_state(game, GAME_MODE_MAIN_MENU);
+			break;
+		default:
+			break;
+		}
 
-            // Resume button
-            if (mx >= bx && mx <= bx + bw && my >= py + 66 && my <= py + 66 + bh) {
-                game->playing->is_paused = 0;
-            }
-            // Settings button — open in-game overlay, unpause so world keeps running
-            if (mx >= bx && mx <= bx + bw && my >= py + 116 && my <= py + 116 + bh) {
-                game->playing->is_paused = 0;
-                game->show_settings = 1;
-            }
-            // Quit to Menu button
-            if (mx >= bx && mx <= bx + bw && my >= py + 166 && my <= py + 166 + bh) {
-                game->playing->is_paused = 0;
-                game_change_state(game, GAME_MODE_MAIN_MENU);
-            }
-        }
-        return; // Block all gameplay input while paused
-    }
+		return; // Block all gameplay input while paused
+	}
 
-    // route input to settings overlay
-    if (game->show_settings) {
-        if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
-            game->show_settings = 0;
-            return;
-        }
-        float vw = (float)game->camera.viewport_width;
-        float vh = (float)game->camera.viewport_height;
-        float scale = game->settings.ui_scale;
-        float pw = SP_PW * scale;
-        float ph = SP_PH * scale;
-        float px = (vw - pw) * 0.5f;
-        float py = (vh - ph) * 0.5f;
-        float rel_mx = (game->input.mouse_x - px) / scale;
-        float rel_my = (game->input.mouse_y - py) / scale;
-        float btn_y = SP_PH - 54.0f;
-        int closed = sp_handle_mouse(0, 0,
-                                     rel_mx, rel_my,
-                                     game->input.mouse_left_clicked,
-                                     game->input.mouse_left_down,
-                                     &game->settings, btn_y);
-        if (closed) {
-            game->show_settings = 0;
-            game_settings_save(&game->settings, SETTINGS_PATH);
-            game_settings_apply(&game->settings);
-        }
-        return;
-    }
+	// Settings menu: closing it returns to the pause menu
+	if(game->show_settings) {
+		if(sm_update(game)) {
+			game->show_settings = 0;
+			game->playing->is_paused = 1;
+			pm_open();
+		}
+
+		return;
+	}
+
+	// The emote hub takes this frame's keys and clicks while it is open
+	if(emote_hub_is_open())
+		emote_hub_update(game);
+
+	// So does the weather window
+	if(weather_window_is_open())
+		weather_window_update(game);
 
     // update hovered buff before gameplay input
     {
@@ -173,7 +361,7 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
     // Quest log
     quest_log_handle_input_full(&game->playing->quest_log,
                                  game->input.mouse_x, game->input.mouse_y,
-                                 game->input.mouse_left_clicked,
+                                 game->input.mouse_left_clicked, game->input.mouse_left_down,
                                  !game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_quest_log),
                                  !game->playing->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE),
                                  game->camera.viewport_width,
@@ -196,7 +384,7 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
     // Currency panel — read-only, and blocks gameplay input while open
     if (currency_panel_handle_input(&game->playing->currency_panel,
                                     game->input.mouse_x, game->input.mouse_y,
-                                    game->input.mouse_left_clicked,
+                                    game->input.mouse_left_clicked, game->input.mouse_left_down,
                                     !game->playing->chat.is_typing &&
                                         input_key_just_pressed(&game->input, g_keybinds.toggle_currency),
                                     !game->playing->chat.is_typing &&
@@ -210,7 +398,7 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
      * when it is open, and gameplay never sees it. */
     if (friends_panel_handle_input(&game->playing->friends,
                                    game->input.mouse_x, game->input.mouse_y,
-                                   game->input.mouse_left_clicked,
+                                   game->input.mouse_left_clicked, game->input.mouse_left_down,
                                    !game->playing->chat.is_typing &&
                                        input_key_just_pressed(&game->input, g_keybinds.toggle_friends),
                                    !game->playing->chat.is_typing &&
@@ -241,8 +429,13 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         }
     }
 
-    // Toggle session panel (O key)
-    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_O)) {
+	// Inspect the targeted player
+	if(!game->playing->chat.is_typing &&
+	   input_key_just_pressed(&game->input, g_keybinds.inspect_target))
+		inspect_client_request_target(game);
+
+    // Toggle session panel
+    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, g_keybinds.toggle_session_panel)) {
         game->playing->show_session_panel = !game->playing->show_session_panel;
         if (game->playing->show_session_panel) {
             game->playing->session_current_page = 0;
@@ -250,10 +443,18 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         }
     }
 
+    // The session panel is carried by its title; nothing else sees the mouse meanwhile
+    if (game->playing->show_session_panel &&
+        hud_session_panel_drag(game, game->input.mouse_x, game->input.mouse_y,
+                               game->input.mouse_left_clicked, game->input.mouse_left_down))
+        return;
+
     // Session panel pagination clicks
     if (game->playing->show_session_panel && game->input.mouse_left_clicked) {
         int dir = hud_session_panel_handle_click(game, game->input.mouse_x, game->input.mouse_y);
-        if (dir == -1 && game->playing->session_current_page > 0) {
+        if (dir == 2) {
+            game->playing->show_session_panel = 0;
+        } else if (dir == -1 && game->playing->session_current_page > 0) {
             uint16_t next = game->playing->session_current_page - 1;
             game->playing->session_current_page = next;
             network_send_session_list_request(next);
@@ -301,6 +502,29 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
             }
         }
 
+		// Check inspect window close button
+		if(game->inspect_screen && game->inspect_screen->is_open &&
+		   character_screen_check_close_button(game->inspect_screen, game->input.mouse_x,
+		                                       game->input.mouse_y)) {
+			inspect_client_close(game);
+			return; // Don't process other clicks
+		}
+
+		// Check the weather and time in the info bar
+		if(!cursor_over_panel(game) &&
+		   hud_check_weather_clicked(&game->playing->hud, game, game->input.mouse_x,
+		                             game->input.mouse_y)) {
+			weather_window_open();
+			return; // Don't process other clicks
+		}
+
+		// Check the Inspect button on the player target bar
+		if(hud_check_inspect_button_clicked(game, (float)game->camera.viewport_width,
+		                                    game->input.mouse_x, game->input.mouse_y)) {
+			inspect_client_request_target(game);
+			return; // Don't process other clicks
+		}
+
         // Check inventory button
         if (game->inventory) {
             if (hud_check_inventory_button_clicked(&game->playing->hud,
@@ -320,178 +544,15 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         }
     }
 
-    // NPC interaction/attack with right-click
-    if (game->input.mouse_right_clicked && !dialogue_is_active()) {
-        // Check if clicked on an NPC -- on its body, which stands above its feet
-        for (int i = 0; i < game->playing->visible_npc_count; i++) {
-            VisibleNPC* npc = &game->playing->visible_npcs[i];
-            if (!npc->is_alive) continue;
-
-            if (camera_hit_standing(&game->camera, npc->pos_x, npc->pos_y,
-                                    npc_body_height(npc), CHARACTER_PICK_RADIUS,
-                                    game->input.mouse_x, game->input.mouse_y)) {
-                if (npc->category == 1) {
-                    // Hostile NPC: target + basic attack
-                    game->playing->target_npc_id = npc->npc_id;
-                    CLOG_DEBUG("[INPUT] Attacking NPC %u at (%.1f, %.1f)",
-                           npc->npc_id, npc->pos_x, npc->pos_y);
-                    network_update_facing_direction(npc->pos_x - game->player.x,
-                                                   npc->pos_y - game->player.y);
-                    network_send_attack_intent(npc->pos_x, npc->pos_y);
-                } else if (npc->is_interactable) {
-                    // Quest/passive NPC: interact as before
-                    CLOG_DEBUG("[INPUT] Clicked on NPC %u at (%.1f, %.1f)",
-                           npc->npc_id, npc->pos_x, npc->pos_y);
-                    network_send_npc_interact_request(npc->npc_id);
-                }
-                return;  // Don't process other clicks
-            }
-        }
-    }
-
-    // T key opens chat
-    if (!game->playing->chat.is_typing && input_key_just_pressed(&game->input, GLFW_KEY_T)) {
-        game->playing->chat.is_typing = 1;
-    }
-
-    // Click on chat area: input box opens chat; clicking a message line starts a whisper
-    if (!game->playing->chat.is_typing && game->input.mouse_left_clicked) {
-        float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
-        float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
-        float input_y = chat_y + chat_h;
-        float mx = game->input.mouse_x;
-        float my = game->input.mouse_y;
-
-        if (mx >= CHAT_X && mx <= CHAT_X + CHAT_W) {
-            if (my >= input_y && my <= input_y + CHAT_INBOX_H) {
-                // Clicked the input box — just open chat
-                game->playing->chat.is_typing = 1;
-            } else if (my >= chat_y && my < input_y) {
-                // Clicked a message line — pre-fill "/w SenderName " for that line
-                ChatState* chat = &game->playing->chat;
-                int start = chat->line_count - CHAT_LINES;
-                if (start < 0) start = 0;
-                for (int i = start; i < chat->line_count; i++) {
-                    float line_y = chat_y + CHAT_PAD + (float)(i - start) * CHAT_LINE_H;
-                    if (my >= line_y && my < line_y + CHAT_LINE_H) {
-                        const ChatLine* ln = &chat->lines[i];
-                        // Only pre-fill for lines that have a real sender
-                        if (ln->sender[0] != '\0' && strncmp(ln->sender, "-> ", 3) != 0) {
-                            snprintf(chat->input_buf, sizeof(chat->input_buf),
-                                     "/w %s ", ln->sender);
-                            chat->input_len = (int)strlen(chat->input_buf);
-                            chat->is_typing = 1;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // Chat input - Enter key toggles typing mode
-    if (input_key_just_pressed(&game->input, GLFW_KEY_ENTER)) {
-        if (game->playing->chat.is_typing) {
-            // Send message or handle slash commands
-            if (game->playing->chat.input_len > 0) {
-                const char* msg = game->playing->chat.input_buf;
-                if (msg[0] == '/') {
-                    // Slash command parsing
-                    if (strncmp(msg, "/invite ", 8) == 0 && msg[8] != '\0') {
-                        network_send_party_invite(msg + 8);
-                    } else if (strcmp(msg, "/leave") == 0) {
-                        network_send_party_leave();
-                    } else if (strncmp(msg, "/friend ", 8) == 0 && msg[8] != '\0') {
-                        /* Typed rather than clicked, because adding a friend
-                         * needs a name the client has never seen and the chat
-                         * bar is this client's only text input. */
-                        network_send_friend_request(msg + 8);
-                    } else if (strncmp(msg, "/unfriend ", 10) == 0 && msg[10] != '\0') {
-                        network_send_friend_remove(msg + 10);
-                    } else if (strncmp(msg, "/block ", 7) == 0 && msg[7] != '\0') {
-                        network_send_friend_block(msg + 7, 1);
-                    } else if (strncmp(msg, "/unblock ", 9) == 0 && msg[9] != '\0') {
-                        network_send_friend_block(msg + 9, 0);
-                    } else if (strncmp(msg, "/g ", 3) == 0 && msg[3] != '\0') {
-                        network_send_chat(1, msg + 3); // channel 1 = global
-                    } else if (strncmp(msg, "/p ", 3) == 0 && msg[3] != '\0') {
-                        network_send_chat(3, msg + 3); // channel 3 = party
-                    } else if (strncmp(msg, "/w ", 3) == 0 && msg[3] != '\0') {
-                        network_send_chat(2, msg + 3); // channel 2 = whisper
-                    } else if (strncmp(msg, "/r ", 3) == 0 && msg[3] != '\0') {
-                        // Reply to last whisper sender
-                        if (game->playing->chat.whisper_reply_target[0] != '\0') {
-                            char whisper_msg[MAX_CHAT_INPUT_LEN + 32];
-                            snprintf(whisper_msg, sizeof(whisper_msg), "%s %s",
-                                     game->playing->chat.whisper_reply_target, msg + 3);
-                            network_send_chat(2, whisper_msg);
-                        }
-                        // If no reply target yet, silently drop (no one has whispered us)
-                    }
-                    // Unknown commands are silently dropped (no server echo)
-                } else {
-                    // When active channel is WHISPER, prepend the reply target so
-                    // the server knows who to route to
-                    if (game->playing->chat.active_channel == 2 &&
-                        game->playing->chat.whisper_reply_target[0] != '\0') {
-                        char whisper_msg[MAX_CHAT_INPUT_LEN + 32];
-                        snprintf(whisper_msg, sizeof(whisper_msg), "%s %s",
-                                 game->playing->chat.whisper_reply_target, msg);
-                        network_send_chat(2, whisper_msg);
-                    } else {
-                        network_send_chat(game->playing->chat.active_channel, msg);
-                    }
-                }
-            }
-            game->playing->chat.is_typing = 0;
-            game->playing->chat.input_len = 0;
-            game->playing->chat.input_buf[0] = '\0';
-        } else {
-            game->playing->chat.is_typing = 1;
-        }
-    }
-
-    // Don't process movement/combat input while typing in chat
-    if (game->playing->chat.is_typing) {
-        // Escape to cancel chat
-        if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
-            game->playing->chat.is_typing = 0;
-            game->playing->chat.input_len = 0;
-            game->playing->chat.input_buf[0] = '\0';
-        }
-        // Backspace (use held state for key repeat)
-        if (input_key_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
-            if (input_key_just_pressed(&game->input, GLFW_KEY_BACKSPACE)) {
-                if (game->playing->chat.input_len > 0) {
-                    game->playing->chat.input_len--;
-                    game->playing->chat.input_buf[game->playing->chat.input_len] = '\0';
-                }
-                game->playing->chat.backspace_timer = 0.0f;
-                game->playing->chat.backspace_first = 1;
-            } else {
-                game->playing->chat.backspace_timer += delta_time;
-                float threshold = game->playing->chat.backspace_first ? 0.4f : 0.05f;
-                if (game->playing->chat.backspace_timer >= threshold) {
-                    game->playing->chat.backspace_timer = 0.0f;
-                    game->playing->chat.backspace_first = 0;
-                    if (game->playing->chat.input_len > 0) {
-                        game->playing->chat.input_len--;
-                        game->playing->chat.input_buf[game->playing->chat.input_len] = '\0';
-                    }
-                }
-            }
-        }
-        // Tab to cycle channels
-        if (input_key_just_pressed(&game->input, GLFW_KEY_TAB)) {
-            game->playing->chat.active_channel = (game->playing->chat.active_channel + 1) % 4;
-        }
-        return; // Don't process other input while typing
-    }
+	// Chat: open it, click it, send, and type into it
+	if(chat_input_frame(game, delta_time))
+		return; // Don't process other input while typing
 
     playing_input_camera(game, delta_time);
 
     // Block gameplay input while dead (server auto-respawns)
-    if (game->playing->is_dead) return;
+    if (game->playing->is_dead) 
+        return;
 
     // Party invite accept/decline clicks
     if (game->playing->party.has_pending_invite && game->input.mouse_left_clicked) {
@@ -516,7 +577,8 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
     }
 
     // While map is open, eat all gameplay input except M and ESC
-    if (game->playing->show_map) goto map_input_only;
+    if (game->playing->show_map) 
+        goto map_input_only;
 
     // Party frame click = target that member
     if (game->input.mouse_left_clicked && game->playing->party.has_party) {
@@ -542,16 +604,17 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         /* The ground under the cursor, for item pickup; entities are hit on
          * their bodies, which in 3D stand above that point. */
         float world_x, world_y;
-        camera_screen_to_world(&game->camera, game->input.mouse_x, game->input.mouse_y,
-                               &world_x, &world_y);
+        pick_cursor_point(game, &world_x, &world_y);
         const float mx = game->input.mouse_x, my = game->input.mouse_y;
 
         // Check if clicked on a nearby player to target them
         int hit_target = 0;
         for (int i = 0; i < game->playing->nearby_player_count; i++) {
             const NearbyPlayer* np = &game->playing->nearby_players[i];
-            if (np->is_dead) continue;
-            if (camera_hit_standing(&game->camera, np->pos_x, np->pos_y,
+            if (np->is_dead) 
+                continue;
+            
+            if (camera_hit_standing(&game->camera, np->pos_x, np->pos_y, np->pos_z,
                                     CHARACTER_HEIGHT, CHARACTER_PICK_RADIUS, mx, my)) {
                 game->playing->target_player_id = np->player_id;
                 game->playing->target_npc_id    = 0;  // Clear NPC target
@@ -565,7 +628,7 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
             for (int i = 0; i < game->playing->visible_npc_count; i++) {
                 VisibleNPC* npc = &game->playing->visible_npcs[i];
                 if (!npc->is_alive) continue;
-                if (camera_hit_standing(&game->camera, npc->pos_x, npc->pos_y,
+                if (camera_hit_standing(&game->camera, npc->pos_x, npc->pos_y, npc->pos_z,
                                         npc_body_height(npc), CHARACTER_PICK_RADIUS, mx, my)) {
                     game->playing->target_npc_id    = npc->npc_id;
                     game->playing->target_player_id = 0;  // Clear player target
@@ -597,6 +660,16 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
             }
         }
     }
+	// Interact (left click): talk to the friendly NPC under the cursor
+	if(input_key_just_pressed(&game->input, g_keybinds.interact) && !cursor_over_panel(game)) {
+		VisibleNPC* npc = npc_under_cursor(game);
+
+		if(npc && npc->category != 1 && npc->is_interactable) {
+			CLOG_DEBUG("[INPUT] Interacting with NPC %u at (%.1f, %.1f)",
+			           npc->npc_id, npc->pos_x, npc->pos_y);
+			network_send_npc_interact_request(npc->npc_id);
+		}
+	}
     done_click:;
 
     // Leave party
@@ -604,8 +677,32 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         network_send_party_leave();
     }
 
-    player_update_movement(&game->player, &game->input, &game->world, delta_time,
-                           game->camera.yaw);
+	// The hub key, and Emotes 1 to 3
+	if(!game->playing->chat.is_typing) {
+		if(input_key_just_pressed(&game->input, g_keybinds.toggle_emote_hub))
+			emote_hub_open();
+		if(input_key_just_pressed(&game->input, g_keybinds.toggle_weather))
+			weather_window_open();
+		for(int n = 0; n < EMOTE_SLOT_KEYED; n++)
+			if(input_key_just_pressed(&game->input, g_keybinds.emote[n]))
+				emote_client_request_slot(game, EMOTE_SLOT_EMOTE_1 + n);
+	}
+
+	// A movement key ends an emote; a seat or an open dialogue pins the body
+	InputState no_keys;
+	const InputState* keys = &game->input;
+	if(emote_holds_body(&game->player.emote) && movement_key_down(game))
+		emote_client_stop(game);
+	if(emote_pins_body(&game->player.emote) || dialogue_is_active()) {
+		memset(&no_keys, 0, sizeof(no_keys));
+		keys = &no_keys;
+	}
+	game->player.sprint_toggle = game->settings.sprint_toggle;
+	player_update_movement(&game->player, keys, &game->world, delta_time,
+	                       game->camera.yaw);
+	game->playing->move_sync.jumped |= player_update_vertical(&game->player, &game->world,
+	                                                          delta_time);
+	game->playing->move_sync.vertical_ran = 1;
 
     /* Form swap. The request is fire-and-forget: the server answers with the
      * authoritative form either way, and refuses while the shared swap cooldown is
@@ -642,14 +739,30 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
     if (ability_to_cast > 0) {
         /* Aim at the ground under the cursor, whichever way the camera faces. */
         float aim_x, aim_y;
-        camera_screen_to_world(&game->camera, game->input.mouse_x, game->input.mouse_y,
-                               &aim_x, &aim_y);
+        pick_cursor_point(game, &aim_x, &aim_y);
 
         network_send_ability_cast(ability_to_cast, aim_x, aim_y, 0);
     }
 
-    // Basic attack
-    if (input_key_just_pressed(&game->input, g_keybinds.basic_attack)) {
+	// Right click while casting cancels the cast instead of attacking
+	int cancelled = 0;
+
+	if(game->input.mouse_right_clicked && game->playing->ability_bar.is_casting) {
+		network_send_ability_cancel();
+		ability_bar_on_cast_cancel(&game->playing->ability_bar,
+		                           game->playing->ability_bar.casting_ability_id);
+		cancelled = 1;
+	}
+
+	// Basic attack (right click): a hostile under the cursor becomes the target
+	if(!cancelled && input_key_just_pressed(&game->input, g_keybinds.basic_attack) &&
+	   !cursor_over_panel(game)) {
+		VisibleNPC* clicked = npc_under_cursor(game);
+
+		if(clicked && clicked->category == 1) {
+			game->playing->target_npc_id = clicked->npc_id;
+			game->playing->target_player_id = 0;
+		}
         float aim_x = game->player.x;
         float aim_y = game->player.y;
         if (game->playing->target_npc_id != 0) {
@@ -668,15 +781,10 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
         network_send_attack_intent(aim_x, aim_y);
     }
 
-    // Cancel ability cast with right-click
-    if (game->input.mouse_right_clicked && game->playing->ability_bar.is_casting) {
-        network_send_ability_cancel();
-        ability_bar_on_cast_cancel(&game->playing->ability_bar, game->playing->ability_bar.casting_ability_id);
-    }
-
     map_input_only:;
-    // M — toggle full map
-    if (input_key_just_pressed(&game->input, GLFW_KEY_M)) {
+	map_view_update(game);
+    // Toggle full map
+    if (input_key_just_pressed(&game->input, g_keybinds.toggle_map)) {
         game->playing->show_map = !game->playing->show_map;
         if (game->playing->show_map && game->playing->map_zoom == 0.0f)
             game->playing->map_zoom = 1.0f;
@@ -688,6 +796,8 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
             game->playing->show_map = 0;
         } else if (dialogue_is_active()) {
             dialogue_close();
+		} else if(game->inspect_screen && game->inspect_screen->is_open) {
+			inspect_client_close(game);
         } else if (game->character_screen && game->character_screen->is_open) {
             character_screen_toggle(game->character_screen);
         } else if (game->inventory && game->inventory->is_open) {
@@ -697,6 +807,7 @@ void playing_input(GameState* game, GLFWwindow* window, float delta_time) {
             game->playing->target_player_id = 0;
         } else {
             game->playing->is_paused = 1;
+            pm_open();
         }
     }
     (void)window;

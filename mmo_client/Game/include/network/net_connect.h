@@ -67,6 +67,13 @@ int network_realm_connect_in_flight(void);
 /** Describe the outcome of the last attempt, for the status line. */
 const char* network_connect_message(void);
 
+/** Report whether the last attempt failed because the realm refused the session.
+ *
+ * The realm answered, so this is not an outage: the login session has ended
+ * and asking again with the same key cannot succeed.
+ */
+int network_connect_session_refused(void);
+
 /** Abandon any attempt in flight and close its socket. */
 void network_connect_abort(void);
 

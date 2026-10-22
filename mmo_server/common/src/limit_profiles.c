@@ -55,6 +55,10 @@ static const PacketLimitProfile WORLD_PROFILE = {
 
         // Social — chat costs more because one packet fans out to many.
         [PACKET_CHAT_SEND]             = { LIMIT_CLASS_SOCIAL,   3 },
+	// An emote costs a scan of the online players when it is a sit.
+	[PACKET_EMOTE_REQUEST]         = { LIMIT_CLASS_SOCIAL,   2 },
+	// A toggle and one small reply.
+	[PACKET_STATUS_REQUEST]           = { LIMIT_CLASS_SOCIAL,   2 },
         [PACKET_PARTY_INVITE]          = { LIMIT_CLASS_SOCIAL,   2 },
         [PACKET_PARTY_ACCEPT]          = { LIMIT_CLASS_SOCIAL,   2 },
         [PACKET_PARTY_DECLINE]         = { LIMIT_CLASS_SOCIAL,   2 },
@@ -97,6 +101,9 @@ static const PacketLimitProfile WORLD_PROFILE = {
          * is asking the server to build 1.2 KB responses on demand, and should
          * pay for it. */
         [PACKET_NAME_QUERY_REQUEST]    = { LIMIT_CLASS_QUERY,    8 },
+
+		// Priced for its answer: a 147-byte reply built under the target's lock.
+		[PACKET_INSPECT_REQUEST]       = { LIMIT_CLASS_QUERY,    3 },
     },
 
     .violation_limit  = 200,

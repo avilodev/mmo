@@ -13,7 +13,7 @@
  * that encrypted the key and then handed it to anyone who asked would pass a
  * test that only checked for encryption.
  *
- * The realm↔world handshake in world_server/src/main.c and the connect in
+ * The realm↔world handshake in world_server/main.c and the connect in
  * realm_server/src/world_connect.c are both thin wrappers over what is tested
  * here: load pins, hand them to tls_accept_pinned/tls_connect_pinned, and only
  * then read or write protocol bytes.

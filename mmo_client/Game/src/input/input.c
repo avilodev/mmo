@@ -4,6 +4,8 @@
  */
 
 #include "input.h"
+#include "core/keybinds.h"
+#include "render/letterbox.h"
 #include <string.h>
 
 /**
@@ -40,8 +42,11 @@ void input_update(InputState* input, GLFWwindow* window,
     
     float prev_x = input->mouse_x;
     float prev_y = input->mouse_y;
-    input->mouse_x = (float)(raw_x * ((double)viewport_width / (double)window_width));
-    input->mouse_y = (float)(raw_y * ((double)viewport_height / (double)window_height));
+	// Through the same letterbox the picture is drawn in, so bars shift the cursor
+	letterbox_rect box = letterbox_fit(window_width, window_height,
+	                                   viewport_width, viewport_height);
+	letterbox_to_view(&box, raw_x, raw_y, viewport_width, viewport_height,
+	                  &input->mouse_x, &input->mouse_y);
 
     /* The first sample has nothing to be relative to; a jump from (0,0) to
      * wherever the cursor starts would spin the camera on the first drag. */
@@ -62,6 +67,17 @@ void input_update(InputState* input, GLFWwindow* window,
     
     prev_mouse_left = mouse_left;
     prev_mouse_right = mouse_right;
+
+	// Every button a binding can name (keybinds.h), edge and held
+	static int prev_buttons[5] = {0};
+
+	for(int b = 0; b < 5; b++) {
+		int down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1 + b) == GLFW_PRESS;
+
+		input->mouse_buttons_pressed[b] = down && !prev_buttons[b];
+		input->mouse_buttons_down[b] = down;
+		prev_buttons[b] = down;
+	}
     
     // Update keyboard state
     for (int key = 0; key <= GLFW_KEY_LAST; key++) {
@@ -79,6 +95,10 @@ void input_update(InputState* input, GLFWwindow* window,
  * @return      Nonzero when the key is held; otherwise zero.
  */
 int input_key_pressed(const InputState* input, int key) {
+	int button = key - KEYBIND_MOUSE_BASE;
+
+	if(button >= 0 && button < 5)
+		return input->mouse_buttons_down[button];
     if (key < 0 || key > GLFW_KEY_LAST) return 0;
     return input->keys_pressed[key];
 }
@@ -90,6 +110,10 @@ int input_key_pressed(const InputState* input, int key) {
  * @return      Nonzero on a new press; otherwise zero.
  */
 int input_key_just_pressed(const InputState* input, int key) {
+	int button = key - KEYBIND_MOUSE_BASE;
+
+	if(button >= 0 && button < 5)
+		return input->mouse_buttons_pressed[button];
     if (key < 0 || key > GLFW_KEY_LAST) return 0;
     return input->keys_just_pressed[key];
 }

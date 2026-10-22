@@ -14,6 +14,7 @@
 #include <string.h>
 #include <winsock2.h>
 #include "core/client_log.h"
+#include "ui/char_select_view.h"
 
 /** Seconds to hold off an automatic character-list retry after an attempt.
  *
@@ -25,6 +26,9 @@
 
 /** Time left before the character list may be asked for again, in seconds. */
 static float s_char_list_retry_in = 0.0f;
+
+// The last frame's length, for the picture of the selected character
+static float s_frame_dt = 0.0f;
 
 /* --- Retrying a refused world entry --------------------------------------
  *
@@ -60,6 +64,25 @@ static int      s_enter_retried = 0;
  * on another refusal. */
 #define ENTER_RETRY_MARGIN_SECONDS 0.15f
 
+// Resends of one refused list, create or delete before the player is told
+#define REFUSAL_MAX_RESENDS 4
+
+// Packet type awaiting a resend; 0 when none
+static uint8_t  s_resend_type  = 0;
+static float    s_resend_in    = 0.0f;
+static int      s_resend_count = 0;
+
+// What a create or delete asked for, kept so it can be resent and matched
+static uint32_t s_op_world_id = 0;
+static uint32_t s_op_char_id  = 0;
+static uint32_t s_op_race_id  = 0;
+static uint32_t s_op_appearance = 0;
+static char     s_op_name[32] = {0};
+
+// Race list retry delay and time spent waiting on the current request
+static float    s_race_retry_in = 0.0f;
+static float    s_race_wait     = 0.0f;
+
 /** The identifier of the world the player picked, or 0 when none is valid.
  *
  * Every use of server_list.selected_index goes through this. Two of the three
@@ -79,6 +102,7 @@ static uint32_t char_select_world_id(const GameState* game) {
 
 static void char_select_enter(GameState* game) {
     CLOG_INFO("[STATE] Entering character select");
+	csv_open();
     game->char_select.loaded = 0;
     game->char_select.selected_index = -1;
     game->char_select.show_creation = 0;
@@ -86,6 +110,7 @@ static void char_select_enter(GameState* game) {
      * stays 0 until the race list arrives, because the client does not know which
      * races exist until the server says. */
     game->char_select.selected_race = 0;
+	game->char_select.selected_body = APPEARANCE_BODY_MALE;
     game->char_select.races_loaded = 0;
     game->char_select.races_requested = 0;
     game->char_select.pending_delete = 0;
@@ -102,11 +127,143 @@ static void char_select_enter(GameState* game) {
     s_enter_retry_char_id  = 0;
     s_enter_retry_world_id = 0;
     s_enter_retried        = 0;
+
+	s_resend_type   = 0;
+	s_resend_in     = 0.0f;
+	s_resend_count  = 0;
+	s_race_retry_in = 0.0f;
+	s_race_wait     = 0.0f;
 }
 
 static void char_select_exit(GameState* game) {
     (void)game;
     CLOG_INFO("[STATE] Exiting character select");
+	csv_close();
+}
+
+/** The wait state a refused packet type is answered in, or IDLE if none. */
+static NetworkState state_for_refused_type(uint8_t type) {
+	switch(type) {
+		case PACKET_CHARACTER_LIST_REQUEST:
+			return NET_STATE_WAITING_FOR_CHARACTERS;
+		case PACKET_CHARACTER_CREATE_REQUEST:
+			return NET_STATE_CREATING_CHARACTER;
+		case PACKET_CHARACTER_DELETE_REQUEST:
+			return NET_STATE_DELETING_CHARACTER;
+		default:
+			return NET_STATE_IDLE;
+	}
+}
+
+/**
+ * Route a realm refusal to the request it names.
+ *
+ * A refused list, create or delete stays on its loading state and is resent
+ * after the delay the realm gave. Only when the resends run out is the player
+ * told. The notice is read every frame, not only while a request is waiting,
+ * so a refused race list cannot be mistaken for the character list's.
+ */
+static void handle_rate_limit_notice(GameState* game) {
+	uint8_t  rejected_type = 0;
+	uint16_t retry_ms      = 0;
+
+	if(!network_get_rate_limit_notice(&rejected_type, &retry_ms))
+		return;
+
+	float delay = retry_ms / 1000.0f + ENTER_RETRY_MARGIN_SECONDS;
+
+	if(rejected_type == PACKET_RACE_LIST_REQUEST) {
+		game->char_select.races_requested = 0;
+		s_race_retry_in = delay;
+		return;
+	}
+
+	if(rejected_type == PACKET_ENTER_WORLD) {
+		// Resent once after the named delay instead of asking for a click
+		if(game->net_state != NET_STATE_WAITING_FOR_ENTER_WORLD || s_enter_retried)
+			return;
+
+		s_enter_retry_in       = delay;
+		s_enter_retry_char_id  = game->pending_character_id;
+		s_enter_retry_world_id = game->pending_world_id;
+		s_enter_retried        = 1;
+		game->net_state        = NET_STATE_IDLE;
+		game->net_wait_seconds = 0.0f;
+
+		CLOG_INFO("[CHAR_SELECT] World entry refused for %ums; resending once",
+		          (unsigned)retry_ms);
+		return;
+	}
+
+	NetworkState waiting_in = state_for_refused_type(rejected_type);
+
+	// Not a request this screen is waiting on; any real loss times out
+	if(waiting_in == NET_STATE_IDLE || game->net_state != waiting_in)
+		return;
+
+	if(s_resend_count >= REFUSAL_MAX_RESENDS) {
+		s_resend_type          = 0;
+		game->net_state        = NET_STATE_IDLE;
+		game->net_wait_seconds = 0.0f;
+		snprintf(game->char_select.error_message,
+		         sizeof(game->char_select.error_message),
+		         "Too many requests - try again in %.1fs", retry_ms / 1000.0f);
+		return;
+	}
+
+	s_resend_type          = rejected_type;
+	s_resend_in            = delay;
+	s_resend_count++;
+	game->net_wait_seconds = 0.0f;
+
+	CLOG_INFO("[CHAR_SELECT] Request %u refused for %ums; resending (%d)",
+	          (unsigned)rejected_type, (unsigned)retry_ms, s_resend_count);
+}
+
+/** Send a refused request again once its delay has passed. */
+static void resend_refused_request(GameState* game, float delta_time) {
+	if(s_resend_type == 0)
+		return;
+
+	// A response or a timeout already settled it
+	if(game->net_state != state_for_refused_type(s_resend_type)) {
+		s_resend_type = 0;
+		return;
+	}
+
+	s_resend_in -= delta_time;
+	if(s_resend_in > 0.0f)
+		return;
+
+	uint32_t world_id = char_select_world_id(game);
+	int      sent     = 0;
+
+	switch(s_resend_type) {
+		case PACKET_CHARACTER_LIST_REQUEST:
+			sent = world_id != 0 && network_request_character_list(world_id);
+			break;
+		case PACKET_CHARACTER_CREATE_REQUEST:
+			sent = network_create_character(s_op_world_id, s_op_name,
+			                                s_op_race_id, s_op_race_id, s_op_appearance);
+			break;
+		case PACKET_CHARACTER_DELETE_REQUEST:
+			sent = network_delete_character(s_op_world_id, s_op_char_id);
+			break;
+		default:
+			break;
+	}
+
+	s_resend_type = 0;
+
+	if(sent) {
+		game->net_wait_seconds = 0.0f;
+		return;
+	}
+
+	game->net_state = NET_STATE_IDLE;
+	snprintf(game->char_select.error_message,
+	         sizeof(game->char_select.error_message),
+	         "Could not reach the server - please try again");
 }
 
 /**
@@ -130,42 +287,8 @@ static void resolve_stalled_request(GameState* game, float delta_time,
 
     game->net_wait_seconds += delta_time;
 
-    uint8_t  rejected_type = 0;
-    uint16_t retry_ms      = 0;
-
-    if (network_get_rate_limit_notice(&rejected_type, &retry_ms)) {
-        /* A world entry the realm could not afford is resent once, after the
-         * delay it named, rather than handed back to the player as an error
-         * they have to answer with another click. */
-        if (rejected_type == PACKET_ENTER_WORLD &&
-            game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD &&
-            !s_enter_retried) {
-
-            s_enter_retry_in       = retry_ms / 1000.0f + ENTER_RETRY_MARGIN_SECONDS;
-            s_enter_retry_char_id  = game->pending_character_id;
-            s_enter_retry_world_id = game->pending_world_id;
-            s_enter_retried        = 1;
-
-            /* Back to idle so nothing waits on a response that will never
-             * come; the retry below is what carries the request. The screen
-             * keeps saying "Entering world...", because from the player's side
-             * that is exactly what is still happening. */
-            game->net_state        = NET_STATE_IDLE;
-            game->net_wait_seconds = 0.0f;
-
-            CLOG_INFO("[CHAR_SELECT] World entry refused for %ums; resending once",
-                      (unsigned)retry_ms);
-            return;
-        }
-
-        game->net_state        = NET_STATE_IDLE;
-        game->net_wait_seconds = 0.0f;
-        snprintf(error_out, error_size,
-                 "Too many requests - try again in %.1fs", retry_ms / 1000.0f);
-        return;
-    }
-
     if (game->net_wait_seconds > NET_REQUEST_TIMEOUT_SECONDS) {
+        s_resend_type          = 0;
         game->net_state        = NET_STATE_IDLE;
         game->net_wait_seconds = 0.0f;
         snprintf(error_out, error_size, "Server did not respond - please try again");
@@ -178,11 +301,17 @@ static void resolve_stalled_request(GameState* game, float delta_time,
  * @param delta_time  Elapsed frame time in seconds.
  */
 static void char_select_update(GameState* game, float delta_time) {
+	s_frame_dt = delta_time;
+
     if (s_char_list_retry_in > 0.0f) s_char_list_retry_in -= delta_time;
+
+	handle_rate_limit_notice(game);
 
     resolve_stalled_request(game, delta_time,
                             game->char_select.error_message,
                             sizeof(game->char_select.error_message));
+
+	resend_refused_request(game, delta_time);
 
     /* Resend a world entry the realm refused, once its stated delay is up.
      *
@@ -233,14 +362,26 @@ static void char_select_update(GameState* game, float delta_time) {
         } else if (game->net_state == NET_STATE_IDLE) {
             /* Both wire fields carry the same fused identifier; the realm server
              * rejects a mismatch, and rejects a race that is not playable. */
+            uint32_t appearance = appearance_pack(game->char_select.selected_body);
+
             if (network_create_character(char_select_world_id(game),
                                          game->char_select.new_name,
                                          game->char_select.selected_race,
-                                         game->char_select.selected_race)) {
+                                         game->char_select.selected_race, appearance)) {
                 game->net_state = NET_STATE_CREATING_CHARACTER;
                 game->net_wait_seconds = 0.0f;
                 memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
-            }
+
+				s_op_world_id  = char_select_world_id(game);
+				s_op_race_id   = game->char_select.selected_race;
+				s_op_appearance = appearance;
+				s_resend_count = 0;
+				snprintf(s_op_name, sizeof(s_op_name), "%s", game->char_select.new_name);
+            } else {
+				snprintf(game->char_select.error_message,
+				         sizeof(game->char_select.error_message),
+				         "Could not reach the server - please try again");
+			}
         }
     }
 
@@ -256,17 +397,33 @@ static void char_select_update(GameState* game, float delta_time) {
                 game->net_state = NET_STATE_DELETING_CHARACTER;
                 game->net_wait_seconds = 0.0f;
                 memset(game->char_select.error_message, 0, sizeof(game->char_select.error_message));
-            }
+
+				s_op_world_id  = world_id;
+				s_op_char_id   = char_id;
+				s_resend_count = 0;
+            } else {
+				snprintf(game->char_select.error_message,
+				         sizeof(game->char_select.error_message),
+				         "Could not reach the server - please try again");
+			}
         }
         game->char_select.pending_delete_index = -1;
     }
 
-    /* The race list is fetched once and outside the state machine: it is small,
-     * needed only by the creation panel, and must not block the character list. */
-    if (!game->char_select.races_loaded) {
-        if (!game->char_select.races_requested) {
-            game->char_select.races_requested = network_request_race_list();
-        } else if (network_get_race_list(&game->char_select.races)) {
+    /* The race list is fetched outside the state machine: it is small, needed
+     * only by the creation panel, and must not block the character list. It is
+     * asked for again when refused or unanswered, so a lost request cannot
+     * leave the panel on "Loading races..." for the rest of the visit. */
+	if(!game->char_select.races_loaded) {
+		if(s_race_retry_in > 0.0f)
+			s_race_retry_in -= delta_time;
+
+		if(!game->char_select.races_requested) {
+			if(s_race_retry_in <= 0.0f) {
+				game->char_select.races_requested = network_request_race_list();
+				s_race_wait = 0.0f;
+			}
+		} else if(network_get_race_list(&game->char_select.races)) {
             game->char_select.races_loaded = 1;
             CLOG_INFO("[CHAR_SELECT] Received %d races", game->char_select.races.count);
 
@@ -276,8 +433,12 @@ static void char_select_update(GameState* game, float delta_time) {
                 game->char_select.selected_race = ntohl(game->char_select.races.races[i].race_id);
                 break;
             }
-        }
-    }
+		} else {
+			s_race_wait += delta_time;
+			if(s_race_wait > NET_REQUEST_TIMEOUT_SECONDS)
+				game->char_select.races_requested = 0;
+		}
+	}
 
     // State machine
     switch (game->net_state) {
@@ -303,19 +464,31 @@ static void char_select_update(GameState* game, float delta_time) {
                 if (network_request_character_list(world_id)) {
                     game->net_state = NET_STATE_WAITING_FOR_CHARACTERS;
                     game->net_wait_seconds = 0.0f;
+					s_resend_count = 0;
                 }
                 s_char_list_retry_in = CHAR_LIST_RETRY_SECONDS;
             }
             break;
         }
 
-        case NET_STATE_WAITING_FOR_CHARACTERS:
-            if (network_get_character_list(&game->char_select.list)) {
+        case NET_STATE_WAITING_FOR_CHARACTERS: {
+			CharacterListResponsePacket incoming_list;
+
+			if(network_get_character_list(&incoming_list)) {
+				// Only the selected world's list answers this screen
+				if(ntohl(incoming_list.world_id) != char_select_world_id(game)) {
+					CLOG_WARN("[CHAR_SELECT] Dropped a list for world %u",
+					          (unsigned)ntohl(incoming_list.world_id));
+					break;
+				}
+
+				game->char_select.list = incoming_list;
                 game->char_select.loaded = 1;
                 game->net_state = NET_STATE_IDLE;
                 CLOG_INFO("[CHAR_SELECT] Received %d characters", game->char_select.list.count);
             }
             break;
+		}
 
         case NET_STATE_CREATING_CHARACTER:
             {
@@ -355,6 +528,14 @@ static void char_select_update(GameState* game, float delta_time) {
             {
                 CharacterDeleteResponsePacket response;
                 if (network_get_character_delete_response(&response)) {
+					// A stale answer for another character is not this one's
+					if(ntohl(response.character_id) != s_op_char_id ||
+					   ntohl(response.world_id) != s_op_world_id) {
+						CLOG_WARN("[CHAR_SELECT] Dropped a delete answer for %u",
+						          (unsigned)ntohl(response.character_id));
+						break;
+					}
+
                     if (response.success) {
                         // Same as create: the server pushes the refreshed list,
                         // so consume that rather than issuing a request that
@@ -474,23 +655,6 @@ static void char_select_update(GameState* game, float delta_time) {
 /**
  * Render and operate the character-creation overlay.
  */
-/** Look up a race's display name in the registry the server sent.
- *
- * Falls back rather than guessing: an existing character of a race the current
- * registry no longer lists should still be legible in the list.
- *
- * @return A name owned by the loaded race list, or "Unknown".
- */
-static const char* char_select_race_name(const GameState* game, uint32_t race_id) {
-    if (!game->char_select.races_loaded) return "...";
-
-    const RaceListResponsePacket* races = &game->char_select.races;
-    for (int i = 0; i < races->count; i++) {
-        if (ntohl(races->races[i].race_id) == race_id) return races->races[i].name;
-    }
-    return "Unknown";
-}
-
 /** Height of one race row, and how many rows the creation panel shows. */
 #define RACE_ROW_H        44.0f
 #define RACE_ROWS_VISIBLE 10
@@ -505,11 +669,31 @@ static const char* role_display_name(uint8_t role) {
     }
 }
 
+// The body toggle, in a column beside the race list
+static void char_select_render_look(GameState* game, float x, float y) {
+	static const char* const BODY_NAMES[APPEARANCE_BODY_COUNT] = { "Male", "Female" };
+
+	renderer_draw_text(x, y + 140, "Body:");
+
+	for(int body = 0; body < APPEARANCE_BODY_COUNT; body++) {
+		float bx = x + body * 120.0f;
+		int selected = game->char_select.selected_body == body;
+		int hovered = input_mouse_in_rect(&game->input, bx, y + 150, 110, 36);
+		float c = selected ? 0.40f : (hovered ? 0.30f : 0.20f);
+
+		renderer_draw_rect(bx, y + 150, 110, 36, c, c, c + 0.08f, 1.0f);
+		renderer_draw_text(bx + 10, y + 174, BODY_NAMES[body]);
+
+		if(hovered && game->input.mouse_left_clicked)
+			game->char_select.selected_body = (uint8_t)body;
+	}
+}
+
 static void char_select_render_creation(GameState* game) {
     int vw = game->camera.viewport_width;
     int vh = game->camera.viewport_height;
 
-    float panel_w = 560;
+    float panel_w = 860;
     float panel_h = 660;
     float panel_x = (vw - panel_w) / 2;
     float panel_y = (vh - panel_h) / 2;
@@ -580,6 +764,8 @@ static void char_select_render_creation(GameState* game) {
         }
     }
 
+	char_select_render_look(game, panel_x + 560, panel_y);
+
     // Create button
     float btn_y = panel_y + panel_h - 100;
     int create_hovered = input_mouse_in_rect(&game->input, panel_x + 150, btn_y, 200, 45);
@@ -615,155 +801,77 @@ static void char_select_render_creation(GameState* game) {
     }
 }
 
+/** Ask the realm to enter the world as the character at an index in the list. */
+static void start_enter_world(GameState* game, int index) {
+	uint32_t char_id;
+	uint32_t world_id = char_select_world_id(game);
+
+	if(index < 0 || index >= game->char_select.list.count)
+		return;
+
+	char_id = ntohl(game->char_select.list.characters[index].character_id);
+
+	/* Recorded with the request, not re-derived from the selection
+	 * when the answer comes back.
+	 *
+	 * The ticket the realm mints names one character, and the world
+	 * ignores the identifier in the connect packet and trusts the
+	 * ticket -- so if the list moved under selected_index between
+	 * the request and the response, the player entered the world as
+	 * one character while the client spent the session addressing
+	 * another, silently. The request is the only moment both halves
+	 * are known to agree. */
+	if(world_id != 0 && network_request_enter_world(char_id, world_id)) {
+		game->pending_character_id = char_id;
+		game->pending_world_id     = world_id;
+		game->net_state = NET_STATE_WAITING_FOR_ENTER_WORLD;
+		game->net_wait_seconds = 0.0f;
+	}
+}
+
+/** A request is in flight. A pending retry counts as busy: without it the
+ *  screen invites the very click this whole path exists to make unnecessary,
+ *  and the two requests would race for one ticket. */
+static int char_select_busy(const GameState* game) {
+	return (game->net_state != NET_STATE_IDLE) || (s_enter_retry_in > 0.0f);
+}
+
 /**
- * Render the character list and process selection, deletion, and navigation.
+ * Render the character select scene, or the creation panel over its backdrop.
  */
 static void char_select_render(GameState* game) {
-    int vw = game->camera.viewport_width;
-    int vh = game->camera.viewport_height;
+	int vw = game->camera.viewport_width;
+	int vh = game->camera.viewport_height;
+	const char* status = NULL;
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0, vw, vh, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+	// The picture of the character is drawn first: it uses its own target
+	if(!game->char_select.show_creation)
+		csv_render_preview(game, s_frame_dt);
 
-    // Background
-    if (game->textures.background != 0) {
-        renderer_draw_sprite(0, 0, vw, vh, game->textures.background);
-    } else {
-        renderer_draw_rect(0, 0, vw, vh, 0.1f, 0.1f, 0.2f, 1.0f);
-    }
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(0, vw, vh, 0, -1, 1);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
 
-    // Character creation overlay
-    if (game->char_select.show_creation) {
-        char_select_render_creation(game);
-        return;
-    }
+	// Character creation overlay
+	if(game->char_select.show_creation) {
+		if(game->textures.background != 0)
+			renderer_draw_sprite(0, 0, vw, vh, game->textures.background);
+		else
+			renderer_draw_rect(0, 0, vw, vh, 0.1f, 0.1f, 0.2f, 1.0f);
 
-    // Character list panel
-    float panel_w = 600;
-    float panel_h = 500;
-    float panel_x = (vw - panel_w) / 2;
-    float panel_y = (vh - panel_h) / 2;
+		char_select_render_creation(game);
+		return;
+	}
 
-    renderer_draw_rect(panel_x, panel_y, panel_w, panel_h, 0.15f, 0.15f, 0.2f, 0.95f);
-    renderer_draw_rect(panel_x, panel_y, panel_w, 4, 0.4f, 0.6f, 0.8f, 1.0f);
-    renderer_draw_rect(panel_x, panel_y + panel_h - 4, panel_w, 4, 0.4f, 0.6f, 0.8f, 1.0f);
-    renderer_draw_rect(panel_x, panel_y, 4, panel_h, 0.4f, 0.6f, 0.8f, 1.0f);
-    renderer_draw_rect(panel_x + panel_w - 4, panel_y, 4, panel_h, 0.4f, 0.6f, 0.8f, 1.0f);
+	// Shown across the retry too: a blank gap there invites a second click
+	if(game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD || s_enter_retry_in > 0.0f)
+		status = "Entering world...";
+	else if(game->net_state == NET_STATE_DELETING_CHARACTER)
+		status = "Deleting...";
 
-    renderer_draw_rect(panel_x, panel_y, panel_w, 60, 0.2f, 0.3f, 0.4f, 1.0f);
-    renderer_draw_text(panel_x + 20, panel_y + 40, "SELECT CHARACTER");
-
-    if (!game->char_select.loaded) {
-        renderer_draw_text(panel_x + 250, panel_y + 200, "Loading...");
-    } else {
-        float item_y = panel_y + 80;
-        float item_h = 60;
-        float item_spacing = 10;
-
-        /* A pending retry counts as busy. Without it the screen invites the
-         * very click this whole path exists to make unnecessary, and the two
-         * requests would race for one ticket. */
-        int is_busy = (game->net_state != NET_STATE_IDLE) || (s_enter_retry_in > 0.0f);
-
-        for (int i = 0; i < game->char_select.list.count && i < 10; i++) {
-            float y = item_y + i * (item_h + item_spacing);
-
-            // Main row (excluding delete button area)
-            float row_w = panel_w - 100;  // leave 80px on right for DEL
-            int row_hovered = input_mouse_in_rect(&game->input, panel_x + 20, y, row_w, item_h);
-            float c = row_hovered ? 0.3f : 0.2f;
-            renderer_draw_rect(panel_x + 20, y, row_w, item_h, c, c, c + 0.1f, 1.0f);
-
-            char info[128];
-            uint32_t race_id = ntohl(game->char_select.list.characters[i].class_id);
-
-            snprintf(info, sizeof(info), "%s - Lv.%lu %s",
-                    game->char_select.list.characters[i].name,
-                    (unsigned long)ntohl(game->char_select.list.characters[i].level),
-                    char_select_race_name(game, race_id));
-
-            renderer_draw_text(panel_x + 40, y + 40, info);
-
-            if (row_hovered && game->input.mouse_left_clicked && !is_busy) {
-                game->char_select.selected_index = i;
-
-                uint32_t char_id  = ntohl(game->char_select.list.characters[i].character_id);
-                uint32_t world_id = char_select_world_id(game);
-
-                /* Recorded with the request, not re-derived from the selection
-                 * when the answer comes back.
-                 *
-                 * The ticket the realm mints names one character, and the world
-                 * ignores the identifier in the connect packet and trusts the
-                 * ticket -- so if the list moved under selected_index between
-                 * the request and the response, the player entered the world as
-                 * one character while the client spent the session addressing
-                 * another, silently. The request is the only moment both halves
-                 * are known to agree. */
-                if (world_id != 0 && network_request_enter_world(char_id, world_id)) {
-                    game->pending_character_id = char_id;
-                    game->pending_world_id     = world_id;
-                    game->net_state = NET_STATE_WAITING_FOR_ENTER_WORLD;
-                    game->net_wait_seconds = 0.0f;
-                    is_busy = 1;
-                }
-            }
-
-            // Delete button
-            float del_x = panel_x + 20 + row_w + 5;
-            float del_w = 55;
-            int del_hovered = input_mouse_in_rect(&game->input, del_x, y + 10, del_w, item_h - 20);
-            renderer_draw_rect(del_x, y + 10, del_w, item_h - 20,
-                              del_hovered ? 0.9f : 0.6f, 0.2f, 0.2f, 1.0f);
-            renderer_draw_text(del_x + 8, y + 35, "DEL");
-
-            if (del_hovered && game->input.mouse_left_clicked && !is_busy) {
-                game->char_select.pending_delete = 1;
-                game->char_select.pending_delete_index = i;
-                is_busy = 1;
-            }
-        }
-
-        // New character button
-        float btn_y = panel_y + panel_h - 70;
-        int btn_hovered = input_mouse_in_rect(&game->input, panel_x + 200, btn_y, 200, 45);
-
-        renderer_draw_rect(panel_x + 200, btn_y, 200, 45,
-                          btn_hovered ? 0.3f : 0.2f, btn_hovered ? 0.7f : 0.5f, 0.2f, 1.0f);
-        renderer_draw_text(panel_x + 215, btn_y + 30, "NEW CHARACTER");
-
-        if (btn_hovered && game->input.mouse_left_clicked) {
-            game->char_select.show_creation = 1;
-        }
-    }
-
-    // Loading indicator
-    if (game->net_state == NET_STATE_WAITING_FOR_ENTER_WORLD || s_enter_retry_in > 0.0f) {
-        /* Shown across the retry as well. The request is in the air either
-         * way, and a screen that went blank between the refusal and the resend
-         * would be the same invitation to click again that the refusal was. */
-        renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.2f, 0.6f, 0.8f, 0.9f);
-        renderer_draw_text(panel_x + 220, panel_y + 230, "Entering world...");
-    } else if (game->net_state == NET_STATE_DELETING_CHARACTER) {
-        renderer_draw_rect(panel_x + 200, panel_y + 200, 200, 50, 0.7f, 0.2f, 0.2f, 0.9f);
-        renderer_draw_text(panel_x + 215, panel_y + 230, "Deleting...");
-    }
-
-    // Back button
-    float back_x = panel_x - 120;
-    float back_y = panel_y + panel_h / 2 - 25;
-    int back_hovered = input_mouse_in_rect(&game->input, back_x, back_y, 100, 50);
-
-    renderer_draw_rect(back_x, back_y, 100, 50,
-                      back_hovered ? 0.8f : 0.6f, 0.3f, 0.3f, 1.0f);
-    renderer_draw_text(back_x + 25, back_y + 35, "Back");
-
-    if (back_hovered && game->input.mouse_left_clicked) {
-        game_change_state(game, GAME_MODE_SERVER_LIST);
-    }
+	csv_draw(game, status);
 }
 
 /**
@@ -781,10 +889,30 @@ static void char_select_input(GameState* game, GLFWwindow* window, float delta_t
     if (input_key_just_pressed(&game->input, GLFW_KEY_ESCAPE)) {
         if (game->char_select.show_creation) {
             game->char_select.show_creation = 0;
-        } else {
+        } else if(!csv_escape()) {
             game_change_state(game, GAME_MODE_SERVER_LIST);
         }
     }
+
+	if(!game->char_select.show_creation) {
+		switch(csv_update(game, char_select_busy(game))) {
+		case CSV_JOIN:
+			start_enter_world(game, game->char_select.selected_index);
+			break;
+		case CSV_DELETE:
+			game->char_select.pending_delete = 1;
+			game->char_select.pending_delete_index = game->char_select.selected_index;
+			break;
+		case CSV_NEW:
+			game->char_select.show_creation = 1;
+			break;
+		case CSV_BACK:
+			game_change_state(game, GAME_MODE_SERVER_LIST);
+			break;
+		default:
+			break;
+		}
+	}
 
     // Handle text input for character creation
     if (game->char_select.show_creation) {

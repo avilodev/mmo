@@ -82,6 +82,11 @@ typedef struct {
     int         tile_y;
     const char* city_name;
     const char* currency_name;
+    /** Where a character appears, in tiles from the centre. Ennara's city scene
+     *  has solid ground against the centre point, so a player-sized box standing
+     *  exactly on it cannot move. */
+    int         spawn_dx;
+    int         spawn_dy;
 } WorldCity;
 
 /**
@@ -93,13 +98,13 @@ typedef struct {
  */
 static const WorldCity WORLD_CITIES[] = {
     { CITY_ENNARA, CURRENCY_ENNARA, CITY_ENNARA_TILE_X, CITY_ENNARA_TILE_Y,
-      "Ennara",     "Ennara Currency"     },
+      "Ennara",     "Ennara Currency",     0, 1 },
     { CITY_K1,     CURRENCY_K1,     CITY_K1_TILE_X,     CITY_K1_TILE_Y,
-      "Kingdom 1",  "Kingdom 1 Currency"  },
+      "Kingdom 1",  "Kingdom 1 Currency",  0, 0 },
     { CITY_K2,     CURRENCY_K2,     CITY_K2_TILE_X,     CITY_K2_TILE_Y,
-      "Kingdom 2",  "Kingdom 2 Currency"  },
+      "Kingdom 2",  "Kingdom 2 Currency",  0, 0 },
     { CITY_K3,     CURRENCY_K3,     CITY_K3_TILE_X,     CITY_K3_TILE_Y,
-      "Kingdom 3",  "Kingdom 3 Currency"  },
+      "Kingdom 3",  "Kingdom 3 Currency",  0, 0 },
 };
 
 #define WORLD_CITY_COUNT ((int)(sizeof(WORLD_CITIES) / sizeof(WORLD_CITIES[0])))
@@ -147,11 +152,12 @@ static inline const WorldCity* world_city_find(CityId city) {
     return NULL;
 }
 
-/** Report a city's centre in world pixels. */
+/** Report where a city's characters appear, in world pixels: its centre,
+ *  moved by spawn_dx/spawn_dy tiles. */
 static inline void world_city_center_px(const WorldCity* c,
                                         float* out_x, float* out_y) {
-    if (out_x) *out_x = (float)c->tile_x * WORLD_TILE_PX;
-    if (out_y) *out_y = (float)c->tile_y * WORLD_TILE_PX;
+    if (out_x) *out_x = (float)(c->tile_x + c->spawn_dx) * WORLD_TILE_PX;
+    if (out_y) *out_y = (float)(c->tile_y + c->spawn_dy) * WORLD_TILE_PX;
 }
 
 /**

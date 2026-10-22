@@ -6,9 +6,14 @@
 #include "render/gl_loader.h"
 #include "render/ground_renderer.h"
 #include "render/world_light.h"
+#include "world/sky.h"
 #include "core/client_log.h"
 
 #include <stddef.h>
+
+// The chunk ground is only streamed this far out, so it still fades at the edge
+#define GROUND_FOG_START 950.0f
+#define GROUND_FOG_END   1450.0f
 
 static const char* VERTEX_SRC =
     "#version 330 core\n"
@@ -72,8 +77,10 @@ int ground_renderer_init(void) {
     GLuint vs = compile(GL_VERTEX_SHADER, VERTEX_SRC);
     GLuint fs = compile(GL_FRAGMENT_SHADER, FRAGMENT_SRC);
     if (!vs || !fs) {
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
+        if (vs) 
+            glDeleteShader(vs);
+        if (fs) 
+            glDeleteShader(fs);
         return 0;
     }
 
@@ -146,8 +153,9 @@ void ground_renderer_begin(const CameraView* view, int solid, float fog_x, float
     glUniformMatrix4fv(u_mvp, 1, GL_FALSE, view->ground_mvp);
     glUniform1i(u_tex, 0);
     glUniform2f(u_fog_center, fog_x, fog_y);
-    glUniform2f(u_fog_range, WORLD_FOG_START, WORLD_FOG_END);
-    glUniform3f(u_fog_color, WORLD_SKY_R, WORLD_SKY_G, WORLD_SKY_B);
+    glUniform2f(u_fog_range, GROUND_FOG_START, GROUND_FOG_END);
+	glUniform3f(u_fog_color, sky_current()->haze[0], sky_current()->haze[1],
+	            sky_current()->haze[2]);
     glActiveTexture(GL_TEXTURE0);
 }
 

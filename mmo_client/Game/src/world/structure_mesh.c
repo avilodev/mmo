@@ -30,24 +30,42 @@
 
 StructureTile structure_tile_of(uint16_t base, uint16_t above, uint8_t collision) {
     StructureTile t = { STRUCTURE_NONE, base };
-    if (!collision) return t;
+    if (!collision) 
+        return t;
+
     switch (base) {
         case PAL_CITY_WALL:
         case PAL_COURTYARD_WALL:
-        case PAL_GATE_TOWER:    t.kind = STRUCTURE_BLOCK;  return t;
-        case PAL_MOUNTAIN_ROCK: t.kind = STRUCTURE_ROCK;   return t;
-        case PAL_COLUMN:        t.kind = STRUCTURE_COLUMN; return t;
-        case PAL_LAMP_POST:     t.kind = STRUCTURE_LAMP;   return t;
-        case PAL_TREE:          t.kind = STRUCTURE_TREE;   return t;
-        default: break;
+        case PAL_GATE_TOWER:    
+            t.kind = STRUCTURE_BLOCK;  
+            return t;
+        case PAL_MOUNTAIN_ROCK: 
+            t.kind = STRUCTURE_ROCK;   
+            return t;
+        case PAL_COLUMN:        
+            t.kind = STRUCTURE_COLUMN; 
+            return t;
+        case PAL_LAMP_POST:     t.kind = STRUCTURE_LAMP;   
+            return t;
+        case PAL_TREE:          t.kind = STRUCTURE_TREE;   
+            return t;
+        default: 
+            break;
     }
-    if (above == PAL_BUILDING_ROOF) { t.kind = STRUCTURE_BUILDING; t.style = above; }
+    if (above == PAL_BUILDING_ROOF) 
+    { 
+        t.kind = STRUCTURE_BUILDING; 
+        t.style = above; 
+    }
+    
     return t;
 }
 
 static StructureTile tile(const StructureMeshInput* in, int tx, int ty) {
     StructureTile none = { STRUCTURE_NONE, 0 };
-    if (tx < 0 || ty < 0 || tx >= in->world_w || ty >= in->world_h) return none;
+    if (tx < 0 || ty < 0 || tx >= in->world_w || ty >= in->world_h) 
+        return none;
+
     return in->tile_at(in->ctx, tx, ty);
 }
 
@@ -57,13 +75,15 @@ static StructureKind kind(const StructureMeshInput* in, int tx, int ty) {
 
 static float block_height(uint16_t style) {
     switch (style) {
-        case PAL_COURTYARD_WALL: return STRUCTURE_COURTYARD_WALL_HEIGHT;
-        case PAL_GATE_TOWER:     return STRUCTURE_GATE_TOWER_HEIGHT;
-        default:                 return STRUCTURE_CITY_WALL_HEIGHT;
+        case PAL_COURTYARD_WALL: 
+            return STRUCTURE_COURTYARD_WALL_HEIGHT;
+        case PAL_GATE_TOWER:     
+            return STRUCTURE_GATE_TOWER_HEIGHT;
+        default:                 
+            return STRUCTURE_CITY_WALL_HEIGHT;
     }
 }
 
-/* ---- heights ----------------------------------------------------------- */
 
 /** Whether all four tiles touching grid vertex (vx, vy) are `k`. */
 static int corner_surrounded(const StructureMeshInput* in, int vx, int vy, StructureKind k) {
@@ -75,7 +95,8 @@ static int corner_surrounded(const StructureMeshInput* in, int vx, int vy, Struc
 static int run_length(const StructureMeshInput* in, int tx, int ty, int sx, int sy,
                       StructureKind k, int limit) {
     int n = 0;
-    while (n < limit && kind(in, tx + sx * n, ty + sy * n) == k) n++;
+    while (n < limit && kind(in, tx + sx * n, ty + sy * n) == k) 
+        n++;
     return n;
 }
 
@@ -90,12 +111,16 @@ float structure_roof_height(const StructureMeshInput* in, int vx, int vy) {
     int r = run_length(in, vx,     vy,  1, 0, b, lim);
     int u = run_length(in, vx, vy - 1,  0, -1, b, lim);
     int w = run_length(in, vx, vy,      0,  1, b, lim);
-    if (r < d) d = r;
-    if (u < d) d = u;
-    if (w < d) d = w;
+    if (r < d) 
+        d = r;
+    if (u < d) 
+        d = u;
+    if (w < d) 
+        d = w;
 
     float rise = (float)d * STRUCTURE_ROOF_RISE;
-    if (rise > STRUCTURE_ROOF_MAX_RISE) rise = STRUCTURE_ROOF_MAX_RISE;
+    if (rise > STRUCTURE_ROOF_MAX_RISE) 
+        rise = STRUCTURE_ROOF_MAX_RISE;
     return STRUCTURE_BUILDING_EAVE + rise;
 }
 
@@ -104,15 +129,15 @@ static float hash01(int x, int y) {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u;
     h = (h ^ (h >> 13)) * 1274126177u;
     h ^= h >> 16;
+
     return (float)(h & 0xFFFFu) / 65536.0f;
 }
 
 static float rock_height(const StructureMeshInput* in, int vx, int vy) {
-    if (!corner_surrounded(in, vx, vy, STRUCTURE_ROCK)) return 0.0f;
+    if (!corner_surrounded(in, vx, vy, STRUCTURE_ROCK)) 
+        return 0.0f;
     return STRUCTURE_ROCK_BASE + hash01(vx, vy) * STRUCTURE_ROCK_NOISE;
 }
-
-/* ---- emitting ---------------------------------------------------------- */
 
 /** Where vertices go, and how many more fit. */
 typedef struct {
@@ -125,8 +150,10 @@ typedef struct {
 typedef struct { float x, y, h; } P3;
 
 static uint8_t to_byte(float c) {
-    if (c <= 0.0f) return 0;
-    if (c >= 1.0f) return 255;
+    if (c <= 0.0f) 
+        return 0;
+    if (c >= 1.0f) 
+        return 255;
     return (uint8_t)lroundf(c * 255.0f);
 }
 
@@ -142,7 +169,8 @@ static void put(ChunkVertex* v, P3 p, const float rgb[3], float light) {
 /** One triangle with each corner's own brightness. */
 static void tri3(Builder* b, P3 p0, P3 p1, P3 p2, const float rgb[3],
                  float l0, float l1, float l2) {
-    if (b->n + 3 > b->cap) return;
+    if (b->n + 3 > b->cap) 
+        return;
     put(&b->v[b->n++], p0, rgb, l0);
     put(&b->v[b->n++], p1, rgb, l1);
     put(&b->v[b->n++], p2, rgb, l2);
@@ -161,7 +189,8 @@ static void lit_tri(Builder* b, P3 p0, P3 p1, P3 p2, const float rgb[3], int up,
     float nh = e1y * e2x - e1x * e2y;
     float ny = e1x * e2h - e1h * e2x;
     float len = sqrtf(nx * nx + nh * nh + ny * ny);
-    if (len < 1e-6f) return;
+    if (len < 1e-6f) 
+        return;
     nx /= len; nh /= len; ny /= len;
 
     float flip;
@@ -173,7 +202,12 @@ static void lit_tri(Builder* b, P3 p0, P3 p1, P3 p2, const float rgb[3], int up,
         float cy = (p0.y + p1.y + p2.y) / 3.0f - ref.y;
         flip = nx * cx + nh * ch + ny * cy;
     }
-    if (flip < 0.0f) { nx = -nx; nh = -nh; ny = -ny; }
+    if (flip < 0.0f) 
+    { 
+        nx = -nx; 
+        nh = -nh; 
+        ny = -ny; 
+    }
 
     float light = world_light(nx, nh, ny);
     tri3(b, p0, p1, p2, rgb, light, light, light);
@@ -225,15 +259,21 @@ static void emit_sides(Builder* b, const StructureMeshInput* in, int tx, int ty,
             if (bottom >= height) continue;
         }
         switch (d) {
-            case 0: emit_side(b, x0, y0, x1, y0, bottom, height,  0.0f, -1.0f, rgb); break;
-            case 1: emit_side(b, x1, y1, x0, y1, bottom, height,  0.0f,  1.0f, rgb); break;
-            case 2: emit_side(b, x0, y1, x0, y0, bottom, height, -1.0f,  0.0f, rgb); break;
-            default: emit_side(b, x1, y0, x1, y1, bottom, height, 1.0f,  0.0f, rgb); break;
+            case 0: 
+                emit_side(b, x0, y0, x1, y0, bottom, height,  0.0f, -1.0f, rgb); 
+                break;
+            case 1: 
+                emit_side(b, x1, y1, x0, y1, bottom, height,  0.0f,  1.0f, rgb); 
+                break;
+            case 2: 
+                emit_side(b, x0, y1, x0, y0, bottom, height, -1.0f,  0.0f, rgb); 
+                break;
+            default: 
+                emit_side(b, x1, y0, x1, y1, bottom, height, 1.0f,  0.0f, rgb); 
+                break;
         }
     }
 }
-
-/* ---- props ------------------------------------------------------------- */
 
 /**
  * A ring-to-ring band around a vertical axis: a cylinder, a cone, a pyramid
@@ -266,7 +306,9 @@ static void emit_box(Builder* b, float cx, float cy, float h0, float h1, float h
 }
 
 static void scale_rgb(const float in[3], float k, float out[3]) {
-    out[0] = in[0] * k; out[1] = in[1] * k; out[2] = in[2] * k;
+    out[0] = in[0] * k; 
+    out[1] = in[1] * k; 
+    out[2] = in[2] * k;
 }
 
 /** A stone column: plinth, base drum, shaft and capital. */
@@ -326,7 +368,9 @@ static void emit_tree(Builder* b, float cx, float cy, float size, int seed_x, in
  * what the server blocks.
  */
 static void emit_prop(Builder* b, const StructureMeshInput* in, int tx, int ty, StructureKind k) {
-    if (kind(in, tx - 1, ty) == k || kind(in, tx, ty - 1) == k) return;
+    if (kind(in, tx - 1, ty) == k || kind(in, tx, ty - 1) == k) 
+        return;
+
     int w = run_length(in, tx, ty, 1, 0, k, STRUCTURE_PROP_MAX_TILES);
     int h = run_length(in, tx, ty, 0, 1, k, STRUCTURE_PROP_MAX_TILES);
     float s  = (float)in->tile_size;
@@ -335,14 +379,19 @@ static void emit_prop(Builder* b, const StructureMeshInput* in, int tx, int ty, 
     float size = (float)(w < h ? w : h) * s;
 
     switch (k) {
-        case STRUCTURE_COLUMN: emit_column(b, cx, cy, size); break;
-        case STRUCTURE_LAMP:   emit_lamp(b, cx, cy, size); break;
-        case STRUCTURE_TREE:   emit_tree(b, cx, cy, size, tx, ty); break;
-        default: break;
+        case STRUCTURE_COLUMN: 
+            emit_column(b, cx, cy, size); 
+            break;
+        case STRUCTURE_LAMP:   
+            emit_lamp(b, cx, cy, size); 
+            break;
+        case STRUCTURE_TREE:   
+            emit_tree(b, cx, cy, size, tx, ty); 
+            break;
+        default: 
+            break;
     }
 }
-
-/* ---- the chunk --------------------------------------------------------- */
 
 int structure_mesh_build(ChunkVertex* out, const StructureMeshInput* in) {
     const float* roof = TILE_PALETTE[PAL_BUILDING_ROOF];

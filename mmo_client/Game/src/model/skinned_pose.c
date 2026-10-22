@@ -96,10 +96,70 @@ void skinned_model_blend(const SkinnedModel* model, const Pose* a, const Pose* b
     }
 }
 
+void skinned_model_blend_masked(const SkinnedModel* model, const Pose* a, const Pose* b,
+                                float t, const float* mask, Pose* out) {
+	if(!model || !a || !b || !mask || !out)
+		return;
+
+	for(int i = 0; i < model->skeleton.node_count; ++i) {
+		const Transform* from = &a->local[i];
+		const Transform* to = &b->local[i];
+		Transform* result = &out->local[i];
+		float w = t * mask[i];
+
+		if(w <= 0.0f) {
+			*result = *from;
+			continue;
+		}
+		if(w > 1.0f)
+			w = 1.0f;
+		for(int c = 0; c < 3; ++c) {
+			result->translation[c] = from->translation[c] +
+			                         (to->translation[c] - from->translation[c]) * w;
+			result->scale[c] = from->scale[c] + (to->scale[c] - from->scale[c]) * w;
+		}
+		quat_nlerp(from->rotation, to->rotation, w, result->rotation);
+	}
+}
+
+int skinned_model_mask_subtree(const SkinnedModel* model, const char* bone, float* mask) {
+	const Skeleton* skeleton = &model->skeleton;
+	int root = -1;
+
+	memset(mask, 0, sizeof(float) * SKIN_MAX_NODES);
+	for(int i = 0; i < skeleton->node_count; ++i)
+		if(strcmp(skeleton->node_names[i], bone) == 0)
+			root = i;
+	if(root < 0)
+		return 0;
+
+	// Parents come before children in `order`, so one pass finds the subtree
+	for(int i = 0; i < skeleton->node_count; ++i) {
+		int node = skeleton->order[i];
+		int parent = skeleton->parent[node];
+
+		if(node == root || (parent >= 0 && mask[parent] > 0.0f))
+			mask[node] = 1.0f;
+	}
+
+	return 1;
+}
+
 int skinned_instance_init(SkinnedInstance* out, const SkinnedModel* model) {
+	return skinned_instance_init_masked(out, model, SKIN_ALL_MESHES);
+}
+
+int skinned_instance_init_masked(SkinnedInstance* out, const SkinnedModel* model,
+                                 SkinMeshMask mask) {
     if (!out || !model) return 0;
     memset(out, 0, sizeof *out);
     for (int i = 0; i < model->mesh_count; ++i) {
+		// A mesh this body does not wear keeps no vertices; the skin and draw
+		// loops pass over a mesh with none
+		out->mesh_count = i + 1;
+		if(!(mask & ((SkinMeshMask)1 << i)))
+			continue;
+
         const SkinnedMesh* mesh = &model->meshes[i];
         SkinnedMeshVertices* target = &out->meshes[i];
         size_t floats = (size_t)mesh->vertex_count * SKIN_VERTEX_FLOATS;
@@ -118,7 +178,6 @@ int skinned_instance_init(SkinnedInstance* out, const SkinnedModel* model) {
             memcpy(vertex + 3, mesh->normals + (size_t)v * 3, sizeof(float) * 3);
         }
         target->vertex_count = mesh->vertex_count;
-        out->mesh_count = i + 1;
     }
     return 1;
 }
@@ -202,31 +261,4 @@ void skinned_model_skin(const SkinnedModel* model, const Pose* pose,
             }
         }
     }
-}
-
-int skinned_model_bone_matrix(const SkinnedModel* model, const Pose* pose,
-                              const char* name, Mat4* out) {
-    if (!model || !pose || !name || !out) return 0;
-    const Skeleton* skeleton = &model->skeleton;
-
-    int node = -1;
-    for (int i = 0; i < skeleton->node_count && node < 0; ++i)
-        if (strcmp(skeleton->node_names[i], name) == 0) node = i;
-    if (node < 0) return 0;
-
-    /* Root first, so the walk down multiplies parent by child in the order
-       mat4_multiply expects. The chain cannot be longer than the skeleton,
-       which is what stops a malformed parent cycle from running off the end. */
-    int chain[SKIN_MAX_NODES];
-    int depth = 0;
-    for (int i = node; i >= 0 && depth < SKIN_MAX_NODES; i = skeleton->parent[i])
-        chain[depth++] = i;
-
-    *out = mat4_identity();
-    for (int i = depth - 1; i >= 0; --i) {
-        const Transform* local = &pose->local[chain[i]];
-        *out = mat4_multiply(*out, mat4_from_trs(local->translation, local->rotation,
-                                                 local->scale));
-    }
-    return 1;
 }

@@ -19,8 +19,6 @@ SSL* tls_client_connect(SOCKET sock);
 
 /** Send bytes with SSL_write return semantics. */
 int tls_client_send(SSL* ssl, const void* buf, int len);
-/** Receive bytes with SSL_read return semantics. */
-int tls_client_recv(SSL* ssl, void* buf, int len);
 /** Receive one complete MMO packet with its seven-byte header. */
 int tls_client_recv_packet(SSL* ssl, void* buf, int capacity);
 

@@ -31,6 +31,7 @@
  */
 
 #include "game_types.h"
+#include "states/chat_layout.h"
 
 #include <GLFW/glfw3.h>
 
@@ -78,6 +79,10 @@ void playing_render_settings_overlay(GameState* game);
 
 /** Seconds between position packets, at most. */
 #define MOVE_INTERVAL       0.05f
+// Below this ground speed the body counts as standing, units per second
+#define MOVE_STOPPED_SPEED  1.0f
+// Wire steps (about 1.4 degrees each) a facing must change by to be sent on its own
+#define MOVE_TURN_STEPS     3
 
 /** World pixels of movement below which no packet is sent at all. */
 #define MOVE_THRESHOLD      0.5f
@@ -87,16 +92,11 @@ void playing_render_settings_overlay(GameState* game);
 
 /* --- The chat box --------------------------------------------------------
  *
- * Shared because the overlay draws it and the input router hit-tests it, and
- * the two must agree about where it is. They were two copies of these numbers
- * in one file, which is one file away from being two copies in two files.
+ * Its geometry and layout are in states/chat_layout.h, which the overlay draws
+ * from and the input router hit-tests against, so the two cannot disagree.
+ * The one thing they share that needs the renderer is how wide text is.
  */
 
-#define CHAT_X       14.0f
-#define CHAT_W       420.0f
-#define CHAT_LINE_H  20.0f
-#define CHAT_LINES   8
-#define CHAT_PAD     8.0f
-#define CHAT_INBOX_H 30.0f
+float playing_chat_measure(const char* text, size_t length);
 
 #endif // STATE_PLAYING_INTERNAL_H

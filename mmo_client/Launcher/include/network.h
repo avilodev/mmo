@@ -12,6 +12,8 @@
 #pragma comment(lib, "ws2_32.lib")
 #endif
 
+#define MIN_PACKET_SIZE 12
+
 // Initialize Winsock
 BOOL NetworkInit(void);
 

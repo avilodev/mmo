@@ -62,7 +62,7 @@ int main(void) {
 
     printf("\nTEST 1: each mode has its own pace, sprint the fastest\n");
     {
-        Locomotion l = { PI_F, 0.0f, 0 };   /* facing north */
+        Locomotion l = { PI_F, 0.0f, 0, 0.0f };   /* facing north */
         Track t = { 0 };
         hold(&l, &t, NORTH_X, NORTH_Y, LOCO_MODE_RUN, 1.0f);
         CHECK(fabsf(l.speed - MAX * LOCO_RUN_FRACTION) < 0.5f, "run settles at running speed");
@@ -79,7 +79,7 @@ int main(void) {
 
     printf("\nTEST 2: speed builds and falls away\n");
     {
-        Locomotion l = { PI_F, 0.0f, 0 };
+        Locomotion l = { PI_F, 0.0f, 0, 0.0f };
         Track t = { 0 };
         hold(&l, &t, NORTH_X, NORTH_Y, LOCO_MODE_SPRINT, DT);
         CHECK(l.speed > 0.0f && l.speed < MAX * 0.2f, "one frame in, not yet at full speed");
@@ -93,7 +93,7 @@ int main(void) {
 
     printf("\nTEST 3: reversing from a standstill turns on the spot\n");
     {
-        Locomotion l = { PI_F, 0.0f, 0 };   /* standing, facing north */
+        Locomotion l = { PI_F, 0.0f, 0, 0.0f };   /* standing, facing north */
         Track t = { 0 };
         int frames_to_face = 0;
         float moved_before_facing = 0.0f;
@@ -116,7 +116,7 @@ int main(void) {
 
     printf("\nTEST 4: reversing at a run brakes, turns, and sets off again\n");
     {
-        Locomotion l = { PI_F, 0.0f, 0 };
+        Locomotion l = { PI_F, 0.0f, 0, 0.0f };
         Track t = { 0 };
         hold(&l, &t, NORTH_X, NORTH_Y, LOCO_MODE_SPRINT, 1.0f);    /* running north */
         float y_before = t.y;
@@ -135,7 +135,7 @@ int main(void) {
 
     printf("\nTEST 5: a running turn is a curve\n");
     {
-        Locomotion l = { PI_F, 0.0f, 0 };
+        Locomotion l = { PI_F, 0.0f, 0, 0.0f };
         Track t = { 0 };
         hold(&l, &t, NORTH_X, NORTH_Y, LOCO_MODE_SPRINT, 1.0f);
         float x0 = t.x, y0 = t.y;
@@ -148,15 +148,67 @@ int main(void) {
 
     printf("\nTEST 6: never faster than the server allows\n");
     {
-        Locomotion l = { 0.0f, 0.0f, 0 };
+        Locomotion l = { 0.0f, 0.0f, 0, 0.0f };
         Track t = { 0 };
         const float dirs[5][2] = { { 0, -1 }, { 1, 1 }, { 0, 1 }, { -1, 0 }, { 0.3f, -0.9f } };
         for (int k = 0; k < 40; k++)
             hold(&l, &t, dirs[k % 5][0], dirs[k % 5][1], (LocoMode)(k % LOCO_MODE_COUNT), 0.15f);
         CHECK(t.max_speed_seen <= MAX + 0.01f, "no frame exceeds max_speed");
-        Locomotion h = { 1.0f, 150.0f, 1 };
+        Locomotion h = { 1.0f, 150.0f, 1, 0.0f };
         locomotion_halt(&h);
         CHECK(h.speed == 0.0f && h.pivoting == 0 && h.heading == 1.0f, "halt stops but keeps the heading");
+    }
+
+    printf("\nTEST 7: letting go mid-pivot finishes the turn\n");
+    {
+        Locomotion l = { 0.0f, 0.0f, 0, 0.0f };   /* facing south */
+        Track t = { 0 };
+        hold(&l, &t, NORTH_X, NORTH_Y, LOCO_MODE_RUN, 0.1f);
+        CHECK(l.pivoting == 1 && angle_between(l.heading, PI_F) > 0.5f, "a tap starts the pivot, part way round");
+        hold(&l, &t, 0.0f, 0.0f, LOCO_MODE_RUN, 0.1f);
+        CHECK(l.pivoting == 1, "and releasing does not cancel it");
+        hold(&l, &t, 0.0f, 0.0f, LOCO_MODE_RUN, 0.5f);
+        CHECK(angle_between(l.heading, PI_F) < 0.01f, "the body ends facing where the key pointed");
+        CHECK(l.pivoting == 0 && l.speed == 0.0f, "then stands, no longer pivoting");
+        CHECK(fabsf(t.x) < 0.01f && fabsf(t.y) < 0.01f, "without having walked anywhere");
+
+        /* a key changed mid-turn is followed, and the last one wins on release */
+        Locomotion m = { 0.0f, 0.0f, 0, 0.0f };
+        hold(&m, &t, NORTH_X, NORTH_Y, LOCO_MODE_RUN, 0.1f);
+        hold(&m, &t, 1.0f, 0.0f, LOCO_MODE_RUN, DT);   /* east, heading pi/2 */
+        hold(&m, &t, 0.0f, 0.0f, LOCO_MODE_RUN, 0.5f);
+        CHECK(angle_between(m.heading, PI_F * 0.5f) < 0.01f && m.pivoting == 0,
+              "the last direction held is the one finished");
+
+        /* holding the key is as before: walks off once nearly round */
+        Locomotion h = { 0.0f, 0.0f, 0, 0.0f };
+        Track th = { 0 };
+        hold(&h, &th, NORTH_X, NORTH_Y, LOCO_MODE_RUN, 1.0f);
+        CHECK(h.pivoting == 0 && th.y < 0.0f, "holding the key still pivots then walks off");
+
+        /* any direction, not only north: a tap sideways finishes too */
+        Locomotion e = { PI_F, 0.0f, 0, 0.0f };   /* facing north, tap south-west, heading -pi/4 */
+        hold(&e, &t, -1.0f, 1.0f, LOCO_MODE_RUN, 0.05f);
+        hold(&e, &t, 0.0f, 0.0f, LOCO_MODE_RUN, 0.5f);
+        CHECK(angle_between(e.heading, -PI_F * 0.25f) < 0.01f && e.pivoting == 0,
+              "a tap in another direction finishes its turn too");
+        Locomotion q = { 0.0f, 0.0f, 0, 0.0f };   /* facing south, tap east: 90 degrees */
+        hold(&q, &t, 1.0f, 0.0f, LOCO_MODE_RUN, 0.05f);
+        hold(&q, &t, 0.0f, 0.0f, LOCO_MODE_RUN, 0.5f);
+        CHECK(angle_between(q.heading, PI_F * 0.5f) < 0.01f && q.pivoting == 0,
+              "a sideways tap pivots round to the side");
+        Locomotion d = { 0.0f, 0.0f, 0, 0.0f };   /* facing south, tap just over 45 degrees to the east */
+        hold(&d, &t, 1.0f, 0.95f, LOCO_MODE_RUN, DT);
+        CHECK(d.pivoting == 1, "a turn of about 45 degrees pivots");
+        Locomotion s = { 0.0f, 0.0f, 0, 0.0f };   /* facing south, tap a little east: about 27 degrees */
+        hold(&s, &t, 0.5f, 1.0f, LOCO_MODE_RUN, DT);
+        CHECK(s.pivoting == 0, "a smaller turn is a curve, not a pivot");
+
+        /* released with no pivot going: nothing is kept */
+        Locomotion w = { PI_F, 0.0f, 0, 0.0f };
+        hold(&w, &t, NORTH_X, NORTH_Y, LOCO_MODE_RUN, 0.2f);
+        hold(&w, &t, 0.0f, 0.0f, LOCO_MODE_RUN, 0.5f);
+        CHECK(w.pivoting == 0 && angle_between(w.heading, PI_F) < 0.01f, "a plain walk is untouched");
     }
 
     printf("\n%s: %d failure(s)\n", g_failures ? "FAILED" : "PASSED", g_failures);

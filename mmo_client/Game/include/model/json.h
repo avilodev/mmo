@@ -5,7 +5,6 @@
 
 typedef struct { const char* begin; size_t length; } JsonSlice;
 
-char* json_read_file(const char* path, char* error, int error_size);
 int json_member(JsonSlice object, const char* key, JsonSlice* value);
 int json_string(JsonSlice value, char* out, size_t capacity);
 int json_int(JsonSlice value, int* out);
@@ -22,6 +21,5 @@ int json_array_at(JsonSlice array, int index, JsonSlice* value);
    file whose accessor array has eight thousand entries, each looked up twice.
    Index the array once, then subscript the result. */
 int json_array_index(JsonSlice array, JsonSlice* out, int capacity);
-JsonSlice json_slice(const char* text);
 
 #endif

@@ -6,6 +6,7 @@
 #include "net_internal.h"
 #include "net_connect.h"
 #include "network/net_tls.h"
+#include "network/net_ping_watch.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -49,7 +50,11 @@ static struct {
     int packet_size;
 
     char message[128];
+	int  session_refused;   /**< The realm said the session is invalid. */
 } g_attempt;
+
+/** What the realm puts in a refusal ack when the session key is not accepted. */
+#define REALM_INVALID_SESSION "Invalid session"
 
 /** Record an outcome and release the socket. */
 static void finish_failed(const char* why) {
@@ -59,6 +64,7 @@ static void finish_failed(const char* why) {
     g_net.connected   = FALSE;
     g_net.handshaking = FALSE;
     net_tls_close();
+    net_ping_watch_disarm();
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
         g_net.socket = INVALID_SOCKET;
@@ -73,8 +79,8 @@ static void finish_succeeded(const char* what) {
 
     g_net.connected      = TRUE;
     g_net.handshaking    = FALSE;   /* the ack landed; ordinary traffic is now ours */
-    g_net.pending_pings  = 0;
-    g_net.last_ping_time = net_now();
+	g_net.last_recv_at   = net_now();   // the ack itself was the last thing heard
+    net_ping_reset();
 
     g_attempt.stage  = STAGE_IDLE;
     g_attempt.target = TARGET_NONE;
@@ -166,6 +172,7 @@ static int start_socket(const char* host, uint16_t port) {
      * old session to the new one's first packet. */
     net_send_queue_reset();
 
+    net_ping_watch_disarm();
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
         g_net.socket = INVALID_SOCKET;
@@ -423,6 +430,8 @@ NetConnectPhase network_connect_poll(void) {
                 snprintf(why, sizeof(why), "Realm refused the connection: %.80s",
                          g_net.realm_connect_ack.data.message);
                 finish_failed(why);
+				g_attempt.session_refused =
+					strcmp(g_net.realm_connect_ack.data.message, REALM_INVALID_SESSION) == 0;
                 return NET_CONNECT_FAILED;
             }
             finish_succeeded(g_net.realm_connect_ack.data.message);
@@ -484,6 +493,11 @@ const char* network_connect_message(void) {
     return g_attempt.message[0] ? g_attempt.message : "";
 }
 
+/** Report whether the last attempt failed because the realm refused the session. */
+int network_connect_session_refused(void) {
+	return g_attempt.session_refused;
+}
+
 /** Abandon any attempt in flight and close its socket. */
 void network_connect_abort(void) {
     if (g_attempt.stage == STAGE_IDLE) return;
@@ -491,6 +505,7 @@ void network_connect_abort(void) {
     g_net.connected   = FALSE;
     g_net.handshaking = FALSE;
     net_tls_close();
+    net_ping_watch_disarm();
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
         g_net.socket = INVALID_SOCKET;

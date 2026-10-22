@@ -2,7 +2,7 @@
 
 /**
  * @file
- * Check the quest log, the completion history, and the on-disk format.
+ * Check the quest log, the completion history, and how quests load.
  *
  * The three things worth proving here are the ones that used to be impossible.
  * A character can hold more quests than any compiled number. Finishing a quest
@@ -22,7 +22,8 @@
 
 #include "quest_system.h"
 #include "item_instance.h"
-#include "items_database.h"
+#include "item_registry.h"
+#include "players_database.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -57,7 +58,7 @@ uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
                                  bind_on_pickup, NULL, 0, NULL);
 }
 int inventory_first_free(const ItemInstance* slots) { (void)slots; return -1; }
-ssize_t server_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }
+ssize_t outbox_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }
 
 typedef struct NPCWorldStub { int unused; } NPCWorldStub;
 NPCWorldStub g_npc_world;
@@ -65,6 +66,82 @@ int npc_world_nearest_of_type(void* world, uint16_t npc_type_id,
                               float from_x, float from_y, float* out_x, float* out_y) {
     (void)world; (void)npc_type_id; (void)from_x; (void)from_y; (void)out_x; (void)out_y;
     return 0;
+}
+
+/* --- The fake database ---------------------------------------------------- */
+
+static quest_records g_db_records;
+static int           g_db_result;   // what character_quests_load reports
+
+// hand back a copy of whatever the fake database was given
+int character_quests_load(uint32_t character_id, quest_records* out) {
+	(void)character_id;
+
+	memset(out, 0, sizeof(*out));
+
+	if(g_db_result <= 0)
+		return g_db_result;
+
+	out->slot_count = g_db_records.slot_count;
+	out->history_count = g_db_records.history_count;
+	out->counter_count = g_db_records.counter_count;
+
+	if(out->slot_count) {
+		out->slots = malloc((size_t)out->slot_count * sizeof(out->slots[0]));
+		memcpy(out->slots, g_db_records.slots,
+		       (size_t)out->slot_count * sizeof(out->slots[0]));
+	}
+
+	if(out->history_count) {
+		out->history = malloc((size_t)out->history_count * sizeof(out->history[0]));
+		memcpy(out->history, g_db_records.history,
+		       (size_t)out->history_count * sizeof(out->history[0]));
+	}
+
+	if(out->counter_count) {
+		out->counters = malloc((size_t)out->counter_count * sizeof(out->counters[0]));
+		memcpy(out->counters, g_db_records.counters,
+		       (size_t)out->counter_count * sizeof(out->counters[0]));
+	}
+
+	return 1;
+}
+
+// forget everything the fake database holds
+static void fake_db_clear(void) {
+	quest_records_free(&g_db_records);
+	g_db_result = 0;
+}
+
+// store a state the way the real save does, as flat rows
+static void fake_db_save(const PlayerQuestState* state) {
+	const QuestHistory* history = &state->history;
+	const QuestCounters* counters = &state->counters;
+
+	fake_db_clear();
+
+	g_db_records.slot_count = state->log.count;
+	g_db_records.slots = calloc((size_t)state->log.count + 1, sizeof(g_db_records.slots[0]));
+
+	if(state->log.count)
+		memcpy(g_db_records.slots, state->log.slots,
+		       (size_t)state->log.count * sizeof(g_db_records.slots[0]));
+
+	g_db_records.history = calloc((size_t)history->count + 1, sizeof(uint32_t));
+
+	for(uint32_t i = 0; history->ids && i <= history->mask; i++) {
+		if(history->ids[i] != 0)
+			g_db_records.history[g_db_records.history_count++] = history->ids[i];
+	}
+
+	g_db_records.counters = calloc((size_t)counters->count + 1, sizeof(QuestCounter));
+
+	for(uint32_t i = 0; counters->entries && i <= counters->mask; i++) {
+		if(counters->entries[i].quest_id != 0)
+			g_db_records.counters[g_db_records.counter_count++] = counters->entries[i];
+	}
+
+	g_db_result = 1;
 }
 
 /* --- Helpers ------------------------------------------------------------- */
@@ -220,7 +297,8 @@ static void test_round_trip(void) {
 
     char directory[] = "/tmp/mmo-quest-test-XXXXXX";
     check(mkdtemp(directory) != NULL, "temporary directory");
-    quest_storage_set_dir(directory);
+    quest_legacy_set_dir(directory);
+    fake_db_clear();
 
     PlayerQuestState state = {0};
 
@@ -228,7 +306,7 @@ static void test_round_trip(void) {
     log_push(&state.log, 20, 7);
     for (uint32_t id = 100; id < 400; id++) quest_history_add(&state.history, id);
 
-    check(quest_player_save(42, &state), "save");
+    fake_db_save(&state);
 
     PlayerQuestState loaded = {0};
     check(quest_player_load(42, &loaded), "load");
@@ -245,6 +323,7 @@ static void test_round_trip(void) {
     quest_state_release(&state);
     quest_state_release(&loaded);
 
+    fake_db_clear();
     check(quest_player_load(999, &loaded) == 0, "an absent file loads nothing");
 
     unlink("/tmp/mmo-quest-test-nonexistent");
@@ -255,7 +334,8 @@ static void test_counters_survive_the_round_trip(void) {
 
     char directory[] = "/tmp/mmo-quest-counter-XXXXXX";
     check(mkdtemp(directory) != NULL, "temporary directory");
-    quest_storage_set_dir(directory);
+    quest_legacy_set_dir(directory);
+    fake_db_clear();
 
     PlayerQuestState state = {0};
     log_push(&state.log, 10, 4);
@@ -264,7 +344,7 @@ static void test_counters_survive_the_round_trip(void) {
     for (int i = 0; i < 3; i++) quest_counters_record(&state.counters, 11, 700);
     quest_counters_record(&state.counters, 12, 42);
 
-    check(quest_player_save(55, &state), "save");
+    fake_db_save(&state);
 
     PlayerQuestState loaded = {0};
     check(quest_player_load(55, &loaded), "load");
@@ -293,7 +373,8 @@ static void test_version_2_file_loads_with_no_counters(void) {
 
     char directory[] = "/tmp/mmo-quest-v2-XXXXXX";
     check(mkdtemp(directory) != NULL, "temporary directory");
-    quest_storage_set_dir(directory);
+    quest_legacy_set_dir(directory);
+    fake_db_clear();
 
     /* Version 2 on disk: magic, version, and the two counts, then the slots and
      * then the finished identifiers. No counter section, because there were no
@@ -339,7 +420,8 @@ static void test_a_corrupt_counter_count_is_refused(void) {
 
     char directory[] = "/tmp/mmo-quest-badc-XXXXXX";
     check(mkdtemp(directory) != NULL, "temporary directory");
-    quest_storage_set_dir(directory);
+    quest_legacy_set_dir(directory);
+    fake_db_clear();
 
     char path[600];
     snprintf(path, sizeof(path), "%s/12.bin", directory);
@@ -369,7 +451,8 @@ static void test_legacy_file_migrates(void) {
 
     char directory[] = "/tmp/mmo-quest-legacy-XXXXXX";
     check(mkdtemp(directory) != NULL, "temporary directory");
-    quest_storage_set_dir(directory);
+    quest_legacy_set_dir(directory);
+    fake_db_clear();
 
     /* Version 1 on disk: a native int count, then that many records, in which a
      * finished quest was left behind with is_active clear. */
@@ -409,7 +492,8 @@ static void test_corrupt_file_is_refused(void) {
 
     char directory[] = "/tmp/mmo-quest-bad-XXXXXX";
     check(mkdtemp(directory) != NULL, "temporary directory");
-    quest_storage_set_dir(directory);
+    quest_legacy_set_dir(directory);
+    fake_db_clear();
 
     char path[600];
     snprintf(path, sizeof(path), "%s/8.bin", directory);
@@ -431,6 +515,62 @@ static void test_corrupt_file_is_refused(void) {
     quest_state_release(&state);
 }
 
+static void test_database_failure_is_not_an_empty_character(void) {
+	printf("a database failure is reported, not read as no quests\n");
+
+	char directory[] = "/tmp/mmo-quest-fail-XXXXXX";
+	check(mkdtemp(directory) != NULL, "temporary directory");
+	quest_legacy_set_dir(directory);
+	fake_db_clear();
+	g_db_result = -1;
+
+	PlayerQuestState state = {0};
+	check(quest_player_load(5, &state) == -1, "the failure is reported");
+	check(state.log.count == 0 && state.history.count == 0, "and nothing was loaded");
+
+	fake_db_clear();
+	quest_state_release(&state);
+}
+
+static void test_database_beats_the_old_file(void) {
+	printf("quests saved in the database win over an old quest file\n");
+
+	char directory[] = "/tmp/mmo-quest-prefer-XXXXXX";
+	check(mkdtemp(directory) != NULL, "temporary directory");
+	quest_legacy_set_dir(directory);
+	fake_db_clear();
+
+	// an old file that says quest 11 is in progress
+	char path[600];
+	snprintf(path, sizeof(path), "%s/6.bin", directory);
+	FILE* f = fopen(path, "wb");
+	check(f != NULL, "writing an old file");
+
+	struct PlayerQuestSlot old_slot;
+	memset(&old_slot, 0, sizeof(old_slot));
+	old_slot.quest_id = 11;
+	old_slot.is_active = 1;
+
+	int count = 1;
+	fwrite(&count, sizeof(int), 1, f);
+	fwrite(&old_slot, sizeof(old_slot), 1, f);
+	fclose(f);
+
+	// the database says the character has since finished it and holds none
+	PlayerQuestState saved = {0};
+	quest_history_add(&saved.history, 11);
+	fake_db_save(&saved);
+	quest_state_release(&saved);
+
+	PlayerQuestState state = {0};
+	check(quest_player_load(6, &state) == 1, "the database record loaded");
+	check(state.log.count == 0, "the old file's quest did not come back");
+	check(quest_history_contains(&state.history, 11), "the finished quest is history");
+
+	fake_db_clear();
+	quest_state_release(&state);
+}
+
 int main(void) {
     printf("=== quest storage and persistence ===\n");
 
@@ -444,6 +584,8 @@ int main(void) {
     test_a_corrupt_counter_count_is_refused();
     test_legacy_file_migrates();
     test_corrupt_file_is_refused();
+    test_database_failure_is_not_an_empty_character();
+    test_database_beats_the_old_file();
 
     printf("\n%d checks passed\n", passed);
     return 0;

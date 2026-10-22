@@ -61,7 +61,7 @@ it is unavailable, those steps report a blocker and the rest still runs.
 3. Add the world to the `worlds=(...)` array in `scripts/start_servers.sh`.
 4. `make setup && make`
 
-Raise `MAX_WORLDS` in `realm_server/include/world_database_manager.h` first if
+Raise `MAX_WORLDS` in `common/include/protocol.h` first if
 you are going past ten.
 
 ## Changing a world's address

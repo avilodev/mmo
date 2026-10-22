@@ -9,6 +9,17 @@
 // Returns 0 if loading fails
 unsigned int texture_load(const char* filepath);
 
+/** Load an icon that is drawn at a different size from its art, at any window size.
+ *
+ * texture_load() samples the nearest texel, which drops pixels unevenly when an
+ * image is drawn smaller and shows as thick black edges. This one is mipmapped
+ * and smoothly filtered, with colour bled into the transparent pixels so thin
+ * parts keep their colour. For icons, not for pixel art meant to stay hard-edged.
+ *
+ * @return The texture, or 0 when the image cannot be loaded.
+ */
+unsigned int texture_load_icon(const char* filepath);
+
 /** Where a tileset's tiles sit in the texture texture_load_tileset() built. */
 typedef struct {
     int tile_w, tile_h;   /**< Tile size in texels. */
@@ -32,8 +43,5 @@ unsigned int texture_load_tileset(const char* filepath, int cols, int rows,
 
 // Unload a texture and free GPU memory
 void texture_unload(unsigned int texture_id);
-
-// Get texture dimensions (optional, for checking size)
-void texture_get_size(unsigned int texture_id, int* width, int* height);
 
 #endif // TEXTURE_H

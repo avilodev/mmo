@@ -7,103 +7,124 @@
  * draw. Where each one sits in the frame is decided by playing_render() in
  * state_playing_render.c.
  *
- * The chat box's geometry is in states/state_playing_internal.h rather than
- * here, because the input router hit-tests the same rectangle and the two have
- * to agree about where it is.
+ * The chat box's geometry is in states/chat_layout.h rather than here, because
+ * the input router hit-tests the same rectangle and the two have to agree about
+ * where it is.
  */
 #include "states/state_playing_internal.h"
 #include "renderer.h"
-#include "world/world_overview.h"
+#include "ui/map_view.h"
 #include "ui/quest_tracker.h"
-#include "ui/settings_panel.h"
+#include "ui/settings_menu.h"
+#include "ui/pause_menu.h"
+#include "ui/ui_kit.h"
 #include "hud.h"
+#include "states/chat_channels.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+// Measures text in the game's font; the chat wraps and clips by it.
+float playing_chat_measure(const char* text, size_t length) {
+	char copy[CHAT_FORMAT_MAX];
+
+	if(length >= sizeof(copy))
+		length = sizeof(copy) - 1;
+	memcpy(copy, text, length);
+	copy[length] = '\0';
+
+	return renderer_text_width(copy);
+}
+
+// Text with a dark edge, so it reads over the world with nothing behind it
+static void draw_shadowed(float x, float y, const char* text, float r, float g, float b) {
+	renderer_draw_text_colored(x + 1.5f, y + 1.5f, text, 0.0f, 0.0f, 0.0f);
+	renderer_draw_text_colored(x, y, text, r, g, b);
+}
+
+// A thin outline round the whole box. It is what the player grabs to move chat.
+static void draw_chat_outline(const GameState* game, const chat_box* box, int scrolled_back) {
+	float x, y, w, h;
+	float mx = game->input.mouse_x;
+	float my = game->input.mouse_y;
+	int hot;
+	float a;
+
+	chat_window_rect(box, &x, &y, &w, &h);
+	hot = game->playing->chat.win.dragging ||
+	      window_pos_on_edge(x, y, w, h, CHAT_EDGE_BAND, mx, my);
+	a = hot ? 0.9f : 0.30f;
+
+	renderer_draw_rect(x, y, w, 1.5f, 0.45f, 0.55f, 0.75f, a);
+	renderer_draw_rect(x, y + h - 1.5f, w, 1.5f, 0.45f, 0.55f, 0.75f, a);
+	renderer_draw_rect(x, y, 1.5f, h, 0.45f, 0.55f, 0.75f, a);
+	renderer_draw_rect(x + w - 1.5f, y, 1.5f, h, 0.45f, 0.55f, 0.75f, a);
+
+	if(scrolled_back) {
+		ui_kit_px_begin(game->camera.viewport_width, game->camera.viewport_height);
+		ui_kit_px_text(x + w - CHAT_PAD, y - 10.0f, "scrolled back - PgDn", 12.0f, KIT_HEAD,
+		               KIT_RIGHT);
+		ui_kit_px_end();
+	}
+}
+
+// The messages that fit, wrapped, each in its channel's colour.
+static void draw_chat_lines(const chat_box* box, const ChatState* chat) {
+	chat_visible visible[CHAT_LINES];
+	int count = chat_layout_visible(chat, playing_chat_measure, visible);
+
+	for(int i = 0; i < count; i++) {
+		const chat_visible* v = &visible[i];
+		float r, g, b;
+
+		chat_line_color(&chat->lines[v->line], &r, &g, &b);
+		for(int row = 0; row < v->row_count; row++) {
+			char text[CHAT_FORMAT_MAX];
+			float y = box->y + CHAT_PAD + (float)(v->first_row + row) * CHAT_LINE_H + CHAT_LINE_H;
+
+			snprintf(text, sizeof(text), "%.*s", v->rows[row].length,
+					v->text + v->rows[row].start);
+			draw_shadowed(box->x + CHAT_PAD, y, text, r, g, b);
+		}
+	}
+}
+
+// The input line while typing: a channel badge, the line's tail, a cursor.
+static void draw_typing_box(const chat_box* box, const ChatState* chat) {
+	const chat_channel_info* info = chat_channel_lookup(chat->active_channel);
+	float text_y = box->input_y + box->input_h - 8.0f;
+	char badge[48];
+	char shown[MAX_CHAT_INPUT_LEN + 2];
+	float badge_w;
+	float room;
+
+	chat_badge_format(chat->active_channel, chat->whisper_reply_target,
+			badge, sizeof(badge));
+	badge_w = renderer_text_width(badge);
+	draw_shadowed(box->x + CHAT_PAD, text_y, badge, info->r, info->g, info->b);
+
+	// The text starts where this channel's badge ends, so it differs by channel
+	room = CHAT_TEXT_W - badge_w - renderer_text_width("_");
+	snprintf(shown, sizeof(shown), "%s_",
+			chat_input_tail(chat->input_buf, room, playing_chat_measure));
+	draw_shadowed(box->x + CHAT_PAD + badge_w, text_y, shown, 1.0f, 1.0f, 1.0f);
+}
 
 /**
  * Draw chat history, channel state, and the active input buffer.
+ * @param game  The GameState to read.
  */
 void playing_render_chat(GameState* game) {
-    ChatState* chat = &game->playing->chat;
+	ChatState* chat = &game->playing->chat;
+	chat_box box = chat_box_at(&chat->win, (float)game->camera.viewport_width,
+	                           (float)game->camera.viewport_height);
 
-    float chat_h  = (float)CHAT_LINES * CHAT_LINE_H + CHAT_PAD * 2.0f;
-    float chat_y  = (float)game->camera.viewport_height - chat_h - CHAT_INBOX_H - 20.0f;
+	draw_chat_outline(game, &box, chat->scroll > 0);
+	draw_chat_lines(&box, chat);
 
-    int has_messages = (chat->line_count > 0);
-
-    // Message panel: always show when typing, show when there are messages,
-    // and show a very faint panel otherwise so the user knows chat is here.
-    {
-        float bg_alpha;
-        if (chat->is_typing)   bg_alpha = 0.65f;
-        else if (has_messages) bg_alpha = 0.35f;
-        else                   bg_alpha = 0.10f;  // faint "empty" state
-
-        renderer_draw_rect(CHAT_X, chat_y, CHAT_W, chat_h, 0.04f, 0.04f, 0.08f, bg_alpha);
-
-        float border_a = chat->is_typing ? 0.6f : (has_messages ? 0.4f : 0.15f);
-        // Top border
-        renderer_draw_rect(CHAT_X, chat_y, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, border_a);
-        // Left border
-        renderer_draw_rect(CHAT_X, chat_y, 1.5f, chat_h, 0.4f, 0.5f, 0.7f, border_a);
-    }
-
-    // Messages (newest at the bottom)
-    int start = chat->line_count - CHAT_LINES;
-    if (start < 0) start = 0;
-    for (int i = start; i < chat->line_count; i++) {
-        const ChatLine* ln = &chat->lines[i];
-
-        const char* prefix = "";
-        switch (ln->channel) {
-            case 0: prefix = "[L] "; break;
-            case 1: prefix = "[G] "; break;
-            case 2: prefix = "[W] "; break;
-            case 3: prefix = "[P] "; break;
-        }
-
-        char line[320];
-        snprintf(line, sizeof(line), "%s%s: %s", prefix, ln->sender, ln->text);
-
-        float line_y = chat_y + CHAT_PAD + (float)(i - start) * CHAT_LINE_H + CHAT_LINE_H;
-        renderer_draw_text(CHAT_X + CHAT_PAD, line_y, line);
-    }
-
-    // Input box
-    float input_y = chat_y + chat_h;
-
-    if (chat->is_typing) {
-        static const char* ch_names[] = {"Local", "Global", "Whisper", "Party"};
-        int ch = (int)chat->active_channel;
-        if (ch < 0 || ch > 3) ch = 0;
-
-        // Input box background
-        renderer_draw_rect(CHAT_X, input_y, CHAT_W, CHAT_INBOX_H, 0.08f, 0.08f, 0.14f, 0.90f);
-        // Bottom and left borders
-        renderer_draw_rect(CHAT_X, input_y + CHAT_INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, 0.6f);
-        renderer_draw_rect(CHAT_X, input_y, 1.5f, CHAT_INBOX_H, 0.4f, 0.5f, 0.7f, 0.6f);
-
-        // Channel badge e.g. "[Local]" or "[-> Name]" for whisper with a known target
-        char badge[48];
-        if (ch == 2 && chat->whisper_reply_target[0] != '\0') {
-            snprintf(badge, sizeof(badge), "[-> %s] ", chat->whisper_reply_target);
-        } else {
-            snprintf(badge, sizeof(badge), "[%s] ", ch_names[ch]);
-        }
-        renderer_draw_text(CHAT_X + CHAT_PAD, input_y + CHAT_INBOX_H - 8.0f, badge);
-
-        // Typed text with blinking cursor
-        char input_display[270];
-        snprintf(input_display, sizeof(input_display), "%s_", chat->input_buf);
-        renderer_draw_text(CHAT_X + CHAT_PAD + 72.0f, input_y + CHAT_INBOX_H - 8.0f, input_display);
-    } else {
-        // Idle input area — always show a faint clickable hint
-        float a = has_messages ? 0.25f : 0.15f;
-        renderer_draw_rect(CHAT_X, input_y, CHAT_W, CHAT_INBOX_H, 0.04f, 0.04f, 0.08f, a);
-        renderer_draw_rect(CHAT_X, input_y + CHAT_INBOX_H - 1.5f, CHAT_W, 1.5f, 0.4f, 0.5f, 0.7f, a * 1.2f);
-        renderer_draw_rect(CHAT_X, input_y, 1.5f, CHAT_INBOX_H, 0.4f, 0.5f, 0.7f, a * 1.2f);
-        renderer_draw_text(CHAT_X + CHAT_PAD, input_y + CHAT_INBOX_H - 8.0f, "Press T to chat");
-    }
+	if(chat->is_typing)
+		draw_typing_box(&box, chat);
 }
 
 /**
@@ -235,7 +256,8 @@ void playing_render_reward_notifications(GameState* game) {
 
     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
         RewardNotification* notif = &game->playing->reward_notifications[i];
-        if (!notif->active) continue;
+        if (!notif->active) 
+            continue;
 
         float t     = notif->age / 2.5f;          // 0..1 over lifetime
         float alpha = 1.0f - t;
@@ -292,8 +314,10 @@ void playing_render_buff_tooltip(const GameState* game) {
     float tw = 170.0f, th = 54.0f;
     float tx = game->input.mouse_x + 12.0f;
     float ty = game->input.mouse_y - th - 4.0f;
-    if (tx + tw > (float)game->camera.viewport_width)  tx = game->input.mouse_x - tw - 4.0f;
-    if (ty < 0) ty = game->input.mouse_y + 12.0f;
+    if (tx + tw > (float)game->camera.viewport_width)  
+        tx = game->input.mouse_x - tw - 4.0f;
+    if (ty < 0) 
+        ty = game->input.mouse_y + 12.0f;
 
     renderer_draw_rect(tx, ty, tw, th, 0.06f, 0.06f, 0.12f, 0.96f);
     renderer_draw_rect(tx, ty, tw, 1.5f, 0.45f,0.45f,0.75f,1.0f);
@@ -315,247 +339,30 @@ void playing_render_buff_tooltip(const GameState* game) {
 }
 
 /**
- * Draw the scaled in-game settings panel over the world.
+ * Draw the in-game settings menu over the world.
  */
 void playing_render_settings_overlay(GameState* game) {
-    if (!game->show_settings) return;
+	if(!game->show_settings)
+		return;
 
-    float vw = (float)game->camera.viewport_width;
-    float vh = (float)game->camera.viewport_height;
-
-    // Semi-transparent dim (lighter than pause so world is visible)
-    renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.40f);
-
-    float scale = game->settings.ui_scale;
-    float pw = SP_PW * scale;
-    float ph = SP_PH * scale;
-    float px = (vw - pw) * 0.5f;
-    float py = (vh - ph) * 0.5f;
-
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glTranslatef(px, py, 0.0f);
-    glScalef(scale, scale, 1.0f);
-
-    // Panel background (in scaled space at 0,0)
-    renderer_draw_rect(0, 0, SP_PW, SP_PH, 0.10f, 0.10f, 0.16f, 0.97f);
-    // Panel border
-    renderer_draw_rect(0,         0,         SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
-    renderer_draw_rect(0,         SP_PH-2,   SP_PW, 2.0f, 0.35f,0.50f,0.70f,1.0f);
-    renderer_draw_rect(0,         0,         2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
-    renderer_draw_rect(SP_PW-2,   0,         2.0f,  SP_PH, 0.35f,0.50f,0.70f,1.0f);
-
-    sp_draw_content(0, 0, &game->settings);
-
-    // Close button
-    float btn_w = 140.0f, btn_h = 36.0f;
-    float btn_x = (SP_PW - btn_w) * 0.5f;
-    float btn_y = SP_PH - 54.0f;
-    // Inverse-transform mouse for hover detection
-    float rel_mx = (game->input.mouse_x - px) / scale;
-    float rel_my = (game->input.mouse_y - py) / scale;
-    int hov = (rel_mx >= btn_x && rel_mx <= btn_x + btn_w &&
-               rel_my >= btn_y && rel_my <= btn_y + btn_h);
-    float bc = hov ? 0.30f : 0.18f;
-    renderer_draw_rect(btn_x, btn_y, btn_w, btn_h, bc, bc, bc+0.12f, 0.95f);
-    renderer_draw_rect(btn_x,            btn_y,             btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_rect(btn_x,            btn_y+btn_h-1.5f,  btn_w, 1.5f, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_rect(btn_x,            btn_y,             1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_rect(btn_x+btn_w-1.5f, btn_y,             1.5f, btn_h, 0.35f,0.50f,0.70f,0.8f);
-    renderer_draw_text(btn_x + btn_w*0.5f - 22.0f, btn_y+btn_h-10.0f, "Close");
-
-    glPopMatrix();
+	renderer_draw_rect(0, 0, (float)game->camera.viewport_width,
+	                   (float)game->camera.viewport_height, 0.0f, 0.0f, 0.0f, 0.6f);
+	sm_draw(game);
 }
 
 /**
- * Draw the centered, zoomable map with entity markers.
+ * Draw the full map screen.
  */
 void playing_render_big_map(GameState* game) {
-    if (!game->playing->show_map) return;
-
-    float vw = (float)game->camera.viewport_width;
-    float vh = (float)game->camera.viewport_height;
-
-    // Screen space is already active for the UI phase, but this panel is drawn
-    // before the HUD, so it guards its own coordinate system rather than relying
-    // on draw order.
-    renderer_begin_screen_space();
-
-    // Dim world behind the map
-    renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.65f);
-
-    // Panel
-    float pw = 620.0f, ph = 640.0f;
-    float px = floorf((vw - pw) * 0.5f);
-    float py = floorf((vh - ph) * 0.5f);
-
-    renderer_draw_rect(px, py, pw, ph, 0.07f, 0.07f, 0.11f, 0.97f);
-
-    // Border
-    renderer_draw_rect(px,        py,        pw,   2.0f, 0.40f, 0.50f, 0.65f, 1.0f);
-    renderer_draw_rect(px,        py+ph-2,   pw,   2.0f, 0.40f, 0.50f, 0.65f, 1.0f);
-    renderer_draw_rect(px,        py,        2.0f, ph,   0.40f, 0.50f, 0.65f, 1.0f);
-    renderer_draw_rect(px+pw-2,   py,        2.0f, ph,   0.40f, 0.50f, 0.65f, 1.0f);
-
-    // Title bar
-    renderer_draw_rect(px, py, pw, 32.0f, 0.10f, 0.12f, 0.18f, 1.0f);
-    renderer_draw_text(px + 12.0f, py + 22.0f, "Map");
-    renderer_draw_text(px + pw - 130.0f, py + 22.0f, "M / ESC to close");
-
-    // Map drawing area (inset from the panel)
-    float mx = px + 10.0f;
-    float my = py + 38.0f;
-    float mw = pw - 20.0f;
-    float mh = ph - 60.0f;
-    float mcx = mx + mw * 0.5f;
-    float mcy = my + mh * 0.5f;
-
-    // Clip: dark map background
-    renderer_draw_rect(mx, my, mw, mh, 0.04f, 0.05f, 0.07f, 1.0f);
-
-    float player_wx = game->player.x;
-    float player_wy = game->player.y;
-
-    // view_radius in world units visible to the map edge
-    float base_radius = 1050.0f;
-    float view_radius = base_radius / game->playing->map_zoom;
-    float scale = (mw * 0.5f) / view_radius;
-
-    // Terrain: the generator's downscaled overview, drawn as the map backdrop.
-    // The streamed world file is far too large to sample here, so the map shows
-    // this instead; without it the map falls back to grid lines only.
-    if (world_overview_ready()) {
-        int ow = 0, oh = 0, ocell = 0;
-        world_overview_dims(&ow, &oh, &ocell);
-
-        float tile_px = (float)game->world.tile_size;
-        float world_px_w = (float)ow * (float)ocell * tile_px;
-        float world_px_h = (float)oh * (float)ocell * tile_px;
-
-        if (world_px_w > 0.0f && world_px_h > 0.0f) {
-            float half_h = (mh * 0.5f) / scale;
-            float u0 = (player_wx - view_radius) / world_px_w;
-            float u1 = (player_wx + view_radius) / world_px_w;
-            float v0 = (player_wy - half_h)      / world_px_h;
-            float v1 = (player_wy + half_h)      / world_px_h;
-
-            renderer_draw_sprite_uv(mx, my, mw, mh,
-                                    world_overview_texture(),
-                                    u0, v0, u1, v1);
-        }
-    }
-
-    // Grid lines. The spacing steps up as the view widens so the grid stays a
-    // reference instead of collapsing into a solid block at continent scale.
-    float grid_spacing = 200.0f;
-    while (view_radius / grid_spacing > 12.0f) grid_spacing *= 5.0f;
-    float grid_start_x = player_wx - view_radius;
-    float grid_start_y = player_wy - view_radius;
-    // Snap to grid
-    grid_start_x = floorf(grid_start_x / grid_spacing) * grid_spacing;
-    grid_start_y = floorf(grid_start_y / grid_spacing) * grid_spacing;
-
-    for (float wx = grid_start_x; wx < player_wx + view_radius; wx += grid_spacing) {
-        float sx = mcx + (wx - player_wx) * scale;
-        if (sx < mx || sx > mx + mw) continue;
-        renderer_draw_rect(sx, my, 1.0f, mh, 0.15f, 0.15f, 0.22f, 1.0f);
-    }
-    for (float wy = grid_start_y; wy < player_wy + view_radius; wy += grid_spacing) {
-        float sy = mcy + (wy - player_wy) * scale;
-        if (sy < my || sy > my + mh) continue;
-        renderer_draw_rect(mx, sy, mw, 1.0f, 0.15f, 0.15f, 0.22f, 1.0f);
-    }
-
-    // NPC dots
-    for (int i = 0; i < game->playing->visible_npc_count; i++) {
-        const VisibleNPC* npc = &game->playing->visible_npcs[i];
-        if (!npc->is_alive) continue;
-        float sx = mcx + (npc->pos_x - player_wx) * scale;
-        float sy = mcy + (npc->pos_y - player_wy) * scale;
-        if (sx < mx || sx > mx+mw-7 || sy < my || sy > my+mh-7) continue;
-        float dr, dg, db;
-        switch (npc->category) {
-            case 1:  dr=0.90f; dg=0.22f; db=0.22f; break; // hostile - red
-            case 2:  dr=0.90f; dg=0.78f; db=0.10f; break; // quest   - gold
-            default: dr=0.20f; dg=0.55f; db=0.90f; break; // passive - blue
-        }
-        renderer_draw_rect(sx - 3.5f, sy - 3.5f, 7.0f, 7.0f, dr, dg, db, 0.95f);
-    }
-
-    // Nearby player dots
-    for (int i = 0; i < game->playing->nearby_player_count; i++) {
-        const NearbyPlayer* p = &game->playing->nearby_players[i];
-        if (p->is_dead) continue;
-        float sx = mcx + (p->pos_x - player_wx) * scale;
-        float sy = mcy + (p->pos_y - player_wy) * scale;
-        if (sx < mx || sx > mx+mw-7 || sy < my || sy > my+mh-7) continue;
-        renderer_draw_rect(sx - 3.5f, sy - 3.5f, 7.0f, 7.0f, 0.25f, 0.90f, 0.45f, 1.0f);
-    }
-
-    // Tracked objective marker, above the dots and clamped into view
-    quest_tracker_render_map_marker(&game->playing->quest_log,
-                                    mx, my, mw, mh, mcx, mcy,
-                                    player_wx, player_wy, scale);
-
-    // Which way the camera faces, then the player dot over it
-    hud_draw_view_cone(&game->camera, mcx, mcy, 60.0f);
-    renderer_draw_rect(mcx - 6.0f, mcy - 6.0f, 12.0f, 12.0f, 1.0f, 1.0f, 0.25f, 1.0f);
-
-    // Bottom bar: coords + zoom
-    float bar_y = py + ph - 22.0f;
-    char info[64];
-    snprintf(info, sizeof(info), "X: %.0f  Y: %.0f    Zoom: %.1fx",
-             player_wx, player_wy, game->playing->map_zoom);
-    renderer_draw_text(px + 10.0f, bar_y + 14.0f, info);
-
-    renderer_end_screen_space();
+	map_view_render(game);
 }
 
 /**
- * Draw the pause menu and its navigation controls.
+ * Draw the pause menu over the world.
  */
 void playing_render_pause_overlay(GameState* game) {
-    if (!game->playing->is_paused) return;
+	if(!game->playing->is_paused)
+		return;
 
-    float vw = (float)game->camera.viewport_width;
-    float vh = (float)game->camera.viewport_height;
-
-    // Dim the world
-    renderer_draw_rect(0, 0, vw, vh, 0.0f, 0.0f, 0.0f, 0.55f);
-
-    // Panel dimensions
-    float pw = 340.0f, ph = 230.0f;
-    float px = (vw - pw) * 0.5f;
-    float py = (vh - ph) * 0.5f;
-
-    // Panel background
-    renderer_draw_rect(px, py, pw, ph, 0.07f, 0.07f, 0.12f, 0.96f);
-
-    // Panel border (top/bottom/left/right)
-    renderer_draw_rect(px,          py,          pw,   2.0f, 0.45f, 0.45f, 0.75f, 1.0f);
-    renderer_draw_rect(px,          py + ph - 2, pw,   2.0f, 0.45f, 0.45f, 0.75f, 1.0f);
-    renderer_draw_rect(px,          py,          2.0f, ph,   0.45f, 0.45f, 0.75f, 1.0f);
-    renderer_draw_rect(px + pw - 2, py,          2.0f, ph,   0.45f, 0.45f, 0.75f, 1.0f);
-
-    // Title
-    renderer_draw_text(px + pw * 0.5f - 32.0f, py + 36.0f, "PAUSED");
-
-    // Divider below title
-    renderer_draw_rect(px + 20, py + 48, pw - 40, 1.5f, 0.35f, 0.35f, 0.55f, 0.8f);
-
-    // Button layout
-    float bw = 220.0f, bh = 38.0f;
-    float bx = px + (pw - bw) * 0.5f;
-
-    // Resume
-    renderer_draw_rect(bx, py + 66,  bw, bh, 0.12f, 0.38f, 0.12f, 0.92f);
-    renderer_draw_text(bx + bw * 0.5f - 28.0f, py + 91, "Resume");
-
-    // Settings (placeholder)
-    renderer_draw_rect(bx, py + 116, bw, bh, 0.18f, 0.18f, 0.32f, 0.92f);
-    renderer_draw_text(bx + bw * 0.5f - 32.0f, py + 141, "Settings");
-
-    // Quit to Menu
-    renderer_draw_rect(bx, py + 166, bw, bh, 0.32f, 0.08f, 0.08f, 0.92f);
-    renderer_draw_text(bx + bw * 0.5f - 50.0f, py + 191, "Quit to Menu");
+	pm_draw(game);
 }

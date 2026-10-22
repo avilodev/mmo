@@ -15,13 +15,6 @@ void combat_init(CombatState* combat) {
 }
 
 /**
- * Clear all active combat state and events.
- */
-void combat_reset(CombatState* combat) {
-    memset(combat, 0, sizeof(CombatState));
-}
-
-/**
  * Advance cast, cooldown, and damage-event timers.
  *
  * @param delta_time  Elapsed frame time in seconds.
@@ -119,7 +112,8 @@ void combat_on_damage(CombatState* combat,
                       int is_kill,
                       int is_heal,
                       float target_x,
-                      float target_y) {
+                      float target_y,
+                      float target_z) {
 
     for (int i = 0; i < MAX_DAMAGE_EVENTS; i++) {
         DamageEvent* evt = &combat->damage_events[i];
@@ -133,6 +127,7 @@ void combat_on_damage(CombatState* combat,
         evt->is_heal   = is_heal;
         evt->world_x   = target_x;
         evt->world_y   = target_y;
+        evt->world_z   = target_z;
         evt->age       = 0.0f;
         break;
     }
@@ -150,67 +145,4 @@ void combat_on_attack_result(CombatState* combat, uint8_t result_code, float coo
         combat->cooldown_remaining = cooldown;
         combat->cooldown_total = cooldown;
     }
-}
-
-/**
- * Check whether a cast is active.
- *
- * @return      Nonzero while casting; otherwise zero.
- */
-int combat_is_casting(const CombatState* combat) {
-    return combat->is_casting;
-}
-
-/**
- * Return normalized cast completion.
- *
- * @return      Cast progress from zero through one, or zero when idle.
- */
-float combat_get_cast_progress(const CombatState* combat) {
-    if (!combat->is_casting || combat->cast_duration <= 0.0f) {
-        return 0.0f;
-    }
-    float progress = combat->cast_elapsed / combat->cast_duration;
-    return (progress > 1.0f) ? 1.0f : progress;
-}
-
-/**
- * Return remaining cast time.
- *
- * @return      Nonnegative remaining duration in seconds.
- */
-float combat_get_cast_remaining(const CombatState* combat) {
-    if (!combat->is_casting || combat->cast_duration <= 0.0f) {
-        return 0.0f;
-    }
-    
-    float remaining = combat->cast_duration - combat->cast_elapsed;
-    return (remaining < 0.0f) ? 0.0f : remaining;
-}
-
-/**
- * Check whether the basic attack is cooling down.
- *
- * @return      Nonzero while cooldown remains; otherwise zero.
- */
-int combat_is_on_cooldown(const CombatState* combat) {
-    return combat->cooldown_remaining > 0.0f;
-}
-
-/**
- * Return normalized remaining cooldown.
- *
- * @return      Remaining fraction from zero through one.
- */
-float combat_get_cooldown_progress(const CombatState* combat) {
-    if (combat->cooldown_total <= 0.0f) {
-        return 0.0f;
-    }
-
-    float progress = combat->cooldown_remaining / combat->cooldown_total;
-    
-    if (progress < 0.0f) return 0.0f;
-    if (progress > 1.0f) return 1.0f;
-    
-    return progress;
 }

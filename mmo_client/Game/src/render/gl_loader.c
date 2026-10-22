@@ -48,7 +48,8 @@ int gl_loader_init(void) {
     MMO_GL_FUNCTIONS(MMO_GL_LOAD)
 #undef MMO_GL_LOAD
 
-    if (missing) return 0;
+    if (missing) 
+        return 0;
 
     /* Anisotropy is core in 4.6 and an extension everywhere before it; the
      * query is harmless when neither is present, it just leaves the default. */

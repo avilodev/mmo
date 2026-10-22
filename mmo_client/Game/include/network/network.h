@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include "protocol.h"
 #include "combat_render.h"
+#include "player/move_correction.h"
+#include "world/weather_state.h"
 
 int  network_init(uint32_t account_id);
 void network_cleanup(void);
@@ -50,7 +52,7 @@ int network_request_form_swap(uint8_t requested_form);
 int network_get_form_swap_ack(FormSwapAckPacket* out);
 
 int network_create_character(uint32_t world_id, const char* name,
-                            uint32_t class_id, uint32_t race_id);
+                            uint32_t class_id, uint32_t race_id, uint32_t appearance);
 int network_get_character_create_response(CharacterCreateResponsePacket* out);
 
 int network_delete_character(uint32_t world_id, uint32_t character_id);
@@ -72,19 +74,66 @@ uint32_t network_next_move_sequence(void);
  *                  alongside the position sent, so a correction naming it can
  *                  be reconciled rather than applied as a teleport.
  */
-int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y,
-                             uint32_t sequence);
+int network_send_player_move(float x, float y, float z, uint8_t flags,
+                             float speed, float vel_x, float vel_y,
+                             uint32_t sequence, uint8_t heading);
 
-/** Consume the most recent position correction, if any.
- *
- * @param out_sequence  Receives the move the server refused; may be NULL.
- * @return Nonzero when a correction was copied out.
- */
-int network_get_server_correction(float* out_x, float* out_y, uint32_t* out_sequence);
+// Take the newest correction (later moves echo it); nonzero if there was one
+int network_get_server_correction(move_correction* out);
+
+/** Ask the server to start an emote, or EMOTE_NONE to stop the current one.
+ *  The answer comes back through network_get_emote_state(). */
+void network_send_emote_request(uint8_t emote, uint8_t arg);
+
+/** Ask the server for another nearby player's gear and stats. The answer comes
+ *  back through network_get_inspect_response(). */
+void network_send_inspect_request(uint32_t target_id);
+
+/** Take the newest unread inspect answer. Returns 1 and fills *out, or 0. */
+int network_get_inspect_response(InspectResponsePacket* out);
+
+/** Take the oldest unread word from the server about the player's own emote.
+ *  @return Nonzero when one was copied out. */
+int network_get_emote_state(uint8_t* emote, uint8_t* arg, uint8_t* result,
+                            uint8_t* requested);
+
+/** Ask the server to show the player as one of SESSION_STATUS_*.
+ *  The answer comes back through network_get_status_state(). */
+void network_send_status_request(uint8_t status);
+
+/** Take the server's latest word on the status it shows for the player.
+ *  @return Nonzero when one was copied out. */
+int network_get_status_state(uint8_t* status);
+
+/** Take the world's time of day the server sent at join.
+ *  @return Nonzero when one was copied out. */
+int network_get_world_time(uint32_t* time_of_day_ms, uint32_t* day_length_ms);
+
+/** Take the weather forecast the server sent, at join and when a weather day begins.
+ *  @return Nonzero when one was copied out. */
+int network_get_weather(WeatherForecast* out);
 
 void network_send_ping(void);
-/** Return the most recently measured round-trip time in milliseconds. */
+// The ping in milliseconds: the time one way, client to server or back.
+// -1 until the first measurement.
 int  network_get_ping_ms(void);
+
+/** Seconds since anything last arrived from the server.
+ *
+ * The server sends the world at 20Hz and answers a ping every two seconds, so
+ * a few seconds of nothing means the link is in trouble even though the socket
+ * has not yet reported it. Zero when there is no established connection.
+ */
+double network_silence_seconds(void);
+
+// The whole trip out and back, in seconds; 0 until the first measurement.
+float network_get_round_trip_seconds(void);
+
+// For /ping: measures now, and network_take_ping_report() hands over the figure.
+void network_request_ping_report(void);
+
+// Returns 1 once per request, with the figure in milliseconds, when it is in.
+int  network_take_ping_report(int* ping_ms);
 
 void network_update_facing_direction(float vel_x, float vel_y);
 void network_send_attack_intent(float aim_x, float aim_y);
@@ -95,6 +144,9 @@ void network_send_ability_cancel(void);
 void network_request_player_stats(void);
 
 void network_request_player_data_refresh(void);
+
+// Deliver the quest packets that arrived before the gameplay state existed.
+void network_replay_early_quest_packets(void);
 
 void network_send_npc_interact_request(uint32_t npc_id);
 
@@ -110,12 +162,11 @@ int network_get_dialogue_update(DialogueUpdatePacket* out);
 int network_get_dialogue_close(DialogueClosePacket* out);
 
 void network_send_equip_item(uint32_t item_id, uint8_t inventory_slot, uint8_t equip_slot);
-void network_send_unequip_item(uint8_t equip_slot);
 void network_send_use_item(uint8_t inventory_slot);
-void network_send_drop_item(uint8_t inventory_slot);
 void network_send_move_item(uint8_t from_slot, uint8_t to_slot);
 
-void network_send_chat(uint8_t channel, const char* message);
+// Say a line on a channel; target names a whisper's recipient, "" otherwise.
+void network_send_chat(uint8_t channel, const char* target, const char* message);
 
 void network_send_loot_pickup(uint32_t ground_item_id);
 
@@ -123,7 +174,6 @@ void network_send_party_invite(const char* target_name);
 void network_send_party_accept(void);
 void network_send_party_decline(void);
 void network_send_party_leave(void);
-void network_send_party_kick(uint32_t target_id);
 
 void network_send_shop_buy(uint32_t shop_id, uint32_t item_id);
 void network_send_shop_sell(uint32_t shop_id, uint8_t inventory_slot);

@@ -2,6 +2,7 @@
 #define CHARACTER_SCREEN_H
 
 #include "core/game_types.h"
+#include "ui/character_view.h"
 
 /** Store one square equipment slot in screen coordinates. */
 typedef struct {
@@ -59,7 +60,15 @@ void character_screen_toggle(CharacterScreenState* char_screen);
 void character_screen_update(CharacterScreenState* char_screen, float mouse_x, float mouse_y,
                             int mouse_clicked, int mouse_down, int right_clicked);
 
-void character_screen_render(const CharacterScreenState* char_screen, const GameState* game);
+// Move the window, keeping all of it on screen
+void character_screen_place(CharacterScreenState* char_screen, float x, float y);
+
+// What the panel shows for the player themself
+void character_view_from_self(const GameState* game, CharacterView* out);
+
+// Draw the panel for a view, under a title: yourself, or a player inspected
+void character_screen_render(const CharacterScreenState* char_screen, const CharacterView* view,
+                             const char* title);
 
 int character_screen_check_close_button(const CharacterScreenState* char_screen, 
                                        float mouse_x, float mouse_y);

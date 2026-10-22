@@ -56,6 +56,18 @@ int main(void) {
               "looking it up again does not queue it again");
     }
 
+    printf("\nTEST 1b: is_known is true only once the name has arrived\n");
+    {
+        name_cache_reset();
+
+        CHECK(!name_cache_is_known(1500), "an identifier never seen is not known");
+        name_cache_lookup(1500);
+        CHECK(!name_cache_is_known(1500), "asked about is not known");
+        CHECK(name_cache_pending_count() == 1, "and is_known did not queue anything else");
+        name_cache_store(1500, "Aldric");
+        CHECK(name_cache_is_known(1500), "an answered identifier is known");
+    }
+
     printf("\nTEST 2: a crowd is one question, not thirty\n");
     {
         name_cache_reset();

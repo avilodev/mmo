@@ -81,8 +81,9 @@ int glb_read_uints(const GlbAccessor* accessor, unsigned int* out, unsigned int 
    an accessor's span is, because a view whose offset ran past the chunk would
    otherwise hand a decoder a pointer into whatever followed it.
 
-   Three channels whatever the file holds: there is no blending in the world
-   pass, so an alpha channel would only cost memory. A texture that will not
+   Four channels whatever the file holds. There is no blending in the world
+   pass, but the shader drops texels that are mostly clear, which is how a
+   lash, a brow or a strand of hair gets its shape. A texture that will not
    decode costs a mesh its map and nothing else, so this reports through its
    return value rather than through `error` - a flat mesh is not a failed
    load. */

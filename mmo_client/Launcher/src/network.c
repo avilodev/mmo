@@ -486,7 +486,7 @@ BOOL SendRegisterRequest(const char* username, const char* password, const char*
         return FALSE;
     }
 
-    if (received < 12) {  // PacketHeader(7) + success(1) + player_id(4) = 12
+    if (received < MIN_PACKET_SIZE) {
         snprintf(errorMsg, errorMsgSize, "Invalid response from server (got %d bytes)", received);
         tls_client_close(ssl);
         closesocket(sock);
@@ -521,8 +521,10 @@ BOOL SendRegisterRequest(const char* username, const char* password, const char*
     // Message (rest of packet)
     char message[256] = {0};
     int message_len = received - offset;
-    if (message_len < 0) message_len = 0;
-    if (message_len > 255) message_len = 255;
+    if (message_len < 0) 
+        message_len = 0;
+    if (message_len > 255) 
+        message_len = 255;
     if (message_len > 0) {
         memcpy(message, &response_buffer[offset], message_len);
         message[message_len] = '\0';

@@ -88,9 +88,9 @@ void combat_on_cast_start(CombatState* c, uint8_t attack_type, float cast_time,
 }
 void combat_on_cast_cancel(CombatState* c) { (void)c; }
 void combat_on_damage(CombatState* c, uint32_t target_id, int damage, int is_crit,
-                      int is_kill, int is_heal, float tx, float ty) {
+                      int is_kill, int is_heal, float tx, float ty, float tz) {
     (void)c; (void)target_id; (void)damage; (void)is_crit; (void)is_kill;
-    (void)is_heal; (void)tx; (void)ty;
+    (void)is_heal; (void)tx; (void)ty; (void)tz;
 }
 
 /* Stubbed only when the real inventory.c is not linked in.
@@ -120,8 +120,37 @@ void quest_log_add(QuestLogState* ql, uint32_t id, const char* title,
                    uint8_t obj_count, const QuestObjectiveInfo* objectives) {
     (void)ql; (void)id; (void)title; (void)obj_count; (void)objectives;
 }
+void quest_log_set_step(QuestLogState* ql, uint32_t id, uint8_t step, uint8_t step_count,
+                        const char* step_title) {
+	(void)ql;
+	(void)id;
+	(void)step;
+	(void)step_count;
+	(void)step_title;
+}
 void quest_log_remove(QuestLogState* ql, uint32_t id) { (void)ql; (void)id; }
+// How many times the dispatcher reached the available-quest list, and in what order.
+int g_stub_available_resets;
+int g_stub_available_adds;
+int g_stub_available_add_before_reset;
+
+void quest_log_available_reset(QuestLogState* ql) {
+	(void)ql;
+	g_stub_available_resets++;
+}
+void quest_log_available_add(QuestLogState* ql, const AvailableQuestPacket* pkt) {
+	(void)ql;
+	(void)pkt;
+	if(g_stub_available_resets == 0)
+		g_stub_available_add_before_reset = 1;
+	g_stub_available_adds++;
+}
 void quest_log_complete(QuestLogState* ql, uint32_t id) { (void)ql; (void)id; }
+void quest_log_finished_add(QuestLogState* ql, uint32_t id, const char* title) {
+	(void)ql;
+	(void)id;
+	(void)title;
+}
 void quest_log_update_progress(QuestLogState* ql, uint32_t quest_id, uint8_t obj_index,
                                int32_t current, int32_t required) {
     (void)ql; (void)quest_id; (void)obj_index; (void)current; (void)required;

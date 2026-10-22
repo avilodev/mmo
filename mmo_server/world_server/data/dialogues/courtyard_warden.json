@@ -47,122 +47,54 @@
     },
     {
       "page_num": 3,
-      "text": "The same thing every Blessed does first. You go and be seen by the one who carries\nyour shape.\n\nThey are all here, all around this courtyard, and they have all been waiting on\nsomebody. Whether they admit to waiting is a matter of temperament.",
+      "text": "Everyone starts the same way: with an empty purse and a list of names. Ennara runs on trade, and trade runs on people who know whom to stand in front of.\n\nGo and learn the market. I will make it worth your while.",
       "options": [
         {
           "option_id": 1,
-          "text": "Where do I find the God of the Hunt?",
+          "text": "Where do I start?",
           "next_page": 10,
           "action": "quest_accept",
-          "action_value": 101,
+          "action_value": 301,
           "conditions": [
             {
-              "type": "race",
-              "value": "wolf"
+              "type": "quest_available",
+              "value": 301
             }
           ]
         },
         {
           "option_id": 2,
-          "text": "Where do I find the God of Might?",
+          "text": "Where was I going?",
           "next_page": 11,
-          "action": "quest_accept",
-          "action_value": 102,
           "conditions": [
             {
-              "type": "race",
-              "value": "bear"
-            }
-          ]
-        },
-        {
-          "option_id": 3,
-          "text": "Where do I find the God of Secrets?",
-          "next_page": 12,
-          "action": "quest_accept",
-          "action_value": 103,
-          "conditions": [
-            {
-              "type": "race",
-              "value": "fox"
-            }
-          ]
-        },
-        {
-          "option_id": 4,
-          "text": "Where do I find the God of the Unseen?",
-          "next_page": 13,
-          "action": "quest_accept",
-          "action_value": 104,
-          "conditions": [
-            {
-              "type": "race",
-              "value": "crow"
-            }
-          ]
-        },
-        {
-          "option_id": 5,
-          "text": "Where do I find the God of Patience?",
-          "next_page": 14,
-          "action": "quest_accept",
-          "action_value": 105,
-          "conditions": [
-            {
-              "type": "race",
-              "value": "hawk"
-            }
-          ]
-        },
-        {
-          "option_id": 6,
-          "text": "Where do I find the God of Aid?",
-          "next_page": 15,
-          "action": "quest_accept",
-          "action_value": 106,
-          "conditions": [
-            {
-              "type": "race",
-              "value": "deer"
-            }
-          ]
-        },
-        {
-          "option_id": 7,
-          "text": "Where do I find the Elder of the Fallen?",
-          "next_page": 16,
-          "action": "quest_accept",
-          "action_value": 108,
-          "conditions": [
-            {
-              "type": "race",
-              "value": "rabbit"
+              "type": "quest_active",
+              "value": 301
             }
           ]
         },
         {
           "option_id": 8,
-          "text": "Where do I find the God of Opportunity?",
-          "next_page": 17,
-          "action": "quest_accept",
-          "action_value": 109,
+          "text": "I have been around the market.",
+          "next_page": 12,
+          "fail_page": 11,
+          "action": "quest_turnin",
+          "action_value": 301,
           "conditions": [
             {
-              "type": "race",
-              "value": "hyena"
+              "type": "quest_complete",
+              "value": 301
             }
           ]
         },
         {
           "option_id": 9,
-          "text": "Where do I find the Keeper of the Ninth?",
-          "next_page": 18,
-          "action": "quest_accept",
-          "action_value": 110,
+          "text": "Anything else?",
+          "next_page": 13,
           "conditions": [
             {
-              "type": "race",
-              "value": "cat"
+              "type": "quest_turned_in",
+              "value": 301
             }
           ]
         },
@@ -175,7 +107,7 @@
     },
     {
       "page_num": 10,
-      "text": "The God of the Hunt. North side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
+      "text": "Mirela the Provisioner keeps the stall on the north side. Start with her, and tell her I sent you.",
       "options": [
         {
           "option_id": 1,
@@ -186,7 +118,7 @@
     },
     {
       "page_num": 11,
-      "text": "The God of Might. Northeast side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
+      "text": "You are in the middle of an errand. Mirela keeps the provisions stall and Doran the arms stall beside it. Do what each of them asks, in the order they ask it, and come back to me when the market is done with you.",
       "options": [
         {
           "option_id": 1,
@@ -197,77 +129,22 @@
     },
     {
       "page_num": 12,
-      "text": "The God of Secrets. East side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
+      "text": "So the market has the measure of you, and you of it. You can buy, you can sell, and you know whom to ask. That is more than most of what comes out of the rift can say on its first week.\n\nTake this. It is warm, and it will keep the wind off.",
       "options": [
         {
           "option_id": 1,
-          "text": "I will go.",
+          "text": "Thank you.",
           "next_page": -1
         }
       ]
     },
     {
       "page_num": 13,
-      "text": "The God of the Unseen. East-southeast side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
+      "text": "Ennara is open to you. Wear it out.",
       "options": [
         {
           "option_id": 1,
-          "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 14,
-      "text": "The God of Patience. South-southeast side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 15,
-      "text": "The God of Aid. South-southwest side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 16,
-      "text": "The Elder of the Fallen. West-southwest side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 17,
-      "text": "The God of Opportunity. West side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 18,
-      "text": "The Keeper of the Ninth. Northwest side of the courtyard -- you will know them when you see them.\n\nGo and be seen. Whatever happens after that is between the two of you.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "I will go.",
+          "text": "I will.",
           "next_page": -1
         }
       ]

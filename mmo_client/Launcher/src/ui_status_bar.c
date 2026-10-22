@@ -38,22 +38,6 @@ void CreateStatusBar(HWND hwndParent) {
     SendMessage(g_hwndStatusBar, WM_SETFONT, (WPARAM)hFont, TRUE);
 }
 
-/** Replace the status control's displayed text. */
-void UpdateStatusBar(const char* status) {
-    if (g_hwndStatusBar) {
-        SetWindowText(g_hwndStatusBar, status);
-        InvalidateRect(g_hwndStatusBar, NULL, TRUE);
-    }
-}
-
-/** Display the predefined online status. */
-void SetStatusOnline(void) {
-    if (g_hwndStatusBar) {
-        SetWindowText(g_hwndStatusBar, "Status: Online");
-        InvalidateRect(g_hwndStatusBar, NULL, TRUE);
-    }
-}
-
 /** Display the predefined offline status. */
 void SetStatusOffline(void) {
     if (g_hwndStatusBar) {
@@ -68,18 +52,4 @@ void ShowStatusBar(void) {
         ShowWindow(g_hwndStatusBar, SW_SHOW);
         InvalidateRect(g_hwndStatusBar, NULL, TRUE);
     }
-}
-
-/** Hide the status control. */
-void HideStatusBar(void) {
-    if (g_hwndStatusBar) {
-        ShowWindow(g_hwndStatusBar, SW_HIDE);
-    }
-}
-
-/**
- * Return the shared brush used for the status background.
- */
-HBRUSH GetStatusBarBrush(void) {
-    return g_hStatusBrush;
 }

@@ -13,15 +13,33 @@
 #include "renderer.h"
 #include "render/gl_loader.h"
 #include "render/ground_renderer.h"
+#include "render/sky_renderer.h"
+#include "render/precip_renderer.h"
+#include "render/weather_map.h"
+#include "render/shadow_map.h"
+#include "render/lamp_shadow.h"
 #include "render/character_renderer.h"
 #include "render/city_renderer.h"
+#include "world/city_heights.h"
+#include "ui/map_view.h"
+#include "ui/weather_window.h"
+#include "ui/settings_menu.h"
+#include "world/footing.h"
+#include "world/world_clock.h"
+#include "world/weather_state.h"
+#include "world_seats.h"
 #include "fps.h"
 #include "network/network.h"
 #include "network/net_connect.h"
 #include "network/net_reconnect.h"
+#include "ui/lost_connection.h"
 #include "network/name_cache.h"
 #include "game_types.h"
 #include "core/client_log.h"
+#include "states/chat_input.h"
+#include "ui/settings_fields.h"
+#include "states/chat_layout.h"
+#include "ui/emote_hub.h"
 
 /** Window the FPS counter averages over. Not a limit; see GameSettings. */
 #define TARGET_FPS       60
@@ -29,6 +47,24 @@
 #define GAME_VIEW_HEIGHT 1080
 
 GameState* g_current_game = NULL;
+
+// Scrolls the chat if the cursor is over it; returns 1 if the scroll was used.
+static int scroll_chat(GameState* game, double yoffset) {
+	chat_box box;
+
+	if(!game->playing || game->playing->show_map || yoffset == 0.0)
+		return 0;
+
+	box = chat_box_at(&game->playing->chat.win, (float)game->camera.viewport_width,
+			(float)game->camera.viewport_height);
+	if(game->input.mouse_x < box.x || game->input.mouse_x > box.x + box.w ||
+	   game->input.mouse_y < box.y || game->input.mouse_y > box.input_y)
+		return 0;
+
+	chat_scroll_by(&game->playing->chat, yoffset > 0.0 ? 2 : -2);
+
+	return 1;
+}
 
 /**
  * Adjust the active map or camera zoom from a scroll event.
@@ -39,6 +75,18 @@ GameState* g_current_game = NULL;
 static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     (void)xoffset;
     GameState* game = (GameState*)glfwGetWindowUserPointer(window);
+
+	if((game->mode == GAME_MODE_SETTINGS || game->show_settings) && sm_scroll((float)yoffset))
+		return;
+
+	if(game->playing && emote_hub_scroll((float)yoffset))
+		return;
+
+	if(game->playing && weather_window_scroll(game, (float)yoffset))
+		return;
+
+	if(scroll_chat(game, yoffset))
+		return;
 
     if (game->playing && game->playing->show_map) {
         // Scroll zooms the full map (faster rate than camera)
@@ -54,17 +102,12 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
 }
 
 static void char_callback(GLFWwindow* window, unsigned int codepoint) {
-    GameState* game = (GameState*)glfwGetWindowUserPointer(window);
-    if (!game || !game->playing || !game->playing->chat.is_typing) return;
+	GameState* game = (GameState*)glfwGetWindowUserPointer(window);
 
-    // Only handle printable ASCII
-    if (codepoint >= 32 && codepoint < 127) {
-        if (game->playing->chat.input_len < MAX_CHAT_INPUT_LEN - 1) {
-            game->playing->chat.input_buf[game->playing->chat.input_len] = (char)codepoint;
-            game->playing->chat.input_len++;
-            game->playing->chat.input_buf[game->playing->chat.input_len] = '\0';
-        }
-    }
+	if(!game || !game->playing || !game->playing->chat.is_typing)
+		return;
+
+	chat_type(&game->playing->chat, codepoint);
 }
 
 /**
@@ -198,6 +241,28 @@ static int connect_to_realm(GameState* game) {
     return 1;
 }
 
+/** Send the player out of the world after a connection that could not be recovered.
+ *
+ * They land on the world list, where the menu retry below reconnects to the
+ * realm on its own with the session the launcher handed over, so there is
+ * nothing to log in to again. Only when the login itself has ended is that not
+ * so, and the dialog says it.
+ */
+static void leave_world_after_lost_connection(GameState* game) {
+	int login_ended = net_reconnect_failure() == RECONNECT_FAIL_LOGIN;
+
+	CLOG_WARN("[NETWORK] Could not get back into the world (%s)",
+	          login_ended ? "the login has ended" : "out of time");
+
+	// Idle again, or the menu's realm connect would never be polled
+	net_reconnect_forget();
+	game->network_connected = 0;
+	snprintf(game->network_status, sizeof(game->network_status), "Disconnected");
+
+	game_change_state(game, GAME_MODE_SERVER_LIST);
+	lost_connection_show(login_ended);
+}
+
 /** Finish whatever connection attempt is in flight, without waiting on it. */
 static void poll_realm_connect(GameState* game) {
     switch (network_connect_poll()) {
@@ -214,6 +279,33 @@ static void poll_realm_connect(GameState* game) {
         default:
             break;
     }
+}
+
+// Hand the time of day the server sent to the world clock
+static void take_world_time(void) {
+	uint32_t time_of_day_ms;
+	uint32_t day_length_ms;
+
+	if(!network_get_world_time(&time_of_day_ms, &day_length_ms))
+		return;
+	if(world_clock_sync(time_of_day_ms, day_length_ms, glfwGetTime()))
+		CLOG_INFO("[CLOCK] Time of day %u of %u ms", time_of_day_ms, day_length_ms);
+	else
+		CLOG_WARN("[CLOCK] Refused time of day %u of %u ms", time_of_day_ms, day_length_ms);
+}
+
+// Hand the forecast the server sent to the weather state
+static void take_weather(void) {
+	WeatherForecast forecast;
+
+	if(!network_get_weather(&forecast))
+		return;
+	if(weather_state_apply(&forecast, glfwGetTime())) {
+		CLOG_INFO("[WEATHER] Forecast for day %u, %d regions", (unsigned)forecast.day_index,
+		          forecast.region_count);
+	} else {
+		CLOG_WARN("[WEATHER] Refused a forecast with %d regions", forecast.region_count);
+	}
 }
 
 /**
@@ -241,6 +333,7 @@ int main(int argc, char* argv[]) {
     const GLFWvidmode* mode = glfwGetVideoMode(monitor);
 
     CLOG_INFO("Monitor: %dx%d @ %dHz", mode->width, mode->height, mode->refreshRate);
+	sf_set_screen_size(mode->width, mode->height);
 
     // Create window hints
     glfwWindowHint(GLFW_RED_BITS, mode->redBits);
@@ -249,9 +342,10 @@ int main(int argc, char* argv[]) {
     glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
     gl_loader_window_hints();
 
-    // Calculate window size (90% of monitor size)
-    int window_width = (int)(mode->width * 0.9f);
-    int window_height = (int)(mode->height * 0.9f);
+	// Borderless at the monitor size; a saved resolution applies after settings load
+	glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+	int window_width = mode->width;
+	int window_height = mode->height;
 
     CLOG_INFO("Window size: %dx%d", window_width, window_height);
 
@@ -264,12 +358,10 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    // Center the window on the monitor
-    int monitor_x, monitor_y;
-    glfwGetMonitorPos(monitor, &monitor_x, &monitor_y);
-    glfwSetWindowPos(window, 
-                    monitor_x + (mode->width - window_width) / 2,
-                    monitor_y + (mode->height - window_height) / 2);
+	// Cover the monitor
+	int monitor_x, monitor_y;
+	glfwGetMonitorPos(monitor, &monitor_x, &monitor_y);
+	glfwSetWindowPos(window, monitor_x, monitor_y);
 
     glfwMakeContextCurrent(window);
     g_window = window;
@@ -283,16 +375,20 @@ int main(int argc, char* argv[]) {
         glfwTerminate();
         return -1;
     }
+	// The sky is scenery: without it the world keeps its flat colour
+	weather_map_init();
+	sky_renderer_init();
+	precip_renderer_init();
+	// Shadows are optional too: without them the world is lit but casts none
+	shadow_map_init();
+	lamp_shadow_init();
 
     /* Players and NPCs are 3D models. A missing or broken model file is not
      * fatal: characters then draw as flat placeholder cards. */
     if (!character_renderer_init())
         CLOG_ERROR("[CHARACTER] Characters will draw as placeholders");
 
-    /* The authored city scene. Also not fatal: without it the world is the
-     * one grown from world.dat alone. */
-    if (!city_renderer_init())
-        CLOG_ERROR("[CITY] The city scene will not be drawn");
+	// The city scene, its baked data and the tile world load when a character enters the game
 
     /* VSync and the frame cap are settings now, applied by
      * game_settings_apply() below once the loaded settings exist. This used to
@@ -337,7 +433,8 @@ int main(int argc, char* argv[]) {
     } else {
         CLOG_INFO("Frame pacing: uncapped");
     }
-    CLOG_INFO("Game viewport: %dx%d", window_width, window_height);
+	CLOG_INFO("Game viewport: %dx%d in a %dx%d window", GAME_VIEW_WIDTH, GAME_VIEW_HEIGHT,
+	          window_width, window_height);
     CLOG_INFO("Network: %s\n", game.network_status);
     
     while (!glfwWindowShouldClose(window) && game.is_running) {
@@ -348,11 +445,17 @@ int main(int argc, char* argv[]) {
         // Get framebuffer size
         int fb_width, fb_height;
         glfwGetFramebufferSize(window, &fb_width, &fb_height);
-        glViewport(0, 0, fb_width, fb_height);
+
+		// The game always draws 16:9; any other window shape gets bars
+		letterbox_rect view_box = letterbox_fit(fb_width, fb_height,
+		                                        GAME_VIEW_WIDTH, GAME_VIEW_HEIGHT);
+		glViewport(view_box.x, view_box.y, view_box.w, view_box.h);
         
         // Update FPS
         fps_update(&fps);
         float delta_time = (float)fps_get_delta_time(&fps);
+        world_clock_tick(glfwGetTime());
+        weather_state_tick(glfwGetTime());
         
         /* Network: never more than a frame's worth of work.
          *
@@ -381,6 +484,8 @@ int main(int argc, char* argv[]) {
                 poll_realm_connect(&game);
         } else if (game.network_connected) {
             network_update_with_ping(game.mode);
+            take_world_time();
+            take_weather();
 
             if (!network_is_connected()) {
                 game.network_connected = 0;
@@ -402,7 +507,12 @@ int main(int argc, char* argv[]) {
                          "%s", net_reconnect_status());
                 game.network_connected = network_is_connected();
             }
+
+			// Recovery ran out of road: leave the world and tell the player
+			if(net_reconnect_phase() == RECONNECT_GIVEN_UP)
+				leave_world_after_lost_connection(&game);
         } else if (!game.network_connected && !network_connect_in_flight() &&
+                   !lost_connection_login_ended() &&
                    (game.mode == GAME_MODE_MAIN_MENU ||
                     game.mode == GAME_MODE_SERVER_LIST ||
                     game.mode == GAME_MODE_CHARACTER_SELECT)) {
@@ -433,7 +543,7 @@ int main(int argc, char* argv[]) {
         static int prev_f11 = 0;
         int cur_f11 = glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS;
         if (cur_f11 && !prev_f11) {
-            game.settings.fullscreen = !game.settings.fullscreen;
+			game_toggle_fullscreen(&game.settings);
             game_settings_apply(&game.settings);
             game_settings_save(&game.settings, SETTINGS_PATH);
         }
@@ -449,6 +559,7 @@ int main(int argc, char* argv[]) {
 
         game_handle_input(&game, window, delta_time);
         game_update(&game, delta_time);
+        character_renderer_set_animal_features(game.settings.show_animal_features);
         game_render(&game);
         
         /* Update the window title, on change only.
@@ -465,6 +576,7 @@ int main(int argc, char* argv[]) {
                                                        : "Multiverse MMO - Offline");
         }
         
+		renderer_clear_bars(fb_width, fb_height, &view_box);
         glfwSwapBuffers(window);
         glfwPollEvents();
 
@@ -519,7 +631,15 @@ int main(int argc, char* argv[]) {
 
     CLOG_INFO("[SHUTDOWN] renderer...");
     character_renderer_shutdown();
+    map_view_shutdown();
     city_renderer_shutdown();
+    city_heights_free();
+    footing_free();
+    lamp_shadow_shutdown();
+    shadow_map_shutdown();
+    precip_renderer_shutdown();
+    weather_map_shutdown();
+    sky_renderer_shutdown();
     ground_renderer_shutdown();
     renderer_cleanup();
 

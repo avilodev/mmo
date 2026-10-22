@@ -18,8 +18,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "packet_handler.h"
+#include "emote_handler.h"
 #include "npc_query.h"
-#include "items_database.h"
+#include "item_registry.h"
 #include "item_instance.h"
 #include "server_types.h"
 #include "config.h"
@@ -125,6 +126,15 @@ int      party_snapshot_of_player(uint32_t c, PartySnapshot* o) { (void)c; (void
 uint32_t party_id_of_player(uint32_t c) { (void)c; return 0; }
 uint32_t party_create(uint32_t l) { (void)l; return 0; }
 int      party_add_member(uint32_t p, uint32_t c) { (void)p; (void)c; return 0; }
+void emote_send_state(int fd, uint32_t c, uint8_t emote, uint8_t arg,
+                      uint8_t result, uint8_t requested) {
+	(void)fd;
+	(void)c;
+	(void)emote;
+	(void)arg;
+	(void)result;
+	(void)requested;
+}
 void     party_remove_member(uint32_t c) { (void)c; }
 void     party_broadcast_update(uint32_t p) { (void)p; }
 int      party_invite_create(uint32_t f, uint32_t t, uint32_t p) { (void)f;(void)t;(void)p; return 0; }
@@ -132,8 +142,10 @@ int      party_invite_find_for_player(uint32_t t, PendingInvite* o) { (void)t;(v
 void     party_invite_remove(uint32_t t) { (void)t; }
 
 MoveVerdict move_validate(MoveBudget* b, float fx, float fy, float tx, float ty,
-                          float speed, const struct timespec* now) {
-    (void)b;(void)fx;(void)fy;(void)tx;(void)ty;(void)speed;(void)now;
+                          float tz, int jump, float speed,
+                          const struct timespec* now, vertical_state* vs) {
+    (void)b;(void)fx;(void)fy;(void)tx;(void)ty;(void)tz;(void)jump;
+    (void)speed;(void)now;(void)vs;
     return MOVE_ACCEPT;
 }
 const char* move_verdict_name(MoveVerdict v) { (void)v; return "ok"; }
@@ -143,8 +155,9 @@ const WorldZone* zone_lookup(float x, float y) { (void)x; (void)y; return NULL; 
 static int      g_drops = 0;
 static uint32_t g_dropped_item = 0;
 static uint8_t  g_dropped_qty = 0;
-uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y, uint32_t owner) {
-    (void)x; (void)y; (void)owner;
+uint32_t loot_drop_item(uint32_t item_id, uint8_t quantity, float x, float y,
+                        float z, uint32_t owner) {
+    (void)x; (void)y; (void)z; (void)owner;
     g_drops++;
     g_dropped_item = item_id;
     g_dropped_qty  = quantity;
@@ -158,7 +171,7 @@ static uint8_t g_reply[MAX_REPLIES][512];
 static size_t  g_reply_len[MAX_REPLIES];
 static int     g_reply_count = 0;
 
-ssize_t server_send(int fd, void* buf, size_t len) {
+ssize_t outbox_send(int fd, void* buf, size_t len) {
     (void)fd;
     if (g_reply_count < MAX_REPLIES) {
         size_t n = len < sizeof(g_reply[0]) ? len : sizeof(g_reply[0]);
@@ -168,7 +181,11 @@ ssize_t server_send(int fd, void* buf, size_t len) {
     }
     return (ssize_t)len;
 }
-ssize_t server_send_direct(int fd, void* buf, size_t len) { return server_send(fd, buf, len); }
+// the network handlers send directly, and both paths land in the same capture
+ssize_t server_send(int fd, void* buf, size_t len) {
+	return outbox_send(fd, buf, len);
+}
+ssize_t server_send_direct(int fd, void* buf, size_t len) { return outbox_send(fd, buf, len); }
 
 /** The first reply of a given opcode, or NULL. */
 static const void* reply_of(uint8_t type) {
@@ -188,13 +205,13 @@ static void reset_io(void) {
 
 /* --- Fixtures ------------------------------------------------------------ */
 
-/** Item definitions this test needs, written where items_database.c reads them. */
+/** Item definitions this test needs, written where item_registry.c reads them. */
 static const char* k_items_json =
     "{\"items\":["
     "{\"id\":10,\"name\":\"Iron Helm\",\"type\":\"armor\",\"slot\":\"helmet\",\"value\":100},"
     "{\"id\":11,\"name\":\"Iron Boots\",\"type\":\"armor\",\"slot\":\"boots\",\"value\":100},"
     /* is_two_handed is derived from the slot name, not from a separate key --
-     * see parse_slot() in items_database.c. */
+     * see parse_slot() in item_registry.c. */
     "{\"id\":20,\"name\":\"Greatsword\",\"type\":\"weapon\",\"slot\":\"two_handed\","
     " \"value\":300},"
     "{\"id\":21,\"name\":\"Shield\",\"type\":\"armor\",\"slot\":\"off_hand\",\"value\":150},"

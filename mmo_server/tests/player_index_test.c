@@ -26,7 +26,7 @@ int character_database_init(const char* c) { (void)c; return 1; }
 /** Stub database shutdown. */
 void character_database_close(void) {}
 /** Stub successful character persistence. */
-int character_update_full_data(const CharacterInfo* d) { (void)d; return 1; }
+int character_update_full_data(const character_record* d) { (void)d; return 1; }
 
 /** Stub loading empty inventory and equipment arrays. */
 int character_items_load(uint32_t c, ItemInstance* inv, int n_inv,
@@ -41,22 +41,37 @@ int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
                          const ItemInstance* eq, int n_eq) {
     (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
+/** Stub the old quest folder setting. */
+void quest_legacy_set_dir(const char* dir) {
+	(void)dir;
+}
+
+/** Stub an empty persisted instance-id range. */
+int character_items_max_instance_id_checked(uint64_t* out_highest) {
+	*out_highest = 0;
+	return 1;
+}
+
 /** Stub the whole-character save that commits scalars, currency and items together. */
-int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
-                       const ItemInstance* eq, int n_eq) {
+int character_save_all(const character_record* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq,
+                       const PlayerQuestState* quests) {
+	(void)quests;
     (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
 /** Stub recording that a character is live in a world. */
 int world_session_mark(uint32_t character_id, uint32_t world_id) {
     (void)character_id; (void)world_id; return 1;
 }
+/** Stub renewing an account's login session. */
+int session_touch(uint32_t account_id) { (void)account_id; return 1; }
 /** Stub clearing that record. */
 void world_session_clear(uint32_t character_id) { (void)character_id; }
 /** Stub an empty persisted instance-id range. */
 uint64_t character_items_max_instance_id(void) { return 0; }
 
 /** Stub a populated level-one character record. */
-int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
+int character_get_full_data(uint32_t character_id, character_record* out) {
     memset(out, 0, sizeof(*out));
     out->character_id = character_id;
     snprintf(out->name, sizeof(out->name), "char%u", character_id);
@@ -83,10 +98,6 @@ const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 int  quest_player_load(uint32_t c, PlayerQuestState* s) {
     (void)c; (void)s; return 0;
 }
-/** Stub successful quest persistence. */
-int  quest_player_save(uint32_t c, const PlayerQuestState* s) {
-    (void)c; (void)s; return 1;
-}
 /** Stub quest storage teardown; these tests never allocate any. */
 void quest_state_release(PlayerQuestState* s) { (void)s; }
 /** Stub the snapshot's deep copy; these tests hold no quest state to copy. */
@@ -96,7 +107,7 @@ int  quest_state_copy(PlayerQuestState* out, const PlayerQuestState* src) {
 /** Stub the completion set; these tests never record one. */
 int  quest_history_add(QuestHistory* h, uint32_t id) { (void)h; (void)id; return 1; }
 /** Stub successful packet transmission. */
-ssize_t server_send(int fd, void* d, size_t n) { (void)fd; (void)d; (void)n; return (ssize_t)n; }
+ssize_t outbox_send(int fd, void* d, size_t n) { (void)fd; (void)d; (void)n; return (ssize_t)n; }
 
 static double now_seconds(void) {
     struct timespec ts;
@@ -351,6 +362,61 @@ int main(void) {
     // allow scheduling variance while detecting starvation
     assert(worst_wait_ms < 50.0);
     printf("  -> writers are not starved\n");
+
+    printf("\nTEST 7: a dropped connection parks the character; only a return or time changes that\n");
+    {
+        const uint32_t id = 777001;
+        int slot = -1;
+
+        assert(player_add_active(id, 700, &slot) == 1);
+
+        // a stale connection cannot park a slot it does not own
+        assert(player_mark_linkdead(id, 701, 100.0) == 0);
+        assert(active_players[slot].client_fd == 700);
+        assert(active_players[slot].linkdead_at == 0.0);
+
+        // the owner can, and the slot then has no descriptor to send to
+        active_players[slot].vel_x = 3.0f;
+        assert(player_mark_linkdead(id, 700, 100.0) == 1);
+        assert(active_players[slot].client_fd == -1);
+        assert(active_players[slot].linkdead_at == 100.0);
+        assert(active_players[slot].vel_x == 0.0f);
+        ActivePlayer* held = player_acquire(id);   // still in the world
+        assert(held != NULL);
+        player_release(held);
+        printf("  parked: still resolvable, no descriptor, stopped\n");
+
+        // not yet expired inside the grace period, expired after it
+        uint32_t out[8];
+        assert(player_linkdead_expired(159.0, 60.0, out, 8) == 0);
+        assert(player_linkdead_expired(160.0, 60.0, out, 8) == 1 && out[0] == id);
+        printf("  listed as expired only once the grace period is over\n");
+
+        // the same player returning takes the slot back
+        int back_slot = -1;
+        assert(player_add_active(id, 702, &back_slot) != 0);
+        assert(back_slot == slot);
+        assert(active_players[slot].client_fd == 702);
+        assert(active_players[slot].linkdead_at == 0.0);
+        assert(player_linkdead_expired(1000.0, 60.0, out, 8) == 0);
+
+        // a character that came back after being listed is not removed
+        assert(player_remove_linkdead(id, NULL) == 0);
+        held = player_acquire(id);
+        assert(held != NULL);
+        player_release(held);
+        printf("  returned: slot rebound, no longer listed, not removable\n");
+
+        // one that never returns is removed, with its account
+        active_players[slot].account_id = 4242;
+        assert(player_mark_linkdead(id, 702, 200.0) == 1);
+        uint32_t account = 0;
+        assert(player_remove_linkdead(id, &account) == 1);
+        assert(account == 4242);
+        assert(player_acquire(id) == NULL);
+        assert(player_remove_linkdead(id, NULL) == 0);   // already gone
+        printf("  never returned: removed with its account\n");
+    }
 
     printf("\nALL ASSERTIONS PASSED\n");
     return 0;

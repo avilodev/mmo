@@ -40,17 +40,32 @@ void hud_render_target_bar(const GameState* game, float screen_width);
 // Render targeted player health bar (below NPC target bar)
 void hud_render_player_target_bar(const GameState* game, float screen_width);
 
+// Whether a click landed on the Inspect button beside the player target bar
+int hud_check_inspect_button_clicked(const GameState* game, float screen_width,
+		float mouse_x, float mouse_y);
+
 // Render party member frames (top-left, stacked vertically)
 void hud_render_party_frames(const GameState* game);
 
-// Render ping (ms) in the upper-right corner above the minimap
-void hud_render_ping(const HUDLayout* hud, int ping_ms);
+// Render the info bar in the upper right above the minimap: the weather and
+// the time of day, then the ping (ms)
+void hud_render_info_bar(const HUDLayout* hud, const GameState* game, int ping_ms);
+
+// Whether a click landed on the weather and time in the info bar, which open the forecast
+int hud_check_weather_clicked(const HUDLayout* hud, const GameState* game, float mouse_x,
+		float mouse_y);
+
+// Render the connection-issue icon at the top centre while the link is in trouble
+void hud_render_connection_issue(const HUDLayout* hud, const GameState* game);
 
 // Render the session panel (O menu — full server player list, paginated)
 void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int own_ping_ms);
 
+// Carry the session panel by its title; nonzero while it is held.
+int hud_session_panel_drag(GameState* game, float mx, float my, int clicked, int down);
+
 // Handle a left-click against the session panel buttons.
-// Returns -1 (prev page), 1 (next page), 0 (nothing hit).
+// Returns -1 (prev page), 1 (next page), 2 (close), 0 (nothing hit).
 int hud_session_panel_handle_click(const GameState* game, float mx, float my);
 
 // Render FF14-style zone entry banner (fades in/out over 4 seconds).

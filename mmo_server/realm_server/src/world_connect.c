@@ -22,7 +22,7 @@
 
 /* send_exact() and recv_exact_timeout() used to live here, writing to a bare
  * descriptor. Their TLS equivalents are tls_send_exact() and tls_recv_exact()
- * in common/src/tls.c, which additionally know that one TLS record can carry
+ * in network/src/tls.c, which additionally know that one TLS record can carry
  * several protocol packets -- so they check SSL_pending() before polling,
  * rather than waiting out a timeout on bytes that already arrived. */
 

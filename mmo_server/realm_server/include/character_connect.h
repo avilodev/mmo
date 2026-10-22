@@ -19,7 +19,8 @@ void handle_race_list_request(int client_fd, uint32_t account_id);
 void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t world_id);
 void handle_character_create_request(int client_fd, uint32_t account_id,
                                       uint32_t world_id, const char* name,
-                                      int class_id, int race_id);
+                                      int class_id, int race_id,
+									  uint32_t appearance);
 void handle_character_delete_request(int client_fd, uint32_t account_id,
                                       uint32_t character_id, uint32_t world_id);
 

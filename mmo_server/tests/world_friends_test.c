@@ -63,7 +63,7 @@ int character_database_init(const char* c) { (void)c; return 1; }
 /** Stub database shutdown. */
 void character_database_close(void) {}
 /** Stub successful character persistence. */
-int character_update_full_data(const CharacterInfo* d) { (void)d; return 1; }
+int character_update_full_data(const character_record* d) { (void)d; return 1; }
 /** Stub loading empty inventory and equipment arrays. */
 int character_items_load(uint32_t c, ItemInstance* inv, int n_inv,
                         ItemInstance* eq, int n_eq) {
@@ -77,9 +77,16 @@ int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
                         const ItemInstance* eq, int n_eq) {
     (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
+/** Stub the old quest folder setting. */
+void quest_legacy_set_dir(const char* dir) {
+	(void)dir;
+}
+
 /** Stub the whole-character save that commits scalars, currency and items together. */
-int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
-                       const ItemInstance* eq, int n_eq) {
+int character_save_all(const character_record* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq,
+                       const PlayerQuestState* quests) {
+	(void)quests;
     (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
 /* world_session_mark() and world_session_clear() are NOT stubbed: session.c is
@@ -93,7 +100,7 @@ int character_items_max_instance_id_checked(uint64_t* out) {
     return 1;
 }
 /** Stub a populated level-one character record. */
-int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
+int character_get_full_data(uint32_t character_id, character_record* out) {
     if (!out) return 0;
     memset(out, 0, sizeof(*out));
     out->character_id = character_id;
@@ -117,8 +124,6 @@ void player_recompute_stats(ActivePlayer* p) { (void)p; }
 const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 /** Stub an empty persisted quest list. */
 int quest_player_load(uint32_t c, PlayerQuestState* s) { (void)c; (void)s; return 0; }
-/** Stub successful quest persistence. */
-int quest_player_save(uint32_t c, const PlayerQuestState* s) { (void)c; (void)s; return 1; }
 /** Stub quest storage teardown. */
 void quest_state_release(PlayerQuestState* s) { (void)s; }
 /** Stub the snapshot's deep copy. */
@@ -134,7 +139,7 @@ void player_award_xp_locked(ActivePlayer* p, uint64_t amount) {
 
 /* --- The captured outbox -------------------------------------------------
  *
- * server_send() is where every answer this module produces ends up, so it is
+ * outbox_send() is where every answer this module produces ends up, so it is
  * captured rather than performed. The bus thread writes here too, hence the
  * lock: a torn read of a captured packet would look like a protocol bug.
  */
@@ -151,7 +156,7 @@ static SentPacket      g_outbox[OUTBOX_MAX];
 static int             g_outbox_count = 0;
 static pthread_mutex_t g_outbox_lock = PTHREAD_MUTEX_INITIALIZER;
 
-ssize_t server_send(int fd, void* buf, size_t len) {
+ssize_t outbox_send(int fd, void* buf, size_t len) {
     pthread_mutex_lock(&g_outbox_lock);
     if (g_outbox_count < OUTBOX_MAX && len <= sizeof(g_outbox[0].bytes)) {
         SentPacket* s = &g_outbox[g_outbox_count++];
@@ -649,6 +654,77 @@ static void test_the_heartbeat_keeps_local_presence_alive(void) {
     player_remove_active(character);
 }
 
+static void test_an_offline_player_is_hidden_from_friends_but_still_notified(void) {
+    printf("redis: appearing offline hides a player from friends, not from their news\n");
+
+    const uint32_t hider_account = 900060, hider_char = 5060;
+    const uint32_t watcher_account = 900061, watcher_char = 5061;
+    const uint32_t far_friend = 900062;
+
+    /* The hider has one friend somewhere else; the watcher has the hider. */
+    const FriendCacheEntry hider_friend = { far_friend, "Faraway" };
+    const FriendCacheEntry watches_hider = { hider_account, "Ayla" };
+    presence_friends_store(hider_account, &hider_friend, 1);
+    presence_friends_store(watcher_account, &watches_hider, 1);
+    presence_requests_store(hider_account, NULL, 0);
+    presence_requests_store(watcher_account, NULL, 0);
+
+    bring_online(hider_char, hider_account);
+    bring_online(watcher_char, watcher_account);
+    world_friends_player_entered(hider_account, hider_char, "Ayla");
+    world_friends_player_entered(watcher_account, watcher_char, "Watcher");
+
+    PresenceRecord rec;
+    CHECK(presence_get(hider_account, &rec) == 1, "online before hiding");
+    outbox_clear();
+
+    world_friends_set_visible(hider_account, hider_char, "Ayla", 0);
+
+    SentPacket sent;
+    CHECK(presence_get(hider_account, &rec) == 0, "no presence once hidden");
+    CHECK(outbox_wait(PACKET_FRIEND_PRESENCE_UPDATE, &sent, 2000) == 1,
+          "a friend watching them is told");
+    FriendPresenceUpdatePacket* upd = (FriendPresenceUpdatePacket*)sent.bytes;
+    CHECK(ntohl(upd->account_id) == hider_account, "about the hider");
+    CHECK(upd->online == 0, "that they went offline");
+    CHECK(sent.fd == (int)(100 + watcher_char), "and it went to the watcher's socket");
+
+    /* The heartbeat only extends keys that exist; it must not bring them back. */
+    world_friends_heartbeat();
+    CHECK(presence_get(hider_account, &rec) == 0, "the heartbeat does not resurrect it");
+
+    /* Hiding twice changes nothing. */
+    world_friends_set_visible(hider_account, hider_char, "Ayla", 0);
+    CHECK(presence_get(hider_account, &rec) == 0, "hiding again is harmless");
+
+    /* They still hear about their own friends. */
+    outbox_clear();
+    presence_set(far_friend, 9, 7060, "Faraway");
+    CHECK(outbox_wait(PACKET_FRIEND_PRESENCE_UPDATE, &sent, 2000) == 1,
+          "a hidden player still gets their friends' news");
+    upd = (FriendPresenceUpdatePacket*)sent.bytes;
+    CHECK(ntohl(upd->account_id) == far_friend, "about their friend");
+    CHECK(sent.fd == (int)(100 + hider_char), "sent to the hidden player's own socket");
+
+    /* Coming back shows them again, under their name and this world. */
+    outbox_clear();
+    world_friends_set_visible(hider_account, hider_char, "Ayla", 1);
+    CHECK(presence_get(hider_account, &rec) == 1, "online again once visible");
+    CHECK(rec.world_id == TEST_WORLD, "on this world");
+    CHECK(strcmp(rec.character_name, "Ayla") == 0, "under their name");
+    CHECK(outbox_wait(PACKET_FRIEND_PRESENCE_UPDATE, &sent, 2000) == 1,
+          "the watcher is told they are back");
+    upd = (FriendPresenceUpdatePacket*)sent.bytes;
+    CHECK(upd->online == 1 && ntohl(upd->account_id) == hider_account,
+          "as online");
+
+    presence_clear(far_friend);
+    world_friends_player_left(hider_account, hider_char);
+    world_friends_player_left(watcher_account, watcher_char);
+    player_remove_active(hider_char);
+    player_remove_active(watcher_char);
+}
+
 int main(void) {
     log_init();
 
@@ -683,6 +759,7 @@ int main(void) {
         test_a_watched_friend_coming_online_reaches_the_watcher();
         test_an_unwatched_change_reaches_nobody();
         test_the_heartbeat_keeps_local_presence_alive();
+        test_an_offline_player_is_hidden_from_friends_but_still_notified();
 
         player_remove_active(5001);
         world_friends_shutdown();

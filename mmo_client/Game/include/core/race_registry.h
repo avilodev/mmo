@@ -31,7 +31,10 @@
 
 #include <stdint.h>
 
-/** Store the race list, replacing anything held. Safe with a NULL packet. */
+/** Store the race list, replacing anything held. Safe with a NULL packet.
+ *
+ * Takes the packet as it arrived: each race_id is in network byte order, and is
+ * held here in host order, which is what client_race_find() is asked for. */
 void client_races_store(const RaceListResponsePacket* packet);
 
 /** Races currently known; zero before the server has answered. */

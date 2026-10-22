@@ -54,8 +54,8 @@ void camera_view_build(CameraView* out, float target_x, float target_y, float ta
 
     float aspect = (viewport_h > 0) ? (float)viewport_w / (float)viewport_h : 1.0f;
     /* The near plane follows the zoom, so depth precision does too. The far
-     * plane reaches past the fog wherever the camera is: a low camera looks
-     * along the ground to the edge of what is streamed. */
+     * plane reaches CAMERA_VIEW_RANGE past the target, so a low camera looks
+     * along the ground a long way. */
     glm_perspective(fovy, aspect, distance * 0.05f, distance + CAMERA_VIEW_RANGE, proj);
 
     out->viewport_w = viewport_w;
@@ -68,7 +68,8 @@ int camera_view_project(const CameraView* v, float wx, float wy, float height,
     vec4 p = { wx, height, wy, 1.0f };
     vec4 clip;
     glm_mat4_mulv((vec4*)v->viewproj, p, clip);
-    if (clip[3] <= 1e-6f) return 0;
+    if (clip[3] <= 1e-6f) 
+        return 0;
 
     float nx = clip[0] / clip[3];
     float ny = clip[1] / clip[3];
@@ -100,14 +101,45 @@ int camera_view_pick_ground(const CameraView* v, float sx, float sy,
     unproject(v, sx, sy,  1.0f, far_pt);
 
     float dy = far_pt[1] - near_pt[1];
-    if (fabsf(dy) < 1e-6f) return 0;          /* ray parallel to the ground */
+    if (fabsf(dy) < 1e-6f) 
+        return 0;          /* ray parallel to the ground */
 
     float t = -near_pt[1] / dy;
-    if (t < 0.0f) return 0;                    /* ground is behind the eye */
+    if (t < 0.0f) 
+        return 0;                    /* ground is behind the eye */
 
     *wx = near_pt[0] + t * (far_pt[0] - near_pt[0]);
     *wy = near_pt[2] + t * (far_pt[2] - near_pt[2]);
     return 1;
+}
+
+void camera_view_eye(const CameraView* v, float eye[3]) {
+	const float* m = v->view;
+
+	// The view matrix is a rotation R and a shift t: the eye is -transpose(R) t
+	for(int c = 0; c < 3; c++)
+		eye[c] = -(m[c * 4] * m[12] + m[c * 4 + 1] * m[13] + m[c * 4 + 2] * m[14]);
+}
+
+void camera_view_screen_ray(const CameraView* v, float sx, float sy,
+                            float origin[3], float dir[3]) {
+    vec3 near_pt, far_pt;
+    unproject(v, sx, sy, -1.0f, near_pt);
+    unproject(v, sx, sy,  1.0f, far_pt);
+
+    /* GL (x, h, y) to world (x, y, z up). */
+    origin[0] = near_pt[0];
+    origin[1] = near_pt[2];
+    origin[2] = near_pt[1];
+
+    float d[3] = { far_pt[0] - near_pt[0], far_pt[2] - near_pt[2], far_pt[1] - near_pt[1] };
+    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len < 1e-9f) 
+        len = 1e-9f;
+
+    dir[0] = d[0] / len;
+    dir[1] = d[1] / len;
+    dir[2] = d[2] / len;
 }
 
 void camera_view_ground_bounds(const CameraView* v, float* min_x, float* min_y,
@@ -132,10 +164,14 @@ void camera_view_ground_bounds(const CameraView* v, float* min_x, float* min_y,
             wx = far_pt[0];
             wy = far_pt[2];
         }
-        if (wx < *min_x) *min_x = wx;
-        if (wx > *max_x) *max_x = wx;
-        if (wy < *min_y) *min_y = wy;
-        if (wy > *max_y) *max_y = wy;
+        if (wx < *min_x) 
+            *min_x = wx;
+        if (wx > *max_x) 
+            *max_x = wx;
+        if (wy < *min_y) 
+            *min_y = wy;
+        if (wy > *max_y) 
+            *max_y = wy;
     }
 }
 
@@ -146,8 +182,10 @@ float camera_view_pixels_per_unit(const CameraView* v, float wx, float wy, float
     float ry = v->view[8];
 
     float ax, ay, bx, by, depth;
-    if (!camera_view_project(v, wx, wy, height, &ax, &ay, &depth)) return 0.0f;
-    if (!camera_view_project(v, wx + rx, wy + ry, height + rh, &bx, &by, &depth)) return 0.0f;
+    if (!camera_view_project(v, wx, wy, height, &ax, &ay, &depth)) 
+        return 0.0f;
+    if (!camera_view_project(v, wx + rx, wy + ry, height + rh, &bx, &by, &depth)) 
+        return 0.0f;
     return sqrtf((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
 }
 
@@ -159,13 +197,38 @@ void camera_math_rotate_input(float yaw, float ix, float iy, float* wx, float* w
     *wy = -ix * s + iy * c;
 }
 
-float camera_math_floor_distance(float pitch, float target_h, float distance, float min_eye_h) {
+float camera_math_floor_distance(float pitch, float target_h, float distance, float min_eye_h,
+                                 float floor_z) {
     float drop = -sinf(pitch);                 /* eye height lost per unit of distance */
-    if (drop <= 1e-6f) return distance;        /* level or above: never reaches the floor */
-    float room = target_h - min_eye_h;
-    if (room <= 0.0f) return 0.0f;
+    if (drop <= 1e-6f) 
+        return distance;        /* level or above: never reaches the floor */
+
+    float room = target_h - (floor_z + min_eye_h);
+    if (room <= 0.0f) 
+        return 0.0f;
+    
     float limit = room / drop;
     return distance < limit ? distance : limit;
+}
+
+float camera_math_clear_distance(float target_x, float target_y, float target_h,
+                                 float yaw, float pitch, float distance,
+                                 float step, float margin, CameraHeightFn height_at,
+                                 camera_open_fn open_at, void* ctx) {
+    if (!height_at || distance <= step || step <= 0.0f) return distance;
+
+    const float dx = sinf(yaw) * cosf(pitch);
+    const float dy = cosf(yaw) * cosf(pitch);
+    const float dh = sinf(pitch);
+    for (float t = step; t <= distance; t += step) {
+        float h = target_h + t * dh;
+		float x = target_x + t * dx, y = target_y + t * dy;
+		if(height_at(ctx, x, y) > h && !(open_at && open_at(ctx, x, y, h))) {
+            float clear = t - step - margin;
+            return clear > 0.0f ? clear : 0.0f;
+        }
+    }
+    return distance;
 }
 
 float camera_math_distance_for_zoom(float zoom, int viewport_h, float fovy) {

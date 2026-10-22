@@ -33,7 +33,7 @@
 #include "shop.h"
 #include "shop_session.h"
 #include "item_instance.h"
-#include "items_database.h"
+#include "item_registry.h"
 #include "npc_world.h"
 #include "player_data.h"
 #include "world_regions.h"
@@ -62,7 +62,7 @@ static int g_failures = 0;
 
 /* --- The world the trading handlers run against -------------------------
  *
- * shop.c, items_database.c, npc_world.c and player_data.c are stubbed rather
+ * shop.c, item_registry.c, npc_world.c and player_data.c are stubbed rather
  * than linked. What is under test is what shop_trade.c does to a player's coin
  * and bag under contention, and every one of those modules is either a lookup
  * table or has a sanitizer suite of its own.
@@ -128,7 +128,15 @@ void player_release(ActivePlayer* p) {
 /** Packets the handlers tried to send, counted rather than delivered. */
 static _Atomic int g_sends = 0;
 
-ssize_t server_send(int fd, void* buf, size_t len) {
+// A purchase or sale tells the quest system; nothing here listens.
+void quest_on_item_bought(uint32_t character_id, int client_fd, uint32_t item_id) {
+    (void)character_id; (void)client_fd; (void)item_id;
+}
+void quest_on_item_sold(uint32_t character_id, int client_fd, uint32_t item_id) {
+    (void)character_id; (void)client_fd; (void)item_id;
+}
+
+ssize_t outbox_send(int fd, void* buf, size_t len) {
     (void)fd; (void)buf;
     atomic_fetch_add(&g_sends, 1);
     return (ssize_t)len;
@@ -144,8 +152,13 @@ void player_send_slot_updates(int client_fd, uint32_t character_id,
  * "no live merchant to re-check" case, so these are never reached -- they exist
  * because shop_trade.c references them. */
 NPCWorld g_npc_world;
+static NPCEntity g_stub_npc;
+static uint32_t  g_stub_npc_id = 0;   // 0: no live merchant
 NPCEntity* npc_world_acquire(NPCWorld* w, uint32_t npc_id) {
-    (void)w; (void)npc_id; return NULL;
+    (void)w;
+    if(g_stub_npc_id != 0 && npc_id == g_stub_npc_id)
+        return &g_stub_npc;
+    return NULL;
 }
 void npc_world_release(NPCWorld* w, NPCEntity* n) { (void)w; (void)n; }
 
@@ -399,6 +412,42 @@ int main(void) {
               "just outside it is not");
         CHECK(dist(50000.0f, 50000.0f, s.npc_x, s.npc_y) > SHOP_INTERACT_RANGE,
               "and the far side of the map certainly is not");
+    }
+
+    printf("\nTEST 5b: a merchant out of vertical reach refuses the trade\n");
+    {
+        reset_traders(1000);
+        open_shop_for_everyone();
+        g_stub_npc_id = 500;
+        memset(&g_stub_npc, 0, sizeof(g_stub_npc));
+        g_stub_npc.id       = 500;
+        g_stub_npc.is_alive = 1;
+        g_stub_npc.pos_z    = 100.0f;
+        shop_session_open(trader_cid(0), TRADE_SHOP_ID, 500, 0.0f, 0.0f);
+
+        ShopBuyPacket req;
+        memset(&req, 0, sizeof(req));
+        req.header.type         = PACKET_SHOP_BUY;
+        req.header.player_id    = htonl(trader_cid(0));
+        req.header.payload_size = htons(sizeof(req) - sizeof(PacketHeader));
+        req.shop_id             = htonl(TRADE_SHOP_ID);
+        req.item_id             = htonl(TRADE_ITEM_ID);
+
+        shop_handle_buy(trader_cid(0), trader_fd(0), (uint8_t*)&req,
+                        (int)sizeof(req));
+        CHECK(traders_hold(TRADE_ITEM_ID) == 0,
+              "100 units above, at zero horizontal distance, nothing is sold");
+        ShopSession s;
+        CHECK(!shop_session_snapshot(trader_cid(0), &s),
+              "and the shop is closed on them");
+
+        g_stub_npc.pos_z = 24.0f;
+        shop_session_open(trader_cid(0), TRADE_SHOP_ID, 500, 0.0f, 0.0f);
+        shop_handle_buy(trader_cid(0), trader_fd(0), (uint8_t*)&req,
+                        (int)sizeof(req));
+        CHECK(traders_hold(TRADE_ITEM_ID) == 1,
+              "24 units above is within reach and the trade goes through");
+        g_stub_npc_id = 0;
     }
 
     printf("\nTEST 6: an idle shop times out\n");

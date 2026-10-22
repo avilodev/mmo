@@ -6,6 +6,7 @@
 #include "ability_bar.h"
 #include "net_internal.h"
 #include "network/net_tls.h"
+#include "network/net_ping_watch.h"
 #include "network.h"
 #include "game_types.h"
 #include "combat_system.h"
@@ -26,8 +27,11 @@
 NetContext g_net;
 
 // Ping tracking
-#define PING_INTERVAL    10.0
-#define PING_MAX_MISSED  3      // Disconnect after 3 unanswered pings (~30s)
+#define PING_INTERVAL    2.0
+#define PING_MAX_MISSED  15     // Disconnect after 15 unanswered pings (~30s)
+
+// A /ping within this long of a ping still out waits for that one
+#define PING_REPORT_REUSE_SECONDS 1.0
 
 // External game state for combat events
 extern GameState* g_current_game;
@@ -130,11 +134,7 @@ static void process_packet(const char* data, int length) {
         }
     }
 
-    if (net_dispatch_world(type, data, length))     return;
-    if (net_dispatch_combat(type, data, length))    return;
-    if (net_dispatch_session(type, data, length))   return;
-    if (net_dispatch_inventory(type, data, length)) return;
-    if (net_dispatch_friends(type, data, length))   return;
+    if (net_dispatch_packet(type, data, length)) return;
 
     NET_WARN("[NET] Unknown packet type: %d (0x%02X)\n", type, type);
 }
@@ -173,6 +173,7 @@ void network_cleanup(void) {
      * is the process going away, not one connection ending. */
     net_tls_shutdown();
     net_send_queue_reset();
+    net_ping_watch_disarm();
 
     if (g_net.socket != INVALID_SOCKET) {
         closesocket(g_net.socket);
@@ -205,13 +206,14 @@ void network_disconnect(void) {
         }
         /* After the logout, so it goes out encrypted on a realm link, and
          * before the close, so the session never outlives its descriptor. */
+        net_ping_watch_disarm();
         net_tls_close();
         net_send_queue_reset();
         closesocket(g_net.socket);
         g_net.socket = INVALID_SOCKET;
     }
     g_net.connected = FALSE;
-    g_net.pending_pings = 0;
+    net_ping_reset();
     g_net.recv_len = 0;
     g_net.character_id = 0;
     g_net.last_facing_angle = 0.0f;
@@ -226,6 +228,8 @@ void network_disconnect(void) {
     g_net.world_connect_ack.ready = FALSE;
     g_net.realm_connect_ack.ready = FALSE;
     g_net.correction.ready = FALSE;
+	g_net.weather_event.ready = FALSE;
+	g_net.correction_echo = 0;
     LeaveCriticalSection(&g_net.response_lock);
 }
 
@@ -445,6 +449,7 @@ int net_recv(void* buf, int len) {
  */
 static void drop_link(const char* why) {
     NET_WARN("[NET] %s\n", why);
+    net_ping_watch_disarm();
     net_tls_close();
     net_send_queue_reset();
     if (g_net.socket != INVALID_SOCKET) {
@@ -462,6 +467,30 @@ static void drop_link(const char* why) {
  */
 void network_update(void) {
     if (g_net.socket == INVALID_SOCKET || !g_net.connected) return;
+
+	// TEMPORARY DIAGNOSTIC: how steadily the client's frames run
+	{
+		static double last_frame, window_start, slowest;
+		static int frames, over_50ms, over_100ms;
+		double at = net_now();
+		double gap = last_frame > 0.0 ? at - last_frame : 0.0;
+
+		last_frame = at;
+		frames++;
+		if(gap > slowest)
+			slowest = gap;
+		if(gap > 0.1)
+			over_100ms++;
+		else if(gap > 0.05)
+			over_50ms++;
+		if(at - window_start >= 1.0) {
+			CLOG_INFO("[DIAG] me=%u frames: %d in %.2fs, >50ms %d, >100ms %d, slowest %.0fms",
+			          g_net.character_id, frames, at - window_start, over_50ms, over_100ms, slowest * 1000.0);
+			window_start = at;
+			frames = over_50ms = over_100ms = 0;
+			slowest = 0.0;
+		}
+	}
 
     /* Anything the link could not take last frame goes out before we read: a
      * queued request that never leaves is a character screen that never fills
@@ -497,6 +526,7 @@ void network_update(void) {
         int bytes = net_recv(g_net.recv_buf + g_net.recv_len, space);
 
         if (bytes > 0) {
+			g_net.last_recv_at = net_now();
             g_net.recv_len += bytes;
             NET_LOG("[NET] Received %d bytes, buffer now has %d bytes\n", bytes, g_net.recv_len);
         } else if (bytes == 0) {
@@ -548,6 +578,7 @@ void network_update(void) {
             NET_WARN("[NET] ❌ Packet type %d (0x%02X) claims %d bytes — exceeds buffer, disconnecting\n",
                    pkt_type, pkt_type, pkt_size);
             g_net.connected = FALSE;
+            net_ping_watch_disarm();
             closesocket(g_net.socket);
             g_net.socket = INVALID_SOCKET;
             g_net.recv_len = 0;
@@ -596,6 +627,9 @@ void network_update_with_ping(int game_mode) {
 
     if (!g_net.connected) return;
 
+	// No session yet to ping through; the first one goes out once there is
+	if(g_net.handshaking) return;
+
     // Send pings in all connected states
     if (game_mode == GAME_MODE_MAIN_MENU      ||
         game_mode == GAME_MODE_SERVER_LIST     ||
@@ -630,42 +664,107 @@ void network_update_with_ping(int game_mode) {
 
 
 /**
- * Send a packed heartbeat containing the latest measured latency.
+ * Send a numbered ping, carrying the figure shown now for other players to see.
  *
- * The packet is serialized manually because PacketHeader is packed and a containing structure would add padding.
+ * Built as a flat buffer because PacketHeader is packed and a containing
+ * structure would add padding. The echo is the same bytes back, which is how
+ * the answer to this ping is told from the answer to an earlier one.
  */
 void network_send_ping(void) {
-    if (!g_net.connected) return;
+	uint8_t packet[PING_PACKET_MAX];
+	size_t size;
+	int shown;
+	uint16_t reported;
 
-    // flat buffer avoids padding after the packed header
-    uint8_t buf[9]; // sizeof(PacketHeader)=7 + sizeof(uint16_t)=2, no padding
-    PacketHeader* hdr = (PacketHeader*)buf;
-    memset(buf, 0, sizeof(buf));
-    hdr->type         = PACKET_PING;
-    hdr->player_id    = htonl(g_net.account_id);
-    hdr->payload_size = htons(sizeof(uint16_t));
-    uint16_t pm_net   = htons((uint16_t)g_net.ping_ms);
-    memcpy(buf + sizeof(PacketHeader), &pm_net, sizeof(uint16_t));
+	if(!g_net.connected) return;
 
-    /* Counted as outstanding whether or not the transport took it.
-     *
-     * pending_pings used to advance only on a successful send, while the caller
-     * moved last_ping_time regardless -- so a link that had stopped accepting
-     * writes never reached PING_MAX_MISSED, and the one timeout built to catch
-     * exactly that case could not fire. A ping that could not be sent is the
-     * strongest evidence there is that the connection is gone. */
-    g_net.pending_pings++;
-    if (net_send(buf, (int)sizeof(buf)) == (int)sizeof(buf))
-        g_net.ping_send_time = net_now();
+	shown = ping_window_shown(&g_net.ping_samples);
+	reported = shown < 0 ? NET_PING_UNKNOWN : (uint16_t)(shown < NET_PING_UNKNOWN ? shown : NET_PING_UNKNOWN - 1);
+
+	g_net.ping_number++;
+	size = ping_build(packet, g_net.account_id, reported, g_net.ping_number);
+
+	/* Counted as outstanding whether or not the transport took it.
+	 *
+	 * pending_pings used to advance only on a successful send, while the caller
+	 * moved last_ping_time regardless -- so a link that had stopped accepting
+	 * writes never reached PING_MAX_MISSED, and the one timeout built to catch
+	 * exactly that case could not fire. A ping that could not be sent is the
+	 * strongest evidence there is that the connection is gone. */
+	g_net.pending_pings++;
+	g_net.ping_outstanding = TRUE;
+
+	/* The world link is watched for the echo from a thread of its own, started
+	 * before the send so nothing can come back unwatched. The realm link is
+	 * encrypted, so there is nothing to recognise in it; it has the keepalive
+	 * and no figure. */
+	net_ping_watch_disarm();
+	if(!net_tls_active())
+		net_ping_watch_arm(g_net.socket, packet, size);
+
+	g_net.ping_send_time = net_now();
+	if(net_send(packet, (int)size) != (int)size) {
+		g_net.ping_outstanding = FALSE;
+		net_ping_watch_disarm();
+	}
 }
 
 /**
- * Return the most recent round-trip measurement.
+ * Return the ping to show, in milliseconds, or -1 before the first one.
  *
- * @return      Round-trip time in milliseconds.
+ * This is the time one way: half of the trip out and back.
  */
+double network_silence_seconds(void) {
+	if(!g_net.connected || g_net.handshaking || g_net.last_recv_at <= 0.0)
+		return 0.0;
+
+	return net_now() - g_net.last_recv_at;
+}
+
 int network_get_ping_ms(void) {
-    return g_net.ping_ms;
+	return ping_window_shown(&g_net.ping_samples);
+}
+
+/** Return the trip out and back, in seconds, or 0 before the first ping. */
+float network_get_round_trip_seconds(void) {
+	double one_way = ping_window_median(&g_net.ping_samples);
+
+	if(one_way < 0.0) return 0.0f;
+
+	return (float)(one_way * 2.0 / 1000.0);
+}
+
+void network_request_ping_report(void) {
+	g_net.ping_report_wanted = TRUE;
+	g_net.ping_report_ready = FALSE;
+
+	// One already on its way answers just as well
+	if(g_net.ping_outstanding &&
+			net_now() - g_net.ping_send_time < PING_REPORT_REUSE_SECONDS)
+		return;
+
+	network_send_ping();
+	g_net.last_ping_time = net_now();
+}
+
+int network_take_ping_report(int* ping_ms) {
+	if(!g_net.ping_report_ready) return 0;
+
+	g_net.ping_report_ready = FALSE;
+	*ping_ms = ping_window_shown(&g_net.ping_samples);
+
+	return *ping_ms >= 0;
+}
+
+/** Forget the ping figure for a new link and make the first ping due at once. */
+void net_ping_reset(void) {
+	net_ping_watch_disarm();
+	ping_window_reset(&g_net.ping_samples);
+	g_net.pending_pings = 0;
+	g_net.ping_outstanding = FALSE;
+	g_net.ping_report_wanted = FALSE;
+	g_net.ping_report_ready = FALSE;
+	g_net.last_ping_time = net_now() - PING_INTERVAL;
 }
 
 /* --- Realm and world connection handshakes ---------------------------------

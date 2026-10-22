@@ -17,8 +17,9 @@
 struct PlayerQuestSlot {
     uint32_t quest_id;
     uint8_t  is_active;
-    uint8_t  is_complete;   /**< Objectives met; waiting to be handed in. */
-    uint8_t  _pad[2];
+    uint8_t  is_complete;   /**< Final step's objectives met; waiting to be handed in. */
+    uint8_t  step;          /**< Step in progress, from 0; progress[] belongs to it. */
+    uint8_t  _pad;
     int32_t  progress[MAX_QUEST_OBJECTIVES];
 };
 
@@ -78,7 +79,7 @@ typedef struct {
 } QuestCounter;
 
 _Static_assert(sizeof(QuestCounter) == 8,
-               "QuestCounter is written to disk verbatim and must stay 8 bytes");
+               "QuestCounter is read from old quest files verbatim and must stay 8 bytes");
 
 /** Hold one entry per repeatable quest a character has actually turned in.
  *
@@ -102,7 +103,7 @@ typedef struct {
  * is "did this ever happen", and the counters exist only for the handful of
  * quests that repeat. Passing them as one value is what keeps that free to grow -- a save,
  * a load, a snapshot and a release each take a PlayerQuestState, so adding a
- * table is a change inside quest_storage.c and nowhere else.
+ * table is a change inside quest_state.c and nowhere else.
  */
 typedef struct {
     PlayerQuestLog log;
@@ -114,7 +115,27 @@ typedef struct {
 typedef struct {
     float           credit;  /**< Available movement distance in world pixels. */
     struct timespec last_tv; /**< Timestamp used to accrue additional credit. */
+    float           vdrift;  /**< Vertical steps adopted minus real steps elapsed. */
+	float           elapsed;         // seconds the last proposal spent
+	uint32_t        correction_seq;  // the last refused move the client must echo
+	float           stale_time;      // seconds of moves sent before that refusal
 } MoveBudget;
+
+/**
+ * Reset movement credit at the supplied monotonic time.
+ *
+ * @param budget  Movement budget to initialize.
+ * @param now  Monotonic timestamp used for the next accrual interval.
+ */
+static inline void move_budget_reset(MoveBudget* budget,
+                                     const struct timespec* now) {
+    budget->credit  = 0.0f;
+    budget->last_tv = *now;
+    budget->vdrift  = 0.0f;
+	budget->elapsed = 0.0f;
+	budget->correction_seq = 0;
+	budget->stale_time = 0.0f;
+}
 
 /** Hold one active player's server-only mutable state. */
 typedef struct {
@@ -125,8 +146,14 @@ typedef struct {
     /** Fused race/class identifier; indexes the race registry loaded from races.json. */
     uint32_t race_id;
 
+	/** Body and fur colour, packed by appearance_pack; fixed at creation. */
+	uint32_t appearance;
+
     char username[32];
     float pos_x, pos_y;
+    float pos_z;
+    float vel_z;
+    int grounded;
     float vel_x, vel_y;
     int level;
     int health;
@@ -198,6 +225,29 @@ typedef struct {
     uint8_t is_dead;
     double death_time;
 
+    /** The emote the player is in (an EmoteId), its argument, and when it began
+     *  on the monotonic clock. Owned by emote_handler.c; the broadcast carries
+     *  it to everyone in view. EMOTE_NONE (0) is "not emoting". */
+	uint8_t emote;
+	uint8_t emote_arg;
+	double emote_started_at;
+
+	/** The speed the player last reported moving at, and when the last accepted
+	 *  move arrived (monotonic seconds). Owned by movement_system.c; the player
+	 *  broadcast sends it so other clients animate the body without guessing. */
+	float anim_speed;
+	double anim_speed_at;
+	/** The way the player says it faces (0-255 for a full turn), and whether it is
+	 *  playing its idle variation. Both are the owner's word, relayed untouched. */
+	uint8_t heading;
+	uint8_t idle_fidget;
+
+	/** When the player last acted, on the monotonic clock, and the status they
+	 *  chose (SESSION_STATUS_*, Online by default). Owned by status_handler.c;
+	 *  the session list reads them. */
+	double last_activity_at;
+	uint8_t status_choice;
+
 /** Bound concurrent status effects stored for one active player. */
 #define MAX_ACTIVE_EFFECTS 8
     /** Track one active status effect and its remaining timers. */
@@ -216,6 +266,11 @@ typedef struct {
     double last_consumable_time;
     uint32_t party_id;
     uint16_t ping_ms;
+
+	/** When the connection dropped, on the monotonic clock; 0 while connected.
+	 *  A link-dead player keeps its slot and client_fd is -1 until it either
+	 *  reconnects or the grace period ends. Owned by player_session.c. */
+	double linkdead_at;
 
     /** Quests in progress, and every quest ever finished.
      *
@@ -254,6 +309,7 @@ typedef struct {
     uint32_t player_count;
     uint32_t max_players;
     time_t last_heartbeat;
+	int retry_delay;      // seconds from a failed connect to the next; 0 before any failure
 } WorldServer;
 
 #endif

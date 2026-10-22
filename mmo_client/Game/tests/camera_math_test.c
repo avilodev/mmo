@@ -45,6 +45,22 @@ static void build_3d(CameraView* v, float tx, float ty, float yaw_deg, float zoo
                       rad(CAMERA_FOVY_DEG), VW, VH);
 }
 
+typedef struct { float x_from, top; } TestWall;
+
+/** A solid wall `top` tall for every point with x >= x_from. */
+static float wall_height(void* ctx, float wx, float wy) {
+    (void)wy;
+    const TestWall* w = ctx;
+    return wx >= w->x_from ? w->top : 0.0f;
+}
+
+/** Free walkable air: a stair tile out to x = 16, under a ceiling at h = 40. */
+static int stair_air(void* ctx, float wx, float wy, float h) {
+	(void)ctx;
+	(void)wy;
+	return wx < 16.0f && h < 40.0f;
+}
+
 int main(void) {
     printf("=== camera math ===\n");
 
@@ -212,7 +228,7 @@ int main(void) {
                     float fovy = rad(CAMERA_FOVY_DEG);
                     float dist = camera_math_floor_distance(
                         rad(pitches[p]), CAMERA_TARGET_HEIGHT,
-                        camera_math_distance_for_zoom(zooms[z], VH, fovy), CAMERA_MIN_EYE_HEIGHT);
+                        camera_math_distance_for_zoom(zooms[z], VH, fovy), CAMERA_MIN_EYE_HEIGHT, 0.0f);
                     CameraView v;
                     camera_view_build(&v, 700.0f, 900.0f, CAMERA_TARGET_HEIGHT, rad(YAWS_DEG[i]),
                                       rad(pitches[p]), dist, fovy, VW, VH);
@@ -241,14 +257,132 @@ int main(void) {
         float close = camera_math_distance_for_zoom(CAMERA_ZOOM_MAX, VH, rad(CAMERA_FOVY_DEG));
         CHECK(close < 100.0f && wide > 1000.0f, "zoom runs from over the shoulder to far overhead");
         CHECK(CAMERA_PITCH_MIN_DEG < 0.0f, "the camera can tilt below the character, looking up");
-        float slid = camera_math_floor_distance(rad(-30.0f), 24.0f, 500.0f, 4.0f);
+        float slid = camera_math_floor_distance(rad(-30.0f), 24.0f, 500.0f, 4.0f, 0.0f);
         CHECK(fabsf(24.0f - slid * 0.5f - 4.0f) < 0.01f,
               "tilted below, a far camera slides in until it rests on the floor");
-        CHECK(camera_math_floor_distance(rad(-30.0f), 24.0f, 20.0f, 4.0f) == 20.0f,
+        CHECK(camera_math_floor_distance(rad(-30.0f), 24.0f, 20.0f, 4.0f, 0.0f) == 20.0f,
               "a close one already above the floor is left where it is");
-        CHECK(camera_math_floor_distance(rad(40.0f), 24.0f, 900.0f, 4.0f) == 900.0f,
+        CHECK(camera_math_floor_distance(rad(40.0f), 24.0f, 900.0f, 4.0f, 0.0f) == 900.0f,
               "and looking down, distance is never shortened");
+        /* A floor at 100: the target stands 24 above it, and an eye that
+         * would sit at 90 is pulled up to rest 4 above the floor. */
+        float raised = camera_math_floor_distance(rad(-30.0f), 124.0f, 500.0f, 4.0f, 100.0f);
+        CHECK(fabsf(124.0f - raised * 0.5f - 104.0f) < 0.01f,
+              "over a raised floor the eye rests on that floor, not on the ground");
+        CHECK(camera_math_floor_distance(rad(-30.0f), 124.0f, 500.0f, 4.0f, 100.0f) ==
+              camera_math_floor_distance(rad(-30.0f), 24.0f, 500.0f, 4.0f, 0.0f),
+              "the same framing at any height");
     }
+
+    printf("\nTEST 9: the camera stops short of a wall between it and the player\n");
+    {
+        /* A wall 60 units tall along x >= 100; the player stands at x = 0 and the
+         * camera orbits to the east (yaw 90 degrees puts the eye at +x). */
+        TestWall wall = { 100.0f, 60.0f };
+        const float yaw_east = rad(90.0f);
+        const float low = rad(10.0f);
+
+        float stop = camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, low, 600.0f,
+		                                        4.0f, 10.0f, wall_height, NULL, &wall);
+        float hit = wall.x_from / cosf(low);   /* eye distance at which it reaches the wall */
+        CHECK(stop < hit - 10.0f && stop >= hit - 14.0f - 0.01f,
+              "the eye halts a margin before the wall");
+
+        CHECK(camera_math_clear_distance(0.0f, 0.0f, 24.0f, rad(270.0f), low, 600.0f,
+		                                 4.0f, 10.0f, wall_height, NULL, &wall) == 600.0f,
+              "looking away from the wall, nothing is in the way");
+
+        wall.x_from = 20.0f;
+        CHECK(camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, rad(85.0f), 600.0f,
+		                                 4.0f, 10.0f, wall_height, NULL, &wall) == 600.0f,
+              "looking steeply down, the eye rises over a wall rather than sitting behind it");
+        CHECK(camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, low, 600.0f,
+		                                 4.0f, 10.0f, NULL, NULL, NULL) == 600.0f,
+              "without a height source the distance is untouched");
+
+        wall.x_from = 3.0f;
+        CHECK(camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, low, 600.0f,
+		                                 4.0f, 10.0f, wall_height, NULL, &wall) == 0.0f,
+              "a wall against the player shortens it to nothing, never below");
+
+        wall.x_from = 100.0f;
+        wall.top = 10.0f;   /* a fence under the player's chest (24 units) */
+        CHECK(camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, low, 600.0f,
+		                                 4.0f, 10.0f, wall_height, NULL, &wall) == 600.0f,
+              "a low fence does not pull the camera in");
+
+		// A stair tile beside a tall wall: the air above its floor is not wall
+		wall.x_from = 3.0f;
+		wall.top = 300.0f;
+		float into = camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, low, 600.0f,
+		                                        4.0f, 10.0f, wall_height, stair_air, &wall);
+		float reach = 16.0f / cosf(low);       // eye distance at the stair tile's edge
+		CHECK(into > 3.0f / cosf(low) && into < reach - 10.0f && into >= reach - 14.0f - 0.01f,
+		      "free walkable air is not a wall: the eye stops at the real wall past the tile");
+		CHECK(camera_math_clear_distance(0.0f, 0.0f, 24.0f, yaw_east, rad(60.0f), 600.0f,
+		                                 4.0f, 10.0f, wall_height, stair_air, &wall) < 600.0f,
+		      "above the ceiling of that air the solid counts again");
+	}
+
+    printf("\nTEST 10: the screen ray runs from the eye through the picked point\n");
+    {
+        int through = 1, unit = 1, agrees = 1;
+        const float fovy = rad(CAMERA_FOVY_DEG);
+        for (int i = 0; i < YAW_COUNT; i++) {
+            CameraView v;
+            camera_view_build(&v, 700.0f, 900.0f, CAMERA_TARGET_HEIGHT, rad(YAWS_DEG[i]),
+                              rad(CAMERA_PITCH_DEFAULT_DEG), 400.0f, fovy, VW, VH);
+            float o[3], d[3];
+            camera_view_screen_ray(&v, VW / 2.0f, VH / 2.0f, o, d);
+
+            /* world coordinates (x, y, z up): the look-at point is (700, 900, 24) */
+            float to[3] = { 700.0f - o[0], 900.0f - o[1], CAMERA_TARGET_HEIGHT - o[2] };
+            float along = to[0] * d[0] + to[1] * d[1] + to[2] * d[2];
+            float miss[3] = { to[0] - along * d[0], to[1] - along * d[1], to[2] - along * d[2] };
+            if (sqrtf(miss[0] * miss[0] + miss[1] * miss[1] + miss[2] * miss[2]) > 0.5f) through = 0;
+            if (fabsf(sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - 1.0f) > 1e-3f) unit = 0;
+
+            /* the ground the old pick found is where the ray crosses z = 0 */
+            float gx, gy;
+            if (camera_view_pick_ground(&v, 300.0f, 200.0f, &gx, &gy)) {
+                float ro[3], rd[3];
+                camera_view_screen_ray(&v, 300.0f, 200.0f, ro, rd);
+                float t = -ro[2] / rd[2];
+                if (fabsf(ro[0] + t * rd[0] - gx) > 0.5f || fabsf(ro[1] + t * rd[1] - gy) > 0.5f)
+                    agrees = 0;
+            }
+        }
+        CHECK(through, "the centre ray passes through the look-at point at every yaw");
+        CHECK(unit, "the ray direction is a unit vector");
+        CHECK(agrees, "the ray meets the ground where camera_view_pick_ground does");
+    }
+
+	printf("\nTEST 11: the eye sits the orbit distance from the target, above it\n");
+	{
+		int near = 1, above = 1;
+
+		for(int i = 0; i < YAW_COUNT; i++) {
+			CameraView v;
+			float eye[3];
+			float dx;
+			float dy;
+			float dz;
+
+			camera_view_build(&v, 700.0f, 900.0f, CAMERA_TARGET_HEIGHT, rad(YAWS_DEG[i]),
+			                  rad(CAMERA_PITCH_DEFAULT_DEG), 400.0f, rad(CAMERA_FOVY_DEG), VW, VH);
+			camera_view_eye(&v, eye);
+			// GL space: (x, up, z) where the world point (700, 900) is x = 700, z = 900
+			dx = eye[0] - 700.0f;
+			dy = eye[1] - CAMERA_TARGET_HEIGHT;
+			dz = eye[2] - 900.0f;
+			if(fabsf(sqrtf(dx * dx + dy * dy + dz * dz) - 400.0f) > 2.0f)
+				near = 0;
+			if(dy < 400.0f * sinf(rad(CAMERA_PITCH_DEFAULT_DEG)) - 2.0f)
+				above = 0;
+		}
+		CHECK(near, "the eye is 400 units from the target at every yaw");
+		CHECK(above, "the eye is as far above the target as the pitch says");
+	}
 
     printf("\n");
     if (g_failures) {

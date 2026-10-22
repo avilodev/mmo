@@ -27,4 +27,16 @@ void texture_atlas_uv(int cols, int rows, int tile_w, int tile_h, int pad, int i
  *  one pixel wide, so no level samples a neighbouring tile. */
 int texture_atlas_mip_levels(int pad);
 
+/** Give every fully transparent pixel the colour of the opaque pixels around it.
+ *
+ * Smoothing a small image with transparent black beside its edges averages that
+ * black into them, which darkens and fades thin parts such as sun rays. Giving
+ * the transparent pixels their neighbours' colour first (alpha is not changed,
+ * so nothing new shows) keeps the edge colours true when the image is mipmapped.
+ *
+ * @param rgba    Tightly packed 8-bit RGBA pixels, changed in place.
+ * @param passes  How many pixels out from the opaque ones to reach.
+ */
+void texture_bleed_color(unsigned char* rgba, int w, int h, int passes);
+
 #endif /* TEXTURE_ATLAS_H */

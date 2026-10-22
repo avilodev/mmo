@@ -32,6 +32,9 @@ void game_settings_save(const GameSettings* s, const char* path);
 void game_settings_load(GameSettings* s, const char* path);
 void game_settings_apply(const GameSettings* s);
 
+// F11: into fullscreen, or back to the window mode it came from
+void game_toggle_fullscreen(GameSettings* s);
+
 void network_send_ability_cast(uint16_t ability_id, float aim_x, float aim_y, uint32_t target_id);
 
 void network_send_ability_cancel(void);

@@ -30,7 +30,7 @@ int character_database_init(const char* c) { (void)c; return 1; }
 /** Stub database shutdown. */
 void character_database_close(void) {}
 /** Stub successful character persistence. */
-int character_update_full_data(const CharacterInfo* d) { (void)d; return 1; }
+int character_update_full_data(const character_record* d) { (void)d; return 1; }
 
 /** Stub loading empty inventory and equipment arrays. */
 int character_items_load(uint32_t c, ItemInstance* inv, int n_inv,
@@ -45,22 +45,37 @@ int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
                          const ItemInstance* eq, int n_eq) {
     (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
+/** Stub the old quest folder setting. */
+void quest_legacy_set_dir(const char* dir) {
+	(void)dir;
+}
+
+/** Stub an empty persisted instance-id range. */
+int character_items_max_instance_id_checked(uint64_t* out_highest) {
+	*out_highest = 0;
+	return 1;
+}
+
 /** Stub the whole-character save that commits scalars, currency and items together. */
-int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
-                       const ItemInstance* eq, int n_eq) {
+int character_save_all(const character_record* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq,
+                       const PlayerQuestState* quests) {
+	(void)quests;
     (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
 /** Stub recording that a character is live in a world. */
 int world_session_mark(uint32_t character_id, uint32_t world_id) {
     (void)character_id; (void)world_id; return 1;
 }
+/** Stub renewing an account's login session. */
+int session_touch(uint32_t account_id) { (void)account_id; return 1; }
 /** Stub clearing that record. */
 void world_session_clear(uint32_t character_id) { (void)character_id; }
 /** Stub an empty persisted instance-id range. */
 uint64_t character_items_max_instance_id(void) { return 0; }
 
 /** Simulate a delayed successful character load. */
-int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
+int character_get_full_data(uint32_t character_id, character_record* out) {
     atomic_fetch_add(&g_loads_started, 1);
     usleep(LOAD_DELAY_US);                 // the slow part we must not hold locks across
     memset(out, 0, sizeof(*out));
@@ -89,10 +104,6 @@ const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 int  quest_player_load(uint32_t c, PlayerQuestState* s) {
     (void)c; (void)s; return 0;
 }
-/** Stub successful quest persistence. */
-int  quest_player_save(uint32_t c, const PlayerQuestState* s) {
-    (void)c; (void)s; return 1;
-}
 /** Stub quest storage teardown; these tests never allocate any. */
 void quest_state_release(PlayerQuestState* s) { (void)s; }
 /** Stub the snapshot's deep copy; these tests hold no quest state to copy. */
@@ -102,7 +113,7 @@ int  quest_state_copy(PlayerQuestState* out, const PlayerQuestState* src) {
 /** Stub the completion set; these tests never record one. */
 int  quest_history_add(QuestHistory* h, uint32_t id) { (void)h; (void)id; return 1; }
 /** Stub successful packet transmission. */
-ssize_t server_send(int fd, void* d, size_t n) { (void)fd; (void)d; (void)n; return (ssize_t)n; }
+ssize_t outbox_send(int fd, void* d, size_t n) { (void)fd; (void)d; (void)n; return (ssize_t)n; }
 
 /** Carry one concurrent login request and its result. */
 typedef struct { uint32_t cid; int fd; int result; } LoginArg;

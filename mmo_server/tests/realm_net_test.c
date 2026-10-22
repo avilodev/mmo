@@ -68,8 +68,8 @@ static struct { uint8_t type; uint32_t account_id; ssize_t bytes; } g_seen[SEEN_
  * The real one reads $MMO_WORLD_POOL_SIZE; this test opens no database, and
  * what it cares about is that realm_net_start() asks for a plausible worker
  * count, not which number it gets. */
-int world_database_manager_conn_per_world(void);
-int world_database_manager_conn_per_world(void) { return 4; }
+int realm_db_worker_count(void);
+int realm_db_worker_count(void) { return 4; }
 
 int session_validate(uint32_t account_id, const char* session_key) {
     (void)account_id;
@@ -80,8 +80,8 @@ int session_validate(uint32_t account_id, const char* session_key) {
 /* The realm binds a session to the address it was issued to. The fixture drives
  * loopback sockets, so the binding is not what this suite is about; it is
  * covered by session_binding_test. */
-int session_validate_from(uint32_t account_id, const char* session_key,
-                          const char* peer_ip) {
+int realm_session_valid(uint32_t account_id, const char* session_key,
+                        const char* peer_ip) {
     (void)peer_ip;
     return session_validate(account_id, session_key);
 }

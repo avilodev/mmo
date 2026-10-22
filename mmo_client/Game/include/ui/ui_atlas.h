@@ -18,18 +18,4 @@ typedef struct {
     int          count;
 } UIAtlas;
 
-int ui_atlas_load(UIAtlas* atlas, const char* texture_path, const char* atlas_path);
-
-void ui_atlas_unload(UIAtlas* atlas);
-
-const AtlasSprite* ui_atlas_get(const UIAtlas* atlas, const char* name);
-
-/** Draw a named sprite, using natural dimensions when width or height is zero. */
-void ui_atlas_draw(const UIAtlas* atlas, const char* name,
-                   float x, float y, float w, float h);
-
-void ui_atlas_draw_tinted(const UIAtlas* atlas, const char* name,
-                          float x, float y, float w, float h,
-                          float r, float g, float b, float a);
-
 #endif // UI_ATLAS_H

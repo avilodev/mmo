@@ -25,6 +25,7 @@ static float g_size[MAX_NPC_TYPE_ID];
 static unsigned char g_has_style[MAX_NPC_TYPE_ID];
 static float g_outline[MAX_NPC_TYPE_ID][3];
 static unsigned char g_has_outline[MAX_NPC_TYPE_ID];
+static unsigned char g_roles[MAX_NPC_TYPE_ID];
 
 static int   g_loaded = 0;
 
@@ -102,6 +103,34 @@ static int read_float_array(const char* p, float* out, int n) {
     return 1;
 }
 
+/** Read a list of role names, e.g. "roles": ["merchant"], into a role mask.
+ *
+ * @param p  Position expected to point at the opening bracket.
+ * @return   The roles named; a name this client does not know is ignored.
+ */
+static unsigned char read_roles(const char* p) {
+	unsigned char roles = 0;
+	char name[24];
+
+	p = skip_ws(p);
+	if(*p != '[')
+		return 0;
+	p++;
+	while(*p && *p != ']') {
+		p = skip_ws(p);
+		if(*p == '"') {
+			read_str(p, name, sizeof(name));
+			if(strcmp(name, "merchant") == 0)
+				roles |= NPC_ROLE_MERCHANT;
+			p = skip_str(p);
+		} else if(*p && *p != ']') {
+			p++;
+		}
+	}
+
+	return roles;
+}
+
 /**
  * Advance past one JSON scalar or balanced container value.
  *
@@ -140,6 +169,7 @@ void npc_types_init(const char* path) {
     memset(g_has_style, 0, sizeof(g_has_style));
     memset(g_outline, 0, sizeof(g_outline));
     memset(g_has_outline, 0, sizeof(g_has_outline));
+    memset(g_roles, 0, sizeof(g_roles));
     g_loaded = 1;
 
     FILE* f = fopen(path, "r");
@@ -200,6 +230,7 @@ void npc_types_init(const char* path) {
         float size = 1.0f;
         int   have_color = 0;
         int   have_outline = 0;
+        unsigned char roles = 0;
 
         while (*p && *p != '}') {
             p = skip_ws(p);
@@ -225,6 +256,9 @@ void npc_types_init(const char* path) {
             } else if (strcmp(key, "outline") == 0) {
                 have_outline = read_float_array(p, outline, 3);
                 p = skip_value(p);
+            } else if (strcmp(key, "roles") == 0) {
+                roles = read_roles(p);
+                p = skip_value(p);
             } else if (strcmp(key, "size_scale") == 0) {
                 size = read_float(p);
                 p = skip_value(p);
@@ -240,6 +274,7 @@ void npc_types_init(const char* path) {
         if (id >= 0 && id < MAX_NPC_TYPE_ID && name[0] != '\0') {
             memcpy(g_names[id], name, 31);
             g_names[id][31] = '\0';
+            g_roles[id] = roles;
             if (have_color) {
                 g_color[id][0] = color[0];
                 g_color[id][1] = color[1];
@@ -271,6 +306,7 @@ void npc_types_cleanup(void) {
     memset(g_has_style, 0, sizeof(g_has_style));
     memset(g_outline, 0, sizeof(g_outline));
     memset(g_has_outline, 0, sizeof(g_has_outline));
+    memset(g_roles, 0, sizeof(g_roles));
     g_loaded = 0;
 }
 
@@ -293,6 +329,10 @@ int npc_type_get_outline(uint8_t type_id, float* out_rgb) {
         out_rgb[2] = g_outline[type_id][2];
     }
     return 1;
+}
+
+int npc_type_has_role(uint8_t type_id, npc_role role) {
+	return g_loaded && (g_roles[type_id] & (unsigned char)role) != 0;
 }
 
 /**

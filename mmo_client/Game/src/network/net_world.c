@@ -15,10 +15,126 @@
 #include "npc_types.h"
 #include "audio/audio.h"
 #include "ui/quest_log.h"
+#include "states/chat_log.h"
+#include "states/join_data.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
 #include <math.h>
+
+// Join packets that arrive before the gameplay state exists, held in order.
+//
+// The server sends them as soon as the world connection opens, which is during
+// character select: one millisecond before gameplay is entered in the logs.
+// Dropping them left the quest log, the marks and the available list empty,
+// and the stats and ability bars with them.
+#define EARLY_QUEST_CAP (256 * 1024)
+
+static unsigned char* g_early_quest;
+static size_t         g_early_quest_len;
+static size_t         g_early_quest_cap;
+
+// Whether a packet is one the server pushes at join rather than on request.
+static int is_join_push_packet(uint8_t type) {
+	switch(type) {
+	case PACKET_PLAYER_STATS:
+	case PACKET_ABILITY_DATA:
+	// The first nearby lists: an empty one is sent once, so losing it would be for good
+	case PACKET_NPC_POSITIONS:
+	case PACKET_PLAYER_POSITIONS:
+	case PACKET_QUEST_ACCEPT:
+	case PACKET_QUEST_PROGRESS:
+	case PACKET_NPC_QUEST_MARKS:
+	case PACKET_AVAILABLE_QUESTS_RESET:
+	case PACKET_AVAILABLE_QUEST:
+	case PACKET_QUEST_HISTORY:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+// Whether the gameplay state exists to receive quest packets.
+static int playing_is_ready(void) {
+	return g_current_game && g_current_game->playing;
+}
+
+// Keep one packet, length first, for replay once gameplay starts.
+static void stash_early_packet(const char* data, int length) {
+	size_t need = g_early_quest_len + sizeof(int) + (size_t)length;
+
+	if(length <= 0 || need > EARLY_QUEST_CAP) {
+		CLOG_WARN("[NET] Early join packet dropped: %d bytes, %d already held", length,
+		          (int)g_early_quest_len);
+		return;
+	}
+	if(need > g_early_quest_cap) {
+		size_t grown = g_early_quest_cap ? g_early_quest_cap * 2 : 4096;
+		unsigned char* bigger;
+
+		while(grown < need)
+			grown *= 2;
+		bigger = realloc(g_early_quest, grown);
+		if(!bigger) {
+			CLOG_WARN("[NET] Early join packet dropped: out of memory");
+			return;
+		}
+		g_early_quest = bigger;
+		g_early_quest_cap = grown;
+	}
+	memcpy(g_early_quest + g_early_quest_len, &length, sizeof(int));
+	memcpy(g_early_quest + g_early_quest_len + sizeof(int), data, (size_t)length);
+	g_early_quest_len = need;
+}
+
+// Show the popup a finished quest or step earns, and refresh balances and XP.
+static void show_quest_reward(uint32_t xp, uint32_t coin, uint8_t currency_id) {
+	PlayingState* ps = g_current_game->playing;
+
+	// reuse the kill-reward popup
+	for(int i = 0; i < MAX_REWARD_POPUPS; i++) {
+		if(ps->reward_notifications[i].active)
+			continue;
+		ps->reward_notifications[i].xp_gained = xp;
+		ps->reward_notifications[i].currency_gained = coin;
+		ps->reward_notifications[i].currency_id = currency_id;
+		ps->reward_notifications[i].age = 0.0f;
+		ps->reward_notifications[i].active = 1;
+		break;
+	}
+	network_request_player_data_refresh();
+}
+
+void net_world_forget_early_quest(void) {
+	g_early_quest_len = 0;
+}
+
+void network_replay_early_quest_packets(void) {
+	unsigned char* held = g_early_quest;
+	size_t held_len = g_early_quest_len;
+	size_t at = 0;
+	int replayed = 0;
+
+	// Taken first: a replayed packet must never be stashed again.
+	g_early_quest = NULL;
+	g_early_quest_len = 0;
+	g_early_quest_cap = 0;
+	while(held && at + sizeof(int) <= held_len) {
+		int length;
+
+		memcpy(&length, held + at, sizeof(int));
+		at += sizeof(int);
+		if(length <= 0 || at + (size_t)length > held_len)
+			break;
+		net_dispatch_packet(held[at], (const char*)(held + at), length);
+		at += (size_t)length;
+		replayed++;
+	}
+	free(held);
+	if(replayed > 0)
+		CLOG_INFO("[NET] Replayed %d join packet(s) that arrived before gameplay", replayed);
+}
 
 /**
  * Dispatch one world packet.
@@ -31,18 +147,97 @@
 int net_dispatch_world(uint8_t type, const char* data, int length) {
     (void)data; (void)length;
 
+	if(is_join_push_packet(type) && !playing_is_ready()) {
+		stash_early_packet(data, length);
+		return 1;
+	}
+
     switch (type) {
         case PACKET_PLAYER_MOVE_ACK:
             if (length >= (int)sizeof(PlayerMoveAckPacket)) {
                 PlayerMoveAckPacket* ack = (PlayerMoveAckPacket*)data;
                 EnterCriticalSection(&g_net.response_lock);
-                g_net.correction.x        = ack->pos_x;
-                g_net.correction.y        = ack->pos_y;
-                g_net.correction.sequence = ntohl(ack->sequence);
-                g_net.correction.ready    = TRUE;
+				g_net.correction.data.x = ack->pos_x;
+				g_net.correction.data.y = ack->pos_y;
+				g_net.correction.data.z = ack->pos_z;
+				g_net.correction.data.vz = ack->vel_z;
+				g_net.correction.data.grounded = ack->grounded != 0;
+				g_net.correction.data.sequence = ntohl(ack->sequence);
+				g_net.correction.ready = TRUE;
                 LeaveCriticalSection(&g_net.response_lock);
             }
             break;
+
+		case PACKET_EMOTE_STATE:
+			if(length >= (int)sizeof(EmoteStatePacket)) {
+				const EmoteStatePacket* pkt = (const EmoteStatePacket*)data;
+
+				EnterCriticalSection(&g_net.response_lock);
+				int slot;
+				if(g_net.emote_events.count == 8) {   // full: drop the oldest
+					g_net.emote_events.head = (g_net.emote_events.head + 1) % 8;
+					g_net.emote_events.count--;
+				}
+				slot = (g_net.emote_events.head + g_net.emote_events.count) % 8;
+				g_net.emote_events.entries[slot][0] = pkt->emote;
+				g_net.emote_events.entries[slot][1] = pkt->arg;
+				g_net.emote_events.entries[slot][2] = pkt->result;
+				g_net.emote_events.entries[slot][3] = pkt->requested;
+				g_net.emote_events.count++;
+				LeaveCriticalSection(&g_net.response_lock);
+				NET_LOG("[NET] Emote state: emote %u arg %u result %u\n",
+				        pkt->emote, pkt->arg, pkt->result);
+			}
+			break;
+
+		case PACKET_STATUS_STATE:
+			if(length >= (int)sizeof(StatusStatePacket)) {
+				const StatusStatePacket* pkt = (const StatusStatePacket*)data;
+
+				EnterCriticalSection(&g_net.response_lock);
+				g_net.status_event.status = pkt->status;
+				g_net.status_event.ready = TRUE;
+				LeaveCriticalSection(&g_net.response_lock);
+				NET_LOG("[NET] Status state: %u\n", pkt->status);
+			}
+			break;
+
+		case PACKET_WORLD_TIME:
+			if(length >= (int)sizeof(WorldTimePacket)) {
+				const WorldTimePacket* pkt = (const WorldTimePacket*)data;
+				uint32_t time_of_day_ms = ntohl(pkt->time_of_day_ms);
+				uint32_t day_length_ms = ntohl(pkt->day_length_ms);
+
+				EnterCriticalSection(&g_net.response_lock);
+				g_net.world_time_event.time_of_day_ms = time_of_day_ms;
+				g_net.world_time_event.day_length_ms = day_length_ms;
+				g_net.world_time_event.ready = TRUE;
+				LeaveCriticalSection(&g_net.response_lock);
+				NET_LOG("[NET] World time: %u of %u ms\n", (unsigned)time_of_day_ms,
+				        (unsigned)day_length_ms);
+			}
+			break;
+
+		case PACKET_WEATHER_FORECAST:
+			if(length >= (int)sizeof(WeatherForecastPacket)) {
+				const WeatherForecastPacket* pkt = (const WeatherForecastPacket*)data;
+				WeatherForecast forecast;
+
+				memset(&forecast, 0, sizeof(forecast));
+				forecast.day_index = ntohl(pkt->day_index);
+				forecast.day_length_ms = ntohl(pkt->day_length_ms);
+				forecast.ms_to_next_day = ntohl(pkt->ms_to_next_day);
+				forecast.region_count = pkt->region_count;
+				memcpy(forecast.days, pkt->days, sizeof(forecast.days));
+
+				EnterCriticalSection(&g_net.response_lock);
+				g_net.weather_event.forecast = forecast;
+				g_net.weather_event.ready = TRUE;
+				LeaveCriticalSection(&g_net.response_lock);
+				NET_LOG("[NET] Weather forecast: day %u, %d regions\n",
+				        (unsigned)forecast.day_index, forecast.region_count);
+			}
+			break;
 
         case PACKET_NPC_POSITIONS: {
             size_t base_size = offsetof(NPCPositionPacket, npcs);
@@ -72,7 +267,14 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
             NET_LOG("[NET] NPC positions received: %d NPCs\n", claimed_count);
 
             if (g_current_game && g_current_game->playing) {
+				join_data_note(JOIN_NPCS);
                 int old_count = g_current_game->playing->visible_npc_count;
+				// The list comes nearest-first, so an NPC changes slot as the player
+				// moves. Reading the old state from a copy keeps each NPC's own name
+				// and animation offset, not those of whoever held its slot before.
+				VisibleNPC old_npcs[MAX_VISIBLE_NPCS];
+
+				memcpy(old_npcs, g_current_game->playing->visible_npcs, sizeof(old_npcs));
                 g_current_game->playing->visible_npc_count = claimed_count;
 
                 for (int i = 0; i < claimed_count && i < MAX_VISIBLE_NPCS; i++) {
@@ -80,14 +282,20 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                     uint32_t npc_id = ntohl(src->npc_id);
                     float new_x = src->pos_x;
                     float new_y = src->pos_y;
+                    float new_z = src->pos_z;
 
                     // Check if this NPC existed before to interpolate
                     int found = 0;
+					VisibleNPC* slot = &g_current_game->playing->visible_npcs[i];
+
+					memset(slot, 0, sizeof(*slot));
                     for (int j = 0; j < old_count && j < MAX_VISIBLE_NPCS; j++) {
-                        if (g_current_game->playing->visible_npcs[j].npc_id == npc_id) {
-                            // Existing NPC: set up interpolation from current to new
-                            g_current_game->playing->visible_npcs[i].prev_x = g_current_game->playing->visible_npcs[j].pos_x;
-                            g_current_game->playing->visible_npcs[i].prev_y = g_current_game->playing->visible_npcs[j].pos_y;
+                        if (old_npcs[j].npc_id == npc_id) {
+							// Existing NPC: carry its state, interpolate from where it was drawn
+							*slot = old_npcs[j];
+							slot->prev_x = old_npcs[j].pos_x;
+							slot->prev_y = old_npcs[j].pos_y;
+							slot->prev_z = old_npcs[j].pos_z;
                             found = 1;
                             break;
                         }
@@ -96,13 +304,16 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                     g_current_game->playing->visible_npcs[i].npc_id = npc_id;
                     g_current_game->playing->visible_npcs[i].target_x = new_x;
                     g_current_game->playing->visible_npcs[i].target_y = new_y;
+                    g_current_game->playing->visible_npcs[i].target_z = new_z;
 
                     if (!found) {
                         // New NPC: snap to position immediately
                         g_current_game->playing->visible_npcs[i].pos_x = new_x;
                         g_current_game->playing->visible_npcs[i].pos_y = new_y;
+                        g_current_game->playing->visible_npcs[i].pos_z = new_z;
                         g_current_game->playing->visible_npcs[i].prev_x = new_x;
                         g_current_game->playing->visible_npcs[i].prev_y = new_y;
+                        g_current_game->playing->visible_npcs[i].prev_z = new_z;
                         g_current_game->playing->visible_npcs[i].interp_t = 1.0f;
                     } else {
                         // Reset interpolation timer for smooth movement
@@ -127,6 +338,19 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
             }
             break;
         }
+
+		case PACKET_INSPECT_RESPONSE:
+			if(length >= (int)sizeof(InspectResponsePacket)) {
+				EnterCriticalSection(&g_net.response_lock);
+				memcpy(&g_net.inspect.data, data, sizeof(InspectResponsePacket));
+				g_net.inspect.data.name[sizeof(g_net.inspect.data.name) - 1] = '\0';
+				g_net.inspect.ready = TRUE;
+				LeaveCriticalSection(&g_net.response_lock);
+				NET_LOG("[NET] Inspect answer: target %u result %u\n",
+				        (unsigned)ntohl(g_net.inspect.data.target_id),
+				        g_net.inspect.data.result);
+			}
+			break;
 
         case PACKET_NPC_INTERACT_RESPONSE:
             if (length >= (int)sizeof(NPCInteractResponsePacket)) {
@@ -176,6 +400,32 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
             PlayerPositionBroadcastPacket* pkt = (PlayerPositionBroadcastPacket*)data;
             uint8_t claimed_count = pkt->count;
 
+			// TEMPORARY DIAGNOSTIC: how evenly the position broadcasts arrive
+			{
+				static double last_at, window_start, max_gap;
+				static int arrived, over_100, over_250, over_500;
+				double at = net_now();
+				double gap = last_at > 0.0 ? at - last_at : 0.0;
+
+				last_at = at;
+				arrived++;
+				if(gap > max_gap)
+					max_gap = gap;
+				if(gap > 0.5)
+					over_500++;
+				else if(gap > 0.25)
+					over_250++;
+				else if(gap > 0.1)
+					over_100++;
+				if(at - window_start >= 1.0) {
+					CLOG_INFO("[DIAG] me=%u positions: %d in %.2fs, gaps >100ms %d, >250ms %d, >500ms %d, max %.0fms",
+					          g_net.character_id, arrived, at - window_start, over_100, over_250, over_500, max_gap * 1000.0);
+					window_start = at;
+					arrived = over_100 = over_250 = over_500 = 0;
+					max_gap = 0.0;
+				}
+			}
+
             size_t expected_size = base_size + (claimed_count * sizeof(NearbyPlayerData));
 
             if (length < (int)expected_size) {
@@ -191,6 +441,7 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
             }
 
             if (g_current_game && g_current_game->playing) {
+				join_data_note(JOIN_PLAYERS);
                 int old_count = g_current_game->playing->nearby_player_count;
                 NearbyPlayer* nearby = g_current_game->playing->nearby_players;
 
@@ -199,7 +450,9 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                  * snapped to. Read before the array is overwritten: the list
                  * is rebuilt in broadcast order, and a player can move to a
                  * different index between two broadcasts. */
-                float prev_x[MAX_NEARBY_PLAYERS], prev_y[MAX_NEARBY_PLAYERS];
+                float prev_x[MAX_NEARBY_PLAYERS], prev_y[MAX_NEARBY_PLAYERS], prev_z[MAX_NEARBY_PLAYERS];
+				emote_state prev_emote[MAX_NEARBY_PLAYERS];
+				float prev_speed[MAX_NEARBY_PLAYERS];
                 uint32_t prev_id[MAX_NEARBY_PLAYERS];
                 int prev_count = old_count;
                 if (prev_count > MAX_NEARBY_PLAYERS) prev_count = MAX_NEARBY_PLAYERS;
@@ -207,6 +460,9 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                     prev_id[j] = nearby[j].player_id;
                     prev_x[j]  = nearby[j].pos_x;
                     prev_y[j]  = nearby[j].pos_y;
+                    prev_z[j]  = nearby[j].pos_z;
+					prev_emote[j] = nearby[j].emote;
+					prev_speed[j] = nearby[j].speed;
                 }
 
                 g_current_game->playing->nearby_player_count = claimed_count;
@@ -221,12 +477,16 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                      * from wherever the slot happened to hold would slide them
                      * in from another part of the map. */
                     int seen = 0;
+					memset(&nearby[i].emote, 0, sizeof(nearby[i].emote));
                     for (int j = 0; j < prev_count; j++) {
                         if (prev_id[j] != id) continue;
+						nearby[i].emote = prev_emote[j];
                         nearby[i].prev_x = prev_x[j];
                         nearby[i].prev_y = prev_y[j];
+                        nearby[i].prev_z = prev_z[j];
                         nearby[i].pos_x  = prev_x[j];
                         nearby[i].pos_y  = prev_y[j];
+                        nearby[i].pos_z  = prev_z[j];
                         nearby[i].interp_t = 0.0f;
                         seen = 1;
                         break;
@@ -234,16 +494,35 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                     if (!seen) {
                         nearby[i].prev_x = src->pos_x;
                         nearby[i].prev_y = src->pos_y;
+                        nearby[i].prev_z = src->pos_z;
                         nearby[i].pos_x  = src->pos_x;
                         nearby[i].pos_y  = src->pos_y;
+                        nearby[i].pos_z  = src->pos_z;
                         nearby[i].interp_t = 1.0f;
                     }
                     nearby[i].target_x = src->pos_x;
                     nearby[i].target_y = src->pos_y;
+                    nearby[i].target_z = src->pos_z;
+                    nearby[i].airborne = src->airborne;
+					// Their emote as the server sees it; first sight appears mid-emote
+					emote_observe(&nearby[i].emote, src->emote, src->emote_arg, !seen);
                     g_current_game->playing->nearby_players[i].health = (int32_t)ntohl(src->health);
                     g_current_game->playing->nearby_players[i].max_health = (int32_t)ntohl(src->max_health);
                     g_current_game->playing->nearby_players[i].player_class = src->player_class;
                     g_current_game->playing->nearby_players[i].player_race = src->player_race;
+					g_current_game->playing->nearby_players[i].appearance = ntohl(src->appearance);
+					g_current_game->playing->nearby_players[i].speed = (float)ntohs(src->speed);
+					g_current_game->playing->nearby_players[i].heading = src->heading;
+					g_current_game->playing->nearby_players[i].idle_fidget = src->idle_fidget;
+					// TEMPORARY DIAGNOSTIC: when a player's reported speed starts or stops
+					for(int j = 0; j < prev_count; j++) {
+						if(prev_id[j] != id)
+							continue;
+						if((prev_speed[j] > 0.0f) != (ntohs(src->speed) > 0))
+							CLOG_INFO("[DIAG] me=%u sees player %u speed %.0f -> %u", g_net.character_id, id,
+							          prev_speed[j], (unsigned)ntohs(src->speed));
+						break;
+					}
                     g_current_game->playing->nearby_players[i].level = src->level;
                     g_current_game->playing->nearby_players[i].is_dead = src->is_dead;
                     g_current_game->playing->nearby_players[i].ping_ms = ntohs(src->ping_ms);
@@ -299,35 +578,13 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
         case PACKET_CHAT_MESSAGE:
             if (length >= (int)sizeof(ChatMessagePacket)) {
                 ChatMessagePacket* pkt = (ChatMessagePacket*)data;
-                pkt->sender_name[31] = '\0';
+                pkt->sender_name[sizeof(pkt->sender_name) - 1] = '\0';
                 pkt->message[MAX_CHAT_MESSAGE - 1] = '\0';
                 NET_LOG("[CHAT] [ch%u] %s: %s\n",
                        pkt->channel, pkt->sender_name, pkt->message);
-                if (g_current_game && g_current_game->playing) {
-                    ChatState* chat = &g_current_game->playing->chat;
-                    int idx = chat->line_count;
-                    if (idx >= MAX_CHAT_LINES) {
-                        memmove(&chat->lines[0], &chat->lines[1],
-                                sizeof(ChatLine) * (MAX_CHAT_LINES - 1));
-                        idx = MAX_CHAT_LINES - 1;
-                    } else {
-                        chat->line_count++;
-                    }
-                    memcpy(chat->lines[idx].sender, pkt->sender_name, 31);
-                    chat->lines[idx].sender[31] = '\0';
-                    memcpy(chat->lines[idx].text, pkt->message, 255);
-                    chat->lines[idx].text[255] = '\0';
-                    chat->lines[idx].channel = pkt->channel;
-
-                    // Track whisper reply target: only set on received whispers,
-                    // not on echo-backs (echo sender_name starts with "-> ")
-                    if (pkt->channel == CHAT_CHANNEL_WHISPER &&
-                        strncmp(pkt->sender_name, "-> ", 3) != 0) {
-                        strncpy(chat->whisper_reply_target, pkt->sender_name,
-                                sizeof(chat->whisper_reply_target) - 1);
-                        chat->whisper_reply_target[sizeof(chat->whisper_reply_target) - 1] = '\0';
-                    }
-                }
+				if(g_current_game && g_current_game->playing)
+					chat_log_receive(&g_current_game->playing->chat, pkt->channel,
+							pkt->flags, pkt->sender_name, pkt->message);
             }
             break;
 
@@ -414,9 +671,64 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                  * and the marker the tracker, badge and map all read. */
                 quest_log_add(&g_current_game->playing->quest_log,
                               quest_id, pkt->title, obj_count, pkt->objectives);
-                NET_LOG("[NET] Quest accepted: id=%u '%s'\n", quest_id, pkt->title);
+				pkt->step_title[sizeof(pkt->step_title) - 1] = '\0';
+				quest_log_set_step(&g_current_game->playing->quest_log, quest_id, pkt->step,
+				                   pkt->step_count, pkt->step_title);
+                NET_LOG("[NET] Quest accepted: id=%u '%s' step %u of %u\n", quest_id,
+				        pkt->title, (unsigned)pkt->step, (unsigned)pkt->step_count);
             }
             break;
+
+		case PACKET_QUEST_HISTORY:
+			if(length >= (int)sizeof(QuestHistoryPacket) && g_current_game && g_current_game->playing) {
+				QuestHistoryPacket* pkt = (QuestHistoryPacket*)data;
+
+				pkt->title[sizeof(pkt->title) - 1] = '\0';
+				quest_log_finished_add(&g_current_game->playing->quest_log,
+				                       ntohl(pkt->quest_id), pkt->title);
+			}
+			break;
+
+        case PACKET_NPC_QUEST_MARKS:
+            if (length >= (int)sizeof(NPCQuestMarksPacket) && g_current_game && g_current_game->playing) {
+                NPCQuestMarksPacket* pkt = (NPCQuestMarksPacket*)data;
+                PlayingState* ps = g_current_game->playing;
+                int count = pkt->count > MAX_NPC_QUEST_MARKS ? MAX_NPC_QUEST_MARKS : pkt->count;
+
+                /* A replacement, not an addition: a type left out has nothing. */
+                memset(ps->npc_quest_marks, 0, sizeof(ps->npc_quest_marks));
+                for (int i = 0; i < count; i++) {
+                    ps->npc_quest_marks[i] = pkt->entries[i];
+                    ps->npc_quest_marks[i].title[sizeof(ps->npc_quest_marks[i].title) - 1] = '\0';
+                }
+                ps->npc_quest_mark_count = count;
+                NET_LOG("[NET] Quest marks: %d NPC types\n", count);
+            }
+            break;
+
+		case PACKET_AVAILABLE_QUESTS_RESET:
+			if(length >= (int)sizeof(AvailableQuestsResetPacket) && g_current_game && g_current_game->playing) {
+				// A replacement: the quests it lists follow, in order.
+				quest_log_available_reset(&g_current_game->playing->quest_log);
+				join_data_available_reset(ntohl(((AvailableQuestsResetPacket*)data)->count));
+				CLOG_INFO("[NET] Available quests: %u follow",
+				          (unsigned)ntohl(((AvailableQuestsResetPacket*)data)->count));
+			}
+			break;
+
+		case PACKET_AVAILABLE_QUEST:
+			if(length >= (int)sizeof(AvailableQuestPacket) && g_current_game && g_current_game->playing) {
+				quest_log_available_add(&g_current_game->playing->quest_log,
+				                        (const AvailableQuestPacket*)data);
+				join_data_available_entry();
+				CLOG_INFO("[NET] Available quest %u listed (%d held)",
+				          (unsigned)ntohl(((const AvailableQuestPacket*)data)->quest_id),
+				          g_current_game->playing->quest_log.available_count);
+			} else {
+				CLOG_WARN("[NET] Available quest packet too short: %d bytes, need %d", length,
+				          (int)sizeof(AvailableQuestPacket));
+			}
+			break;
 
         case PACKET_QUEST_PROGRESS:
             if (length >= (int)sizeof(QuestProgressPacket) && g_current_game && g_current_game->playing) {
@@ -432,6 +744,20 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
             }
             break;
 
+		case PACKET_QUEST_STEP_DONE:
+			if(length >= (int)sizeof(QuestStepDonePacket) && g_current_game &&
+			   g_current_game->playing) {
+				QuestStepDonePacket* pkt = (QuestStepDonePacket*)data;
+
+				// the quest goes on; the accept packet that follows describes the next step
+				show_quest_reward(ntohl(pkt->xp_reward), ntohl(pkt->currency_reward),
+				                  pkt->currency_id);
+				NET_LOG("[NET] Quest step done: id=%u step %u of %u +%u XP\n",
+				        ntohl(pkt->quest_id), (unsigned)pkt->step, (unsigned)pkt->step_count,
+				        ntohl(pkt->xp_reward));
+			}
+			break;
+
         case PACKET_QUEST_COMPLETE:
             if (length >= (int)sizeof(QuestCompletePacket) && g_current_game && g_current_game->playing) {
                 QuestCompletePacket* pkt = (QuestCompletePacket*)data;
@@ -441,21 +767,7 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
                 uint8_t  currency_id     = pkt->currency_id;
 
                 quest_log_complete(&g_current_game->playing->quest_log, quest_id);
-
-                // Show reward notification (reuse existing kill-reward popup)
-                for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
-                    if (!g_current_game->playing->reward_notifications[i].active) {
-                        g_current_game->playing->reward_notifications[i].xp_gained       = xp_reward;
-                        g_current_game->playing->reward_notifications[i].currency_gained = currency_reward;
-                        g_current_game->playing->reward_notifications[i].currency_id     = currency_id;
-                        g_current_game->playing->reward_notifications[i].age             = 0.0f;
-                        g_current_game->playing->reward_notifications[i].active          = 1;
-                        break;
-                    }
-                }
-
-                // Refresh balances and XP from server
-                network_request_player_data_refresh();
+				show_quest_reward(xp_reward, currency_reward, currency_id);
 
                 NET_LOG("[NET] Quest complete: id=%u +%u XP +%u %s\n",
                        quest_id, xp_reward, currency_reward,
@@ -497,8 +809,6 @@ int net_dispatch_world(uint8_t type, const char* data, int length) {
     return 1;
 }
 
-/* --- Movement, interaction, chat, and party requests --------------------- */
-
 /**
  * Send the current player position and velocity.
  *
@@ -516,8 +826,9 @@ uint32_t network_next_move_sequence(void) {
     return next;
 }
 
-int network_send_player_move(float x, float y, float speed, float vel_x, float vel_y,
-                             uint32_t sequence) {
+int network_send_player_move(float x, float y, float z, uint8_t flags,
+                             float speed, float vel_x, float vel_y,
+                             uint32_t sequence, uint8_t heading) {
     if (!g_net.connected) return 0;
 
     /* `speed` is accepted and not sent. PlayerMovePacket used to carry it and
@@ -534,11 +845,138 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
     pkt.header.payload_size = htons(sizeof(PlayerMovePacket) - sizeof(PacketHeader));
     pkt.pos_x = x;
     pkt.pos_y = y;
+    pkt.pos_z = z;
+    pkt.move_flags = flags;
+    pkt.heading = heading;
     pkt.vel_x = vel_x;
     pkt.vel_y = vel_y;
     pkt.sequence = htonl(sequence);
+	EnterCriticalSection(&g_net.response_lock);
+	pkt.correction_seq = htonl(g_net.correction_echo);
+	LeaveCriticalSection(&g_net.response_lock);
 
     return net_send((char*)&pkt, sizeof(pkt)) == sizeof(pkt);
+}
+
+void network_send_emote_request(uint8_t emote, uint8_t arg) {
+	if(!g_net.connected)
+		return;
+
+	EmoteRequestPacket pkt;
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_EMOTE_REQUEST;
+	pkt.header.player_id = htonl(g_net.character_id);
+	pkt.header.payload_size = htons(sizeof(EmoteRequestPacket) - sizeof(PacketHeader));
+	pkt.emote = emote;
+	pkt.arg = arg;
+
+	net_send((char*)&pkt, sizeof(pkt));
+	NET_LOG("[NET] Emote request sent: emote %u arg %u\n", emote, arg);
+}
+
+void network_send_inspect_request(uint32_t target_id) {
+	if(!g_net.connected)
+		return;
+
+	InspectRequestPacket pkt;
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_INSPECT_REQUEST;
+	pkt.header.player_id = htonl(g_net.character_id);
+	pkt.header.payload_size = htons(sizeof(InspectRequestPacket) - sizeof(PacketHeader));
+	pkt.target_id = htonl(target_id);
+
+	net_send((char*)&pkt, sizeof(pkt));
+	NET_LOG("[NET] Inspect request sent: target %u\n", target_id);
+}
+
+int network_get_inspect_response(InspectResponsePacket* out) {
+	EnterCriticalSection(&g_net.response_lock);
+	if(!g_net.inspect.ready) {
+		LeaveCriticalSection(&g_net.response_lock);
+		return 0;
+	}
+	memcpy(out, &g_net.inspect.data, sizeof(InspectResponsePacket));
+	g_net.inspect.ready = FALSE;
+	LeaveCriticalSection(&g_net.response_lock);
+
+	return 1;
+}
+
+void network_send_status_request(uint8_t status) {
+	if(!g_net.connected)
+		return;
+
+	StatusRequestPacket pkt;
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_STATUS_REQUEST;
+	pkt.header.player_id = htonl(g_net.character_id);
+	pkt.header.payload_size = htons(sizeof(StatusRequestPacket) - sizeof(PacketHeader));
+	pkt.status = status;
+
+	net_send((char*)&pkt, sizeof(pkt));
+	NET_LOG("[NET] Status request sent: %u\n", status);
+}
+
+int network_get_status_state(uint8_t* status) {
+	int ready;
+
+	EnterCriticalSection(&g_net.response_lock);
+	ready = g_net.status_event.ready;
+	if(ready) {
+		*status = g_net.status_event.status;
+		g_net.status_event.ready = FALSE;
+	}
+	LeaveCriticalSection(&g_net.response_lock);
+
+	return ready;
+}
+
+int network_get_world_time(uint32_t* time_of_day_ms, uint32_t* day_length_ms) {
+	int ready;
+
+	EnterCriticalSection(&g_net.response_lock);
+	ready = g_net.world_time_event.ready;
+	if(ready) {
+		*time_of_day_ms = g_net.world_time_event.time_of_day_ms;
+		*day_length_ms = g_net.world_time_event.day_length_ms;
+		g_net.world_time_event.ready = FALSE;
+	}
+	LeaveCriticalSection(&g_net.response_lock);
+
+	return ready;
+}
+
+int network_get_weather(WeatherForecast* out) {
+	int ready;
+
+	EnterCriticalSection(&g_net.response_lock);
+	ready = g_net.weather_event.ready;
+	if(ready) {
+		*out = g_net.weather_event.forecast;
+		g_net.weather_event.ready = FALSE;
+	}
+	LeaveCriticalSection(&g_net.response_lock);
+
+	return ready;
+}
+
+int network_get_emote_state(uint8_t* emote, uint8_t* arg, uint8_t* result,
+                            uint8_t* requested) {
+	EnterCriticalSection(&g_net.response_lock);
+	if(g_net.emote_events.count == 0) {
+		LeaveCriticalSection(&g_net.response_lock);
+		return 0;
+	}
+	const uint8_t* e = g_net.emote_events.entries[g_net.emote_events.head];
+	*emote = e[0];
+	*arg = e[1];
+	*result = e[2];
+	*requested = e[3];
+	g_net.emote_events.head = (g_net.emote_events.head + 1) % 8;
+	g_net.emote_events.count--;
+	LeaveCriticalSection(&g_net.response_lock);
+
+	return 1;
 }
 
 /**
@@ -546,18 +984,19 @@ int network_send_player_move(float x, float y, float speed, float vel_x, float v
  *
  * @return      Nonzero when a correction is copied; otherwise zero.
  */
-int network_get_server_correction(float* out_x, float* out_y, uint32_t* out_sequence) {
-    EnterCriticalSection(&g_net.response_lock);
-    if (!g_net.correction.ready) {
-        LeaveCriticalSection(&g_net.response_lock);
-        return 0;
-    }
-    *out_x = g_net.correction.x;
-    *out_y = g_net.correction.y;
-    if (out_sequence) *out_sequence = g_net.correction.sequence;
-    g_net.correction.ready = FALSE;
-    LeaveCriticalSection(&g_net.response_lock);
-    return 1;
+int network_get_server_correction(move_correction* out) {
+	EnterCriticalSection(&g_net.response_lock);
+	if(!g_net.correction.ready) {
+		LeaveCriticalSection(&g_net.response_lock);
+		return 0;
+	}
+	*out = g_net.correction.data;
+	// taken now, so every move from here on says so
+	g_net.correction_echo = out->sequence;
+	g_net.correction.ready = FALSE;
+	LeaveCriticalSection(&g_net.response_lock);
+
+	return 1;
 }
 
 /**
@@ -683,9 +1122,10 @@ int network_get_dialogue_close(DialogueClosePacket* out) {
 /**
  * Send a chat message on a protocol channel.
  *
+ * @param target   NUL-terminated whisper recipient, "" on other channels.
  * @param message  NUL-terminated text truncated to MAX_CHAT_MESSAGE minus one bytes.
  */
-void network_send_chat(uint8_t channel, const char* message) {
+void network_send_chat(uint8_t channel, const char* target, const char* message) {
     if (!g_net.connected) return;
 
     ChatSendPacket pkt;
@@ -694,6 +1134,7 @@ void network_send_chat(uint8_t channel, const char* message) {
     pkt.header.player_id = htonl(g_net.character_id);
     pkt.header.payload_size = htons(sizeof(ChatSendPacket) - sizeof(PacketHeader));
     pkt.channel = channel;
+    strncpy(pkt.target, target, MAX_CHAT_TARGET - 1);
     strncpy(pkt.message, message, MAX_CHAT_MESSAGE - 1);
 
     net_send((char*)&pkt, sizeof(pkt));
@@ -761,21 +1202,4 @@ void network_send_party_leave(void) {
 
     net_send((char*)&pkt, sizeof(pkt));
     NET_LOG("[NET] Party leave sent\n");
-}
-
-/**
- * Request removal of a character from the current party.
- */
-void network_send_party_kick(uint32_t target_id) {
-    if (!g_net.connected) return;
-
-    PartyKickPacket pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.header.type = PACKET_PARTY_KICK;
-    pkt.header.player_id = htonl(g_net.character_id);
-    pkt.header.payload_size = htons(sizeof(PartyKickPacket) - sizeof(PacketHeader));
-    pkt.target_id = htonl(target_id);
-
-    net_send((char*)&pkt, sizeof(pkt));
-    NET_LOG("[NET] Party kick sent: %u\n", target_id);
 }

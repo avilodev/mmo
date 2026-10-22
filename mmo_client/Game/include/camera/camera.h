@@ -20,17 +20,30 @@ typedef struct {
     float y;
     float target_x;
     float target_y;
+    float z;            /**< Height of the ground the player stands on; the look-at point is above it. */
     float smoothing;    /**< Interpolation factor from instant at 0.0 to stationary at 1.0. */
     int viewport_width;
     int viewport_height;
     float zoom;         /**< Pixel scale at the look-at point (camera_tuning.h limits). */
     float yaw;          /**< Rotation about the vertical axis, radians; 0 is north-up. */
     float pitch;        /**< Tilt below the horizon, radians, within the tuning limits. */
+    float distance_limit;  /**< Orbit distance cap from walls in the way; 0 when none. */
 } Camera;
 
 void camera_init(Camera* camera, int viewport_width, int viewport_height);
 
-void camera_update(Camera* camera, float target_x, float target_y, double delta_time);
+/** Follow the player. `target_z` is the height of the floor they stand on (the
+ *  drawn, eased height), so the camera climbs stairs and ramps with them. */
+void camera_update(Camera* camera, float target_x, float target_y, float target_z,
+                   double delta_time);
+
+/** Keep the eye out of walls: pull the camera in toward the player when
+ *  something solid is between them, and let it drift back out once clear.
+ *  Call once a frame after camera_update().
+ *  @param height_at  Solid height at a world point (see CameraHeightFn); NULL
+ *                    turns the check off. */
+void camera_update_clearance(Camera* camera, CameraHeightFn height_at, void* ctx,
+                             double delta_time);
 
 void camera_set_position(Camera* camera, float x, float y);
 
@@ -64,6 +77,11 @@ void camera_apply(const Camera* camera);
 void camera_screen_to_world(const Camera* camera, float screen_x, float screen_y,
                             float* world_x, float* world_y);
 
+/** The ray under a screen point, in world coordinates (x, y, z up): the one
+ *  camera_screen_to_world() intersects with the ground. `dir` is a unit vector. */
+void camera_screen_ray(const Camera* camera, float screen_x, float screen_y,
+                       float origin[3], float dir[3]);
+
 void camera_world_to_screen(const Camera* camera, float world_x, float world_y,
                             float* screen_x, float* screen_y);
 
@@ -85,13 +103,15 @@ void camera_visible_ground(const Camera* camera, float* min_x, float* min_y,
 void camera_billboard_begin(float anchor_x, float anchor_y, float foot_dy, float lift);
 void camera_billboard_end(void);
 
-/** Whether a screen point is over a figure standing at a ground point.
+/** Whether a screen point is over a figure standing at a point.
  *
- * The figure is treated as an upright capsule: the segment from its feet to
- * `height` above them, thickened by `radius`, all in world units. That is what
- * a 3D character covers on screen at any camera angle.
+ * The figure is treated as an upright capsule: the segment from its feet, at
+ * `entity_z` (the floor it stands on), to `height` above them, thickened by
+ * `radius`, all in world units. That is what a 3D character covers on screen at
+ * any camera angle.
  */
 int camera_hit_standing(const Camera* camera, float entity_x, float entity_y,
-                        float height, float radius, float screen_x, float screen_y);
+                        float entity_z, float height, float radius,
+                        float screen_x, float screen_y);
 
 #endif // CAMERA_H

@@ -105,19 +105,10 @@ static void main_menu_render(GameState* game) {
     }
 }
 
-static void main_menu_input(GameState* game, GLFWwindow* window, float delta_time) {
-    (void)delta_time;
-    
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        game->is_running = 0;
-    }
-}
-
 /** State-handler table for GAME_MODE_MAIN_MENU. */
 const StateHandler g_state_main_menu = {
     .enter = main_menu_enter,
     .exit = main_menu_exit,
     .update = main_menu_update,
-    .render = main_menu_render,
-    .handle_input = main_menu_input
+    .render = main_menu_render
 };

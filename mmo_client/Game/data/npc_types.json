@@ -990,6 +990,28 @@
         0.126
       ],
       "size_scale": 0.75
+    },
+    {
+      "id": 50,
+      "name": "Mirela the Provisioner",
+      "color": [
+        0.2,
+        0.55,
+        0.8
+      ],
+      "roles": ["merchant"],
+      "size_scale": 1.0
+    },
+    {
+      "id": 51,
+      "name": "Doran the Armsmonger",
+      "color": [
+        0.2,
+        0.55,
+        0.8
+      ],
+      "roles": ["merchant"],
+      "size_scale": 1.0
     }
   ]
 }

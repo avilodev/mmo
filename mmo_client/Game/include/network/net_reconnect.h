@@ -32,6 +32,13 @@ typedef enum {
     RECONNECT_GIVEN_UP        /**< Out of attempts; the player must act. */
 } ReconnectPhase;
 
+/** Why recovery stopped, once the phase is RECONNECT_GIVEN_UP. */
+typedef enum {
+	RECONNECT_FAIL_NONE = 0,
+	RECONNECT_FAIL_TIMEOUT,   /**< The time budget ran out. */
+	RECONNECT_FAIL_LOGIN      /**< The login is over; the player must log in again. */
+} ReconnectFailure;
+
 /** Remember what a live world session was, so it can be rebuilt.
  *
  * Called once the world handshake succeeds. Nothing else knows all three
@@ -68,6 +75,9 @@ const char* net_reconnect_status(void);
 
 /** Attempts made since the connection dropped. */
 int net_reconnect_attempts(void);
+
+/** Why recovery gave up; RECONNECT_FAIL_NONE until it does. */
+ReconnectFailure net_reconnect_failure(void);
 
 /** Abandon recovery and reset the backoff, e.g. because the player logged out. */
 void net_reconnect_cancel(void);

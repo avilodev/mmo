@@ -406,16 +406,6 @@ double race_passive_modifier(const RacePassive* passive, PassiveModifierKind kin
     return total;
 }
 
-/** Return the lowercase name of a role, for logging and client display. */
-const char* role_name(CombatRole role) {
-    switch (role) {
-        case ROLE_TANK:   return "tank";
-        case ROLE_DPS:    return "dps";
-        case ROLE_HEALER: return "healer";
-        default:          return "unknown";
-    }
-}
-
 /**
  * Return the canonical JSON key of a stat.
  *

@@ -8,69 +8,13 @@
       "options": [
         {
           "option_id": 1,
-          "text": "The Warden sent me to you.",
-          "next_page": 1,
-          "fail_page": -1,
-          "action": "quest_turnin",
-          "action_value": 106,
-          "conditions": [
-            {
-              "type": "quest_complete",
-              "value": 106
-            }
-          ]
+          "text": "What can you teach me?",
+          "next_page": 1
         },
         {
           "option_id": 2,
-          "text": "The Warden sent me to you.",
-          "next_page": 0,
-          "conditions": [
-            {
-              "type": "quest_active",
-              "value": 106
-            }
-          ]
-        },
-        {
-          "option_id": 3,
-          "text": "I was not sent here.",
-          "next_page": 3,
-          "conditions": [
-            {
-              "type": "quest_not_started",
-              "value": 106
-            }
-          ]
-        },
-        {
-          "option_id": 4,
-          "text": "Where is the gate again?",
-          "next_page": 2,
-          "conditions": [
-            {
-              "type": "quest_turned_in",
-              "value": 106
-            },
-            {
-              "type": "quest_active",
-              "value": 200
-            }
-          ]
-        },
-        {
-          "option_id": 5,
           "text": "Nothing. Just passing.",
-          "next_page": 4,
-          "conditions": [
-            {
-              "type": "quest_turned_in",
-              "value": 106
-            },
-            {
-              "type": "quest_turned_in",
-              "value": 200
-            }
-          ]
+          "next_page": 4
         }
       ]
     },
@@ -80,20 +24,7 @@
       "options": [
         {
           "option_id": 1,
-          "text": "And if I need it before then?",
-          "next_page": 2,
-          "action": "quest_accept",
-          "action_value": 200,
-          "conditions": [
-            {
-              "type": "quest_available",
-              "value": 200
-            }
-          ]
-        },
-        {
-          "option_id": 2,
-          "text": "And if I need it before then?",
+          "text": "How far?",
           "next_page": 2
         }
       ]
@@ -105,17 +36,6 @@
         {
           "option_id": 1,
           "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 3,
-      "text": "You have not been sent, have you. That is all right -- nobody is in trouble.\n\nFind the Warden in the middle of the courtyard first. She likes to be told.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "The Warden, then.",
           "next_page": -1
         }
       ]

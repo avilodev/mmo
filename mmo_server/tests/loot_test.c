@@ -13,7 +13,7 @@
 #include "log.h"
 #include "types.h"
 #include "player_data.h"
-#include "items_database.h"
+#include "item_registry.h"
 #include "quest_system.h"
 #include "interest.h"
 #include "utils.h"
@@ -66,7 +66,7 @@ static int fixture_fd(int slot) { return g_player_fd + slot; }
 static _Atomic int g_sends = 0;
 
 /** Stub the send path, counting rather than writing to a socket. */
-ssize_t server_send(int fd, void* buf, size_t len) {
+ssize_t outbox_send(int fd, void* buf, size_t len) {
     (void)fd; (void)buf;
     atomic_fetch_add(&g_sends, 1);
     return (ssize_t)len;
@@ -236,7 +236,7 @@ static void test_full_inventory_does_not_destroy_the_item(void) {
     fill_inventory();
 
     /* owner_id 0 so no exclusive window blocks the fixture player. */
-    uint32_t gid = loot_drop_item(1234, 3, 0.0f, 0.0f, 0);
+    uint32_t gid = loot_drop_item(1234, 3, 0.0f, 0.0f, 0.0f, 0);
     CHECK(gid != 0, "the item reached the ground");
     CHECK(loot_active_count() == 1, "one item is on the ground");
 
@@ -266,7 +266,7 @@ static void test_successful_pickup_removes_the_item(void) {
     fresh_world();
     reset_player();
 
-    uint32_t gid = loot_drop_item(77, 5, 10.0f, 10.0f, 0);
+    uint32_t gid = loot_drop_item(77, 5, 10.0f, 10.0f, 0.0f, 0);
     CHECK(gid != 0, "the item reached the ground");
 
     request_pickup(gid);
@@ -288,7 +288,7 @@ static void test_out_of_range_pickup_is_refused(void) {
     reset_player();
 
     uint32_t gid = loot_drop_item(88, 1,
-                                  LOOT_PICKUP_RANGE * 4.0f, 0.0f, 0);
+                                  LOOT_PICKUP_RANGE * 4.0f, 0.0f, 0.0f, 0);
     request_pickup(gid);
 
     CHECK(loot_active_count() == 1, "a distant item stays on the ground");
@@ -299,6 +299,28 @@ static void test_out_of_range_pickup_is_refused(void) {
           "and it was never reserved");
 }
 
+/** Pickup respects height: the item rests on the floor it was dropped on. */
+static void test_pickup_respects_height(void) {
+    printf("height check\n");
+    fresh_world();
+    reset_player();
+
+    uint32_t gid = loot_drop_item(66, 1, 0.0f, 0.0f, 0.0f, 0);
+    GroundItem snap;
+    CHECK(loot_snapshot(gid, &snap) && snap.pos_z == 0.0f,
+          "an item dropped at z 0 rests at z 0");
+
+    active_players[0].pos_z = 100.0f;
+    request_pickup(gid);
+    CHECK(loot_active_count() == 1, "a player 100 units above cannot take it");
+    CHECK(inventory_total(66) == 0, "and nothing reached the bag");
+
+    active_players[0].pos_z = 24.0f;
+    request_pickup(gid);
+    CHECK(loot_active_count() == 0, "a player at z 24 picks it up");
+    CHECK(inventory_total(66) == 1, "and the item reached the bag");
+}
+
 /** The exclusive window belongs to the killer. */
 static void test_owner_window_blocks_others(void) {
     printf("owner window\n");
@@ -306,7 +328,7 @@ static void test_owner_window_blocks_others(void) {
     reset_player();
 
     /* Owned by somebody else, dropped just now. */
-    uint32_t gid = loot_drop_item(99, 1, 0.0f, 0.0f, g_player_character_id + 1);
+    uint32_t gid = loot_drop_item(99, 1, 0.0f, 0.0f, 0.0f, g_player_character_id + 1);
     request_pickup(gid);
 
     CHECK(loot_active_count() == 1, "another player's fresh drop is refused");
@@ -319,7 +341,7 @@ static void test_reservation_is_exclusive(void) {
     fresh_world();
     reset_player();
 
-    uint32_t gid = loot_drop_item(55, 2, 0.0f, 0.0f, 0);
+    uint32_t gid = loot_drop_item(55, 2, 0.0f, 0.0f, 0.0f, 0);
 
     uint32_t item_id = 0;
     uint8_t  qty = 0;
@@ -349,7 +371,7 @@ static void test_snapshot_is_a_copy(void) {
     fresh_world();
     reset_player();
 
-    uint32_t gid = loot_drop_item(31, 1, 123.0f, 456.0f, 0);
+    uint32_t gid = loot_drop_item(31, 1, 123.0f, 456.0f, 0.0f, 0);
 
     GroundItem first;
     CHECK(loot_snapshot(gid, &first), "the snapshot resolves");
@@ -379,7 +401,7 @@ static void test_ground_pool_grows(void) {
     const int wanted = 700;
     int placed = 0;
     for (int i = 0; i < wanted; i++)
-        if (loot_drop_item(1000 + (uint32_t)i, 1, (float)i, 0.0f, 0) != 0) placed++;
+        if (loot_drop_item(1000 + (uint32_t)i, 1, (float)i, 0.0f, 0.0f, 0) != 0) placed++;
 
     CHECK(placed == wanted, "every drop past the old 256-slot ceiling was placed");
     CHECK(loot_active_count() == (size_t)wanted, "and all of them are on the ground");
@@ -404,7 +426,7 @@ static void test_slots_are_reused(void) {
     for (int round = 0; round < 5; round++) {
         uint32_t ids[64];
         for (int i = 0; i < 64; i++)
-            ids[i] = loot_drop_item(2000 + (uint32_t)i, 1, (float)i, 0.0f, 0);
+            ids[i] = loot_drop_item(2000 + (uint32_t)i, 1, (float)i, 0.0f, 0.0f, 0);
         for (int i = 0; i < 64; i++) {
             loot_reserve(ids[i], 1, NULL, NULL);
             loot_commit(ids[i]);
@@ -439,7 +461,7 @@ static void test_concurrent_claims_have_one_winner(void) {
     reset_player();
 
     for (int trial = 0; trial < 50; trial++) {
-        uint32_t gid = loot_drop_item(4242, 1, 0.0f, 0.0f, 0);
+        uint32_t gid = loot_drop_item(4242, 1, 0.0f, 0.0f, 0.0f, 0);
 
         enum { THREADS = 8 };
         pthread_t t[THREADS];
@@ -545,7 +567,7 @@ static void test_concurrent_pickups_conserve_every_item(void) {
         for (int i = 0; i < DROPS; i++)
             /* owner 0: unowned, so no exclusive window decides the race for
              * us. Stacked at the origin, where every fixture player stands. */
-            ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0);
+            ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0.0f, 0);
 
         pthread_t      t[FIXTURE_PLAYERS];
         PickupRaceArgs args[FIXTURE_PLAYERS];
@@ -588,7 +610,7 @@ static void test_concurrent_pickups_conserve_every_item(void) {
 
     uint32_t ids[DROPS];
     for (int i = 0; i < DROPS; i++)
-        ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0);
+        ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0.0f, 0);
 
     pthread_t      t[FIXTURE_PLAYERS];
     PickupRaceArgs args[FIXTURE_PLAYERS];
@@ -651,7 +673,7 @@ static void test_pickups_race_the_expiry_sweep(void) {
 
     uint32_t ids[DROPS];
     for (int i = 0; i < DROPS; i++)
-        ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0);
+        ids[i] = loot_drop_item(ITEM, 1, 0.0f, 0.0f, 0.0f, 0);
 
     _Atomic int running = 1;
     pthread_barrier_t start;
@@ -702,6 +724,7 @@ int main(void) {
     test_full_inventory_does_not_destroy_the_item();
     test_successful_pickup_removes_the_item();
     test_out_of_range_pickup_is_refused();
+    test_pickup_respects_height();
     test_owner_window_blocks_others();
     test_reservation_is_exclusive();
     test_snapshot_is_a_copy();

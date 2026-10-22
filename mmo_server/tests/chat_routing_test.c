@@ -127,7 +127,7 @@ uint32_t player_find_by_name(const char* name) {
 
 /* --- The block index, stubbed -------------------------------------------
  *
- * The real one is world_server/src/friends.c, which pulls in the friend bus
+ * The real one is world_server/systems/src/friends.c, which pulls in the friend bus
  * and Redis. What this file has to prove is that delivery consults it and
  * honours the answer, so one settable edge is the whole stub.
  */
@@ -153,15 +153,19 @@ static pthread_mutex_t g_sent_lock = PTHREAD_MUTEX_INITIALIZER;
 static int             g_sent_fd[MAX_SENDS];
 static char            g_sent_name[MAX_SENDS][32];
 static char            g_sent_body[MAX_SENDS][MAX_CHAT_MESSAGE];
+static uint8_t         g_sent_channel[MAX_SENDS];
+static uint8_t         g_sent_flags[MAX_SENDS];
 static int             g_sent_count = 0;
 
-ssize_t server_send(int fd, void* buf, size_t len) {
+ssize_t outbox_send(int fd, void* buf, size_t len) {
     pthread_mutex_lock(&g_sent_lock);
     if (g_sent_count < MAX_SENDS && len >= sizeof(ChatMessagePacket)) {
         const ChatMessagePacket* m = (const ChatMessagePacket*)buf;
         g_sent_fd[g_sent_count] = fd;
         snprintf(g_sent_name[g_sent_count], sizeof(g_sent_name[0]), "%s", m->sender_name);
         snprintf(g_sent_body[g_sent_count], sizeof(g_sent_body[0]), "%s", m->message);
+		g_sent_channel[g_sent_count] = m->channel;
+		g_sent_flags[g_sent_count] = m->flags;
         g_sent_count++;
     }
     pthread_mutex_unlock(&g_sent_lock);
@@ -202,16 +206,41 @@ static int reached(int fd) {
 
 /* --- Driving one message ------------------------------------------------- */
 
-static void say(uint8_t channel, const char* text) {
-    ChatSendPacket pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.header.type         = PACKET_CHAT_SEND;
-    pkt.header.player_id    = htonl(1);
-    pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
-    pkt.channel             = channel;
-    snprintf(pkt.message, sizeof(pkt.message), "%s", text);
+// Sends one line on a channel; `target` is only read for a whisper.
+static void say_to(uint8_t channel, const char* target, const char* text) {
+	ChatSendPacket pkt;
 
-    chat_handle_send(FD_SENDER, 1, (uint8_t*)&pkt, (ssize_t)sizeof(pkt));
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_CHAT_SEND;
+	pkt.header.player_id = htonl(1);
+	pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+	pkt.channel = channel;
+	snprintf(pkt.target, sizeof(pkt.target), "%s", target);
+	snprintf(pkt.message, sizeof(pkt.message), "%s", text);
+
+	chat_handle_send(FD_SENDER, 1, (uint8_t*)&pkt, (ssize_t)sizeof(pkt));
+}
+
+static void say(uint8_t channel, const char* text) {
+	say_to(channel, "", text);
+}
+
+static void whisper(const char* target, const char* text) {
+	say_to(CHAT_CHANNEL_WHISPER, target, text);
+}
+
+// Did a system notice go to this descriptor, and did it contain this text?
+static int noticed(int fd, const char* needle) {
+	int found = 0;
+
+	pthread_mutex_lock(&g_sent_lock);
+	for(int i = 0; i < g_sent_count; i++)
+		if(g_sent_fd[i] == fd && g_sent_channel[i] == CHAT_CHANNEL_SYSTEM &&
+		   strstr(g_sent_body[i], needle))
+			found = 1;
+	pthread_mutex_unlock(&g_sent_lock);
+
+	return found;
 }
 
 int main(void) {
@@ -271,7 +300,7 @@ int main(void) {
 
     printf("\nTEST 5: a whisper reaches its target and its sender, and no one else\n");
     clear_sends();
-    say(CHAT_CHANNEL_WHISPER, "Far psst over here");
+	whisper("Far", "psst over here");
     n = settle();
     printf("  %d recipient(s)\n", n);
     CHECK(n == 2,                   "exactly two sends: the target and the echo");
@@ -280,43 +309,56 @@ int main(void) {
     CHECK(!reached(FD_NEAR),        "a player standing next to the sender does NOT");
     CHECK(!reached(FD_STRANGER),    "nor does anyone else");
 
-    printf("\nTEST 6: the whisper body has the target name stripped from it\n");
+    printf("\nTEST 6: a whisper's body arrives alone and its echo is flagged\n");
     {
         int ok_body = 0, ok_echo = 0;
         pthread_mutex_lock(&g_sent_lock);
         for (int i = 0; i < g_sent_count; i++) {
             if (g_sent_fd[i] == FD_FAR && strcmp(g_sent_body[i], "psst over here") == 0)
                 ok_body = 1;
-            /* The echo is labelled with where it went, not who sent it. */
-            if (g_sent_fd[i] == FD_SENDER && strncmp(g_sent_name[i], "-> Far", 6) == 0)
-                ok_echo = 1;
+			// The echo names where it went, and says it is an echo
+			if(g_sent_fd[i] == FD_SENDER && strcmp(g_sent_name[i], "Far") == 0 &&
+			   (g_sent_flags[i] & CHAT_FLAG_ECHO))
+				ok_echo = 1;
         }
         pthread_mutex_unlock(&g_sent_lock);
-        CHECK(ok_body, "the target sees the body without their own name in front");
-        CHECK(ok_echo, "the sender's echo is labelled with the target");
+        CHECK(ok_body, "the target sees the body alone");
+        CHECK(ok_echo, "the sender's echo names the target and carries the echo flag");
     }
 
     printf("\nTEST 7: a whisper to nobody reaches nobody\n");
     clear_sends();
-    say(CHAT_CHANNEL_WHISPER, "Nonexistent are you there");
-    n = settle();
-    printf("  %d recipient(s)\n", n);
-    CHECK(n == 0, "an offline target is not an excuse to broadcast");
+	whisper("Nonexistent", "are you there");
+	n = settle();
+	printf("  %d recipient(s)\n", n);
+	CHECK(n == 1, "an offline target is not an excuse to broadcast");
+	CHECK(noticed(FD_SENDER, "No player named Nonexistent is online."),
+			"the sender is told, in the system channel");
 
-    printf("\nTEST 8: malformed whispers are dropped, not routed\n");
-    /* A whisper is "Target body". Without a space there is no target, and the
-     * old inline implementation's split is the kind of parse that turns a
-     * missing separator into a name of the whole message -- or into a read
-     * past it. */
-    const char* malformed[] = { "Alone", " leadingspace", "Target ", "" };
-    for (size_t i = 0; i < sizeof(malformed) / sizeof(malformed[0]); i++) {
-        clear_sends();
-        say(CHAT_CHANNEL_WHISPER, malformed[i]);
-        n = settle();
-        char what[96];
-        snprintf(what, sizeof(what), "whisper \"%s\" reaches nobody", malformed[i]);
-        CHECK(n == 0, what);
-    }
+	printf("\nTEST 8: a whisper with no target is refused, not routed\n");
+	// Target and text are separate fields now, so a missing target is simply
+	// empty, and the old "no space, no name" parse cannot arise.
+	const char* bad_targets[] = { "", "   ", "\t\n" };
+	for(size_t i = 0; i < sizeof(bad_targets) / sizeof(bad_targets[0]); i++) {
+		clear_sends();
+		whisper(bad_targets[i], "hello");
+		n = settle();
+		CHECK(n == 1 && noticed(FD_SENDER, "Whisper to whom?"),
+				"only the sender hears, and is asked who to whisper to");
+	}
+
+	printf("\nTEST 8b: a whisper to yourself is refused\n");
+	clear_sends();
+	whisper("Sender", "talking to myself");
+	n = settle();
+	CHECK(n == 1 && noticed(FD_SENDER, "cannot whisper yourself"),
+			"the sender is told, and nobody else hears");
+
+	printf("\nTEST 8c: the target name's spaces and control bytes are cleaned\n");
+	clear_sends();
+	whisper("  Far\x01 ", "cleaned");
+	n = settle();
+	CHECK(n == 2 && reached(FD_FAR), "the cleaned name finds the player");
 
     printf("\nTEST 9: an unknown channel routes to nobody\n");
     clear_sends();
@@ -325,11 +367,37 @@ int main(void) {
     printf("  %d recipient(s)\n", n);
     CHECK(n == 0, "an unrecognised channel is not treated as global");
 
+	// The system channel belongs to the server; a client may not speak on it
+	clear_sends();
+	say(CHAT_CHANNEL_SYSTEM, "The server says");
+	n = settle();
+	CHECK(n == 0, "a client cannot speak on the system channel");
+
     printf("\nTEST 10: an empty message is dropped before it is queued\n");
     clear_sends();
     say(CHAT_CHANNEL_GLOBAL, "");
     n = settle();
     CHECK(n == 0, "an empty message reaches nobody");
+
+	printf("\nTEST 10b: control bytes are stripped and blank lines dropped\n");
+	clear_sends();
+	say(CHAT_CHANNEL_GLOBAL, "   \t \n  ");
+	n = settle();
+	CHECK(n == 0, "a line of only whitespace and control bytes is dropped");
+
+	clear_sends();
+	say(CHAT_CHANNEL_GLOBAL, "  hi\x1b[31m\r\nthere  ");
+	n = settle();
+	CHECK(n == ROSTER, "a line with control bytes is still delivered");
+	{
+		int clean = 0;
+
+		pthread_mutex_lock(&g_sent_lock);
+		if(g_sent_count > 0)
+			clean = strcmp(g_sent_body[0], "hi[31mthere") == 0;
+		pthread_mutex_unlock(&g_sent_lock);
+		CHECK(clean, "control bytes are removed and the ends trimmed");
+	}
 
     printf("\nTEST 11: a short packet is refused\n");
     clear_sends();
@@ -393,12 +461,13 @@ int main(void) {
      * as it would have. A distinguishable failure would make the block a
      * detector, and a detector is what turns one blocked account into two. */
     clear_sends();
-    say(CHAT_CHANNEL_WHISPER, "Far let me in");
-    n = settle();
-    printf("  %d recipient(s)\n", n);
-    CHECK(n == 1,             "exactly one send: the sender's own echo");
-    CHECK(!reached(FD_FAR),   "the target does not receive it");
-    CHECK(reached(FD_SENDER), "the sender sees the same echo as a delivered whisper");
+	whisper("Far", "let me in");
+	n = settle();
+	printf("  %d recipient(s)\n", n);
+	CHECK(n == 1,             "exactly one send: the sender's own echo");
+	CHECK(!reached(FD_FAR),   "the target does not receive it");
+	CHECK(reached(FD_SENDER), "the sender sees the same echo as a delivered whisper");
+	CHECK(!noticed(FD_SENDER, ""), "and it is a whisper echo, not a system notice");
 
     printf("\nTEST 15: the block is directional\n");
     set_block(1, 3);            /* Sender refuses Far -- the other way round */
@@ -421,7 +490,8 @@ int main(void) {
     int both = settle();
     printf("  first message: %d sends; after a second: %d sends\n", first, both);
     CHECK(first == ROSTER, "the first global message goes out");
-    CHECK(both == first,   "a second inside the cooldown adds nothing");
+    CHECK(both == first + 1, "a second inside the cooldown is refused with one notice");
+	CHECK(noticed(FD_SENDER, "on cooldown"), "and the sender is told why");
 
     printf("\nTEST 17: the cooldown does not gag the other channels\n");
     clear_sends();

@@ -118,19 +118,8 @@ void world_cleanup(WorldState* world);
 Chunk* world_get_chunk(WorldState* world, int chunk_x, int chunk_y);
 Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y);
 
-int  world_get_tile(const WorldState* world, int tile_x, int tile_y);
-void world_set_tile(WorldState* world, int tile_x, int tile_y, int tile_type);
-
 int world_check_tile_collision(const WorldState* world, float x, float y);
 int world_check_box_collision(const WorldState* world, float x, float y, float half_size);
-
-void world_to_tile(const WorldState* world, float wx, float wy, int* tx, int* ty);
-void tile_to_world(const WorldState* world, int tx, int ty, float* wx, float* wy);
-
-int  world_add_modification(WorldState* world, int tile_x, int tile_y,
-                             uint16_t tile_type, uint8_t collision, float duration);
-void world_remove_modification(WorldState* world, int tile_x, int tile_y);
-void world_clear_modifications(WorldState* world);
 
 /** Draw the visible ground, flat, without writing depth. World-space drawing
  *  after this (telegraphs, zones) lies on it and is hidden by what stands. */

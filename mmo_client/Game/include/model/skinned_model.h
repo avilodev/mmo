@@ -22,13 +22,19 @@
 
 #include "model/mat4.h"
 
+#include <stdint.h>
+
 #define SKIN_MAX_NODES   256
-#define SKIN_MAX_JOINTS  128
-#define SKIN_MAX_MESHES  24
+#define SKIN_MAX_JOINTS  192   // the VRM players carry 154 and 170
+#define SKIN_MAX_MESHES  64    // one bit each in a SkinMeshMask
 #define SKIN_INFLUENCES  4     /* glTF's JOINTS_0/WEIGHTS_0 is exactly four */
 /** Floats per skinned vertex: position then normal, interleaved. */
 #define SKIN_VERTEX_FLOATS 6
 #define SKIN_NAME_MAX    64
+
+/** Which of a model's meshes a body wears: bit i is mesh i. */
+typedef uint64_t SkinMeshMask;
+#define SKIN_ALL_MESHES (~(SkinMeshMask)0)
 
 /** A node's local transform. Rotation is a quaternion (x, y, z, w). */
 typedef struct {
@@ -88,10 +94,17 @@ typedef struct {
     int index_count;
     float* uvs;                      /* NULL when the file gave none */
 
+	// The mesh's name in the file, minus Blender's ".001" copy suffix
+	char name[SKIN_NAME_MAX];
+	char material[SKIN_NAME_MAX];
+
+	// With a tint: the tint times this, or 0 for the material's own colour
+	float tint_shade;
+
     float base_color[3];
     int double_sided;
 
-    /* The base colour map, decoded but not yet on the GPU; NULL draws flat. */
+    /* The base colour map, 4 bytes a pixel, decoded but not yet on the GPU; NULL draws flat. */
     unsigned char* image;
     int image_width;
     int image_height;
@@ -131,10 +144,6 @@ typedef struct {
 int skinned_model_load_glb(SkinnedModel* model, const char* path,
                            char* error, int error_size);
 
-/** Append another file's clips, matching nodes by name. */
-int skinned_model_add_clips(SkinnedModel* model, const char* path,
-                            char* error, int error_size);
-
 /** A clip's index by name, or -1. */
 int skinned_model_find_clip(const SkinnedModel* model, const char* name);
 
@@ -154,16 +163,25 @@ void skinned_model_sample(const SkinnedModel* model, int clip, float time, Pose*
 void skinned_model_blend(const SkinnedModel* model, const Pose* a, const Pose* b,
                          float t, Pose* out);
 
+// Like skinned_model_blend, but each bone moves toward b by t * mask[node]
+void skinned_model_blend_masked(const SkinnedModel* model, const Pose* a, const Pose* b,
+                                float t, const float* mask, Pose* out);
+
+// Mask of 1 for the named bone and all under it; 0 and all zero if no such bone
+int skinned_model_mask_subtree(const SkinnedModel* model, const char* bone, float* mask);
+
 /** Give a body its own vertices, seeded with the bind pose. Nonzero on success. */
 int  skinned_instance_init(SkinnedInstance* out, const SkinnedModel* model);
+
+/** Like skinned_instance_init, but only the meshes whose bit is set in `mask`
+ *  get vertices. The rest are never skinned or drawn, so a body pays for the
+ *  parts it wears and not for the whole kit. */
+int  skinned_instance_init_masked(SkinnedInstance* out, const SkinnedModel* model,
+                                  SkinMeshMask mask);
 void skinned_instance_free(SkinnedInstance* instance);
 
 /** Pose the skeleton and write the instance's vertices. */
 void skinned_model_skin(const SkinnedModel* model, const Pose* pose,
                         SkinnedInstance* instance);
-
-/** Where the named bone is in `pose`, in model space. Nonzero when found. */
-int skinned_model_bone_matrix(const SkinnedModel* model, const Pose* pose,
-                              const char* name, Mat4* out);
 
 #endif /* MODEL_SKINNED_MODEL_H */

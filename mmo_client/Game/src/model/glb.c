@@ -283,6 +283,6 @@ int glb_decode_image(const Glb* glb, int texture_index, unsigned char** pixels,
     if (!bytes || size > (size_t)0x7FFFFFFF) return 0;
 
     int channels = 0;
-    *pixels = stbi_load_from_memory(bytes, (int)size, width, height, &channels, 3);
+    *pixels = stbi_load_from_memory(bytes, (int)size, width, height, &channels, 4);
     return *pixels != NULL;
 }

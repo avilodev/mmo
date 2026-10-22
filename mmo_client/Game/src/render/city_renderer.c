@@ -6,6 +6,11 @@
 #include "render/gl_loader.h"
 #include "render/city_renderer.h"
 #include "render/world_light.h"
+#include "world/sky.h"
+#include "world/city_lamps.h"
+#include "render/scene_light.h"
+#include "render/shadow_map.h"
+#include "render/cover_map.h"
 #include "model/obj_mesh.h"
 #include "camera/cglm_config.h"
 #include "core/client_log.h"
@@ -16,64 +21,68 @@
 #include <string.h>
 
 static const char* VERTEX_SRC =
-    "#version 330 core\n"
-    "layout(location = 0) in vec3 a_pos;\n"
-    "layout(location = 1) in vec3 a_normal;\n"
-    "layout(location = 2) in vec2 a_uv;\n"
-    "uniform mat4 u_mvp;\n"
-    "uniform mat4 u_model;\n"
-    "out vec3 v_normal;\n"
-    "out vec2 v_uv;\n"
-    "out vec2 v_world;\n"
-    "void main() {\n"
-    "    v_normal = mat3(u_model) * a_normal;\n"
-    "    v_world = (u_model * vec4(a_pos, 1.0)).xz;\n"
-    "    v_uv = a_uv;\n"
-    "    gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
-    "}\n";
+	"#version 330 core\n"
+	"layout(location = 0) in vec3 a_pos;\n"
+	"layout(location = 1) in vec3 a_normal;\n"
+	"layout(location = 2) in vec2 a_uv;\n"
+	"uniform mat4 u_mvp;\n"
+	"uniform mat4 u_model;\n"
+	"out vec3 v_normal;\n"
+	"out vec2 v_uv;\n"
+	"out vec3 v_wpos;\n"
+	"void main() {\n"
+	"    vec4 w = u_model * vec4(a_pos, 1.0);\n"
+	"    v_normal = mat3(u_model) * a_normal;\n"
+	"    v_wpos = w.xyz;\n"
+	"    v_uv = a_uv;\n"
+	"    gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
+	"}\n";
 
-/* The same half-Lambert sun, scale and fog as model_renderer.c, so the city
- * and the people walking through it are lit alike. */
-static const char* FRAGMENT_SRC =
-    "#version 330 core\n"
-    "in vec3 v_normal;\n"
-    "in vec2 v_uv;\n"
-    "in vec2 v_world;\n"
-    "uniform vec2 u_fog_center;\n"
-    "uniform vec2 u_fog_range;\n"
-    "uniform vec3 u_fog_color;\n"
-    "uniform vec3 u_color;\n"
-    "uniform vec3 u_sun;\n"
-    "uniform float u_ambient;\n"
-    "uniform float u_light_scale;\n"
-    "uniform int u_use_tex;\n"
-    "uniform sampler2D u_tex;\n"
-    "out vec4 frag;\n"
-    "void main() {\n"
-    "    vec3 n = normalize(v_normal);\n"
-    "    if (!gl_FrontFacing) n = -n;\n"
-    "    float wrap = dot(n, u_sun) * 0.5 + 0.5;\n"
-    "    float light = u_ambient + (1.0 - u_ambient) * wrap * wrap;\n"
-    "    vec3 c = u_color;\n"
-    "    if (u_use_tex == 1) c *= texture(u_tex, v_uv).rgb;\n"
-    "    float f = smoothstep(u_fog_range.x, u_fog_range.y, distance(v_world, u_fog_center));\n"
-    "    frag = vec4(mix(c * light * u_light_scale, u_fog_color, f), 1.0);\n"
-    "}\n";
+// The light comes from scene_light.h, shared with the characters, so the city
+// and the people walking through it are lit alike.
+static const char* FRAGMENT_HEAD =
+	"#version 330 core\n"
+	"in vec3 v_normal;\n"
+	"in vec2 v_uv;\n"
+	"in vec3 v_wpos;\n"
+	"uniform float u_clip_y;\n"
+	"uniform vec3 u_color;\n"
+	"uniform int u_use_tex;\n"
+	"uniform sampler2D u_tex;\n"
+	"out vec4 frag;\n";
+
+static const char* FRAGMENT_MAIN =
+	"void main() {\n"
+	"    if (v_wpos.y > u_clip_y) discard;\n"
+	"    vec3 n = normalize(v_normal);\n"
+	"    if (!gl_FrontFacing) n = -n;\n"
+	"    vec3 c = u_color;\n"
+	"    if (u_use_tex == 1) c *= texture(u_tex, v_uv).rgb;\n"
+	"    c = scene_surface(c, n, v_wpos);\n"
+	"    vec3 lit = c * scene_light(n, v_wpos) + scene_sheen(n, v_wpos);\n"
+	"    frag = vec4(scene_fog(lit, v_wpos), 1.0);\n"
+	"}\n";
 
 static GLuint g_program, g_vao, g_vbo, g_ibo;
 static GLuint g_textures[OBJ_MAX_MATERIALS];
 static float  g_colors[OBJ_MAX_MATERIALS][3];
 static int    g_material_count;
-static GLint  u_mvp, u_model, u_color, u_sun, u_ambient, u_light_scale, u_use_tex, u_tex;
-static GLint  u_fog_center, u_fog_range, u_fog_color;
+static GLint  u_mvp, u_model, u_color, u_use_tex, u_tex;
+static scene_light_uniforms g_light;
+static GLint  u_clip_y;
+
+// The scene's footprint in world units, from the batch boxes.
+static float g_bounds[4];
+static float g_heights[2];
+static int   g_have_bounds;
 
 /* Only the batch table stays on the CPU; the geometry lives on the GPU. */
 static ObjBatch* g_batches;
 static int       g_batch_count;
 
-static GLuint compile(GLenum type, const char* src) {
+static GLuint compile(GLenum type, const char* const* parts, int part_count) {
     GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &src, NULL);
+    glShaderSource(shader, part_count, parts, NULL);
     glCompileShader(shader);
 
     GLint ok = 0;
@@ -90,11 +99,15 @@ static GLuint compile(GLenum type, const char* src) {
 }
 
 static int build_program(void) {
-    GLuint vs = compile(GL_VERTEX_SHADER, VERTEX_SRC);
-    GLuint fs = compile(GL_FRAGMENT_SHADER, FRAGMENT_SRC);
+    const char* const vertex_parts[] = { VERTEX_SRC };
+    const char* const fragment_parts[] = { FRAGMENT_HEAD, scene_light_glsl(), FRAGMENT_MAIN };
+    GLuint vs = compile(GL_VERTEX_SHADER, vertex_parts, 1);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, fragment_parts, 3);
     if (!vs || !fs) {
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
+        if (vs) 
+            glDeleteShader(vs);
+        if (fs) 
+            glDeleteShader(fs);
         return 0;
     }
     g_program = glCreateProgram();
@@ -118,14 +131,10 @@ static int build_program(void) {
     u_mvp         = glGetUniformLocation(g_program, "u_mvp");
     u_model       = glGetUniformLocation(g_program, "u_model");
     u_color       = glGetUniformLocation(g_program, "u_color");
-    u_sun         = glGetUniformLocation(g_program, "u_sun");
-    u_ambient     = glGetUniformLocation(g_program, "u_ambient");
-    u_light_scale = glGetUniformLocation(g_program, "u_light_scale");
     u_use_tex     = glGetUniformLocation(g_program, "u_use_tex");
     u_tex         = glGetUniformLocation(g_program, "u_tex");
-    u_fog_center  = glGetUniformLocation(g_program, "u_fog_center");
-    u_fog_range   = glGetUniformLocation(g_program, "u_fog_range");
-    u_fog_color   = glGetUniformLocation(g_program, "u_fog_color");
+    u_clip_y      = glGetUniformLocation(g_program, "u_clip_y");
+    scene_light_locate(g_program, &g_light);
     return 1;
 }
 
@@ -189,6 +198,33 @@ static void upload(const ObjMesh* mesh) {
     }
 }
 
+// Find the world-space rectangle every batch lies inside.
+static void measure_bounds(void) {
+	const float s = CITY_UNITS_PER_METRE;
+
+	g_have_bounds = g_batch_count > 0;
+	for(int i = 0; i < g_batch_count; i++) {
+		const ObjBatch* b = &g_batches[i];
+		float lo_x = CITY_ORIGIN_X + b->min[0] * s;
+		float lo_y = CITY_ORIGIN_Y + b->min[2] * s;
+		float hi_x = CITY_ORIGIN_X + b->max[0] * s;
+		float hi_y = CITY_ORIGIN_Y + b->max[2] * s;
+
+		if(i == 0 || lo_x < g_bounds[0])
+			g_bounds[0] = lo_x;
+		if(i == 0 || lo_y < g_bounds[1])
+			g_bounds[1] = lo_y;
+		if(i == 0 || hi_x > g_bounds[2])
+			g_bounds[2] = hi_x;
+		if(i == 0 || hi_y > g_bounds[3])
+			g_bounds[3] = hi_y;
+		if(i == 0 || b->min[1] * s < g_heights[0])
+			g_heights[0] = b->min[1] * s;
+		if(i == 0 || b->max[1] * s > g_heights[1])
+			g_heights[1] = b->max[1] * s;
+	}
+}
+
 int city_renderer_init(void) {
     const float cell = CITY_CELL_UNITS / CITY_UNITS_PER_METRE;
     ObjMesh mesh;
@@ -212,8 +248,20 @@ int city_renderer_init(void) {
     g_batches = mesh.batches;
     g_batch_count = mesh.batch_count;
     mesh.batches = NULL;
+    measure_bounds();
     uint32_t tris = mesh.index_count / 3, verts = mesh.vertex_count;
     obj_mesh_free(&mesh);
+
+    int lamps = city_lamps_load(CITY_LAMPS_PATH, CITY_ORIGIN_X, CITY_ORIGIN_Y,
+                                CITY_UNITS_PER_METRE);
+    if (lamps < 0)
+        CLOG_WARN("[CITY] Could not read the lamps from %s; the city has none at night",
+                  CITY_LAMPS_PATH);
+    else
+        CLOG_INFO("[CITY] %d lamps", lamps);
+
+    // What the roofs keep the rain off: drawn from above once, now the scene is here
+    cover_map_build();
 
     CLOG_INFO("[CITY] Ready: %u triangles, %u vertices, %d cells; %s in %.2f s, "
               "uploaded in %.2f s", tris, verts, g_batch_count,
@@ -223,17 +271,35 @@ int city_renderer_init(void) {
 }
 
 void city_renderer_shutdown(void) {
+    cover_map_shutdown();
     for (int i = 0; i < g_material_count; i++)
         if (g_textures[i]) glDeleteTextures(1, &g_textures[i]);
     memset(g_textures, 0, sizeof(g_textures));
     g_material_count = 0;
-    if (g_ibo)     { glDeleteBuffers(1, &g_ibo);         g_ibo = 0; }
-    if (g_vbo)     { glDeleteBuffers(1, &g_vbo);         g_vbo = 0; }
-    if (g_vao)     { glDeleteVertexArrays(1, &g_vao);    g_vao = 0; }
-    if (g_program) { glDeleteProgram(g_program);         g_program = 0; }
+    if (g_ibo) { 
+        glDeleteBuffers(1, &g_ibo);         
+        g_ibo = 0; 
+    }
+
+    if (g_vbo) { 
+        glDeleteBuffers(1, &g_vbo);         
+        g_vbo = 0; 
+    }
+
+    if (g_vao) { 
+        glDeleteVertexArrays(1, &g_vao);    
+        g_vao = 0; 
+    }
+
+    if (g_program) { 
+        glDeleteProgram(g_program);         
+        g_program = 0; 
+    }
+
     free(g_batches);
     g_batches = NULL;
     g_batch_count = 0;
+    g_have_bounds = 0;
 }
 
 /** Whether a world-space box is at least partly inside the frustum of a
@@ -256,14 +322,8 @@ static int box_in_frustum(const float m[16], const float lo[3], const float hi[3
     return 1;
 }
 
-/** Ground distance from (x, z) to the nearest point of a box. */
-static float ground_distance(float x, float z, const float lo[3], const float hi[3]) {
-    float dx = x < lo[0] ? lo[0] - x : (x > hi[0] ? x - hi[0] : 0.0f);
-    float dz = z < lo[2] ? lo[2] - z : (z > hi[2] ? z - hi[2] : 0.0f);
-    return sqrtf(dx * dx + dz * dz);
-}
-
-void city_renderer_draw(const CameraView* view, float focus_x, float focus_y) {
+// Draw every cell the frustum holds, but nothing above clip_y
+static void draw_scene(const float* viewproj, float clip_y) {
     if (!g_program || g_batch_count == 0) return;
 
     const float s = CITY_UNITS_PER_METRE;
@@ -271,7 +331,7 @@ void city_renderer_draw(const CameraView* view, float focus_x, float focus_y) {
     glm_mat4_identity(model);
     glm_translate(model, (vec3){ CITY_ORIGIN_X, 0.0f, CITY_ORIGIN_Y });
     glm_scale_uni(model, s);
-    glm_mat4_mul((vec4*)view->viewproj, model, mvp);
+    glm_mat4_mul((vec4*)viewproj, model, mvp);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -285,16 +345,9 @@ void city_renderer_draw(const CameraView* view, float focus_x, float focus_y) {
     glBindVertexArray(g_vao);
     glUniformMatrix4fv(u_mvp, 1, GL_FALSE, (const float*)mvp);
     glUniformMatrix4fv(u_model, 1, GL_FALSE, (const float*)model);
-    float len = sqrtf(WORLD_SUN_X * WORLD_SUN_X + WORLD_SUN_Y * WORLD_SUN_Y +
-                      WORLD_SUN_Z * WORLD_SUN_Z);
-    glUniform3f(u_sun, WORLD_SUN_X / len, WORLD_SUN_Y / len, WORLD_SUN_Z / len);
-    glUniform1f(u_ambient, WORLD_AMBIENT);
-    float up = 0.5f * WORLD_SUN_Y / len + 0.5f;
-    glUniform1f(u_light_scale, 1.0f / (WORLD_AMBIENT + (1.0f - WORLD_AMBIENT) * up * up));
+    scene_light_apply(&g_light);
     glUniform1i(u_tex, 0);
-    glUniform2f(u_fog_center, focus_x, focus_y);
-    glUniform2f(u_fog_range, WORLD_FOG_START, WORLD_FOG_END);
-    glUniform3f(u_fog_color, WORLD_SKY_R, WORLD_SKY_G, WORLD_SKY_B);
+    glUniform1f(u_clip_y, clip_y);
     glActiveTexture(GL_TEXTURE0);
 
     int bound = -1;
@@ -304,14 +357,15 @@ void city_renderer_draw(const CameraView* view, float focus_x, float focus_y) {
                               CITY_ORIGIN_Y + b->min[2] * s };
         const float hi[3] = { CITY_ORIGIN_X + b->max[0] * s, b->max[1] * s,
                               CITY_ORIGIN_Y + b->max[2] * s };
-        if (ground_distance(focus_x, focus_y, lo, hi) > WORLD_FOG_END) continue;
-        if (!box_in_frustum(view->viewproj, lo, hi)) continue;
+        if (!box_in_frustum(viewproj, lo, hi))
+            continue;
 
         if (b->material != bound) {
             bound = b->material;
             GLuint tex = g_textures[bound];
             glUniform1i(u_use_tex, tex ? 1 : 0);
-            if (tex) glBindTexture(GL_TEXTURE_2D, tex);
+            if (tex) 
+                glBindTexture(GL_TEXTURE_2D, tex);
             glUniform3f(u_color, g_colors[bound][0], g_colors[bound][1], g_colors[bound][2]);
         }
         glDrawElements(GL_TRIANGLES, (GLsizei)b->count, GL_UNSIGNED_INT,
@@ -323,4 +377,70 @@ void city_renderer_draw(const CameraView* view, float focus_x, float focus_y) {
     glBindTexture(GL_TEXTURE_2D, 0);
     glDisable(GL_DEPTH_TEST);
     if (blend_was_on) glEnable(GL_BLEND);
+}
+
+void city_renderer_draw(const CameraView* view) {
+	draw_scene(view->viewproj, 1.0e9f);
+}
+
+void city_renderer_draw_map(const float* viewproj, float clip_y) {
+	// A map shows the city in daylight, whatever hour it is in the world
+	scene_light_set_flat(1);
+	draw_scene(viewproj, clip_y);
+	scene_light_set_flat(0);
+}
+
+void city_renderer_draw_shadow(const float* light_viewproj) {
+	const float s = CITY_UNITS_PER_METRE;
+	mat4 model, mvp;
+
+	if(!g_vao || g_batch_count == 0)
+		return;
+
+	glm_mat4_identity(model);
+	glm_translate(model, (vec3){ CITY_ORIGIN_X, 0.0f, CITY_ORIGIN_Y });
+	glm_scale_uni(model, s);
+	glm_mat4_mul((vec4*)light_viewproj, model, mvp);
+	shadow_map_set_mvp((const float*)mvp);
+
+	glBindVertexArray(g_vao);
+	for(int i = 0; i < g_batch_count; i++) {
+		const ObjBatch* b = &g_batches[i];
+		const float lo[3] = { CITY_ORIGIN_X + b->min[0] * s, b->min[1] * s,
+		                      CITY_ORIGIN_Y + b->min[2] * s };
+		const float hi[3] = { CITY_ORIGIN_X + b->max[0] * s, b->max[1] * s,
+		                      CITY_ORIGIN_Y + b->max[2] * s };
+
+		if(!box_in_frustum(light_viewproj, lo, hi))
+			continue;
+		glDrawElements(GL_TRIANGLES, (GLsizei)b->count, GL_UNSIGNED_INT,
+		               (const void*)((size_t)b->first * sizeof(uint32_t)));
+	}
+	glBindVertexArray(0);
+}
+
+int city_renderer_height_range(float* low, float* high) {
+	if(!g_have_bounds)
+		return 0;
+	if(low)
+		*low = g_heights[0];
+	if(high)
+		*high = g_heights[1];
+
+	return 1;
+}
+
+int city_renderer_bounds(float* min_x, float* min_y, float* max_x, float* max_y) {
+	if(!g_have_bounds)
+		return 0;
+	if(min_x)
+		*min_x = g_bounds[0];
+	if(min_y)
+		*min_y = g_bounds[1];
+	if(max_x)
+		*max_x = g_bounds[2];
+	if(max_y)
+		*max_y = g_bounds[3];
+
+	return 1;
 }

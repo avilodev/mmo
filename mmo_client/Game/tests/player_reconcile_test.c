@@ -25,6 +25,7 @@
 #include "world/world.h"
 #include "core/keybinds.h"
 #include "core/client_log.h"
+#include "world_spans.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -81,9 +82,18 @@ int world_check_box_collision(const WorldState* world, float x, float y, float h
 static WorldState  g_world;
 static PlayerState g_player;
 
+// A correction standing on the floor, as every one in these tests is
+static int correct(uint32_t sequence, float x, float y, float z) {
+	move_correction c = { x, y, z, 0.0f, 1, sequence };
+
+	return player_apply_correction(&g_player, &g_world, &c, 0.0f);
+}
+
 static void fresh(float x, float y) {
     memset(&g_world, 0, sizeof(g_world));
     g_world.tile_size = TILE;
+    /* Flat open ground everywhere: no sidecar, as in a world without spans. */
+    world_spans_init(4000, 4000, TILE);
 
     player_init(&g_player);
     g_player.x = x;
@@ -93,7 +103,7 @@ static void fresh(float x, float y) {
 
 /** Send a move: number it, remember it, and pretend the packet went out. */
 static uint32_t send_move(uint32_t sequence) {
-    player_record_sent_move(&g_player, sequence, g_player.x, g_player.y);
+    player_record_sent_move(&g_player, sequence, g_player.x, g_player.y, 0.0f);
     return sequence;
 }
 
@@ -102,6 +112,10 @@ static void predict(float dx, float dy) {
     g_player.x += dx;
     g_player.y += dy;
 }
+
+/* The world edge is at 0, and a box half over it is outside the spans, so the
+ * tests that walk near the origin stand a little way in. */
+#define SHIFT 100.0f
 
 static int near_enough(float a, float b) { return fabsf(a - b) < 0.01f; }
 
@@ -125,7 +139,7 @@ static void test_an_agreeing_correction_is_invisible(void) {
 
     float before_x = g_player.x, before_y = g_player.y;
 
-    int visible = player_apply_correction(&g_player, &g_world, 7, 1000.0f, 500.0f);
+    int visible = correct(7, 1000.0f, 500.0f, 0.0f);
 
     CHECK(!visible, "the correction reports itself as invisible");
     CHECK(near_enough(g_player.x, before_x) && near_enough(g_player.y, before_y),
@@ -146,7 +160,7 @@ static void test_a_disagreeing_correction_keeps_the_tail(void) {
     send_move(7);
     predict(40.0f, 0.0f);
 
-    int visible = player_apply_correction(&g_player, &g_world, 7, 900.0f, 500.0f);
+    int visible = correct(7, 900.0f, 500.0f, 0.0f);
 
     CHECK(visible, "the correction reports a visible move");
     CHECK(near_enough(g_player.x, 940.0f),
@@ -163,7 +177,7 @@ static void test_the_tail_is_measured_from_the_refused_move(void) {
      *
      * Measuring from the recorded position of the refused sequence is what
      * makes that split fall out for free rather than being counted by hand. */
-    fresh(0.0f, 0.0f);
+    fresh(SHIFT, SHIFT);
 
     send_move(1);            /* claimed (0, 0) */
     predict(10.0f, 0.0f);
@@ -174,18 +188,18 @@ static void test_the_tail_is_measured_from_the_refused_move(void) {
 
     /* Refusing sequence 2: the server says the player is at (5, 0). The tail
      * after sequence 2 is 30 - 10 = 20px. */
-    player_apply_correction(&g_player, &g_world, 2, 5.0f, 0.0f);
+    correct(2, SHIFT + 5.0f, SHIFT, 0.0f);
 
-    CHECK(near_enough(g_player.x, 25.0f),
+    CHECK(near_enough(g_player.x, SHIFT + 25.0f),
           "the tail is everything after the refused proposal, and only that");
 
     /* Refusing the newest instead leaves no tail at all: the client has walked
      * nowhere since sequence 3 was... except it has. Check the boundary the
      * other way with a fresh run. */
-    fresh(0.0f, 0.0f);
-    send_move(9);            /* claimed (0, 0) */
-    player_apply_correction(&g_player, &g_world, 9, -50.0f, 0.0f);
-    CHECK(near_enough(g_player.x, -50.0f),
+    fresh(SHIFT, SHIFT);
+    send_move(9);            /* claimed (SHIFT, 0) */
+    correct(9, SHIFT - 50.0f, SHIFT, 0.0f);
+    CHECK(near_enough(g_player.x, SHIFT - 50.0f),
           "a refusal with nothing sent after it is the server's position exactly");
 }
 
@@ -200,7 +214,7 @@ static void test_an_unknown_sequence_falls_back(void) {
     send_move(7);
     predict(40.0f, 0.0f);
 
-    int visible = player_apply_correction(&g_player, &g_world, 999, 800.0f, 400.0f);
+    int visible = correct(999, 800.0f, 400.0f, 0.0f);
 
     CHECK(visible, "an unreconcilable correction is reported as visible");
     CHECK(near_enough(g_player.x, 800.0f) && near_enough(g_player.y, 400.0f),
@@ -210,7 +224,7 @@ static void test_an_unknown_sequence_falls_back(void) {
      * slot, which would otherwise reconcile against a position of (0, 0). */
     fresh(1000.0f, 500.0f);
     predict(40.0f, 0.0f);
-    player_apply_correction(&g_player, &g_world, 0, 700.0f, 300.0f);
+    correct(0, 700.0f, 300.0f, 0.0f);
     CHECK(near_enough(g_player.x, 700.0f) && near_enough(g_player.y, 300.0f),
           "sequence zero does not match an empty ring slot");
 }
@@ -218,7 +232,7 @@ static void test_an_unknown_sequence_falls_back(void) {
 static void test_the_ring_wraps_without_confusing_itself(void) {
     printf("the ring holds the newest moves and forgets the oldest\n");
 
-    fresh(0.0f, 0.0f);
+    fresh(SHIFT, SHIFT);
 
     /* Three full turns of the ring. Every position is distinct, so a wrapped
      * slot resolving to the wrong entry would land the replay somewhere
@@ -231,12 +245,12 @@ static void test_the_ring_wraps_without_confusing_itself(void) {
     /* Now at (total * 10, 0); sequence N claimed ((N - 1) * 10, 0). */
 
     uint32_t newest = (uint32_t)total;
-    player_apply_correction(&g_player, &g_world, newest, 0.0f, 0.0f);
-    CHECK(near_enough(g_player.x, 10.0f),
+    correct(newest, SHIFT, SHIFT, 0.0f);
+    CHECK(near_enough(g_player.x, SHIFT + 10.0f),
           "the newest sequence resolves to the position it claimed");
 
     /* Rebuild and check the oldest still in the ring. */
-    fresh(0.0f, 0.0f);
+    fresh(SHIFT, SHIFT);
     for (int i = 1; i <= total; i++) {
         send_move((uint32_t)i);
         predict(10.0f, 0.0f);
@@ -244,18 +258,17 @@ static void test_the_ring_wraps_without_confusing_itself(void) {
     uint32_t oldest_held = (uint32_t)(total - PLAYER_MOVE_HISTORY + 1);
     float claimed_x = (float)(oldest_held - 1) * 10.0f;
     float tail      = (float)total * 10.0f - claimed_x;
-    player_apply_correction(&g_player, &g_world, oldest_held, 0.0f, 0.0f);
-    CHECK(near_enough(g_player.x, tail),
+    correct(oldest_held, SHIFT, SHIFT, 0.0f);
+    CHECK(near_enough(g_player.x, SHIFT + tail),
           "and so does the oldest the ring still holds");
 
     /* One older than that is gone, and must not resolve to a wrapped slot. */
-    fresh(0.0f, 0.0f);
+    fresh(SHIFT, SHIFT);
     for (int i = 1; i <= total; i++) {
         send_move((uint32_t)i);
         predict(10.0f, 0.0f);
     }
-    player_apply_correction(&g_player, &g_world,
-                            (uint32_t)(total - PLAYER_MOVE_HISTORY), 12345.0f, 0.0f);
+    correct((uint32_t)(total - PLAYER_MOVE_HISTORY), 12345.0f, 0.0f, 0.0f);
     CHECK(near_enough(g_player.x, 12345.0f),
           "one older than the ring holds falls back rather than matching a wrap");
 }
@@ -267,29 +280,29 @@ static void test_the_replay_does_not_walk_through_walls(void) {
      * can cross a wall the player would have been stopped by. The replay walks
      * it in half-tile samples for the same reason the server samples its own
      * path checks. */
-    fresh(0.0f, 0.0f);
+    fresh(SHIFT, SHIFT);
     send_move(1);
     predict(200.0f, 0.0f);    /* the client walked 200px east, unobstructed */
 
     /* The server puts the player back at the origin -- and between the origin
      * and 200px east there is now a wall. */
-    wall_at(80.0f, 96.0f);
+    wall_at(SHIFT + 80.0f, SHIFT + 96.0f);
 
-    player_apply_correction(&g_player, &g_world, 1, 0.0f, 0.0f);
+    correct(1, SHIFT, SHIFT, 0.0f);
 
-    CHECK(g_player.x < 80.0f,
+    CHECK(g_player.x < SHIFT + 80.0f,
           "the replay stopped at the wall rather than teleporting past it");
-    CHECK(g_player.x > 0.0f,
+    CHECK(g_player.x > SHIFT,
           "but still made the progress it could before reaching it");
 
     /* And with no wall in the way, the same tail arrives in full -- so the
      * stop above is the wall, not the sampling losing distance. */
-    fresh(0.0f, 0.0f);
+    fresh(SHIFT, SHIFT);
     send_move(1);
     predict(200.0f, 0.0f);
     wall_none();
-    player_apply_correction(&g_player, &g_world, 1, 0.0f, 0.0f);
-    CHECK(near_enough(g_player.x, 200.0f),
+    correct(1, SHIFT, SHIFT, 0.0f);
+    CHECK(near_enough(g_player.x, SHIFT + 200.0f),
           "an unobstructed tail of the same length arrives in full");
 }
 
@@ -311,7 +324,7 @@ static void test_a_teleport_forgets_the_unanswered_moves(void) {
     player_reset_position(&g_player, 20.0f, 20.0f);   /* a respawn across the map */
     predict(10.0f, 0.0f);
 
-    player_apply_correction(&g_player, &g_world, 4, 900.0f, 400.0f);
+    correct(4, 900.0f, 400.0f, 0.0f);
 
     CHECK(near_enough(g_player.x, 900.0f) && near_enough(g_player.y, 400.0f),
           "the stale correction is taken as-is rather than replayed across the jump");
@@ -322,7 +335,7 @@ static void test_a_teleport_forgets_the_unanswered_moves(void) {
     player_reset_position(&g_player, 20.0f, 20.0f);
     send_move(5);
     predict(15.0f, 0.0f);
-    player_apply_correction(&g_player, &g_world, 5, 20.0f, 20.0f);
+    correct(5, 20.0f, 20.0f, 0.0f);
     CHECK(near_enough(g_player.x, 35.0f),
           "while a move sent after it replays its tail as usual");
 }
@@ -337,14 +350,18 @@ static void test_a_correction_without_a_world_still_corrects(void) {
     send_move(3);
     predict(40.0f, 0.0f);
 
-    player_apply_correction(&g_player, NULL, 3, 111.0f, 222.0f);
+	move_correction no_world = { 111.0f, 222.0f, 0.0f, 0.0f, 1, 3 };
+
+	player_apply_correction(&g_player, NULL, &no_world, 0.0f);
     CHECK(near_enough(g_player.x, 111.0f) && near_enough(g_player.y, 222.0f),
           "the server's position is taken without a replay");
 
     /* And a NULL player is survivable, because a correction can arrive during
      * teardown. */
-    player_apply_correction(NULL, &g_world, 1, 0.0f, 0.0f);
-    player_record_sent_move(NULL, 1, 0.0f, 0.0f);
+	move_correction none = { 0.0f, 0.0f, 0.0f, 0.0f, 1, 1 };
+
+	player_apply_correction(NULL, &g_world, &none, 0.0f);
+    player_record_sent_move(NULL, 1, 0.0f, 0.0f, 0.0f);
     CHECK(1, "a NULL player does not crash either call");
 }
 

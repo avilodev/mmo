@@ -36,14 +36,31 @@ void quest_tracker_render_panel(const QuestLogState* ql, int vw, int vh) {
     int lines = renderer_measure_text_wrapped(QT_WIDTH - QT_MARGIN * 2.0f, step.description);
     if (lines < 1) lines = 1;
 
-    float ph = QT_LINE_H * 2.0f + lines * QT_LINE_H + QT_MARGIN;
+	// a quest with named steps says which one this is, on a line of its own
+	char step_label[96] = "";
+	int step_line = 0;
+
+	if(step.step_count > 1) {
+		if(step.step_title[0] != '\0')
+			snprintf(step_label, sizeof(step_label), "Step %u of %u: %s", (unsigned)step.step,
+			         (unsigned)step.step_count, step.step_title);
+		else
+			snprintf(step_label, sizeof(step_label), "Step %u of %u", (unsigned)step.step,
+			         (unsigned)step.step_count);
+		step_line = 1;
+	}
+
+    float ph = QT_LINE_H * (2.0f + step_line) + lines * QT_LINE_H + QT_MARGIN;
 
     renderer_draw_rect(px, py, QT_WIDTH, ph, 0.05f, 0.06f, 0.10f, 0.72f);
     renderer_draw_rect(px, py, 3.0f, ph, QT_R, QT_G, QT_B, 0.9f);
 
     renderer_draw_text(px + QT_MARGIN, py + QT_LINE_H, step.quest_title);
 
-    float text_y = py + QT_LINE_H * 2.0f;
+	if(step_line)
+		renderer_draw_text(px + QT_MARGIN, py + QT_LINE_H * 2.0f, step_label);
+
+    float text_y = py + QT_LINE_H * (2.0f + step_line);
     renderer_draw_rect(px + QT_MARGIN - 8.0f, text_y - 8.0f, 5.0f, 5.0f,
                        QT_R, QT_G, QT_B, 1.0f);
     renderer_draw_text_wrapped(px + QT_MARGIN, text_y,

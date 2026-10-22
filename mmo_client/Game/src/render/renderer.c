@@ -7,6 +7,7 @@
 #include "stb_truetype.h"
 
 #include "renderer.h"
+#include "render/font_levels.h"
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -19,13 +20,22 @@ static int screen_height;
 static stbtt_bakedchar baked_chars[96];
 static GLuint font_texture;
 
+// The same font baked at the sizes of font_levels.h; level 0 is the one above
+static stbtt_bakedchar level_chars[FONT_LEVEL_COUNT][96];
+static GLuint level_texture[FONT_LEVEL_COUNT];
+static int level_atlas[FONT_LEVEL_COUNT];
+static float level_base_size = 22.0f;
+
 // Cached GL texture state — avoids redundant glEnable/glDisable calls
 static int g_texture_enabled = 1;
 
 static void set_texture_enabled(int enable) {
-    if (enable == g_texture_enabled) return;
-    if (enable) glEnable(GL_TEXTURE_2D);
-    else        glDisable(GL_TEXTURE_2D);
+    if (enable == g_texture_enabled) 
+        return;
+    if (enable) 
+        glEnable(GL_TEXTURE_2D);
+    else        
+        glDisable(GL_TEXTURE_2D);
     g_texture_enabled = enable;
 }
 
@@ -54,6 +64,39 @@ void renderer_init(int window_width, int window_height) {
 void renderer_clear(float r, float g, float b) {
     glClearColor(r, g, b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+/**
+ * Paint the margin around the letterboxed view black.
+ *
+ * Done last, with the scissor test, because glClear ignores the viewport and
+ * the scene's own clear would otherwise colour the bars.
+ */
+void renderer_clear_bars(int fb_width, int fb_height, const letterbox_rect* box) {
+	// Left and right, then below and above
+	const int bars[4][4] = {
+		{ 0, 0, box->x, fb_height },
+		{ box->x + box->w, 0, fb_width - box->x - box->w, fb_height },
+		{ box->x, 0, box->w, box->y },
+		{ box->x, box->y + box->h, box->w, fb_height - box->y - box->h },
+	};
+
+	if(box->x == 0 && box->y == 0 && box->w == fb_width && box->h == fb_height)
+		return;
+
+	glViewport(0, 0, fb_width, fb_height);
+	glEnable(GL_SCISSOR_TEST);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+	for(int i = 0; i < 4; i++) {
+		if(bars[i][2] <= 0 || bars[i][3] <= 0)
+			continue;
+
+		glScissor(bars[i][0], bars[i][1], bars[i][2], bars[i][3]);
+		glClear(GL_COLOR_BUFFER_BIT);
+	}
+
+	glDisable(GL_SCISSOR_TEST);
 }
 
 /**
@@ -125,10 +168,10 @@ void renderer_draw_rect(float x, float y, float width, float height,
 
     glColor4f(r, g, b, a);
     glBegin(GL_QUADS);
-        glVertex2f(x, y);
-        glVertex2f(x + width, y);
-        glVertex2f(x + width, y + height);
-        glVertex2f(x, y + height);
+    glVertex2f(x, y);
+    glVertex2f(x + width, y);
+    glVertex2f(x + width, y + height);
+    glVertex2f(x, y + height);
     glEnd();
 }
 
@@ -144,10 +187,10 @@ void renderer_draw_sprite(float x, float y, float width, float height,
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     
     glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 0.0f); glVertex2f(x, y);
-        glTexCoord2f(1.0f, 0.0f); glVertex2f(x + width, y);
-        glTexCoord2f(1.0f, 1.0f); glVertex2f(x + width, y + height);
-        glTexCoord2f(0.0f, 1.0f); glVertex2f(x, y + height);
+    glTexCoord2f(0.0f, 0.0f); glVertex2f(x, y);
+    glTexCoord2f(1.0f, 0.0f); glVertex2f(x + width, y);
+    glTexCoord2f(1.0f, 1.0f); glVertex2f(x + width, y + height);
+    glTexCoord2f(0.0f, 1.0f); glVertex2f(x, y + height);
     glEnd();
 }
 
@@ -167,30 +210,10 @@ void renderer_draw_sprite_uv(float x, float y, float width, float height,
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     glBegin(GL_QUADS);
-        glTexCoord2f(u0, v0); glVertex2f(x,         y);
-        glTexCoord2f(u1, v0); glVertex2f(x + width, y);
-        glTexCoord2f(u1, v1); glVertex2f(x + width, y + height);
-        glTexCoord2f(u0, v1); glVertex2f(x,         y + height);
-    glEnd();
-}
-
-/**
- * Draw a normalized texture region multiplied by an RGBA tint.
- *
- * @param texture_id  OpenGL texture object to bind for the draw.
- */
-void renderer_draw_sprite_uv_tinted(float x, float y, float width, float height,
-                                    unsigned int texture_id,
-                                    float u0, float v0, float u1, float v1,
-                                    float r, float g, float b, float a) {
-    set_texture_enabled(1);
-    glBindTexture(GL_TEXTURE_2D, texture_id);
-    glColor4f(r, g, b, a);
-    glBegin(GL_QUADS);
-        glTexCoord2f(u0, v0); glVertex2f(x,         y);
-        glTexCoord2f(u1, v0); glVertex2f(x + width, y);
-        glTexCoord2f(u1, v1); glVertex2f(x + width, y + height);
-        glTexCoord2f(u0, v1); glVertex2f(x,         y + height);
+    glTexCoord2f(u0, v0); glVertex2f(x,         y);
+    glTexCoord2f(u1, v0); glVertex2f(x + width, y);
+    glTexCoord2f(u1, v1); glVertex2f(x + width, y + height);
+    glTexCoord2f(u0, v1); glVertex2f(x,         y + height);
     glEnd();
 }
 
@@ -204,6 +227,39 @@ void renderer_draw_text_primitive(float x, float y, const char* text, float r, f
     for (int i = 0; text[i] != '\0'; i++) {
         renderer_draw_rect(x + i * 10, y, 8, 12, r, g, b, 1.0f);
     }
+}
+
+// Side of the square atlas a bake of this pixel height needs
+static int atlas_side_for(float size) {
+	return size > 45.0f ? 1024 : 512;
+}
+
+// Bake the sizes above the first; a level that fails falls back to a smaller one
+static void bake_font_levels(const unsigned char* ttf_buffer) {
+	for(int level = 1; level < FONT_LEVEL_COUNT; level++) {
+		float size = font_level_size(level, level_base_size);
+		int side = atlas_side_for(size);
+		unsigned char* bitmap = malloc((size_t)side * (size_t)side);
+
+		if(!bitmap)
+			continue;
+
+		if(stbtt_BakeFontBitmap(ttf_buffer, 0, size, bitmap, side, side, 32, 96,
+		                        level_chars[level]) <= 0) {
+			CLOG_WARN("Font size %.0f did not fit its atlas", size);
+			free(bitmap);
+			continue;
+		}
+
+		glGenTextures(1, &level_texture[level]);
+		glBindTexture(GL_TEXTURE_2D, level_texture[level]);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, side, side, 0, GL_ALPHA, GL_UNSIGNED_BYTE,
+		             bitmap);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		level_atlas[level] = side;
+		free(bitmap);
+	}
 }
 
 /**
@@ -254,6 +310,12 @@ void renderer_font_init(const char* path, float size) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, 512, 512, 0, GL_ALPHA, GL_UNSIGNED_BYTE, temp_bitmap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
+	level_base_size = size;
+	memcpy(level_chars[0], baked_chars, sizeof(baked_chars));
+	level_texture[0] = font_texture;
+	level_atlas[0] = 512;
+	bake_font_levels(ttf_buffer);
+
     free(ttf_buffer);
     free(temp_bitmap);
 }
@@ -264,10 +326,20 @@ void renderer_font_init(const char* path, float size) {
  * @param text  NUL-terminated text; bytes outside ASCII 32 through 127 are skipped.
  */
 void renderer_draw_text(float x, float y, const char* text) {
-    set_texture_enabled(1);
-    glBindTexture(GL_TEXTURE_2D, font_texture);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f); // White text
-    
+	renderer_draw_text_colored(x, y, text, 1.0f, 1.0f, 1.0f);   // White text
+}
+
+/**
+ * Draw printable ASCII text with the shared baked font, in a colour.
+ *
+ * @param text  NUL-terminated text; bytes outside ASCII 32 through 127 are skipped.
+ */
+void renderer_draw_text_colored(float x, float y, const char* text,
+                                float r, float g, float b) {
+	set_texture_enabled(1);
+	glBindTexture(GL_TEXTURE_2D, font_texture);
+	glColor4f(r, g, b, 1.0f);
+
     glBegin(GL_QUADS);
     while (*text) {
         if ((unsigned char)*text >= 32 && (unsigned char)*text < 128) {
@@ -317,6 +389,18 @@ void renderer_draw_circle(float cx, float cy, float radius,
 }
 
 /**
+ * Raise world-space drawing by z world units until renderer_lift_end().
+ */
+void renderer_lift_begin(float z) {
+    glPushMatrix();
+    glTranslatef(0.0f, 0.0f, z);
+}
+
+void renderer_lift_end(void) {
+    glPopMatrix();
+}
+
+/**
  * Draw a filled cone centered on a direction vector.
  *
  * @param angle_deg  Full cone angle in degrees.
@@ -355,17 +439,105 @@ void renderer_draw_cone(float cx, float cy, float dir_x, float dir_y,
     glEnd();
 }
 
+void renderer_draw_texture_quad(unsigned int texture_id, const float corners[8],
+                                float r, float g, float b, float a) {
+	set_texture_enabled(1);
+	glBindTexture(GL_TEXTURE_2D, texture_id);
+	glColor4f(r, g, b, a);
+	glBegin(GL_QUADS);
+	glTexCoord2f(0.0f, 0.0f); glVertex2f(corners[0], corners[1]);
+	glTexCoord2f(1.0f, 0.0f); glVertex2f(corners[2], corners[3]);
+	glTexCoord2f(1.0f, 1.0f); glVertex2f(corners[4], corners[5]);
+	glTexCoord2f(0.0f, 1.0f); glVertex2f(corners[6], corners[7]);
+	glEnd();
+}
+
+void renderer_draw_triangle(float x0, float y0, float x1, float y1, float x2, float y2,
+                            float r, float g, float b, float a) {
+	set_texture_enabled(0);
+	glColor4f(r, g, b, a);
+	glBegin(GL_TRIANGLES);
+	glVertex2f(x0, y0);
+	glVertex2f(x1, y1);
+	glVertex2f(x2, y2);
+	glEnd();
+}
+
 /**
  * Release the shared font texture.
  *
  * A current OpenGL context must exist before this call.
  */
 void renderer_cleanup(void) {
+	for(int level = 1; level < FONT_LEVEL_COUNT; level++) {
+		if(level_texture[level]) {
+			glDeleteTextures(1, &level_texture[level]);
+			level_texture[level] = 0;
+		}
+	}
     if (font_texture) {
         glDeleteTextures(1, &font_texture);
         font_texture = 0;
     }
     CLOG_INFO("Renderer cleaned up");
+}
+
+// The level asked for if it baked, else the nearest smaller one that did
+static int usable_level(int level) {
+	if(level >= FONT_LEVEL_COUNT)
+		level = FONT_LEVEL_COUNT - 1;
+	while(level > 0 && !level_texture[level])
+		level--;
+
+	return level < 0 ? 0 : level;
+}
+
+int renderer_font_level_for(float pixel_height) {
+	return usable_level(font_level_for(pixel_height, level_base_size));
+}
+
+float renderer_font_level_size(int level) {
+	return font_level_size(usable_level(level), level_base_size);
+}
+
+float renderer_text_width_level(const char* text, int level) {
+	float width = 0.0f;
+
+	level = usable_level(level);
+	for(int i = 0; text && text[i]; i++) {
+		unsigned char c = (unsigned char)text[i];
+
+		if(c >= 32 && c < 128)
+			width += level_chars[level][c - 32].xadvance;
+	}
+
+	return width;
+}
+
+void renderer_draw_text_level(float x, float y, const char* text, int level, float r, float g,
+                              float b) {
+	int side;
+
+	level = usable_level(level);
+	side = level_atlas[level];
+	set_texture_enabled(1);
+	glBindTexture(GL_TEXTURE_2D, level_texture[level]);
+	glColor4f(r, g, b, 1.0f);
+
+	glBegin(GL_QUADS);
+	while(*text) {
+		if((unsigned char)*text >= 32 && (unsigned char)*text < 128) {
+			stbtt_aligned_quad q;
+
+			stbtt_GetBakedQuad(level_chars[level], side, side, *text - 32, &x, &y, &q, 1);
+			glTexCoord2f(q.s0, q.t0); glVertex2f(q.x0, q.y0);
+			glTexCoord2f(q.s1, q.t0); glVertex2f(q.x1, q.y0);
+			glTexCoord2f(q.s1, q.t1); glVertex2f(q.x1, q.y1);
+			glTexCoord2f(q.s0, q.t1); glVertex2f(q.x0, q.y1);
+		}
+		text++;
+	}
+	glEnd();
 }
 
 /**

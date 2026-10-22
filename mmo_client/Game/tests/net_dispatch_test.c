@@ -24,8 +24,10 @@
 #include "ui/quest_log.h"
 #include "ui/friends_panel.h"
 #include "state_handler.h"
+#include "network/heading_wire.h"
 
 #include <assert.h>
+#include "states/join_data.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,6 +139,10 @@ static void test_declared_counts_are_not_trusted(void) {
         PACKET_RACE_LIST_RESPONSE,
         PACKET_INVENTORY_UPDATE,
         PACKET_QUEST_ACCEPT,
+		PACKET_QUEST_STEP_DONE,
+        PACKET_NPC_QUEST_MARKS,
+		PACKET_AVAILABLE_QUESTS_RESET,
+		PACKET_AVAILABLE_QUEST,
         PACKET_SHOP_OPEN,
         /* Both trimmed by the server to the entries it filled, so the count is
          * the only thing that says how many are there -- and it arrives from
@@ -173,7 +179,7 @@ static void test_declared_counts_are_not_trusted(void) {
             }
         }
     }
-    printf("  ok   14 counted opcodes x 256 counts x 7 sizes survived\n");
+    printf("  ok   18 counted opcodes x 256 counts x 7 sizes survived\n");
 }
 
 /** Strings that fill their field with no terminator anywhere. */
@@ -193,6 +199,9 @@ static void test_unterminated_strings(void) {
         PACKET_DISCONNECT,
         PACKET_DIALOGUE_UPDATE,
         PACKET_QUEST_ACCEPT,
+        PACKET_NPC_QUEST_MARKS,
+		PACKET_AVAILABLE_QUEST,
+		PACKET_QUEST_HISTORY,
         PACKET_FRIEND_LIST_RESPONSE,
         PACKET_FRIEND_REQUESTS_LIST,
         PACKET_FRIEND_REQUEST_NOTIFY,
@@ -217,6 +226,133 @@ static void test_unterminated_strings(void) {
         }
     }
     printf("  ok   17 text-bearing opcodes survived unterminated fields\n");
+}
+
+// Send one available-quest packet to the world dispatcher.
+static void send_available(uint8_t type, int length) {
+	memset(g_buf, 0, (size_t)length);
+	PacketHeader* h = (PacketHeader*)g_buf;
+
+	h->type = type;
+	h->player_id = htonl(1);
+	h->payload_size = htons((uint16_t)(length - sizeof(PacketHeader)));
+	assert(net_dispatch_world(type, (const char*)g_buf, length) == 1);
+}
+
+// Quest packets from the world connection arrive during character select.
+static void test_early_quest_packets_wait_for_gameplay(void) {
+	printf("quest packets that arrive before gameplay are held, then delivered in order\n");
+
+	reset_game();
+	g_game.playing = NULL;
+	g_stub_available_resets = 0;
+	g_stub_available_adds = 0;
+	g_stub_available_add_before_reset = 0;
+
+	send_available(PACKET_AVAILABLE_QUESTS_RESET, (int)sizeof(AvailableQuestsResetPacket));
+	send_available(PACKET_AVAILABLE_QUEST, (int)sizeof(AvailableQuestPacket));
+	send_available(PACKET_AVAILABLE_QUEST, (int)sizeof(AvailableQuestPacket));
+	assert(g_stub_available_resets == 0 && g_stub_available_adds == 0);
+	printf("  ok   nothing is delivered while there is no gameplay state\n");
+
+	g_game.playing = &g_playing;
+	network_replay_early_quest_packets();
+	assert(g_stub_available_resets == 1 && g_stub_available_adds == 2);
+	assert(!g_stub_available_add_before_reset);
+	printf("  ok   all three arrive once it exists, the reset first\n");
+
+	network_replay_early_quest_packets();
+	assert(g_stub_available_resets == 1 && g_stub_available_adds == 2);
+	printf("  ok   a second replay delivers nothing more\n");
+
+	send_available(PACKET_AVAILABLE_QUESTS_RESET, (int)sizeof(AvailableQuestsResetPacket));
+	assert(g_stub_available_resets == 2);
+	printf("  ok   with gameplay running, packets go straight through\n");
+
+	g_game.playing = NULL;
+	send_available(PACKET_AVAILABLE_QUEST, (int)sizeof(AvailableQuestPacket));
+	net_world_forget_early_quest();
+	g_game.playing = &g_playing;
+	network_replay_early_quest_packets();
+	assert(g_stub_available_adds == 2);
+	printf("  ok   a new world connection forgets what an old one left\n");
+}
+
+// Hand one zeroed packet of a given type and length to the whole chain.
+static void send_blank(uint8_t type, int length) {
+	memset(g_buf, 0, (size_t)length);
+	PacketHeader* h = (PacketHeader*)g_buf;
+
+	h->type = type;
+	h->player_id = htonl(1);
+	h->payload_size = htons((uint16_t)(length - sizeof(PacketHeader)));
+	assert(net_dispatch_packet(type, (const char*)g_buf, length) == 1);
+}
+
+// Stats and both ability bars are pushed at join, possibly before gameplay exists.
+static void test_early_stats_and_abilities_wait_for_gameplay(void) {
+	printf("stats, abilities and the first nearby lists that arrive before gameplay are held, then delivered\n");
+
+	reset_game();
+	g_game.playing = NULL;
+	join_data_reset();
+
+	send_blank(PACKET_PLAYER_STATS, (int)sizeof(PlayerStatsPacket));
+	send_blank(PACKET_NPC_POSITIONS, (int)offsetof(NPCPositionPacket, npcs));
+	send_blank(PACKET_PLAYER_POSITIONS, (int)offsetof(PlayerPositionBroadcastPacket, players));
+	send_blank(PACKET_ABILITY_DATA, (int)sizeof(AbilityDataPacket));
+	((AbilityDataPacket*)g_buf)->form = FORM_ANIMAL;
+	assert(net_dispatch_packet(PACKET_ABILITY_DATA, (const char*)g_buf,
+	                           (int)sizeof(AbilityDataPacket)) == 1);
+	assert(!join_data_seen(JOIN_STATS) && !join_data_seen(JOIN_ABILITIES_HUMAN));
+	assert(!join_data_seen(JOIN_NPCS) && !join_data_seen(JOIN_PLAYERS));
+	printf("  ok   nothing is noted while there is no gameplay state\n");
+
+	g_game.playing = &g_playing;
+	network_replay_early_quest_packets();
+	assert(join_data_seen(JOIN_STATS));
+	assert(join_data_seen(JOIN_ABILITIES_HUMAN));
+	assert(join_data_seen(JOIN_ABILITIES_ANIMAL));
+	assert(join_data_seen(JOIN_NPCS) && join_data_seen(JOIN_PLAYERS));
+	printf("  ok   once it exists the stats, both forms and the first nearby lists are delivered\n");
+}
+
+// The loading screen waits on these arrivals, so each one has to be noted.
+static void test_join_arrivals_are_noted(void) {
+	printf("each join packet notes its arrival\n");
+
+	reset_game();
+	join_data_reset();
+
+	send_blank(PACKET_FRIEND_LIST_RESPONSE, (int)offsetof(FriendListResponsePacket, friends));
+	assert(join_data_seen(JOIN_FRIENDS) && !join_data_seen(JOIN_FRIEND_REQUESTS));
+	send_blank(PACKET_FRIEND_REQUESTS_LIST, (int)offsetof(FriendRequestsListPacket, requests));
+	assert(join_data_seen(JOIN_FRIEND_REQUESTS));
+	printf("  ok   the friend list and the request list\n");
+
+	send_blank(PACKET_SESSION_LIST_RESPONSE, (int)offsetof(SessionListResponsePacket, entries));
+	assert(join_data_seen(JOIN_ONLINE_LIST));
+	printf("  ok   the online players list\n");
+
+	send_blank(PACKET_NPC_POSITIONS, (int)offsetof(NPCPositionPacket, npcs));
+	assert(join_data_seen(JOIN_NPCS) && !join_data_seen(JOIN_PLAYERS));
+	send_blank(PACKET_PLAYER_POSITIONS, (int)offsetof(PlayerPositionBroadcastPacket, players));
+	assert(join_data_seen(JOIN_PLAYERS));
+	printf("  ok   the nearby NPCs and players\n");
+
+	// The quest list is whole only when every entry it announced has come
+	send_available(PACKET_AVAILABLE_QUESTS_RESET, (int)sizeof(AvailableQuestsResetPacket));
+	assert(join_data_seen(JOIN_QUESTS));
+	join_data_reset();
+	((AvailableQuestsResetPacket*)g_buf)->count = htonl(2);
+	assert(net_dispatch_packet(PACKET_AVAILABLE_QUESTS_RESET, (const char*)g_buf,
+	                           (int)sizeof(AvailableQuestsResetPacket)) == 1);
+	assert(!join_data_seen(JOIN_QUESTS));
+	send_available(PACKET_AVAILABLE_QUEST, (int)sizeof(AvailableQuestPacket));
+	assert(!join_data_seen(JOIN_QUESTS));
+	send_available(PACKET_AVAILABLE_QUEST, (int)sizeof(AvailableQuestPacket));
+	assert(join_data_seen(JOIN_QUESTS));
+	printf("  ok   the available quests, once the announced count is in\n");
 }
 
 /** Random bytes, at random lengths, for every opcode. */
@@ -555,6 +691,314 @@ static void test_loading_and_empty_are_distinguishable(void) {
                  "an empty list that arrived is known to be empty");
 }
 
+// --- Emotes ---
+
+static int g_emote_failures = 0;
+#define EMOTE_CHECK(cond, what)                                             \
+    do { if (cond) printf("  ok   %s\n", (what));                          \
+         else { printf("  FAIL %s  (%s:%d)\n", (what), __FILE__, __LINE__);  \
+                g_emote_failures++; } } while (0)
+
+static void send_emote_state(uint8_t emote, uint8_t arg, uint8_t result,
+                             uint8_t requested) {
+	EmoteStatePacket pkt;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_EMOTE_STATE;
+	pkt.header.player_id = htonl(1);
+	pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+	pkt.emote = emote;
+	pkt.arg = arg;
+	pkt.result = result;
+	pkt.requested = requested;
+	dispatch_all(PACKET_EMOTE_STATE, (const char*)&pkt, sizeof(pkt));
+}
+
+// One positions broadcast carrying n nearby players.
+static void send_positions(const uint32_t* ids, const uint8_t* emotes,
+                           const uint8_t* args, int n) {
+	static PlayerPositionBroadcastPacket pkt;
+	size_t size;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_PLAYER_POSITIONS;
+	pkt.header.player_id = htonl(1);
+	pkt.count = (uint8_t)n;
+	for(int i = 0; i < n; i++) {
+		pkt.players[i].player_id = htonl(ids[i]);
+		pkt.players[i].health = htonl(10);
+		pkt.players[i].max_health = htonl(10);
+		pkt.players[i].emote = emotes[i];
+		pkt.players[i].emote_arg = args[i];
+	}
+
+	size = offsetof(PlayerPositionBroadcastPacket, players) +
+	       (size_t)n * sizeof(NearbyPlayerData);
+	pkt.header.payload_size = htons((uint16_t)(size - sizeof(PacketHeader)));
+	dispatch_all(PACKET_PLAYER_POSITIONS, (const char*)&pkt, (int)size);
+}
+
+static void test_emote_states_arrive_in_order(void) {
+	uint8_t emote, arg, result, requested;
+	int got = 0;
+	uint8_t last_arg = 0;
+
+	printf("the server's word on the player's emote is queued, oldest first\n");
+	reset_game();
+
+	// the fuzz tests above sprayed this queue with whatever bytes they chose
+	while(network_get_emote_state(&emote, &arg, &result, &requested)) {
+	}
+
+	EMOTE_CHECK(!network_get_emote_state(&emote, &arg, &result, &requested),
+	            "nothing queued at first");
+	send_emote_state(EMOTE_SIT, 1, EMOTE_RESULT_STARTED, EMOTE_SIT);
+	send_emote_state(EMOTE_NONE, 0, EMOTE_ENDED_MOVED, EMOTE_SIT);
+	EMOTE_CHECK(network_get_emote_state(&emote, &arg, &result, &requested) &&
+	            emote == EMOTE_SIT && arg == 1 && result == EMOTE_RESULT_STARTED &&
+	            requested == EMOTE_SIT, "the start comes out first, intact");
+	EMOTE_CHECK(network_get_emote_state(&emote, &arg, &result, &requested) &&
+	            emote == EMOTE_NONE && result == EMOTE_ENDED_MOVED, "then the ending");
+	EMOTE_CHECK(!network_get_emote_state(&emote, &arg, &result, &requested),
+	            "then nothing");
+
+	// a flood drops the oldest and keeps the newest, never overrunning
+	for(int i = 0; i < 20; i++)
+		send_emote_state(EMOTE_DANCE, (uint8_t)i, EMOTE_RESULT_STARTED, EMOTE_DANCE);
+
+	while(network_get_emote_state(&emote, &arg, &result, &requested)) {
+		got++;
+		last_arg = arg;
+	}
+	EMOTE_CHECK(got == 8 && last_arg == 19, "a flood keeps the 8 newest");
+}
+
+static void send_world_time(uint32_t time_of_day_ms, uint32_t day_length_ms, int length) {
+	WorldTimePacket pkt;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_WORLD_TIME;
+	pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+	pkt.time_of_day_ms = htonl(time_of_day_ms);
+	pkt.day_length_ms = htonl(day_length_ms);
+	assert(net_dispatch_packet(PACKET_WORLD_TIME, (const char*)&pkt, length) == 1);
+}
+
+static void test_the_world_time_is_read_once_in_network_order(void) {
+	uint32_t time_of_day_ms = 0;
+	uint32_t day_length_ms = 0;
+
+	printf("the world time is read in network order and handed over once\n");
+	reset_game();
+
+	// the fuzz tests above may have left one waiting
+	while(network_get_world_time(&time_of_day_ms, &day_length_ms)) {
+	}
+
+	assert(!network_get_world_time(&time_of_day_ms, &day_length_ms));
+	send_world_time(675000, 2700000, (int)sizeof(WorldTimePacket));
+	assert(network_get_world_time(&time_of_day_ms, &day_length_ms));
+	assert(time_of_day_ms == 675000 && day_length_ms == 2700000);
+	assert(!network_get_world_time(&time_of_day_ms, &day_length_ms));
+
+	// a second one before the first is read replaces it
+	send_world_time(1, 2700000, (int)sizeof(WorldTimePacket));
+	send_world_time(2, 2700000, (int)sizeof(WorldTimePacket));
+	assert(network_get_world_time(&time_of_day_ms, &day_length_ms));
+	assert(time_of_day_ms == 2);
+
+	// a truncated packet is claimed and ignored
+	send_world_time(3, 2700000, (int)sizeof(WorldTimePacket) - 1);
+	assert(!network_get_world_time(&time_of_day_ms, &day_length_ms));
+	printf("  ok   read once, newest wins, truncated ignored\n");
+}
+
+static void send_weather(uint32_t day_index, int region_count, int length) {
+	WeatherForecastPacket pkt;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_WEATHER_FORECAST;
+	pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+	pkt.day_index = htonl(day_index);
+	pkt.day_length_ms = htonl(7200000);
+	pkt.ms_to_next_day = htonl(123456);
+	pkt.region_count = (uint8_t)region_count;
+	pkt.days[1][2].condition = WEATHER_SNOW;
+	pkt.days[1][2].temp_hi = -3;
+	pkt.days[1][2].precip_pct = 80;
+	pkt.days[1][2].revised = WEATHER_REVISED_WEST;
+	assert(net_dispatch_packet(PACKET_WEATHER_FORECAST, (const char*)&pkt, length) == 1);
+}
+
+static void test_the_forecast_is_read_once_in_host_order(void) {
+	WeatherForecast forecast;
+
+	printf("the forecast is read in host order and handed over once\n");
+	reset_game();
+
+	// the fuzz tests above may have left one waiting
+	while(network_get_weather(&forecast)) {
+	}
+
+	assert(!network_get_weather(&forecast));
+	send_weather(41, 4, (int)sizeof(WeatherForecastPacket));
+	assert(network_get_weather(&forecast));
+	assert(forecast.day_index == 41 && forecast.day_length_ms == 7200000);
+	assert(forecast.ms_to_next_day == 123456 && forecast.region_count == 4);
+	assert(forecast.days[1][2].condition == WEATHER_SNOW);
+	assert(forecast.days[1][2].temp_hi == -3 && forecast.days[1][2].precip_pct == 80);
+	assert(forecast.days[1][2].revised == WEATHER_REVISED_WEST);
+	assert(!network_get_weather(&forecast));
+
+	// a second one before the first is read replaces it
+	send_weather(1, 4, (int)sizeof(WeatherForecastPacket));
+	send_weather(2, 4, (int)sizeof(WeatherForecastPacket));
+	assert(network_get_weather(&forecast));
+	assert(forecast.day_index == 2);
+
+	// a truncated packet is claimed and ignored
+	send_weather(3, 4, (int)sizeof(WeatherForecastPacket) - 1);
+	assert(!network_get_weather(&forecast));
+	printf("  ok   read once, newest wins, truncated ignored\n");
+}
+
+static void test_another_players_emote_follows_them(void) {
+	NearbyPlayer* np;
+	uint32_t ids[2] = { 7, 9 };
+	uint8_t emotes[2] = { EMOTE_SIT, EMOTE_NONE };
+	uint8_t args[2] = { 1, 0 };
+	uint32_t swapped[2] = { 9, 7 };
+	uint8_t same[2] = { EMOTE_NONE, EMOTE_SIT };
+	uint8_t same_args[2] = { 0, 1 };
+	uint8_t stopped[2] = { EMOTE_NONE, EMOTE_NONE };
+	uint8_t dance[2] = { EMOTE_DANCE, EMOTE_NONE };
+	uint32_t only9[1] = { 9 };
+
+	printf("another player's emote is carried across broadcasts by their id\n");
+	reset_game();
+	np = g_playing.nearby_players;
+
+	// first seen already sitting: seated at once
+	send_positions(ids, emotes, args, 2);
+	EMOTE_CHECK(g_playing.nearby_player_count == 2, "two players in view");
+	EMOTE_CHECK(np[0].emote.phase == EMOTE_PHASE_HELD && np[0].emote.id == EMOTE_SIT &&
+	            np[0].emote.arg == 1,
+	            "one seen mid-sit is seated, with no sit-down to play");
+	EMOTE_CHECK(np[1].emote.phase == EMOTE_PHASE_NONE, "the other is not emoting");
+
+	// the next broadcast lists them in the other order: the state follows the id
+	send_positions(swapped, same, same_args, 2);
+	EMOTE_CHECK(np[0].player_id == 9 && np[0].emote.phase == EMOTE_PHASE_NONE,
+	            "the slot that changed hands does not inherit a sit");
+	EMOTE_CHECK(np[1].player_id == 7 && np[1].emote.phase == EMOTE_PHASE_HELD,
+	            "the sitter is still sitting in their new slot");
+
+	// the server says they stopped: they get up
+	send_positions(swapped, stopped, same_args, 2);
+	EMOTE_CHECK(np[1].emote.phase == EMOTE_PHASE_EXITING, "a stop plays the get-up");
+
+	// a player already known who starts one plays it from the beginning
+	send_positions(swapped, dance, same_args, 2);
+	EMOTE_CHECK(np[0].emote.id == EMOTE_DANCE && np[0].emote.phase == EMOTE_PHASE_HELD,
+	            "a dance starts (it has no enter clip)");
+
+	// someone who leaves view and returns is a first sighting again
+	send_positions(only9, dance, same_args, 1);
+	send_positions(swapped, stopped, same_args, 2);
+	EMOTE_CHECK(np[1].emote.phase == EMOTE_PHASE_NONE,
+	            "a returning player starts from nothing");
+}
+
+// The inspect answer is held for the window to read, once, and ended.
+static void test_inspect_answer_is_held_once(void) {
+	InspectResponsePacket pkt;
+	InspectResponsePacket got;
+
+	printf("an inspect answer is held until read, then gone\n");
+	reset_game();
+	while(network_get_inspect_response(&got)) {
+	}
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_INSPECT_RESPONSE;
+	pkt.header.player_id = htonl(1);
+	pkt.header.payload_size = htons(sizeof(pkt) - sizeof(PacketHeader));
+	pkt.target_id = htonl(9);
+	pkt.result = INSPECT_OK;
+	pkt.equipment[EQUIP_HELMET] = htonl(1001);
+
+	// the name arrives with no terminator at all
+	memset(pkt.name, 'x', sizeof(pkt.name));
+	dispatch_all(PACKET_INSPECT_RESPONSE, (const char*)&pkt, sizeof(pkt));
+	EMOTE_CHECK(network_get_inspect_response(&got), "the answer comes out");
+	EMOTE_CHECK(ntohl(got.target_id) == 9 && got.result == INSPECT_OK &&
+	            ntohl(got.equipment[EQUIP_HELMET]) == 1001, "intact");
+	EMOTE_CHECK(got.name[sizeof(got.name) - 1] == '\0', "its name is ended");
+	EMOTE_CHECK(!network_get_inspect_response(&got), "and is not read twice");
+
+	// a truncated answer is not an answer
+	dispatch_all(PACKET_INSPECT_RESPONSE, (const char*)&pkt, sizeof(pkt) - 1);
+	EMOTE_CHECK(!network_get_inspect_response(&got), "a short answer is dropped");
+}
+
+// A broadcast naming one player with a ground speed, or none at all.
+static void send_positions_with_speed(uint32_t id, uint16_t speed, int n) {
+	static PlayerPositionBroadcastPacket pkt;
+	size_t size;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_PLAYER_POSITIONS;
+	pkt.header.player_id = htonl(1);
+	pkt.count = (uint8_t)n;
+	if(n > 0) {
+		pkt.players[0].player_id = htonl(id);
+		pkt.players[0].health = htonl(10);
+		pkt.players[0].max_health = htonl(10);
+		pkt.players[0].speed = htons(speed);
+	}
+	size = offsetof(PlayerPositionBroadcastPacket, players) +
+	       (size_t)n * sizeof(NearbyPlayerData);
+	pkt.header.payload_size = htons((uint16_t)(size - sizeof(PacketHeader)));
+	dispatch_all(PACKET_PLAYER_POSITIONS, (const char*)&pkt, (int)size);
+}
+
+static void test_facing_and_idle_variation_arrive(void) {
+	static PlayerPositionBroadcastPacket pkt;
+	size_t size;
+
+	printf("a player's facing and idle variation are carried across\n");
+	reset_game();
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.header.type = PACKET_PLAYER_POSITIONS;
+	pkt.count = 1;
+	pkt.players[0].player_id = htonl(7);
+	pkt.players[0].health = htonl(10);
+	pkt.players[0].max_health = htonl(10);
+	pkt.players[0].heading = heading_to_wire(1.5f);
+	pkt.players[0].idle_fidget = 1;
+	size = offsetof(PlayerPositionBroadcastPacket, players) + sizeof(NearbyPlayerData);
+	pkt.header.payload_size = htons((uint16_t)(size - sizeof(PacketHeader)));
+	dispatch_all(PACKET_PLAYER_POSITIONS, (const char*)&pkt, (int)size);
+
+	EMOTE_CHECK(g_playing.nearby_players[0].idle_fidget == 1, "the idle variation flag arrives");
+	EMOTE_CHECK(fabsf(heading_from_wire(g_playing.nearby_players[0].heading) - 1.5f) < 0.02f,
+	            "the facing arrives, to the wire's precision");
+	EMOTE_CHECK(heading_to_wire(heading_from_wire(200)) == 200, "a wire facing survives a round trip");
+	EMOTE_CHECK(heading_wire_steps(250, 4) == 10, "facings are compared the short way round");
+}
+
+static void test_an_empty_list_clears_who_is_in_view(void) {
+	printf("the last player leaving view is told, and the speed they moved at is kept\n");
+	reset_game();
+
+	send_positions_with_speed(7, 150, 1);
+	EMOTE_CHECK(g_playing.nearby_player_count == 1, "one player in view");
+	EMOTE_CHECK(g_playing.nearby_players[0].speed == 150.0f, "their ground speed arrives");
+
+	send_positions_with_speed(0, 0, 0);
+	EMOTE_CHECK(g_playing.nearby_player_count == 0, "an empty broadcast empties the list");
+}
+
 int main(void) {
     printf("=== client packet dispatch ===\n");
 
@@ -567,7 +1011,17 @@ int main(void) {
     test_unterminated_strings();
     test_negative_lengths();
     test_random_fuzz();
+    test_early_quest_packets_wait_for_gameplay();
+	test_early_stats_and_abilities_wait_for_gameplay();
+	test_join_arrivals_are_noted();
     test_a_refused_move_is_reverted();
+    test_emote_states_arrive_in_order();
+    test_the_world_time_is_read_once_in_network_order();
+    test_the_forecast_is_read_once_in_host_order();
+    test_another_players_emote_follows_them();
+    test_inspect_answer_is_held_once();
+    test_an_empty_list_clears_who_is_in_view();
+    test_facing_and_idle_variation_arrive();
 
     test_the_friends_list_is_read_from_what_arrived();
     test_an_unterminated_friend_name_is_bounded();
@@ -578,7 +1032,7 @@ int main(void) {
 
     DeleteCriticalSection(&g_net.response_lock);
 
-    int failures = g_move_failures + g_friend_failures;
+    int failures = g_move_failures + g_friend_failures + g_emote_failures;
     if (failures) {
         printf("=== client packet dispatch: %d check(s) FAILED ===\n", failures);
         return 1;

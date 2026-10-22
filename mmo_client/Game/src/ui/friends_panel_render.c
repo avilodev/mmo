@@ -9,161 +9,128 @@
  */
 
 #include "ui/friends_panel.h"
+#include "ui/ui_kit.h"
 #include "friends_panel_layout.h"
 #include "render/renderer.h"
 
 #include <stdio.h>
 #include <string.h>
 
-/** Draw a one-pixel border around a rectangle. */
-static void draw_border(float x, float y, float w, float h,
-                        float r, float g, float b, float a) {
-    renderer_draw_rect(x,            y,            w,    1.5f, r, g, b, a);
-    renderer_draw_rect(x,            y + h - 1.5f, w,    1.5f, r, g, b, a);
-    renderer_draw_rect(x,            y,            1.5f, h,    r, g, b, a);
-    renderer_draw_rect(x + w - 1.5f, y,            1.5f, h,    r, g, b, a);
-}
+#define TEXT_SIZE 16.0f
+#define SMALL_SIZE 13.0f
+#define TITLE_SIZE 20.0f
 
-/** Draw one tab header, brighter when it is the active one. */
-static void draw_tab(float x, float y, float w, const char* label, int active) {
-    if (active) renderer_draw_rect(x, y, w, FP_TAB_H, 0.18f, 0.26f, 0.38f, 1.0f);
-    renderer_draw_rect(x, y + FP_TAB_H - 2.0f, w, 2.0f,
-                       0.35f, 0.50f, 0.70f, active ? 1.0f : 0.25f);
-    renderer_draw_text_centered(x, y, w, FP_TAB_H, label);
-}
-
-/** Draw the button at the right of a row. */
-static void draw_button(float x, float y, const char* label, int hot) {
-    renderer_draw_rect(x, y, FP_BTN_W, FP_BTN_H,
-                       hot ? 0.22f : 0.14f, hot ? 0.32f : 0.20f,
-                       hot ? 0.46f : 0.30f, 1.0f);
-    draw_border(x, y, FP_BTN_W, FP_BTN_H, 0.40f, 0.55f, 0.75f, 0.7f);
-    renderer_draw_text_centered(x, y, FP_BTN_W, FP_BTN_H, label);
+/** Draw the dot that says a friend is on or off. */
+static void draw_presence_dot(float x, float cy, int online) {
+	ui_kit_px_rect(x, cy - 4.0f, 8.0f, 8.0f, online ? 0.25f : 0.40f, online ? 0.80f : 0.40f,
+	               online ? 0.35f : 0.40f, 1.0f);
 }
 
 /** Draw the friends tab's rows. */
 static void render_friend_rows(const FriendsState* fs, float px, float py) {
-    float row_y = fp_rows_top(py);
+	float row_y = fp_rows_top(py);
 
-    if (fs->friend_count == 0) {
-        /* "Loading" and "none" are different statements, and saying the wrong
-         * one is worse than saying nothing: a player told they have no friends
-         * closes the panel. */
-        renderer_draw_text(px + FP_PAD, row_y + 20.0f,
-                           fs->have_list ? "No friends yet. Use /friend <name> to add one."
-                                         : "Loading...");
-        return;
-    }
+	if(fs->friend_count == 0) {
+		ui_kit_px_text(px + FP_PAD, row_y + FP_ROW_H * 0.5f,
+		               fs->have_list ? "No friends yet." : "Loading...",
+		               TEXT_SIZE, KIT_DIM, KIT_LEFT);
+		return;
+	}
 
-    for (int i = fs->scroll;
-         i < fs->friend_count && i < fs->scroll + FP_VISIBLE;
-         i++) {
-        const FriendRow* f = &fs->friends[i];
-        int hot = (i == fs->hovered);
+	for(int i = fs->scroll; i < fs->friend_count && i < fs->scroll + FP_VISIBLE; i++) {
+		const FriendRow* f = &fs->friends[i];
+		int hot = (i == fs->hovered);
+		float cy = row_y + FP_ROW_H * 0.5f;
+		char line[96];
 
-        if (hot)
-            renderer_draw_rect(px + 6.0f, row_y, FP_PW - 12.0f, FP_ROW_H - 3.0f,
-                               0.14f, 0.16f, 0.22f, 0.8f);
+		if(hot)
+			ui_kit_px_rect(px + 6.0f, row_y, FP_PW - 12.0f, FP_ROW_H - 2.0f, 1.0f, 1.0f, 1.0f,
+			               0.07f);
 
-        /* A dot rather than a word, so the row's text is the name. */
-        renderer_draw_rect(px + FP_PAD, row_y + 12.0f, 10.0f, 10.0f,
-                           f->online ? 0.25f : 0.40f,
-                           f->online ? 0.80f : 0.40f,
-                           f->online ? 0.35f : 0.40f, 1.0f);
+		draw_presence_dot(px + FP_PAD, cy, f->online);
 
-        char line[96];
-        if (f->online)
-            snprintf(line, sizeof(line), "%s  -  World %u", f->name, f->world_id);
-        else
-            snprintf(line, sizeof(line), "%s  -  Offline", f->name);
-        renderer_draw_text(px + FP_PAD + 20.0f, row_y + FP_ROW_H - 12.0f, line);
+		if(f->online)
+			snprintf(line, sizeof(line), "%s  -  World %u", f->name, f->world_id);
+		else
+			snprintf(line, sizeof(line), "%s  -  Offline", f->name);
+		ui_kit_px_text(px + FP_PAD + 16.0f, cy, line, TEXT_SIZE,
+		               f->online ? KIT_WHITE : KIT_DIM, KIT_LEFT);
 
-        if (hot)
-            draw_button(px + FP_PW - FP_PAD - FP_BTN_W, row_y + 5.0f, "Remove", 1);
+		if(hot)
+			ui_kit_px_button(px + FP_PW - FP_PAD - FP_BTN_W, row_y + FP_BTN_Y, FP_BTN_W,
+			                 FP_BTN_H, "Remove", 0, KIT_BTN_HOVER);
 
-        row_y += FP_ROW_H;
-    }
+		row_y += FP_ROW_H;
+	}
 }
 
 /** Draw the requests tab's rows. */
 static void render_request_rows(const FriendsState* fs, float px, float py) {
-    float row_y = fp_rows_top(py);
+	float row_y = fp_rows_top(py);
 
-    if (fs->request_count == 0) {
-        renderer_draw_text(px + FP_PAD, row_y + 20.0f, "No requests waiting.");
-        return;
-    }
+	if(fs->request_count == 0) {
+		ui_kit_px_text(px + FP_PAD, row_y + FP_ROW_H * 0.5f, "No requests waiting.", TEXT_SIZE,
+		               KIT_DIM, KIT_LEFT);
+		return;
+	}
 
-    for (int i = fs->scroll;
-         i < fs->request_count && i < fs->scroll + FP_VISIBLE;
-         i++) {
-        const FriendRequestRow* r = &fs->requests[i];
-        int hot = (i == fs->hovered);
+	for(int i = fs->scroll; i < fs->request_count && i < fs->scroll + FP_VISIBLE; i++) {
+		const FriendRequestRow* r = &fs->requests[i];
+		int hot = (i == fs->hovered);
+		kit_btn_state state = hot ? KIT_BTN_HOVER : KIT_BTN_NORMAL;
+		float decline_x = px + FP_PW - FP_PAD - FP_BTN_W;
 
-        if (hot)
-            renderer_draw_rect(px + 6.0f, row_y, FP_PW - 12.0f, FP_ROW_H - 3.0f,
-                               0.14f, 0.16f, 0.22f, 0.8f);
+		if(hot)
+			ui_kit_px_rect(px + 6.0f, row_y, FP_PW - 12.0f, FP_ROW_H - 2.0f, 1.0f, 1.0f, 1.0f,
+			               0.07f);
 
-        renderer_draw_text(px + FP_PAD, row_y + FP_ROW_H - 12.0f,
-                           r->from_name[0] ? r->from_name : "(unknown)");
+		ui_kit_px_text(px + FP_PAD, row_y + FP_ROW_H * 0.5f,
+		               r->from_name[0] ? r->from_name : "(unknown)", TEXT_SIZE, KIT_WHITE,
+		               KIT_LEFT);
 
-        /* Both buttons always drawn, not only on hover: these are the actions
-         * the tab exists for, and a player should not have to discover them. */
-        draw_button(px + FP_PW - FP_PAD - FP_BTN_W, row_y + 5.0f, "Decline", hot);
-        draw_button(px + FP_PW - FP_PAD - FP_BTN_W * 2.0f - 6.0f, row_y + 5.0f,
-                    "Accept", hot);
+		// Both buttons always drawn: these are the actions the tab exists for
+		ui_kit_px_button(decline_x, row_y + FP_BTN_Y, FP_BTN_W, FP_BTN_H, "Decline", 0, state);
+		ui_kit_px_button(decline_x - FP_BTN_W - 4.0f, row_y + FP_BTN_Y, FP_BTN_W, FP_BTN_H,
+		                 "Accept", 1, state);
 
-        row_y += FP_ROW_H;
-    }
+		row_y += FP_ROW_H;
+	}
 }
 
 void friends_panel_render(const FriendsState* fs, int vw, int vh) {
-    if (!fs || !fs->is_open) return;
+	char requests_label[32];
+	float tab_w = (FP_PW - 2.0f * FP_PAD) * 0.5f;
+	float ph;
+	float px;
+	float py;
 
-    float ph = fp_panel_height();
-    float px, py;
-    fp_panel_origin(vw, vh, &px, &py);
+	if(!fs || !fs->is_open)
+		return;
 
-    renderer_draw_rect(px, py, FP_PW, ph, 0.08f, 0.08f, 0.14f, 0.97f);
-    draw_border(px, py, FP_PW, ph, 0.35f, 0.50f, 0.70f, 0.8f);
+	ph = fp_panel_height();
+	fp_panel_origin(fs, vw, vh, &px, &py);
 
-    renderer_draw_rect(px, py, FP_PW, FP_TITLE_H, 0.12f, 0.18f, 0.28f, 1.0f);
-    renderer_draw_rect(px, py + FP_TITLE_H, FP_PW, 1.5f, 0.35f, 0.50f, 0.70f, 0.8f);
-    renderer_draw_text(px + FP_PW * 0.5f - 36.0f, py + 28.0f, "FRIENDS");
-    renderer_draw_text(px + FP_PW - 52.0f, py + 28.0f, "[U]");
+	// The requests tab carries its count so a waiting request is not missed
+	if(fs->request_count > 0)
+		snprintf(requests_label, sizeof(requests_label), "Requests (%d)", fs->request_count);
+	else
+		snprintf(requests_label, sizeof(requests_label), "Requests");
 
-    /* Tabs. The requests tab carries its count, because an unanswered request
-     * the player never notices is the one failure this panel can have. */
-    char requests_label[32];
-    if (fs->request_count > 0)
-        snprintf(requests_label, sizeof(requests_label), "REQUESTS (%d)", fs->request_count);
-    else
-        snprintf(requests_label, sizeof(requests_label), "%s", "REQUESTS");
+	ui_kit_px_begin(vw, vh);
+	ui_kit_px_rect(px, py, FP_PW, ph, 0.05f, 0.05f, 0.09f, 0.97f);
+	ui_kit_px_panel(px, py, FP_PW, ph);
+	ui_kit_px_text(px + FP_PAD, py + FP_TITLE_H * 0.5f, "Friends", TITLE_SIZE, KIT_GOLD,
+	               KIT_LEFT);
+	ui_kit_px_close_button(px + FP_PW - FP_CLOSE - 8.0f, py + 8.0f, FP_CLOSE, 0);
+	ui_kit_px_tab(px + FP_PAD, py + FP_TITLE_H, tab_w, FP_TAB_H - 2.0f, "Friends",
+	              fs->tab == FRIENDS_TAB_LIST, 0);
+	ui_kit_px_tab(px + FP_PAD + tab_w, py + FP_TITLE_H, tab_w, FP_TAB_H - 2.0f, requests_label,
+	              fs->tab == FRIENDS_TAB_REQUESTS, 0);
 
-    float tab_w = FP_PW * 0.5f;
-    draw_tab(px,         py + FP_TITLE_H, tab_w, "FRIENDS",      fs->tab == FRIENDS_TAB_LIST);
-    draw_tab(px + tab_w, py + FP_TITLE_H, tab_w, requests_label, fs->tab == FRIENDS_TAB_REQUESTS);
+	if(fs->tab == FRIENDS_TAB_REQUESTS)
+		render_request_rows(fs, px, py);
+	else
+		render_friend_rows(fs, px, py);
 
-    if (fs->tab == FRIENDS_TAB_REQUESTS) render_request_rows(fs, px, py);
-    else                                 render_friend_rows(fs, px, py);
-
-    /* Footer: the last result, or the hint that says how to add somebody. */
-    const char* footer = (fs->notice_timer > 0.0f && fs->notice[0])
-                       ? fs->notice
-                       : "/friend <name>   /unfriend <name>   /block <name>";
-    renderer_draw_text(px + FP_PAD, py + ph - 12.0f, footer);
-
-    /* Only shown when there is something off screen, so the hint appears
-     * exactly when it is true. */
-    if (fp_row_count(fs) > FP_VISIBLE) {
-        char pages[48];
-        snprintf(pages, sizeof(pages), "%d-%d of %d  [PgUp/PgDn]",
-                 fs->scroll + 1,
-                 (fs->scroll + FP_VISIBLE < fp_row_count(fs)) ? fs->scroll + FP_VISIBLE
-                                                           : fp_row_count(fs),
-                 fp_row_count(fs));
-        renderer_draw_text(px + FP_PW - FP_PAD - renderer_text_width(pages),
-                           py + ph - 12.0f, pages);
-    }
+	ui_kit_px_end();
 }
-

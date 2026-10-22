@@ -21,6 +21,18 @@
  *  the character along the floor instead (camera_math_floor_distance). */
 #define CAMERA_MIN_EYE_HEIGHT 4.0f
 
+/** The camera stops this far short of a wall it would otherwise sit inside
+ *  (world units), and never comes closer to the character than the minimum
+ *  distance, however tight the space. */
+#define CAMERA_WALL_MARGIN        10.0f
+#define CAMERA_WALL_MIN_DISTANCE  14.0f
+/** How far apart the samples along the line to the eye are, world units. */
+#define CAMERA_WALL_STEP          4.0f
+/** Once a wall is out of the way the camera drifts back out at this speed,
+ *  world units per second. It moves in at once, so it never shows the inside
+ *  of a wall. */
+#define CAMERA_WALL_RECOVER_SPEED 300.0f
+
 /** Vertical mouse drag, degrees of pitch per logical pixel. */
 #define CAMERA_DRAG_PITCH_DEG_PER_PIXEL 0.20f
 
@@ -33,9 +45,9 @@
  *  not balloon when the camera comes in close. */
 #define CAMERA_CARD_MAX_SCALE CAMERA_ZOOM_DEFAULT
 
-/** How far past the target the far plane reaches. The fog (world_light.h)
- *  closes in well before it. */
-#define CAMERA_VIEW_RANGE 3000.0f
+/** How far past the target the far plane reaches; nothing is drawn beyond it.
+ *  There is no fog to hide the cut, so it is far. */
+#define CAMERA_VIEW_RANGE 8000.0f
 
 /** Vertical field of view (D5). Narrow keeps the League-like low distortion. */
 #define CAMERA_FOVY_DEG 40.0f

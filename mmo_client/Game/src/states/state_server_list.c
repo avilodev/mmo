@@ -16,8 +16,27 @@
 /** Refresh interval for a loaded world list, in seconds. */
 #define SERVER_LIST_REFRESH_INTERVAL 10.0
 
+// Seconds before asking again when a list arrived with capacities unknown
+#define SERVER_LIST_UNKNOWN_RECHECK 1.0
+
 static double s_last_refresh = 0.0;
 static int    s_refreshing   = 0;   // 1 while a background re-fetch is in flight
+static double s_entered_at   = 0.0;
+
+/** Whether an online world has not yet reported its capacity.
+ *
+ * The realm sends a capacity of 0 for a world that has not answered its first
+ * status check. That is "unknown", and drawing it as 0/0 reads as an empty
+ * world rather than as a number still on its way.
+ */
+static int world_list_has_unknown_capacity(const WorldListResponsePacket* list) {
+	for(int i = 0; i < list->count && i < MAX_WORLDS; i++) {
+		if(list->worlds[i].status != 0 && ntohs(list->worlds[i].capacity) == 0)
+			return 1;
+	}
+
+	return 0;
+}
 
 static void server_list_enter(GameState* game) {
     CLOG_INFO("[STATE] Entering server list");
@@ -26,6 +45,7 @@ static void server_list_enter(GameState* game) {
     game->net_state = NET_STATE_IDLE;
     s_last_refresh = 0.0;
     s_refreshing   = 0;
+	s_entered_at   = glfwGetTime();
 }
 
 static void server_list_exit(GameState* game) {
@@ -48,11 +68,20 @@ static void server_list_update(GameState* game, float delta_time) {
 
         uint8_t  rejected_type = 0;
         uint16_t retry_ms      = 0;
-        int rejected = network_get_rate_limit_notice(&rejected_type, &retry_ms);
+        int rejected = network_get_rate_limit_notice(&rejected_type, &retry_ms) &&
+		               rejected_type == PACKET_WORLD_LIST_REQUEST;
 
-        if (rejected || game->net_wait_seconds > NET_REQUEST_TIMEOUT_SECONDS) {
-            CLOG_WARN("[SERVER_LIST] World list request abandoned (%s)",
-                   rejected ? "rate limited" : "timed out");
+		if(rejected) {
+			// Ask again once the delay the realm named has passed
+			CLOG_INFO("[SERVER_LIST] World list refused for %ums; retrying",
+			          (unsigned)retry_ms);
+			game->net_state        = NET_STATE_IDLE;
+			game->net_wait_seconds = 0.0f;
+			s_refreshing           = 0;
+			s_last_refresh         = now - SERVER_LIST_REFRESH_INTERVAL +
+			                         retry_ms / 1000.0 + 0.15;
+		} else if(game->net_wait_seconds > NET_REQUEST_TIMEOUT_SECONDS) {
+            CLOG_WARN("[SERVER_LIST] World list request abandoned (timed out)");
             game->net_state        = NET_STATE_IDLE;
             game->net_wait_seconds = 0.0f;
             s_refreshing           = 0;
@@ -68,7 +97,11 @@ static void server_list_update(GameState* game, float delta_time) {
      * retried on the very next frame and every frame after it. s_last_refresh
      * of zero is what makes the first attempt immediate; every other path
      * through here sets it. */
-    int needs_refresh = !s_refreshing &&
+    /* Not before the realm is connected. This screen is also where a player
+     * dropped from the world lands while the client is still reconnecting to
+     * the realm; a request made then fails, and the failure above waits out a
+     * full interval before asking again. */
+    int needs_refresh = game->network_connected && !s_refreshing &&
                         (s_last_refresh == 0.0 ||
                          (now - s_last_refresh) >= SERVER_LIST_REFRESH_INTERVAL);
 
@@ -85,10 +118,21 @@ static void server_list_update(GameState* game, float delta_time) {
 
     if (game->net_state == NET_STATE_WAITING_FOR_WORLDS) {
         if (network_get_world_list(&game->server_list.list)) {
-            game->server_list.loaded = 1;
             game->net_state = NET_STATE_IDLE;
             s_last_refresh = now;
             s_refreshing   = 0;
+
+			// First list with capacities unknown: stay loading and ask again
+			if(!game->server_list.loaded &&
+			   world_list_has_unknown_capacity(&game->server_list.list) &&
+			   now - s_entered_at < NET_REQUEST_TIMEOUT_SECONDS) {
+				s_last_refresh = now - SERVER_LIST_REFRESH_INTERVAL +
+				                 SERVER_LIST_UNKNOWN_RECHECK;
+				CLOG_INFO("[SERVER_LIST] Capacities not reported yet; waiting");
+				return;
+			}
+
+            game->server_list.loaded = 1;
             CLOG_INFO("[SERVER_LIST] Received %d worlds", game->server_list.list.count);
         }
     }
@@ -170,8 +214,14 @@ static void server_list_render(GameState* game) {
 
             // Population
             char pop_text[32];
-            snprintf(pop_text, sizeof(pop_text), "%d/%d",
-                    ntohs(world->population), ntohs(world->capacity));
+			if(ntohs(world->capacity) == 0) {
+				// Offline, or online and not yet reported; never drawn as 0/0
+				snprintf(pop_text, sizeof(pop_text), "%s",
+				         world->status == 0 ? "offline" : "...");
+			} else {
+				snprintf(pop_text, sizeof(pop_text), "%d/%d",
+				         ntohs(world->population), ntohs(world->capacity));
+			}
             renderer_draw_text(panel_x + panel_w - 100, y + 30, pop_text);
 
             // Handle click

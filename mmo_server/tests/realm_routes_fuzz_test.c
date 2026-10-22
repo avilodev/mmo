@@ -41,8 +41,9 @@ void handle_character_list_request(int client_fd, uint32_t account_id, uint32_t 
 static size_t g_last_name_len = 0;
 void handle_character_create_request(int client_fd, uint32_t account_id,
                                      uint32_t world_id, const char* name,
-                                     int class_id, int race_id) {
+                                     int class_id, int race_id, uint32_t appearance) {
     (void)client_fd; (void)account_id; (void)world_id; (void)class_id; (void)race_id;
+	(void)appearance;
     fz_entered("handle_character_create_request", PACKET_CHARACTER_CREATE_REQUEST,
                sizeof(CharacterCreateRequestPacket));
     g_last_name_len = strlen(name);

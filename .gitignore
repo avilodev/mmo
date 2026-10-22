@@ -72,6 +72,8 @@ build_out.txt
 Story/
 docs/
 Next_steps/
+PAIRED_RELEASE
+item_ideas.txt
 
 # Tools
 .githooks
@@ -79,3 +81,6 @@ Next_steps/
 .superpowers
 .claude
 .codex
+# Python bytecode
+__pycache__/
+*.pyc

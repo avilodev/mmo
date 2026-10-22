@@ -3,13 +3,22 @@
  * Render the in-game heads-up display and handle its panel controls.
  */
 #include "hud.h"
+#include "ui/map_minimap.h"
 #include "core/race_registry.h"
+#include "core/session_status.h"
 #include "world_regions.h"
 #include "renderer.h"
 #include "core/game_types.h"
 #include "world/npc.h"
 #include "camera/camera_tuning.h"
 #include "network/network.h"
+#include "network/net_ping.h"
+#include "network/net_reconnect.h"
+#include "world/world_clock.h"
+#include "world/weather_state.h"
+#include "ui/weather_icon.h"
+#include "ui/ui_kit.h"
+#include "ui/window_pos.h"
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -108,16 +117,22 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
 
     int own_ping = network_get_ping_ms();
 
+    // The full map covers the top-right corner, so its readouts step aside
+    int map_open = game->playing->show_map;
+
     // Render all HUD elements
-    hud_render_minimap(hud, game);
-    hud_render_ping(hud, own_ping);
+    if (!map_open) {
+        hud_render_minimap(hud, game);
+        hud_render_info_bar(hud, game, own_ping);
+    }
     hud_render_health_bar(hud, game);
     hud_render_mana_bar(hud, game);
     hud_render_exp_bar(hud, game);
     hud_render_level(hud, game);
     hud_render_inventory_button(hud, game);
     hud_render_character_button(hud, game);
-    hud_render_currencies(hud, game);
+    if (!map_open)
+        hud_render_currencies(hud, game);
     hud_render_target_bar(game, (float)hud->screen_width);
     hud_render_player_target_bar(game, (float)hud->screen_width);
     hud_render_party_frames(game);
@@ -126,6 +141,7 @@ void hud_render(const HUDLayout* hud, const GameState* game) {
         hud_render_session_panel(hud, game, own_ping);
 
     hud_render_zone_banner(hud, game);
+	hud_render_connection_issue(hud, game);
 
     renderer_end_screen_space();
 }
@@ -153,66 +169,14 @@ void hud_render_minimap(const HUDLayout* hud, const GameState* game) {
     float x    = hud->minimap_x;
     float y    = hud->minimap_y;
     float size = hud->minimap_size;
+    float px   = game->player.x;
+    float py   = game->player.y;
 
-    // Background
+    // Background, then the nearby city and what stands in it
     renderer_draw_rect(x, y, size, size, 0.06f, 0.06f, 0.10f, 0.92f);
+    map_minimap_render(game, &(map_rect){ x, y, size, size });
 
-    // Player world position — everything is drawn relative to this
-    float px = game->player.x;
-    float py = game->player.y;
-
-    // View radius: how many world units are shown to each edge of the minimap
-    float view_radius = 350.0f;
-    float scale       = (size * 0.5f) / view_radius;
-    float cx          = x + size * 0.5f;
-    float cy          = y + size * 0.5f;
-
-    // Helper: world position -> minimap pixel (returns 0 if off-map)
-    // We'll inline it below.
-
-    // --- NPC dots ---
-    for (int i = 0; i < game->playing->visible_npc_count; i++) {
-        const VisibleNPC* npc = &game->playing->visible_npcs[i];
-        if (!npc->is_alive) continue;
-
-        float dx = (npc->pos_x - px) * scale;
-        float dy = (npc->pos_y - py) * scale;
-        float dot_x = cx + dx - 2.5f;
-        float dot_y = cy + dy - 2.5f;
-        if (dot_x < x || dot_x > x + size - 5 ||
-            dot_y < y || dot_y > y + size - 5) continue;
-
-        float dr, dg, db;
-        switch (npc->category) {
-            case 1:  dr=0.90f; dg=0.20f; db=0.20f; break; // hostile  - red
-            case 2:  dr=0.90f; dg=0.78f; db=0.10f; break; // quest    - gold
-            default: dr=0.20f; dg=0.55f; db=0.90f; break; // passive  - blue
-        }
-        renderer_draw_rect(dot_x, dot_y, 5.0f, 5.0f, dr, dg, db, 0.95f);
-    }
-
-    // --- Nearby player dots ---
-    for (int i = 0; i < game->playing->nearby_player_count; i++) {
-        const NearbyPlayer* p = &game->playing->nearby_players[i];
-        if (p->is_dead) continue;
-
-        float dx = (p->pos_x - px) * scale;
-        float dy = (p->pos_y - py) * scale;
-        float dot_x = cx + dx - 3.0f;
-        float dot_y = cy + dy - 3.0f;
-        if (dot_x < x || dot_x > x + size - 6 ||
-            dot_y < y || dot_y > y + size - 6) continue;
-
-        renderer_draw_rect(dot_x, dot_y, 6.0f, 6.0f, 0.25f, 0.90f, 0.45f, 1.0f);
-    }
-
-    // --- Which way the camera faces ---
-    hud_draw_view_cone(&game->camera, cx, cy, size * 0.3f);
-
-    // --- Player dot (always at center, drawn last so it's on top) ---
-    renderer_draw_rect(cx - 5.0f, cy - 5.0f, 10.0f, 10.0f, 1.0f, 1.0f, 0.25f, 1.0f);
-
-    // Border (drawn on top of dots so the edges look clean)
+    // Border (drawn on top of the marks so the edges look clean)
     renderer_draw_rect(x,            y,            size, 2.0f, 0.55f, 0.55f, 0.65f, 1.0f);
     renderer_draw_rect(x,            y + size - 2, size, 2.0f, 0.55f, 0.55f, 0.65f, 1.0f);
     renderer_draw_rect(x,            y,            2.0f, size, 0.55f, 0.55f, 0.65f, 1.0f);
@@ -522,6 +486,56 @@ void hud_render_target_bar(const GameState* game, float screen_width) {
     renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
 }
 
+// The Inspect button sits to the right of the player target panel.
+#define INSPECT_BUTTON_W 90.0f
+#define INSPECT_BUTTON_H 26.0f
+
+static void inspect_button_rect(float screen_width, float* x, float* y) {
+	// the panel is 300 wide, centred, with a 4px border and a 12px gap
+	*x = screen_width / 2.0f + 150.0f + 4.0f + 12.0f;
+	*y = 52.0f + (50.0f - INSPECT_BUTTON_H) / 2.0f;
+}
+
+// Whether the targeted player is among those in view, and so the bar is drawn.
+static int target_player_in_view(const GameState* game) {
+	if(game->playing->target_player_id == 0)
+		return 0;
+
+	for(int i = 0; i < game->playing->nearby_player_count; i++) {
+		if(game->playing->nearby_players[i].player_id == game->playing->target_player_id)
+			return 1;
+	}
+
+	return 0;
+}
+
+int hud_check_inspect_button_clicked(const GameState* game, float screen_width,
+		float mouse_x, float mouse_y) {
+	float x;
+	float y;
+
+	if(!target_player_in_view(game))
+		return 0;
+
+	inspect_button_rect(screen_width, &x, &y);
+
+	return mouse_x >= x && mouse_x <= x + INSPECT_BUTTON_W &&
+	       mouse_y >= y && mouse_y <= y + INSPECT_BUTTON_H;
+}
+
+static void render_inspect_button(float screen_width) {
+	float x;
+	float y;
+
+	inspect_button_rect(screen_width, &x, &y);
+	renderer_draw_rect(x, y, INSPECT_BUTTON_W, INSPECT_BUTTON_H, 0.05f, 0.08f, 0.10f, 0.88f);
+	renderer_draw_rect(x, y, INSPECT_BUTTON_W, 1.5f, 0.30f, 0.65f, 0.70f, 1.0f);
+	renderer_draw_rect(x, y + INSPECT_BUTTON_H - 1.5f, INSPECT_BUTTON_W, 1.5f, 0.30f, 0.65f, 0.70f, 1.0f);
+	renderer_draw_rect(x, y, 1.5f, INSPECT_BUTTON_H, 0.30f, 0.65f, 0.70f, 1.0f);
+	renderer_draw_rect(x + INSPECT_BUTTON_W - 1.5f, y, 1.5f, INSPECT_BUTTON_H, 0.30f, 0.65f, 0.70f, 1.0f);
+	renderer_draw_text_centered(x, y, INSPECT_BUTTON_W, INSPECT_BUTTON_H, "Inspect");
+}
+
 /**
  * Render the selected nearby player's health panel.
  */
@@ -579,6 +593,8 @@ void hud_render_player_target_bar(const GameState* game, float screen_width) {
     char hp_text[32];
     snprintf(hp_text, sizeof(hp_text), "%d / %d", np->health, np->max_health);
     renderer_draw_text(x + bar_width / 2.0f - 18.0f, y + bar_height - 4.0f, hp_text);
+
+	render_inspect_button(screen_width);
 }
 
 /**
@@ -675,88 +691,281 @@ void hud_render_currencies(const HUDLayout* hud, const GameState* game) {
     renderer_draw_text(x, y, gold_text);
 }
 
+// Pixels the text of the upper right info bar is drawn below its place in the bar
+#define BADGE_TEXT_DROP 3.0f
+
+// Height of a capital letter or digit in the 22 px font, which the icons centre on
+#define BADGE_CAP_HEIGHT 14.0f
+
+// Side of an info bar icon. The art is 32 px; half size fits the strip above the minimap.
+#define INFO_ICON_SIZE 16.0f
+
+// Space between an icon and its text
+#define INFO_ICON_PAD 4.0f
+
+// Space between one item and the next
+#define INFO_ITEM_GAP 8.0f
+
+// Width of the box the ping used to be drawn in, which its right edge still follows
+#define INFO_BAR_W 100.0f
+
+// Where the info bar sits: the upper right, just above the minimap
+static void info_bar_rect(const HUDLayout* hud, float* x, float* y, float* h) {
+	*h = 18.0f;
+	*x = hud->minimap_x + hud->minimap_size - INFO_BAR_W;
+	*y = hud->minimap_y - *h - 4.0f;
+}
+
+// The baseline of the bar's text; y and h are the bar's
+static float info_baseline(float y, float h) {
+	return y + h - 3 + BADGE_TEXT_DROP;
+}
+
+// An icon with its left edge at x, centred on the height of a capital letter
+static void draw_info_icon(unsigned int texture, float x, float y, float h) {
+	float centre = info_baseline(y, h) - BADGE_CAP_HEIGHT / 2.0f;
+
+	if(!texture)
+		return;
+
+	renderer_draw_sprite(x, centre - INFO_ICON_SIZE / 2.0f, INFO_ICON_SIZE, INFO_ICON_SIZE,
+	                     texture);
+}
+
+// Where the parts of the info bar sit; the weather and the clock lead
+typedef struct {
+	float box_x;
+	float y;
+	float h;
+	float baseline;
+	float weather_x;
+	float clock_text_x;
+	float clock_w;
+	float ping_icon_x;
+	float ping_text_x;
+} InfoBarLayout;
+
+// Lay the bar out for the clock text it is about to show
+static InfoBarLayout info_bar_layout(const HUDLayout* hud, const GameState* game,
+                                     char* clock_text, size_t clock_size) {
+	InfoBarLayout bar;
+	int hour24 = game->settings.clock_24h;
+
+	info_bar_rect(hud, &bar.box_x, &bar.y, &bar.h);
+	bar.baseline = info_baseline(bar.y, bar.h);
+
+	// Wide enough for the widest reading, so the item does not change size as the minutes pass
+	world_clock_text_now(hour24, clock_text, clock_size);
+	bar.clock_w = renderer_text_width(hour24 ? "00:00" : "12:00 AM");
+	if(renderer_text_width(clock_text) > bar.clock_w)
+		bar.clock_w = renderer_text_width(clock_text);
+
+	bar.ping_text_x = bar.box_x + 2.0f + renderer_text_width("Ping: ");
+	bar.ping_icon_x = bar.ping_text_x - INFO_ICON_PAD - INFO_ICON_SIZE;
+	bar.clock_text_x = bar.ping_icon_x - INFO_ITEM_GAP - bar.clock_w;
+	bar.weather_x = bar.clock_text_x - INFO_ICON_PAD - INFO_ICON_SIZE;
+	return bar;
+}
+
+// Today's condition in the player's region, or the sun before a forecast
+static int info_bar_condition(const GameState* game) {
+	WeatherDayData today;
+	int region = weather_region_at(game->player.x, game->player.y);
+
+	if(weather_state_day_now(region, 0, &today))
+		return today.condition;
+	return WEATHER_CLEAR;
+}
+
+int hud_check_weather_clicked(const HUDLayout* hud, const GameState* game, float mouse_x,
+                              float mouse_y) {
+	char clock_text[16];
+	InfoBarLayout bar = info_bar_layout(hud, game, clock_text, sizeof(clock_text));
+	float right = bar.clock_text_x + bar.clock_w;
+
+	return mouse_x >= bar.weather_x && mouse_x < right && mouse_y >= bar.y &&
+	       mouse_y < bar.y + bar.h;
+}
+
 /**
- * Render the connection latency badge above the minimap.
+ * Render the info bar in the upper right, left to right: the weather and the
+ * time of day, then the ping bars and the ping.
  *
- * @param ping_ms  Round-trip latency in milliseconds, or a nonpositive value when unavailable.
+ * The ping's digits stay where they were when "Ping: " stood in front of them,
+ * and the time follows from there, a fixed gap before the ping icon.
+ * The weather is today's in the region the player stands in, and the sun until
+ * the server has sent a forecast.
+ *
+ * @param ping_ms  One-way latency in milliseconds, or a negative value when unavailable.
  */
-void hud_render_ping(const HUDLayout* hud, int ping_ms) {
-    // Render ping badge just above the minimap in the upper-right
-    char text[32];
-    if (ping_ms <= 0)
-        snprintf(text, sizeof(text), "Ping: --");
-    else
-        snprintf(text, sizeof(text), "Ping: %dms", ping_ms);
+void hud_render_info_bar(const HUDLayout* hud, const GameState* game, int ping_ms) {
+	const GameTextures* textures = &game->textures;
+	char clock_text[16];
+	char ping_text[16];
+	InfoBarLayout bar = info_bar_layout(hud, game, clock_text, sizeof(clock_text));
+	float icon_y = bar.baseline - BADGE_CAP_HEIGHT / 2.0f - INFO_ICON_SIZE / 2.0f;
+	int night = world_clock_synced() && weather_is_night(world_clock_hour_now());
 
-    // Color: green <=80ms, yellow <=150ms, red >150ms
-    float r, g, b;
-    if (ping_ms <= 0)       { r = 0.6f; g = 0.6f; b = 0.6f; }
-    else if (ping_ms <= 80) { r = 0.2f; g = 0.9f; b = 0.3f; }
-    else if (ping_ms <= 150){ r = 0.9f; g = 0.85f; b = 0.1f; }
-    else                    { r = 0.9f; g = 0.2f;  b = 0.2f; }
+	if(ping_ms < 0)
+		snprintf(ping_text, sizeof(ping_text), "--ms");
+	else
+		snprintf(ping_text, sizeof(ping_text), "%dms", ping_ms);
 
-    float w = 100.0f, h = 18.0f;
-    float x = hud->minimap_x + hud->minimap_size - w;
-    float y = hud->minimap_y - h - 4.0f;
+	weather_icon_draw(textures, info_bar_condition(game), night, bar.weather_x, icon_y,
+	                  INFO_ICON_SIZE);
+	renderer_draw_text(bar.clock_text_x, bar.baseline, clock_text);
 
-    renderer_draw_rect(x - 4, y - 2, w + 8, h + 4, 0.05f, 0.05f, 0.08f, 0.82f);
-    // colored left accent bar
-    renderer_draw_rect(x - 4, y - 2, 3.0f, h + 4, r, g, b, 1.0f);
-
-    // Use OpenGL color for the text (approximate by drawing colored rect behind it)
-    // Since renderer_draw_text doesn't take a color, we draw a subtle tinted bg instead
-    renderer_draw_text(x + 2, y + h - 3, text);
+	draw_info_icon(textures->hud_ping[net_ping_level(ping_ms)], bar.ping_icon_x, bar.y, bar.h);
+	renderer_draw_text(bar.ping_text_x, bar.baseline, ping_text);
 }
 
-/** Map a protocol class identifier to its display name. */
-static const char* session_class_name(uint8_t cls) {
-    switch (cls) {
-        case 1: return "Gladiator";
-        case 2: return "Ninja";
-        case 3: return "Landweaver";
-        case 4: return "Spirit";
-        default: return "Unknown";
-    }
+// Seconds of nothing from the server before the connection icon shows
+#define CONNECTION_ISSUE_SILENCE 3.0
+
+// Side of the connection icon, in the HUD's own units
+#define CONNECTION_ICON_SIZE 32.0f
+
+// Gap between the top of the screen and the connection icon
+#define CONNECTION_ICON_TOP 12.0f
+
+/**
+ * Render the connection-issue icon at the top centre of the screen.
+ *
+ * Shown while the server has gone quiet or while recovery is under way, and
+ * gone as soon as data flows again. It is the worst ping level's icon, so it
+ * reads as the same family as the ping bars in the corner. Nothing is locked:
+ * the player can keep moving while the client tries to get back in.
+ */
+void hud_render_connection_issue(const HUDLayout* hud, const GameState* game) {
+	unsigned int icon = game->textures.hud_ping[0];
+
+	if(!icon)
+		return;
+
+	if(net_reconnect_phase() == RECONNECT_IDLE &&
+	   network_silence_seconds() < CONNECTION_ISSUE_SILENCE)
+		return;
+
+	renderer_draw_sprite((float)hud->screen_width * 0.5f - CONNECTION_ICON_SIZE * 0.5f,
+	                     CONNECTION_ICON_TOP, CONNECTION_ICON_SIZE, CONNECTION_ICON_SIZE, icon);
 }
 
-/** Map a protocol race identifier to its display name. */
+/** Map a protocol race identifier to the name the server's registry gives it. */
 static const char* session_race_name(uint8_t race) {
-    switch (race) {
-        case 1: return "Human";
-        case 2: return "Pyseck";
-        case 3: return "Infor";
-        default: return "Unknown";
-    }
+	const RaceInfo* info = client_race_find(race);
+
+	return info ? info->name : "Unknown";
 }
 
-// Layout constants shared between render and click-handler
-#define SESSION_PANEL_W    450.0f
-#define SESSION_ROW_H       16.0f
-#define SESSION_HEADER_H    32.0f
-#define SESSION_COL_H       18.0f
-#define SESSION_FOOTER_H    30.0f
-#define SESSION_PAD          8.0f
+// Layout constants shared between render and click-handler, in window pixels
+#define SESSION_PANEL_W    540.0f
+#define SESSION_ROW_H       24.0f
+#define SESSION_HEADER_H    46.0f
+#define SESSION_COL_H       28.0f
+#define SESSION_FOOTER_H    48.0f
+#define SESSION_PAD         16.0f
 #define SESSION_ROWS        SESSION_LIST_PAGE_SIZE  // 30 rows per page
+#define SESSION_CLOSE       24.0f
+#define SESSION_TEXT        14.0f
+#define SESSION_HEAD_TEXT   13.0f
 
 // Column X offsets (relative to panel left edge)
 #define SESSION_COL_LV      SESSION_PAD
-#define SESSION_COL_NAME    44.0f
-#define SESSION_COL_CLASS  164.0f
-#define SESSION_COL_RACE   264.0f
-#define SESSION_COL_PING   (SESSION_PANEL_W - 54.0f)
+#define SESSION_COL_NAME    64.0f
+#define SESSION_COL_RACE   224.0f
+#define SESSION_COL_STATUS 360.0f
+#define SESSION_COL_PING   (SESSION_PANEL_W - 76.0f)
 
 // Total fixed panel height: header + col-header row + 30 rows + footer
 #define SESSION_PANEL_H    (SESSION_HEADER_H + SESSION_COL_H + \
                             SESSION_ROWS * SESSION_ROW_H + SESSION_FOOTER_H)
 
 // Prev/Next button dimensions (inside footer)
-#define SESSION_BTN_W  60.0f
-#define SESSION_BTN_H  18.0f
+#define SESSION_BTN_W  88.0f
+#define SESSION_BTN_H  28.0f
 
-static float session_panel_x(const HUDLayout* hud) {
-    return (float)hud->screen_width / 2.0f - SESSION_PANEL_W / 2.0f;
+// The panel's top left: where it was dragged, else centred
+static void session_panel_origin(const HUDLayout* hud, const window_pos* pos, float* out_x,
+                                 float* out_y) {
+    window_pos_origin(pos, (float)hud->screen_width, (float)hud->screen_height, SESSION_PANEL_W,
+                      SESSION_PANEL_H, out_x, out_y);
 }
-static float session_panel_y(void) { return 60.0f; }
+
+// Where the pagination buttons and the close button sit
+static float session_btn_y(float py) {
+    return py + SESSION_PANEL_H - SESSION_FOOTER_H + (SESSION_FOOTER_H - SESSION_BTN_H) / 2.0f;
+}
+
+static float session_close_x(float px) {
+    return px + SESSION_PANEL_W - SESSION_CLOSE - 10.0f;
+}
+
+static int can_page_prev(const GameState* game) {
+    return game->playing->session_current_page > 0;
+}
+
+static int can_page_next(const GameState* game) {
+    return game->playing->session_total_pages > 0 &&
+           game->playing->session_current_page + 1 < game->playing->session_total_pages;
+}
+
+// One player's row
+static void render_session_row(const GameState* game, int i, float px, float row_y) {
+    const SessionPlayer* p = &game->playing->session_list[i];
+    float cy = row_y + SESSION_ROW_H * 0.5f;
+    char lv_buf[8];
+    char ping_buf[16];
+
+    // Self highlight (page 0, first entry is self), else alternating shade
+    if (i == 0 && game->playing->session_current_page == 0)
+        ui_kit_px_rect(px + 8.0f, row_y, SESSION_PANEL_W - 16.0f, SESSION_ROW_H - 1.0f,
+                       0.35f, 0.75f, 0.45f, 0.16f);
+    else if (i % 2 == 1)
+        ui_kit_px_rect(px + 8.0f, row_y, SESSION_PANEL_W - 16.0f, SESSION_ROW_H - 1.0f,
+                       1.0f, 1.0f, 1.0f, 0.05f);
+
+    snprintf(lv_buf, sizeof(lv_buf), "%u", (unsigned)p->level);
+    if (p->ping_ms == NET_PING_UNKNOWN)
+        snprintf(ping_buf, sizeof(ping_buf), "--");
+    else
+        snprintf(ping_buf, sizeof(ping_buf), "%dms", (int)p->ping_ms);
+
+    ui_kit_px_text(px + SESSION_COL_LV, cy, lv_buf, SESSION_TEXT, KIT_DIM, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_NAME, cy, p->name, SESSION_TEXT, KIT_WHITE, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_RACE, cy, session_race_name(p->player_race), SESSION_TEXT,
+                   KIT_WHITE, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_STATUS, cy, session_status_label(p->status), SESSION_TEXT,
+                   KIT_WHITE, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_PING, cy, ping_buf, SESSION_TEXT, KIT_DIM, KIT_LEFT);
+}
+
+// The Prev and Next buttons and the page they are on
+static void render_session_footer(const GameState* game, float px, float py) {
+    float btn_y = session_btn_y(py);
+    float next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
+    float prev_x = px + SESSION_PAD;
+    char page_buf[48];
+
+    ui_kit_px_divider(px + SESSION_PAD, py + SESSION_PANEL_H - SESSION_FOOTER_H,
+                      SESSION_PANEL_W - 2.0f * SESSION_PAD);
+    ui_kit_px_button(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, "< Prev", 0, KIT_BTN_NORMAL);
+    ui_kit_px_button(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, "Next >", 0, KIT_BTN_NORMAL);
+
+    // A button that cannot be used is dimmed
+    if (!can_page_prev(game))
+        ui_kit_px_rect(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, 0.05f, 0.05f, 0.09f, 0.65f);
+    if (!can_page_next(game))
+        ui_kit_px_rect(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, 0.05f, 0.05f, 0.09f, 0.65f);
+
+    if (game->playing->session_total_pages > 0)
+        snprintf(page_buf, sizeof(page_buf), "Page %u / %u",
+                 (unsigned)game->playing->session_current_page + 1,
+                 (unsigned)game->playing->session_total_pages);
+    else
+        snprintf(page_buf, sizeof(page_buf), "Loading...");
+    ui_kit_px_text(px + SESSION_PANEL_W * 0.5f, btn_y + SESSION_BTN_H * 0.5f, page_buf,
+                   SESSION_TEXT, KIT_DIM, KIT_CENTER);
+}
 
 /**
  * Render the paginated server session roster.
@@ -768,121 +977,39 @@ void hud_render_session_panel(const HUDLayout* hud, const GameState* game, int o
     // is not needed here. Kept in the signature for callers.
     (void)own_ping_ms;
 
-    float px = session_panel_x(hud);
-    float py = session_panel_y();
-
-    // fall back to a flat panel until the texture loads
-    if (game->textures.session_panel_bg) {
-        renderer_draw_sprite(px, py, SESSION_PANEL_W, SESSION_PANEL_H,
-                             game->textures.session_panel_bg);
-    } else {
-        renderer_draw_rect(px, py, SESSION_PANEL_W, SESSION_PANEL_H,
-                           0.04f, 0.04f, 0.08f, 0.94f);
-        // Border
-        renderer_draw_rect(px, py, SESSION_PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
-        renderer_draw_rect(px, py + SESSION_PANEL_H - 1.5f, SESSION_PANEL_W, 1.5f, 0.40f, 0.50f, 0.65f, 1.0f);
-        renderer_draw_rect(px, py, 1.5f, SESSION_PANEL_H, 0.40f, 0.50f, 0.65f, 1.0f);
-        renderer_draw_rect(px + SESSION_PANEL_W - 1.5f, py, 1.5f, SESSION_PANEL_H, 0.40f, 0.50f, 0.65f, 1.0f);
-    }
-
-    // Header bar
-    renderer_draw_rect(px, py, SESSION_PANEL_W, SESSION_HEADER_H, 0.08f, 0.12f, 0.20f, 0.95f);
-
+    float px;
+    float py;
+    float col_y;
+    float row_y;
     char header[64];
-    snprintf(header, sizeof(header), "Players Online: %u",
-             game->playing->session_total_players);
-    renderer_draw_text(px + SESSION_PAD, py + SESSION_HEADER_H - 8, header);
 
-    renderer_draw_text(px + SESSION_PANEL_W - 72.0f, py + SESSION_HEADER_H - 8, "[O] close");
+    session_panel_origin(hud, &game->playing->session_win, &px, &py);
+    col_y = py + SESSION_HEADER_H + SESSION_COL_H * 0.5f;
+    row_y = py + SESSION_HEADER_H + SESSION_COL_H;
+    snprintf(header, sizeof(header), "Players Online: %u", game->playing->session_total_players);
 
-    // Column headers
-    float col_label_y = py + SESSION_HEADER_H + SESSION_COL_H - 4;
-    renderer_draw_text(px + SESSION_COL_LV,   col_label_y, "Lv");
-    renderer_draw_text(px + SESSION_COL_NAME,  col_label_y, "Name");
-    renderer_draw_text(px + SESSION_COL_CLASS, col_label_y, "Class");
-    renderer_draw_text(px + SESSION_COL_RACE,  col_label_y, "Race");
-    renderer_draw_text(px + SESSION_COL_PING,  col_label_y, "Ping");
+    ui_kit_px_begin(hud->screen_width, hud->screen_height);
+    ui_kit_px_rect(px, py, SESSION_PANEL_W, SESSION_PANEL_H, 0.05f, 0.05f, 0.09f, 0.97f);
+    ui_kit_px_panel(px, py, SESSION_PANEL_W, SESSION_PANEL_H);
+    ui_kit_px_text(px + SESSION_PAD, py + SESSION_HEADER_H * 0.5f, header, 20.0f, KIT_GOLD,
+                   KIT_LEFT);
+    ui_kit_px_close_button(session_close_x(px), py + 11.0f, SESSION_CLOSE, 0);
 
-    // Thin separator under column headers
-    float sep_y = py + SESSION_HEADER_H + SESSION_COL_H;
-    renderer_draw_rect(px + SESSION_PAD, sep_y, SESSION_PANEL_W - SESSION_PAD * 2, 1.0f,
-                       0.30f, 0.36f, 0.48f, 0.8f);
-
-    // draw one optional background texture per player row
-    float row_y = sep_y + 2.0f;
+    ui_kit_px_text(px + SESSION_COL_LV, col_y, "Lv", SESSION_HEAD_TEXT, KIT_HEAD, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_NAME, col_y, "Name", SESSION_HEAD_TEXT, KIT_HEAD, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_RACE, col_y, "Race", SESSION_HEAD_TEXT, KIT_HEAD, KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_STATUS, col_y, "Status", SESSION_HEAD_TEXT, KIT_HEAD,
+                   KIT_LEFT);
+    ui_kit_px_text(px + SESSION_COL_PING, col_y, "Ping", SESSION_HEAD_TEXT, KIT_HEAD, KIT_LEFT);
+    ui_kit_px_divider(px + SESSION_PAD, row_y - 2.0f, SESSION_PANEL_W - 2.0f * SESSION_PAD);
 
     for (int i = 0; i < game->playing->session_list_count; i++) {
-        const SessionPlayer* p = &game->playing->session_list[i];
-
-        // Entry background: texture if loaded, else alternating shaded rect
-        if (game->textures.session_entry_bg) {
-            renderer_draw_sprite(px + SESSION_PAD, row_y,
-                                 SESSION_PANEL_W - SESSION_PAD * 2, SESSION_ROW_H - 1,
-                                 game->textures.session_entry_bg);
-        } else {
-            // Self highlight (page 0, first entry is self)
-            if (i == 0 && game->playing->session_current_page == 0) {
-                renderer_draw_rect(px + 2, row_y, SESSION_PANEL_W - 4, SESSION_ROW_H - 1,
-                                   0.08f, 0.18f, 0.10f, 0.70f);
-            } else if (i % 2 == 1) {
-                renderer_draw_rect(px + 2, row_y, SESSION_PANEL_W - 4, SESSION_ROW_H - 1,
-                                   0.08f, 0.08f, 0.13f, 0.45f);
-            }
-        }
-
-        float text_y = row_y + SESSION_ROW_H - 4;
-
-        char lv_buf[8];
-        snprintf(lv_buf, sizeof(lv_buf), "%u", (unsigned)p->level);
-        renderer_draw_text(px + SESSION_COL_LV,    text_y, lv_buf);
-        renderer_draw_text(px + SESSION_COL_NAME,  text_y, p->name);
-        renderer_draw_text(px + SESSION_COL_CLASS, text_y, session_class_name(p->player_class));
-        renderer_draw_text(px + SESSION_COL_RACE,  text_y, session_race_name(p->player_race));
-
-        char ping_buf[16];
-        if (p->ping_ms == 0) snprintf(ping_buf, sizeof(ping_buf), "--");
-        else                 snprintf(ping_buf, sizeof(ping_buf), "%dms", (int)p->ping_ms);
-        renderer_draw_text(px + SESSION_COL_PING, text_y, ping_buf);
-
+        render_session_row(game, i, px, row_y);
         row_y += SESSION_ROW_H;
     }
 
-    // pagination footer
-    float footer_y = py + SESSION_PANEL_H - SESSION_FOOTER_H;
-    renderer_draw_rect(px, footer_y, SESSION_PANEL_W, 1.0f, 0.30f, 0.36f, 0.48f, 0.6f);
-
-    float btn_y = footer_y + (SESSION_FOOTER_H - SESSION_BTN_H) / 2.0f;
-
-    // Prev button
-    float prev_x = px + SESSION_PAD;
-    int can_prev = game->playing->session_current_page > 0;
-    renderer_draw_rect(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H,
-                       can_prev ? 0.15f : 0.08f,
-                       can_prev ? 0.20f : 0.08f,
-                       can_prev ? 0.30f : 0.08f, 0.9f);
-    renderer_draw_text_centered(prev_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, "< Prev");
-
-    // Next button
-    float next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
-    int can_next = game->playing->session_total_pages > 0 &&
-                   game->playing->session_current_page + 1 < game->playing->session_total_pages;
-    renderer_draw_rect(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H,
-                       can_next ? 0.15f : 0.08f,
-                       can_next ? 0.20f : 0.08f,
-                       can_next ? 0.30f : 0.08f, 0.9f);
-    renderer_draw_text_centered(next_x, btn_y, SESSION_BTN_W, SESSION_BTN_H, "Next >");
-
-    // Page indicator (centered)
-    char page_buf[48];
-    if (game->playing->session_total_pages > 0)
-        snprintf(page_buf, sizeof(page_buf), "Page %u / %u",
-                 (unsigned)game->playing->session_current_page + 1,
-                 (unsigned)game->playing->session_total_pages);
-    else
-        snprintf(page_buf, sizeof(page_buf), "Loading...");
-    renderer_draw_text_centered(prev_x + SESSION_BTN_W, btn_y,
-                                next_x - prev_x - SESSION_BTN_W, SESSION_BTN_H,
-                                page_buf);
+    render_session_footer(game, px, py);
+    ui_kit_px_end();
 }
 
 /** Total lifetime of a zone-entry banner, in seconds. */
@@ -935,30 +1062,52 @@ void hud_render_zone_banner(const HUDLayout* hud, const GameState* game) {
 }
 
 /**
- * Resolve a click against the session panel's pagination controls.
+ * Resolve a click against the session panel's controls.
  *
- * @return      -1 for the previous page, 1 for the next page, or 0 for neither.
+ * @return      -1 for the previous page, 1 for the next page, 2 for close, or 0.
  */
 int hud_session_panel_handle_click(const GameState* game, float mx, float my) {
-    // Must mirror the footer layout in hud_render_session_panel
-    extern void hud_init(HUDLayout*, int, int);  // just to get screen_width via game->playing->hud
-    float px = (float)game->playing->hud.screen_width / 2.0f - SESSION_PANEL_W / 2.0f;
-    float py = session_panel_y();
+    // Must mirror the layout in hud_render_session_panel
+    const HUDLayout* hud = &game->playing->hud;
+    float px;
+    float py;
+    float btn_y;
+    float prev_x;
+    float next_x;
+    float close_x;
 
-    float footer_y = py + SESSION_PANEL_H - SESSION_FOOTER_H;
-    float btn_y    = footer_y + (SESSION_FOOTER_H - SESSION_BTN_H) / 2.0f;
+    session_panel_origin(hud, &game->playing->session_win, &px, &py);
+    btn_y = session_btn_y(py);
+    prev_x = px + SESSION_PAD;
+    next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
+    close_x = session_close_x(px);
 
-    // Prev button bounds
-    float prev_x = px + SESSION_PAD;
+    if (mx >= close_x && mx <= close_x + SESSION_CLOSE &&
+        my >= py + 11.0f && my <= py + 11.0f + SESSION_CLOSE)
+        return 2;
+
     if (mx >= prev_x && mx <= prev_x + SESSION_BTN_W &&
         my >= btn_y  && my <= btn_y + SESSION_BTN_H)
         return -1;
 
-    // Next button bounds
-    float next_x = px + SESSION_PANEL_W - SESSION_PAD - SESSION_BTN_W;
     if (mx >= next_x && mx <= next_x + SESSION_BTN_W &&
         my >= btn_y  && my <= btn_y + SESSION_BTN_H)
         return 1;
 
     return 0;
+}
+
+/**
+ * Carry the session panel about by its title strip.
+ *
+ * @return      Nonzero while the panel is held, so the click goes no further.
+ */
+int hud_session_panel_drag(GameState* game, float mx, float my, int clicked, int down) {
+    const HUDLayout* hud = &game->playing->hud;
+
+    // The close button is left out of the strip
+    return window_pos_drag(&game->playing->session_win, (float)hud->screen_width,
+                           (float)hud->screen_height, SESSION_PANEL_W, SESSION_PANEL_H,
+                           SESSION_PANEL_W - SESSION_CLOSE - 20.0f, SESSION_HEADER_H, mx, my,
+                           clicked, down);
 }

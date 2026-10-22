@@ -62,6 +62,9 @@ void name_cache_store(uint32_t character_id, const char* name);
  */
 void name_cache_flush_requests(void);
 
+/** Whether an identifier's name has arrived. Asks nobody. */
+int name_cache_is_known(uint32_t character_id);
+
 /** Identifiers whose names are known. For tests. */
 int name_cache_known_count(void);
 

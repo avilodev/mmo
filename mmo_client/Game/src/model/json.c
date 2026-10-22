@@ -19,8 +19,6 @@ static const char* skip_value(const char*p,const char*end){
     while(p<end&&!isspace((unsigned char)*p)&&*p!=','&&*p!=']'&&*p!='}')p++;
     return p;
 }
-JsonSlice json_slice(const char*text){JsonSlice s={text,text?strlen(text):0};return s;}
-char*json_read_file(const char*path,char*error,int error_size){FILE*f=fopen(path,"rb");if(!f){if(error&&error_size)snprintf(error,(size_t)error_size,"could not open %s",path);return NULL;}if(fseek(f,0,SEEK_END)){fclose(f);return NULL;}long n=ftell(f);if(n<0){fclose(f);return NULL;}rewind(f);char*s=malloc((size_t)n+1);if(!s){fclose(f);return NULL;}if(fread(s,1,(size_t)n,f)!=(size_t)n){free(s);fclose(f);return NULL;}s[n]=0;fclose(f);return s;}
 int json_member(JsonSlice object,const char*key,JsonSlice*out){
     if(!object.begin||!key||!out)return 0;
     const char*p=object.begin,*end=p+object.length;p=skip_ws(p,end);if(p>=end||*p!='{')return 0;p++;

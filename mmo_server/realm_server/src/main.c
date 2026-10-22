@@ -4,23 +4,20 @@
  */
 #include "types.h"
 #include "log.h"
-#include "session.h"
 #include "packet_limiter.h"
 #include "limit_profiles.h"
 #include "net_notify.h"
 #include "metrics_server.h"
 
-#include "players_database.h"
 #include "character_connect.h"
 #include "config.h"
 #include "utils.h"
 #include "routes.h"
 #include "world_connect.h"
-#include "realm_world_auth.h"
-#include "world_database_manager.h"
 #include "realm_net.h"
 #include "net_tuning.h"
 #include "class_stats.h"
+#include "realm_service.h"
 #include "data_paths.h"
 #include "realm_friends.h"
 #include "world_table.h"
@@ -40,6 +37,11 @@ static SSL_CTX* g_tls_ctx = NULL;
 
 /** Seconds between heartbeat cycles, and the retry interval for an offline world. */
 #define WORLD_QUERY_TIMEOUT 15
+
+// A world that has just failed is retried after this many seconds, then twice
+// as long each time up to WORLD_QUERY_TIMEOUT, so a world still starting when
+// the realm does is online within seconds rather than a cycle later
+#define WORLD_RETRY_FIRST 1
 
 /** Default milliseconds allowed for each blocking phase of one world probe.
  *
@@ -149,13 +151,26 @@ static void world_link_drop(WorldServer* ws) {
  * Operates on the caller's private snapshot, so no lock is held across any of
  * the network I/O here.
  */
+// Seconds to wait after a failure before connecting to this world again
+static int retry_interval(const WorldServer* ws) {
+	return ws->retry_delay > 0 ? ws->retry_delay : WORLD_RETRY_FIRST;
+}
+
+// The next wait after another failure: double the last, up to the cycle
+static void back_off(WorldServer* ws) {
+	ws->retry_delay = ws->retry_delay > 0 ? ws->retry_delay * 2 : WORLD_RETRY_FIRST;
+	if(ws->retry_delay > WORLD_QUERY_TIMEOUT)
+		ws->retry_delay = WORLD_QUERY_TIMEOUT;
+}
+
 static void probe_one_world(WorldServer* ws, const ProbeBatch* batch) {
     time_t now = batch->now;
 
     if (ws->fd < 0) {
-        if (now - ws->last_heartbeat < WORLD_QUERY_TIMEOUT) return;
+		if(now - ws->last_heartbeat < retry_interval(ws))
+			return;
 
-        char* world_key = get_server_auth_key_from_redis(ws->name);
+        char* world_key = realm_link_key(ws->name);
         const char* key_to_use = world_key ? world_key : batch->fallback_key;
 
         // silent=1 suppresses the per-attempt spam; the first failure is logged below.
@@ -170,18 +185,22 @@ static void probe_one_world(WorldServer* ws, const ProbeBatch* batch) {
 
         if (ws->fd < 0) {
             if (!ws->connection_logged) {
-                LOG_INFO("World server '%s' is offline - will retry silently every %ds",
-                         ws->name, WORLD_QUERY_TIMEOUT);
+				LOG_INFO("World server '%s' is offline - retrying silently, every %ds at most",
+				         ws->name, WORLD_QUERY_TIMEOUT);
                 ws->connection_logged = 1;
             }
+			back_off(ws);
             ws->online = 0;
             ws->player_count = 0;  // Reset player count when offline
-        } else {
-            LOG_INFO("Successfully connected to world server '%s'", ws->name);
-            ws->online = 1;
-            ws->connection_logged = 0;  // Reset for next disconnect
+			return;
         }
-        return;
+
+        LOG_INFO("Successfully connected to world server '%s'", ws->name);
+        ws->online = 1;
+		ws->retry_delay = 0;
+        ws->connection_logged = 0;  // Reset for next disconnect
+
+		// Fall through to the heartbeat so counts are known at once
     }
 
     WorldHeartbeatPacket hb = {0};
@@ -319,7 +338,7 @@ void* world_monitor_thread_func(void* arg) {
         time_t now = time(NULL);
 
         // Get today's server auth key from Redis
-        char* server_key = get_server_auth_key_from_redis("global");
+        char* server_key = realm_link_key("global");
         if (!server_key) {
             LOG_WARN("WARNING: No server auth key in Redis, retrying in %ds",
                      WORLD_QUERY_TIMEOUT);
@@ -363,14 +382,22 @@ void* world_monitor_thread_func(void* arg) {
             dst->max_players       = probe[i].max_players;
             dst->last_heartbeat    = probe[i].last_heartbeat;
             dst->connection_logged = probe[i].connection_logged;
+			dst->retry_delay       = probe[i].retry_delay;
         }
         pthread_mutex_unlock(&g_server.world_servers_lock);
 
         free(server_key);
 
-        // Sleep 10 seconds between heartbeat cycles, in steps so that a
-        // shutdown request is noticed promptly rather than up to 10s later.
-        monitor_sleep(10);
+		// A world in its first quick retries is tried again in a second;
+		// otherwise sleep 10 seconds between heartbeat cycles, in steps so that
+		// a shutdown request is noticed promptly rather than up to 10s later.
+		int retrying = 0;
+
+		for(int i = 0; i < world_count; i++) {
+			if(probe[i].fd < 0 && probe[i].retry_delay < WORLD_QUERY_TIMEOUT)
+				retrying = 1;
+		}
+		monitor_sleep(retrying ? WORLD_RETRY_FIRST : 10);
     }
 
     free(probe);
@@ -496,7 +523,7 @@ static int realm_health(char* reason, size_t reason_size, void* user) {
         snprintf(reason, reason_size, "shutting down");
         return 0;
     }
-    if (!session_is_ready()) {
+    if (!realm_service_ready()) {
         snprintf(reason, reason_size, "Redis is unavailable; no ticket can be issued");
         return 0;
     }
@@ -553,7 +580,7 @@ int main(int argc, char** argv) {
                           "character creation will refuse every request", races_path);
     }
 
-    if (!session_init()) {
+    if (!realm_service_start()) {
         LOG_ERROR("Failed to initialize Redis session connection");
         return 1;
     }
@@ -568,13 +595,13 @@ int main(int argc, char** argv) {
      * a known value.
      */
     {
-        char* key = get_server_auth_key_from_redis("global");
+        char* key = realm_link_key("global");
         if (!key) {
             LOG_ERROR("FATAL: no server auth key at Redis key 'server_auth_key:global'.\n"
                       "       Provision one before starting the realm, e.g.\n"
                       "         common/server_keys/generate_daily_server_keys.sh\n"
                       "       The realm cannot authenticate to any world without it.");
-            session_close();
+            realm_service_stop();
             return 1;
         }
         /* Never logged: it is the credential itself. */
@@ -587,7 +614,9 @@ int main(int argc, char** argv) {
      * refusing to boot over a friends list would take the whole game down for
      * a feature nobody is required to use. friends_start() says so in the log
      * and everything else carries on. */
-    if (!friends_start(SOCIAL_DB))
+    char social_path[512];
+    if (!data_path_resolve(social_path, sizeof(social_path), SOCIAL_DB_FROM_EXE) ||
+        !friends_start(social_path))
         LOG_WARN("Friends and presence are unavailable this run");
 
     memset(&g_server, 0, sizeof(g_server));
@@ -604,7 +633,7 @@ int main(int argc, char** argv) {
         g_server.world_servers = calloc(configured, sizeof(*g_server.world_servers));
         if (!g_server.world_servers) {
             LOG_ERROR("Out of memory allocating %zu world slots", configured);
-            session_close();
+            realm_service_stop();
             return 1;
         }
         g_server.num_world_servers =
@@ -612,7 +641,7 @@ int main(int argc, char** argv) {
         if (g_server.num_world_servers <= 0) {
             LOG_ERROR("FATAL: the world table produced no usable worlds");
             free(g_server.world_servers);
-            session_close();
+            realm_service_stop();
             return 1;
         }
     }
@@ -633,8 +662,7 @@ int main(int argc, char** argv) {
 
     g_server.tcp_sockfd = create_tcp_server_socket(g_server.port);
     if (g_server.tcp_sockfd < 0) {
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
 
@@ -664,8 +692,7 @@ int main(int argc, char** argv) {
                            "/../certs/world_pins.txt")) {
         LOG_ERROR("Certificate paths do not fit in the buffer; install root is too deep.");
         close(g_server.tcp_sockfd);
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
     LOG_INFO("[PATHS] Certificate directory resolved from the executable");
@@ -679,8 +706,7 @@ int main(int argc, char** argv) {
         LOG_INFO("    -keyout certs/server.key -out certs/server.crt \\");
         LOG_INFO("    -days 3650 -nodes -subj \"/CN=mmo-realm\"");
         close(g_server.tcp_sockfd);
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
 
@@ -694,8 +720,7 @@ int main(int argc, char** argv) {
         LOG_INFO("system and cross-installs the pins.");
         tls_server_cleanup(g_tls_ctx);
         close(g_server.tcp_sockfd);
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
 
@@ -703,16 +728,14 @@ int main(int argc, char** argv) {
         LOG_ERROR("Failed to start the realm event loops");
         tls_server_cleanup(g_tls_ctx);
         close(g_server.tcp_sockfd);
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
 
     if (pthread_create(&g_server.accept_thread, NULL, accept_thread_func, NULL) != 0) {
         realm_net_stop();
         close(g_server.tcp_sockfd);
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
 
@@ -723,8 +746,7 @@ int main(int argc, char** argv) {
         pthread_join(g_server.accept_thread, NULL);
         realm_net_stop();
         close(g_server.tcp_sockfd);
-        character_database_close();
-        session_close();
+        realm_service_stop();
         return 1;
     }
 
@@ -752,9 +774,7 @@ int main(int argc, char** argv) {
     world_connect_tls_cleanup();
     tls_server_cleanup(g_tls_ctx);
     g_tls_ctx = NULL;
-    world_databases_cleanup();
-    friends_stop();          /* joins the consumer before session_close() takes Redis away */
-    session_close();
+    realm_service_shutdown();
     pthread_mutex_destroy(&g_server.world_servers_lock);
     free(g_server.world_servers);
     g_server.world_servers = NULL;

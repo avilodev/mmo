@@ -7,7 +7,7 @@
 
 /* CURRENCY_COUNT sizes the player's balance array on the wire. */
 #include "world_regions.h"
-
+ 
 /** Identify the wire contract this build speaks.
  *
  * The client and server trees each carry their own copy of this file and are
@@ -22,7 +22,7 @@
  * enum that travels on the wire changes. tests/check_protocol_version.sh (and
  * the client's equivalent) fails the build when this file changes without it.
  */
-#define PROTOCOL_VERSION 9
+#define PROTOCOL_VERSION 31
 
 /* --- Byte order ----------------------------------------------------------
  *
@@ -44,11 +44,12 @@
  *
  * The native-endian fields are, exhaustively:
  *
- *   PlayerMovePacket        pos_x, pos_y, vel_x, vel_y
- *   PlayerPositionPacket    pos_x, pos_y
+ *   PlayerMovePacket        pos_x, pos_y, pos_z, vel_x, vel_y, move_flags
+ *   PlayerMoveAckPacket     pos_x, pos_y, pos_z, vel_z
+ *   PlayerPositionPacket    pos_x, pos_y, pos_z
  *   AttackIntentPacket      aim_x, aim_y
- *   NearbyPlayerData        pos_x, pos_y
- *   NPCPositionData         pos_x, pos_y
+ *   NearbyPlayerData        pos_x, pos_y, pos_z
+ *   NPCPositionData         pos_x, pos_y, pos_z
  *   ProjectileData          origin, direction, speed
  *   WorldStatusPacket       cpu_usage
  *
@@ -254,7 +255,28 @@ typedef enum {
      * each, and caches the answers for the session. A name is requested when a
      * player first comes into view and never again. */
     PACKET_NAME_QUERY_REQUEST  = 212,   // Client -> Server: who are these ids?
-    PACKET_NAME_QUERY_RESPONSE = 213,   // Server -> Client: their names
+    PACKET_NAME_QUERY_RESPONSE = 213,
+    PACKET_NPC_QUEST_MARKS     = 214,   // Server -> Client: which NPCs have a quest for you   // Server -> Client: their names
+	PACKET_AVAILABLE_QUESTS_RESET = 215, // Server -> Client: forget the available quests
+	PACKET_AVAILABLE_QUEST        = 216, // Server -> Client: one quest you may take
+	PACKET_QUEST_HISTORY          = 217, // Server -> Client: a quest this character has finished
+	PACKET_QUEST_STEP_DONE        = 218, // Server -> Client: a quest step finished and paid
+	PACKET_STATUS_REQUEST            = 219, // Client -> Server: choose your status
+	PACKET_STATUS_STATE              = 221, // Server -> Client: your status now
+
+	// Emotes (240-241): state sent with each nearby player; the server decides.
+	PACKET_EMOTE_REQUEST = 240, // Client -> Server: start an emote, EMOTE_NONE stops
+	PACKET_EMOTE_STATE = 241, // Server -> Client: your emote now, and why
+
+	// Inspect (242-243): read another player's gear and stats; the server decides.
+	PACKET_INSPECT_REQUEST = 242, // Client -> Server: show me this nearby player
+	PACKET_INSPECT_RESPONSE = 243, // Server -> Client: their gear and stats, or why not
+
+	// World clock (244): the time of day, sent once at join.
+	PACKET_WORLD_TIME = 244, // Server -> Client: the time of day and the length of a day
+
+	// Weather (245): the forecast for every region, sent at join and each weather day.
+	PACKET_WEATHER_FORECAST = 245, // Server -> Client: seven days of forecast per region
 
     /* Friends and presence (230-238).
      *
@@ -339,6 +361,44 @@ typedef struct {
     uint32_t player_id;     // 4 bytes
     uint16_t payload_size;  // 2 bytes
 } PacketHeader;             // Total: 7 bytes (no padding)
+
+/** Pack a character's look into one word.
+ *
+ * Bits 0-1 hold the body (AppearanceBody) and bits 2-31 are reserved and must be
+ * zero. The word travels in network byte order like every other integer; these
+ * helpers work on the host-order value. Zero means "male body", which is what
+ * every character created before appearances existed became.
+ *
+ * It is wider than today's one field on purpose: a later choice is a new field
+ * in the reserved bits, not a protocol bump.
+ */
+typedef enum {
+	APPEARANCE_BODY_MALE   = 0,
+	APPEARANCE_BODY_FEMALE = 1,
+	APPEARANCE_BODY_COUNT
+} AppearanceBody;
+
+#define APPEARANCE_BODY_SHIFT    0
+#define APPEARANCE_BODY_MASK     0x3u
+#define APPEARANCE_USED_BITS     0x3u
+
+static inline uint32_t appearance_pack(unsigned body) {
+	return (body & APPEARANCE_BODY_MASK) << APPEARANCE_BODY_SHIFT;
+}
+
+static inline unsigned appearance_body(uint32_t appearance) {
+	return (appearance >> APPEARANCE_BODY_SHIFT) & APPEARANCE_BODY_MASK;
+}
+
+/** Nonzero when the word names a real body and sets no reserved bit.
+ *
+ * A hand-built packet cannot smuggle a value the renderer has no answer for.
+ */
+static inline int appearance_valid(uint32_t appearance) {
+	if(appearance & ~APPEARANCE_USED_BITS)
+		return 0;
+	return appearance_body(appearance) < APPEARANCE_BODY_COUNT;
+}
 
 /** Describe one race to the character-creation screen.
  *
@@ -566,6 +626,7 @@ typedef struct {
         uint32_t level;
         uint32_t class_id;
         uint32_t race_id;
+		uint32_t appearance; // network order; see appearance_pack
     } characters[10];
 } CharacterListResponsePacket;
 
@@ -576,6 +637,7 @@ typedef struct {
     char name[32];
     uint32_t class_id;
     uint32_t race_id;
+	uint32_t appearance; // network order; see appearance_pack
 } CharacterCreateRequestPacket;
 
 /** Return the result and assigned identifier of character creation. */
@@ -719,6 +781,7 @@ typedef struct {
     uint32_t level;
     float pos_x;
     float pos_y;
+    float pos_z;
     uint32_t health;
     uint32_t max_health;
     int32_t resource;
@@ -732,6 +795,7 @@ typedef struct {
     uint8_t  resource_type; // ResourceType, derived from the active spec's role
     uint8_t  form;          // PlayerForm currently active
     uint8_t  _reserved[2];  // keeps the struct naturally aligned; must be 0
+	uint32_t appearance;    // network order; see appearance_pack
 
     /** Empty slots use an instance identifier of zero. */
     InventorySlotData equipment[EQUIP_SLOTS];
@@ -792,6 +856,7 @@ typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
+    float pos_z;
     float vel_x;
     float vel_y;
     /** Numbers this proposal, so a correction can say which one it answers.
@@ -808,7 +873,19 @@ typedef struct {
      * only ever compares it to entries in a short ring of recent moves.
      */
     uint32_t sequence;
+    uint8_t  move_flags;    // MOVE_FLAG_*
+    uint8_t  heading;       // the way the body faces, 0-255 for a full turn
+    uint8_t  _reserved[2];
+	// The last correction the client took; moves sent before it are dropped
+	uint32_t correction_seq;
 } PlayerMovePacket;
+
+/** Mark a move that starts a jump. */
+#define MOVE_FLAG_JUMP 0x01
+#define MOVE_FLAG_FIDGET 0x02 // the body is playing an idle variation
+// Which idle variation, while MOVE_FLAG_FIDGET is set: 0-7 in bits 2-4
+#define MOVE_FIDGET_KIND_SHIFT 2
+#define MOVE_FIDGET_KIND_MASK 0x1C
 
 /** Correct a player's position, naming the proposal it rejects.
  *
@@ -824,7 +901,11 @@ typedef struct {
     PacketHeader header;
     float pos_x;
     float pos_y;
+    float pos_z;
     uint32_t sequence;
+	float vel_z;           // the server body's fall speed, so both fall alike
+	uint8_t grounded;      // the server body stands on a floor
+	uint8_t _reserved[3];
 } PlayerMoveAckPacket;
 
 /** Identify supported attack-area shapes. */
@@ -958,6 +1039,7 @@ typedef struct {
     uint16_t     ability_id;
     float        pos_x;
     float        pos_y;
+    float        pos_z;
     float        duration;
     float        radius;
     uint8_t      has_collision;
@@ -1062,6 +1144,7 @@ typedef struct {
     uint32_t npc_id;
     float pos_x;
     float pos_y;
+    float pos_z;
     uint32_t health;
     uint32_t max_health;
     uint8_t is_alive;
@@ -1077,6 +1160,8 @@ typedef struct {
     uint8_t padding[3];  // Must match server alignment
     NPCPositionData npcs[MAX_NPCS_PER_PACKET];
 } NPCPositionPacket;
+_Static_assert(sizeof(NPCPositionPacket) <= 8192,
+               "NPCPositionPacket must fit inside MAX_PACKET_SIZE");
 
 /** Bound the choices one dialogue page may offer at once.
  *
@@ -1273,15 +1358,15 @@ typedef struct {
     uint16_t ability_id;
     uint32_t owner_id;
     uint8_t  owner_type;        // 0=player, 1=npc
-    float    pos_x, pos_y;
-    float    dir_x, dir_y;
+    float    pos_x, pos_y, pos_z;
+    float    dir_x, dir_y, dir_z;
     float    speed;
 } ProjectileSpawnPacket;
 
 /** Describe one projectile position in a batch update. */
 typedef struct {
     uint32_t projectile_id;
-    float    pos_x, pos_y;
+    float    pos_x, pos_y, pos_z;
 } ProjectilePositionData;
 
 /** Broadcast a bounded batch of visible projectile positions. */
@@ -1291,6 +1376,8 @@ typedef struct {
     uint8_t padding[3];
     ProjectilePositionData projectiles[MAX_PROJECTILES_PER_PACKET];
 } ProjectileUpdatePacket;
+_Static_assert(sizeof(ProjectileUpdatePacket) <= 8192,
+               "ProjectileUpdatePacket must fit inside MAX_PACKET_SIZE");
 
 /** Announce projectile destruction and its reason code. */
 typedef struct {
@@ -1311,7 +1398,7 @@ typedef struct {
 typedef struct {
     PacketHeader header;
     uint32_t player_id;
-    float    pos_x, pos_y;
+    float    pos_x, pos_y, pos_z;
     int32_t  health;
     int32_t  max_health;
     int32_t  mana;
@@ -1324,7 +1411,7 @@ typedef struct {
     uint32_t ground_item_id;
     uint32_t item_id;
     uint8_t  quantity;
-    float    pos_x, pos_y;
+    float    pos_x, pos_y, pos_z;
 } LootDropPacket;
 
 /** Request collection of a ground item. */
@@ -1360,7 +1447,7 @@ typedef struct {
 /** Describe one nearby player's position, state, and reported latency. */
 typedef struct {
     uint32_t player_id;
-    float    pos_x, pos_y;
+    float    pos_x, pos_y, pos_z;
     int32_t  health;
     int32_t  max_health;
     uint8_t  player_class;
@@ -1368,7 +1455,14 @@ typedef struct {
     uint8_t  level;
     uint8_t  is_dead;
     uint16_t ping_ms;       // client-reported RTT in milliseconds
-    uint8_t  padding[2];
+    uint8_t  airborne;      // 0 = on a surface
+	uint8_t  emote; // EmoteId; EMOTE_NONE when not emoting
+	uint8_t  emote_arg; // the emote's argument (the seat index for EMOTE_SIT)
+	uint8_t  heading; // facing, 0-255 for a full turn; the same yaw the client draws with
+	uint16_t speed; // network order; ground speed in units per second, 0 when standing
+	uint8_t  idle_fidget; // 0 standing; else 1 + the idle variation the owner plays
+	uint8_t  _padding[3];
+	uint32_t appearance; // network order; see appearance_pack
 } NearbyPlayerData;
 
 /** Identifiers one name query may ask about.
@@ -1413,6 +1507,110 @@ typedef struct {
     NameQueryEntry entries[MAX_NAME_QUERY];
 } NameQueryResponsePacket;
 
+/** Say how an inspect request ended. */
+typedef enum {
+	INSPECT_OK = 0,
+	INSPECT_UNAVAILABLE = 1, // not online, not loaded, or yourself
+	INSPECT_TOO_FAR = 2
+} InspectResult;
+
+/** Ask to inspect one player. The server answers only for a player in range. */
+typedef struct {
+	PacketHeader header;
+	uint32_t target_id; // character id, network order
+} InspectRequestPacket;
+
+/** Return another player's gear and stats, or the reason there is none.
+ *
+ * Everything past `result` is zero unless result is INSPECT_OK. Only what the
+ * inspector could not already see is here: no experience, currency, quests or
+ * live health. Equipment is item ids, which is all the tooltip needs. Every
+ * integer is in network order.
+ */
+typedef struct {
+	PacketHeader header;
+	uint32_t target_id;
+	uint8_t result; // InspectResult
+	uint8_t form; // PlayerForm
+	uint8_t resource_type; // ResourceType
+	uint8_t _reserved;
+	uint32_t level;
+	uint32_t race_id;
+	uint32_t appearance; // see appearance_pack
+	char name[32];
+	uint32_t equipment[EQUIP_SLOTS]; // item ids, indexed by EquipSlotIndex
+	int32_t stats[STAT_COUNT]; // indexed by StatId
+	int32_t max_health;
+	int32_t max_resource;
+	int32_t weapon_damage;
+} InspectResponsePacket;
+
+/** The world's time of day, sent once when a player joins.
+ *
+ * A game day is a fixed length of real time, so the client keeps the time
+ * itself from this one packet. Both fields are in network order.
+ */
+typedef struct {
+	PacketHeader header;
+	uint32_t time_of_day_ms; // milliseconds since midnight, below day_length_ms
+	uint32_t day_length_ms; // real milliseconds in one game day
+} WorldTimePacket;
+
+/** Days in a forecast: today and the six after it. */
+#define WEATHER_FORECAST_DAYS 7
+
+/** Regions a forecast packet has room for; the used ones are region_count. */
+#define WEATHER_REGION_MAX 8
+
+/** What the sky does for a day, and which icon draws it. */
+typedef enum {
+	WEATHER_CLEAR = 0,
+	WEATHER_PARTLY_CLOUDY = 1,
+	WEATHER_CLOUDY = 2,
+	WEATHER_RAIN = 3,
+	WEATHER_THUNDER = 4,
+	WEATHER_SNOW = 5,
+	WEATHER_CONDITION_COUNT = 6
+} WeatherCondition;
+
+/** Why a forecast day changed since it was first made; 0 when it did not. */
+typedef enum {
+	WEATHER_REVISED_NONE = 0,
+	WEATHER_REVISED_WEST = 1,
+	WEATHER_REVISED_EAST = 2,
+	WEATHER_REVISED_NORTH = 3,
+	WEATHER_REVISED_SOUTH = 4,
+	WEATHER_REVISED_COUNT = 5
+} WeatherRevision;
+
+/** One day of one region's forecast. */
+typedef struct {
+	uint8_t condition; // WeatherCondition
+	uint8_t precip_pct; // chance of rain or snow, 0-100
+	int8_t temp_hi; // degrees Celsius
+	int8_t temp_lo; // degrees Celsius
+	uint8_t revised; // WeatherRevision: how the storm moved, 0 if it did not
+	uint8_t intensity; // how hard rain or snow falls: 0 none, 1 light, 2 moderate, 3 heavy
+	uint8_t wind; // how hard the wind blows: 0 calm, 1 breezy, 2 windy, 3 gale
+	uint8_t _padding[1];
+} WeatherDayData;
+
+/** The forecast for every region, sent at join and when a weather day begins.
+ *
+ * Regions are in the order of WORLD_CITIES. Day 0 of each region is today. The
+ * client counts down ms_to_next_day from the moment it arrives and shifts the
+ * table itself if the next packet is late. All integers are in network order.
+ */
+typedef struct {
+	PacketHeader header;
+	uint32_t day_index; // the weather day this forecast was made on
+	uint32_t day_length_ms; // real milliseconds in one weather day
+	uint32_t ms_to_next_day; // real milliseconds until day_index + 1 begins
+	uint8_t region_count; // how many rows of days are filled in
+	uint8_t _padding[3];
+	WeatherDayData days[WEATHER_REGION_MAX][WEATHER_FORECAST_DAYS];
+} WeatherForecastPacket;
+
 /** Broadcast a bounded batch of nearby player states. */
 typedef struct {
     PacketHeader header;
@@ -1420,16 +1618,76 @@ typedef struct {
     uint8_t padding[3];
     NearbyPlayerData players[MAX_NEARBY_PLAYERS];
 } PlayerPositionBroadcastPacket;
+_Static_assert(sizeof(PlayerPositionBroadcastPacket) <= 8192,
+               "PlayerPositionBroadcastPacket must fit inside MAX_PACKET_SIZE");
+
+/** The emotes a player can be in. EMOTE_NONE is "not emoting".
+ *
+ * Add one by adding a value here, a row in the server's emote table
+ * (emote_validator.c) and a row in the client's (player/emote.c). The value
+ * travels as one byte, so keep the list under 256. */
+typedef enum {
+	EMOTE_NONE = 0,
+	EMOTE_SIT = 1, // arg is the seat index
+	EMOTE_DANCE = 2,
+	EMOTE_CUSTOM = 3, // arg is the clip's index in the emote clip table (EMOTE_CLIP_COUNT)
+	EMOTE_LEAN = 4, // back to the wall, ankles crossed
+	EMOTE_LEAN_FOOT = 5, // back to the wall, one foot up on it, arms crossed
+	EMOTE_COUNT
+} EmoteId;
+
+/** How many clips an EMOTE_CUSTOM can name. The names are the client's table
+ *  (player/emote_clips.c, which checks its length against this); the server only
+ *  checks the index is below it. */
+#define EMOTE_CLIP_COUNT 94
+
+/** Why an emote started, stopped or was refused. The first value is the only
+ *  success; refusals and endings name their cause so the client can say it. */
+typedef enum {
+	EMOTE_RESULT_STARTED = 0, // asked, and now in it
+	EMOTE_RESULT_STOPPED, // asked to stop, and stopped
+	EMOTE_REFUSED_UNKNOWN, // not an emote the server knows
+	EMOTE_REFUSED_NO_SEAT, // no such seat, or too far from it
+	EMOTE_REFUSED_SEAT_TAKEN, // someone else is on that seat
+	EMOTE_REFUSED_DEAD, // the dead do not emote
+	EMOTE_REFUSED_COMBAT, // not while fighting
+	EMOTE_ENDED_MOVED, // the server ended it: the player moved
+	EMOTE_ENDED_DEAD, // the server ended it: the player died
+	EMOTE_ENDED_COMBAT // the server ended it: attacked, cast or was hit
+} EmoteResult;
+
+/** Ask to start an emote, or to stop the current one (emote = EMOTE_NONE). */
+typedef struct {
+	PacketHeader header;
+	uint8_t emote; // EmoteId
+	uint8_t arg; // the seat index for EMOTE_SIT
+} EmoteRequestPacket;
+
+/** The server's answer, and its notice when it ends an emote by itself. */
+typedef struct {
+	PacketHeader header;
+	uint8_t emote; // EmoteId the player is in now
+	uint8_t arg;
+	uint8_t result; // EmoteResult
+	uint8_t requested; // EmoteId that was asked for, so a refusal can name it
+} EmoteStatePacket;
 
 /** Set the number of online players returned per session-list page. */
 #define SESSION_LIST_PAGE_SIZE 30
+
+/** Set a player's status in the session list. Online is zero so a new player starts there. */
+#define SESSION_STATUS_ONLINE  0
+#define SESSION_STATUS_AFK     1
+#define SESSION_STATUS_DND     2
+#define SESSION_STATUS_OFFLINE 3
+#define SESSION_STATUS_COUNT   4
 
 /** Describe one online player in the paginated session list. */
 typedef struct {
     uint32_t player_id;
     char     name[32];
     uint8_t  level;
-    uint8_t  player_class;
+    uint8_t  status;        // SESSION_STATUS_*
     uint8_t  player_race;
     uint8_t  padding;
     uint16_t ping_ms;
@@ -1454,13 +1712,27 @@ typedef struct {
     SessionPlayerEntry entries[SESSION_LIST_PAGE_SIZE];
 } SessionListResponsePacket;
 
+/** Ask the server to set the sender's status to one of SESSION_STATUS_*. */
+typedef struct {
+    PacketHeader header;
+    uint8_t  status;
+    uint8_t  padding[3];
+} StatusRequestPacket;
+
+/** Tell a player which SESSION_STATUS_* the server now shows for them. */
+typedef struct {
+    PacketHeader header;
+    uint8_t  status;
+    uint8_t  padding[3];
+} StatusStatePacket;
+
 /** Announce an NPC cast and its telegraph geometry. */
 typedef struct {
     PacketHeader header;
     uint32_t npc_id;
     uint16_t ability_id;
     uint8_t  shape;             // 0=circle, 1=cone, 2=rectangle, 3=line
-    float    pos_x, pos_y;
+    float    pos_x, pos_y, pos_z;
     float    dir_x, dir_y;
     float    radius;
     float    angle;
@@ -1485,22 +1757,44 @@ typedef enum {
     CHAT_CHANNEL_GLOBAL = 1,
     CHAT_CHANNEL_WHISPER = 2,
     CHAT_CHANNEL_PARTY  = 3,
+    CHAT_CHANNEL_SYSTEM = 4,    /**< Server notices; never accepted from a client. */
 } ChatChannel;
 
-/** Submit a message to a selected chat channel. */
+/** How many channels a player may speak on: every one before CHAT_CHANNEL_SYSTEM. */
+#define CHAT_SPEAKABLE_CHANNELS 4
+
+/** Bound a whisper target's name storage including its terminator. */
+#define MAX_CHAT_TARGET 32
+
+/** Submit a message to a selected chat channel.
+ *
+ * `target` names the recipient of a whisper and is empty on every other
+ * channel. It used to travel inside `message` as "Name text", split at the
+ * first space by the server, which made a missing separator a parsing question
+ * and the name a prefix of the text.
+ */
 typedef struct {
     PacketHeader header;
     uint8_t  channel;
     uint8_t  padding[3];
+    char     target[MAX_CHAT_TARGET];
     char     message[MAX_CHAT_MESSAGE];
 } ChatSendPacket;
 
-/** Broadcast a chat message with its sender identity. */
+/** Set in ChatMessagePacket.flags on the sender's own copy of a whisper. */
+#define CHAT_FLAG_ECHO 0x01
+
+/** Broadcast a chat message with its sender identity.
+ *
+ * On a CHAT_FLAG_ECHO copy `sender_name` is the whisper's recipient, not its
+ * sender. On CHAT_CHANNEL_SYSTEM it is empty.
+ */
 typedef struct {
     PacketHeader header;
     uint32_t sender_id;
     uint8_t  channel;
-    uint8_t  padding[3];
+    uint8_t  flags;
+    uint8_t  padding[2];
     char     sender_name[32];
     char     message[MAX_CHAT_MESSAGE];
 } ChatMessagePacket;
@@ -1651,6 +1945,8 @@ typedef enum {
     QUEST_OBJECTIVE_KILL    = 0,   /**< target_id is an npc_type_id. */
     QUEST_OBJECTIVE_COLLECT = 1,   /**< target_id is an item_id. */
     QUEST_OBJECTIVE_TALK    = 2,   /**< target_id is an npc_type_id. */
+    QUEST_OBJECTIVE_BUY     = 3,   /**< target_id is an item_id bought from a shop. */
+    QUEST_OBJECTIVE_SELL    = 4,   /**< target_id is an item_id sold to a shop. */
     QUEST_OBJECTIVE_TYPE_COUNT
 } QuestObjectiveType;
 
@@ -1673,13 +1969,22 @@ typedef struct {
     float    marker_y;
 } QuestObjectiveInfo;
 
-/** Add a quest and its objectives to the client's log. */
+/** Add a quest and its current step to the client's log.
+ *
+ * Sent again, for the same quest_id, each time the quest moves to its next
+ * step: the client refreshes the entry in place, and the objectives and
+ * progress that follow belong to the new step. A quest with no named steps is
+ * one step, so step_count is 1 and step_title is empty.
+ */
 typedef struct {
     PacketHeader       header;
     uint32_t           quest_id;
     char               title[48];
     uint8_t            obj_count;
-    uint8_t            padding[3];
+    uint8_t            step;            /**< The step the objectives belong to, from 1. */
+    uint8_t            step_count;      /**< How many steps the quest has. */
+    uint8_t            _reserved;       /**< Must be 0. */
+    char               step_title[48];  /**< Name of this step; empty for an unnamed one. */
     QuestObjectiveInfo objectives[MAX_QUEST_OBJECTIVES];
 } QuestAcceptPacket;
 
@@ -1692,6 +1997,37 @@ typedef struct {
     int32_t  current;
     int32_t  required;
 } QuestProgressPacket;
+
+/** Bound the NPC types one quest-marks packet names. */
+#define MAX_NPC_QUEST_MARKS 16
+
+/** What an NPC offers one character right now. */
+typedef enum {
+    NPC_QUEST_MARK_NONE      = 0,
+    NPC_QUEST_MARK_AVAILABLE = 1,   /**< A quest the character may take. */
+    NPC_QUEST_MARK_READY     = 2    /**< A finished quest waiting to be handed in. */
+} NPCQuestMark;
+
+/** One NPC type and the quest it has for this character. */
+typedef struct {
+    uint8_t  npc_type_id;
+    uint8_t  mark;             /**< NPCQuestMark. */
+    uint8_t  _reserved[2];     /**< Must be 0. */
+    char     title[48];        /**< The quest on offer, or ready to hand in. */
+} NPCQuestMarkEntry;
+
+/** Tell a character which NPCs have a quest for them.
+ *
+ * Replaces everything the client held: an NPC type that is not listed has
+ * nothing to offer. Sent on world entry and whenever the answer can change --
+ * a quest accepted, finished, handed in or abandoned, or a level gained.
+ */
+typedef struct {
+    PacketHeader      header;
+    uint8_t           count;
+    uint8_t           padding[3];
+    NPCQuestMarkEntry entries[MAX_NPC_QUEST_MARKS];
+} NPCQuestMarksPacket;
 
 /** Describe one item granted by quest completion. */
 typedef struct {
@@ -1718,6 +2054,23 @@ typedef struct {
     uint32_t     quest_id;
 } QuestAbandonPacket;
 
+/** Announce that one step of a quest finished and what it paid.
+ *
+ * The quest itself goes on: a QuestAcceptPacket for the next step follows.
+ * Laid out like QuestCompletePacket so the two read the same way.
+ */
+typedef struct {
+    PacketHeader    header;
+    uint32_t        quest_id;
+    uint32_t        xp_reward;
+    uint32_t        currency_reward;   // Coin granted, in the currency below
+    uint8_t         currency_id;       // CurrencyId the reward is paid in
+    uint8_t         item_count;
+    uint8_t         step;              // The step that finished, from 1
+    uint8_t         step_count;
+    QuestRewardItem items[MAX_QUEST_OBJECTIVES];
+} QuestStepDonePacket;
+
 /** Announce quest completion and all granted rewards. */
 typedef struct {
     PacketHeader    header;
@@ -1729,6 +2082,39 @@ typedef struct {
     uint8_t         padding[2];
     QuestRewardItem items[MAX_QUEST_OBJECTIVES];
 } QuestCompletePacket;
+
+// Empty the client's list of quests it may take; the quests follow.
+typedef struct {
+	PacketHeader header;
+	uint32_t     count;           // How many AvailableQuestPackets follow.
+} AvailableQuestsResetPacket;
+
+// One quest the character may take, and who gives it.
+typedef struct {
+	PacketHeader       header;
+	uint32_t           quest_id;
+	char               title[48];
+	uint8_t            giver_npc_type;   // npc_type_id that offers the quest.
+	uint8_t            obj_count;
+	uint8_t            item_count;
+	uint8_t            currency_id;
+	uint8_t            has_giver_pos;    // Nonzero when the giver is somewhere.
+	uint8_t            step_count;       // Steps in the quest; the objectives are step 1's.
+	uint8_t            _reserved[2];     // Must be 0.
+	int32_t            giver_x_centi;    // Nearest giver, hundredths of a world unit.
+	int32_t            giver_y_centi;
+	uint32_t           xp_reward;
+	uint32_t           currency_reward;
+	QuestObjectiveInfo objectives[MAX_QUEST_OBJECTIVES];
+	QuestRewardItem    items[MAX_QUEST_OBJECTIVES];
+} AvailableQuestPacket;
+
+// One quest the character has already finished, for the log's completed list.
+typedef struct {
+	PacketHeader header;
+	uint32_t     quest_id;
+	char         title[48];
+} QuestHistoryPacket;
 
 
 /* --- Friends and presence -------------------------------------------------

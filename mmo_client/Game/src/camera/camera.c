@@ -6,6 +6,7 @@
 
 #include "camera.h"
 #include "camera/camera_tuning.h"
+#include "world_spans.h"
 #include <GLFW/glfw3.h>
 #include <math.h>
 #include <stdio.h>
@@ -30,12 +31,14 @@ void camera_init(Camera* camera, int viewport_width, int viewport_height) {
     camera->y = 0.0f;
     camera->target_x = 0.0f;
     camera->target_y = 0.0f;
+    camera->z = 0.0f;
     camera->smoothing = 0.05f;  // Adjust this for smoother/snappier camera (0.05 = very smooth, 0.2 = snappy)
     camera->viewport_width = viewport_width;
     camera->viewport_height = viewport_height;
     camera->zoom = CAMERA_ZOOM_DEFAULT;
     camera->yaw = deg_to_rad(CAMERA_YAW_DEFAULT_DEG);
     camera->pitch = deg_to_rad(CAMERA_PITCH_DEFAULT_DEG);
+    camera->distance_limit = 0.0f;
 
     CLOG_INFO("Camera initialized: viewport %dx%d", viewport_width, viewport_height);
 }
@@ -45,9 +48,11 @@ void camera_init(Camera* camera, int viewport_width, int viewport_height) {
  *
  * @param delta_time  Elapsed frame time in seconds.
  */
-void camera_update(Camera* camera, float target_x, float target_y, double delta_time) {
+void camera_update(Camera* camera, float target_x, float target_y, float target_z,
+                   double delta_time) {
     camera->target_x = target_x;
     camera->target_y = target_y;
+    camera->z = target_z;
 
     float lerp_factor = 1.0f - powf(camera->smoothing, (float)(delta_time * 60.0));
     camera->x += (target_x - camera->x) * lerp_factor;
@@ -88,12 +93,67 @@ void camera_reset_view(Camera* camera) {
     camera->zoom  = CAMERA_ZOOM_DEFAULT;
 }
 
+/** The height the camera looks at: the chest of a body standing on its floor. */
+static float look_height(const Camera* camera) {
+    return camera->z + CAMERA_TARGET_HEIGHT;
+}
+
+/** The highest floor at or below the eye, where the eye would sit at this
+ *  distance; 0 when no spans are loaded or the eye is off the world. */
+static float floor_under_eye(const Camera* camera, float distance) {
+    float eye_x = camera->x + distance * sinf(camera->yaw) * cosf(camera->pitch);
+    float eye_y = camera->y + distance * cosf(camera->yaw) * cosf(camera->pitch);
+    float eye_h = look_height(camera) + distance * sinf(camera->pitch);
+    float floor_z = 0.0f;
+
+    if (!world_spans_loaded() ||
+        !world_spans_floor_between(eye_x, eye_y, 0.0f, -1.0e6f, eye_h, &floor_z))
+        return 0.0f;
+    return floor_z;
+}
+
+/** The orbit distance before walls: the zoom, kept off the floor. */
+static float free_distance(const Camera* camera, float fovy) {
+    float distance = camera_math_distance_for_zoom(camera->zoom, camera->viewport_height, fovy);
+    return camera_math_floor_distance(camera->pitch, look_height(camera), distance,
+                                      CAMERA_MIN_EYE_HEIGHT,
+                                      floor_under_eye(camera, distance));
+}
+
+/** Free walkable air at a point, from the baked spans: not a wall even where
+ *  the flat heights say the tile is solid (stairs, ramps, terrace edges). */
+static int span_air(void* ctx, float x, float y, float h) {
+	(void)ctx;
+	return world_spans_loaded() && world_spans_free_point(x, y, h);
+}
+
+void camera_update_clearance(Camera* camera, CameraHeightFn height_at, void* ctx,
+                             double delta_time) {
+    float fovy = deg_to_rad(CAMERA_FOVY_DEG);
+    float want = free_distance(camera, fovy);
+    float clear = camera_math_clear_distance(camera->x, camera->y, look_height(camera),
+                                             camera->yaw, camera->pitch, want,
+                                             CAMERA_WALL_STEP, CAMERA_WALL_MARGIN,
+                                             height_at, span_air, ctx);
+    if (clear < CAMERA_WALL_MIN_DISTANCE) clear = CAMERA_WALL_MIN_DISTANCE;
+    if (clear > want) clear = want;
+
+    float limit = camera->distance_limit > 0.0f ? camera->distance_limit : want;
+    if (clear < limit) {
+        limit = clear;                                   // in at once
+    } else {
+        limit += CAMERA_WALL_RECOVER_SPEED * (float)delta_time;   // out gradually
+        if (limit > clear) limit = clear;
+    }
+    camera->distance_limit = limit < want ? limit : 0.0f;
+}
+
 void camera_get_view(const Camera* camera, CameraView* out) {
     float fovy = deg_to_rad(CAMERA_FOVY_DEG);
-    float distance = camera_math_distance_for_zoom(camera->zoom, camera->viewport_height, fovy);
-    distance = camera_math_floor_distance(camera->pitch, CAMERA_TARGET_HEIGHT, distance,
-                                          CAMERA_MIN_EYE_HEIGHT);
-    camera_view_build(out, camera->x, camera->y, CAMERA_TARGET_HEIGHT, camera->yaw, camera->pitch,
+    float distance = free_distance(camera, fovy);
+    if (camera->distance_limit > 0.0f && camera->distance_limit < distance)
+        distance = camera->distance_limit;
+    camera_view_build(out, camera->x, camera->y, look_height(camera), camera->yaw, camera->pitch,
                       distance,
                       fovy, camera->viewport_width, camera->viewport_height);
 }
@@ -131,6 +191,13 @@ void camera_screen_to_world(const Camera* camera, float screen_x, float screen_y
         *world_x = camera->x;
         *world_y = camera->y;
     }
+}
+
+void camera_screen_ray(const Camera* camera, float screen_x, float screen_y,
+                       float origin[3], float dir[3]) {
+    CameraView view;
+    camera_get_view(camera, &view);
+    camera_view_screen_ray(&view, screen_x, screen_y, origin, dir);
 }
 
 /**
@@ -201,21 +268,30 @@ void camera_billboard_end(void) {
 }
 
 int camera_hit_standing(const Camera* camera, float entity_x, float entity_y,
-                        float height, float radius, float screen_x, float screen_y) {
+                        float entity_z, float height, float radius,
+                        float screen_x, float screen_y) {
     CameraView view;
     camera_get_view(camera, &view);
 
     float fx, fy, hx, hy, depth;
-    if (!camera_view_project(&view, entity_x, entity_y, 0.0f, &fx, &fy, &depth)) return 0;
-    if (!camera_view_project(&view, entity_x, entity_y, height, &hx, &hy, &depth)) return 0;
-    float r = radius * camera_view_pixels_per_unit(&view, entity_x, entity_y, height * 0.5f);
+    if (!camera_view_project(&view, entity_x, entity_y, entity_z, &fx, &fy, &depth)) 
+        return 0;
+    if (!camera_view_project(&view, entity_x, entity_y, entity_z + height, &hx, &hy, &depth)) 
+        return 0;
+    float r = radius * camera_view_pixels_per_unit(&view, entity_x, entity_y,
+                                                   entity_z + height * 0.5f);
 
     /* Distance from the cursor to the projected feet-to-head segment. */
     float sx = hx - fx, sy = hy - fy;
     float len2 = sx * sx + sy * sy;
     float t = (len2 > 1e-6f) ? ((screen_x - fx) * sx + (screen_y - fy) * sy) / len2 : 0.0f;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
+
+    if (t < 0.0f) 
+        t = 0.0f;
+
+    if (t > 1.0f) 
+        t = 1.0f;
+
     float dx = screen_x - (fx + t * sx), dy = screen_y - (fy + t * sy);
     return dx * dx + dy * dy < r * r;
 }

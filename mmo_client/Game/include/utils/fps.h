@@ -19,6 +19,4 @@ double fps_get_current(const FPSCounter* fps);
 
 double fps_get_delta_time(const FPSCounter* fps);
 
-int fps_should_render(FPSCounter* fps);
-
 #endif // FPS_H

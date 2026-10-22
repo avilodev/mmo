@@ -23,6 +23,8 @@
 #include "npc_triggers.h"
 #include "npc_world.h"
 #include "log.h"
+#include "world_spans.h"
+#include "world_spans_fixture.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -462,6 +464,124 @@ static void test_stealth(void) {
     npc_world_remove(&g_world, id);
 }
 
+/** Height of the player run_chase places; tests reset it to 0 after use. */
+static float g_chase_z;
+
+/** Run AI ticks with one player standing at (px, py). */
+static void run_chase(float px, float py, int ticks) {
+    NPCTickSnapshot npcs;
+
+    memset(&g_players, 0, sizeof(g_players));
+    g_players.count         = 1;
+    g_players.character_id[0] = 2000;
+    g_players.pos_x[0]      = px;
+    g_players.pos_y[0]      = py;
+    g_players.pos_z[0]      = g_chase_z;
+    g_players.client_fd[0]  = -1;
+    g_players.health[0]     = 100;
+    g_players.max_health[0] = 100;
+    assert(npc_snapshot_init(&npcs, &g_world));
+    for (int i = 0; i < ticks; i++) {
+        npc_snapshot_build(&npcs, &g_world);
+        npc_ai_tick(&g_world, &g_players, &npcs, 0.05);
+    }
+    npc_snapshot_free(&npcs);
+}
+
+static uint32_t spawn_small(uint16_t type_id, float x, float y, float radius) {
+    uint32_t id = npc_world_spawn(&g_world, "test", x, y, 100, radius,
+                                  0, 0, type_id, 0.0f, NPC_CATEGORY_HOSTILE);
+    NPCEntity* n = npc_world_acquire(&g_world, id);
+    if (n) { n->max_health = 100; npc_world_release(&g_world, n); }
+    return id;
+}
+
+static void height_movement_at(float radius) {
+    printf("TEST 10: NPCs of radius %.0f walk ramps, stop at a wall of floor\n",
+           (double)radius);
+
+    const char* path = "/tmp/npc_behavior_spans_test.bin";
+    const NPCTypeDef* rit = npc_type_get_by_key("vessane_blood_ritualist");
+    check(rit != NULL, "Blood Ritualist exists for the chase");
+    if (!rit) return;
+
+    world_spans_init(FIX_W, FIX_H, FIX_TILE);
+    fix_write_city(path);
+    check(world_spans_load(path), "the span fixture loads");
+
+    float row = FIX_CX(5);
+    float half = radius < 6.0f ? radius : 6.0f;   // the surface footprint cap
+
+    /* Tile 13 (z 24) next to tile 14 (floor 60): every step east is a wall. */
+    uint32_t a = spawn_small(rit->id, 223.0f - half, row, radius);
+    NPCEntity* na = npc_world_acquire(&g_world, a);
+    check(na && na->pos_z == 24.0f, "it spawns at z 24 on tile 13");
+    float ax = na ? na->pos_x : 0.0f, ay = na ? na->pos_y : 0.0f;
+    if (na) npc_world_release(&g_world, na);
+    run_chase(FIX_CX(16), row, 40);
+    na = npc_world_acquire(&g_world, a);
+    check(na && na->pos_x == ax && na->pos_y == ay && na->pos_z == 24.0f,
+          "told to step into the 60 tile, it keeps x, y and z");
+    if (na) npc_world_release(&g_world, na);
+    npc_world_remove(&g_world, a);
+
+    /* Up the ramp from tile 10 to the edge of tile 13. */
+    uint32_t b = spawn_small(rit->id, FIX_CX(10), row, radius);
+    NPCEntity* nb = npc_world_acquire(&g_world, b);
+    check(nb && nb->pos_z == 0.0f, "a second one spawns at z 0 on tile 10");
+    if (nb) npc_world_release(&g_world, nb);
+    run_chase(FIX_CX(16), row, 400);
+    nb = npc_world_acquire(&g_world, b);
+    check(nb && nb->pos_x >= 208.0f && nb->pos_x < 224.0f - half,
+          "it climbs to tile 13");
+    check(nb && nb->pos_z == 24.0f, "and ends at z 24");
+    if (nb) npc_world_release(&g_world, nb);
+    npc_world_remove(&g_world, b);
+
+    /* A flat world: a big NPC still walks toward its target. */
+    world_spans_init(600, 400, 16);
+    uint32_t c = spawn_small(rit->id, 300.0f, 300.0f, radius);
+    run_chase(400.0f, 300.0f, 40);
+    NPCEntity* nc = npc_world_acquire(&g_world, c);
+    check(nc && nc->pos_x > 320.0f && nc->pos_y == 300.0f && nc->pos_z == 0.0f,
+          "in a flat world it walks as before at z 0");
+    if (nc) npc_world_release(&g_world, nc);
+    npc_world_remove(&g_world, c);
+}
+
+static void test_aggro_height(void) {
+	printf("TEST 11: aggro ignores a player out of vertical reach\n");
+
+	const NPCTypeDef* rit = npc_type_get_by_key("vessane_blood_ritualist");
+	check(rit != NULL, "Blood Ritualist exists for the aggro check");
+	if(!rit)
+		return;
+
+	world_spans_init(600, 400, 16);
+	float heights[2] = {100.0f, 24.0f};
+
+	for(int h = 0; h < 2; h++) {
+		uint32_t id = spawn_small(rit->id, 300.0f, 300.0f, 1.0f);
+		g_chase_z = heights[h];
+		run_chase(400.0f, 300.0f, 40);
+		g_chase_z = 0.0f;
+		NPCEntity* n = npc_world_acquire(&g_world, id);
+		if(h == 0)
+			check(n && n->pos_x == 300.0f, "a player 100 above is not chased");
+		else
+			check(n && n->pos_x > 300.0f, "a player 24 above is chased");
+		if(n)
+			npc_world_release(&g_world, n);
+		npc_world_remove(&g_world, id);
+	}
+}
+
+static void test_height_movement(void) {
+    height_movement_at(1.0f);
+    height_movement_at(18.0f);
+    height_movement_at(20.0f);
+}
+
 static void test_every_type_thinks(void) {
     printf("TEST 9: every type in the roster thinks without falling over\n");
 
@@ -574,6 +694,8 @@ int main(int argc, char** argv) {
         printf("  FAIL the shipped NPC content did not load from '%s'\n", dir);
         return 1;
     }
+    /* Flat span world the size of the stubbed collision extent. */
+    world_spans_init(600, 400, 16);
     if (!npc_ai_init()) {
         printf("  FAIL the runtime behaviour table did not build\n");
         return 1;
@@ -599,6 +721,8 @@ int main(int argc, char** argv) {
     test_ally_queries();
     test_stealth();
     test_hold_distance_clamp();
+    test_height_movement();
+    test_aggro_height();
     test_every_type_thinks();
 
     npc_world_shutdown(&g_world);

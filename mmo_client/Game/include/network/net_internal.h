@@ -19,6 +19,7 @@
 
 #include "network.h"
 #include "game_types.h"
+#include "network/net_ping.h"
 
 #include <stdint.h>
 
@@ -94,11 +95,18 @@ typedef struct {
     // Combat / movement
     float last_facing_angle;
 
+	// When bytes last arrived from the server, on net_now()'s clock; 0 before any
+	double last_recv_at;
+
     // Ping
     double last_ping_time;
     int    pending_pings;
-    double ping_send_time;
-    int    ping_ms;
+	uint32_t ping_number; // the number on the newest ping sent
+	int ping_outstanding; // the newest ping has not come back yet
+	double ping_send_time;
+	ping_window ping_samples; // one-way, in milliseconds
+	int ping_report_wanted; // /ping asked to be told the figure
+	int ping_report_ready; // a measurement has come in since it asked
 
     // Pending server responses — written by recv path, read by callers
     CRITICAL_SECTION response_lock;
@@ -112,6 +120,7 @@ typedef struct {
     struct { BOOL ready; EnterWorldResponsePacket      data; } enter_world;
     struct { BOOL ready; CharacterInfo                 data; } char_data;
     struct { BOOL ready; NPCInteractResponsePacket     data; } npc_interact;
+    struct { BOOL ready; InspectResponsePacket         data; } inspect;
     struct { BOOL ready; DialogueUpdatePacket          data; } dialogue_update;
     struct { BOOL ready; DialogueClosePacket           data; } dialogue_close;
     struct { BOOL ready; WorldConnectAckPacket         data; } world_connect_ack;
@@ -131,7 +140,41 @@ typedef struct {
      * client can rewind to (x, y) and replay only what it sent afterwards.
      * Only the newest correction is kept -- an older one describes a position
      * this one has already superseded. */
-    struct { BOOL ready; float x; float y; uint32_t sequence; } correction;
+    struct { BOOL ready; move_correction data; } correction;
+	// The last correction taken, echoed in every move; zero on a new connection
+	uint32_t correction_echo;
+
+    /** What the server has said about the player's own emote, oldest first.
+     *
+     * A queue, not a single slot like `correction`: "started" and then "ended"
+     * can arrive between two frames, and the second must not erase the first.
+     * Each entry is the four bytes of an EmoteStatePacket after the header.
+     * A full queue drops the oldest. */
+	struct {
+		uint8_t entries[8][4];   // emote, arg, result, requested
+		int     head;
+		int     count;
+	} emote_events;
+
+	/** The server's latest word on the player's status. Only the newest
+	 *  matters, so a second one before the first is read replaces it. */
+	struct {
+		BOOL    ready;
+		uint8_t status;
+	} status_event;
+
+	/** The world's time of day, sent once at join. Only the newest matters. */
+	struct {
+		BOOL     ready;
+		uint32_t time_of_day_ms;
+		uint32_t day_length_ms;
+	} world_time_event;
+
+	/** The weather forecast, sent at join and each weather day. Only the newest matters. */
+	struct {
+		BOOL            ready;
+		WeatherForecast forecast;
+	} weather_event;
 
     // Last rate-limit rejection from the server. Consumed by the UI so a
     // request that was dropped stops a spinner instead of hanging on a
@@ -214,6 +257,9 @@ int net_recv(void* buf, int len);
 /** Return the client clock in seconds. */
 double net_now(void);
 
+// Forgets the ping figure and makes the next ping due now; for a new link.
+void net_ping_reset(void);
+
 /** Print the local player's attributes on one line. */
 void net_log_player_stats(const char* prefix);
 
@@ -227,8 +273,14 @@ void net_log_player_stats(const char* prefix);
 
 int net_dispatch_session(uint8_t type, const char* data, int length);
 int net_dispatch_world(uint8_t type, const char* data, int length);
+
+// Drop quest packets held from before gameplay; a new world connection starts clean.
+void net_world_forget_early_quest(void);
 int net_dispatch_combat(uint8_t type, const char* data, int length);
 int net_dispatch_inventory(uint8_t type, const char* data, int length);
 int net_dispatch_friends(uint8_t type, const char* data, int length);
+
+// Offer one packet to each domain in turn. Returns 1 if one of them took it.
+int net_dispatch_packet(uint8_t type, const char* data, int length);
 
 #endif // NET_INTERNAL_H

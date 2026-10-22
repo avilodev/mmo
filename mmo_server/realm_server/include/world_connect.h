@@ -4,8 +4,6 @@
 /** @file Expose realm connections and configured world-server discovery. */
 
 #include "types.h"
-#include "realm_world_auth.h"
-#include "session.h"
 #include "tls.h"
 
 #include <stdio.h>

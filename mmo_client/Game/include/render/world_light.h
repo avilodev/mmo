@@ -35,25 +35,20 @@ static inline float world_light(float nx, float ny, float nz) {
            (WORLD_AMBIENT + (1.0f - WORLD_AMBIENT) * wu * wu);
 }
 
-/** The sky, and the fog that fades the world into it. A free camera can look
- * out toward the horizon, past the chunks streamed around the player (at
- * least LOAD_RADIUS_CHUNKS * 512 = 1536 units away); the fog closes before
- * that edge so it is never seen. Distances are on the ground, from the point
- * the camera orbits. */
+/** The sky colour at noon, just above the horizon (world/sky.c). There is no
+ * distance fog: the world is drawn as far as the camera sees. */
 #define WORLD_SKY_R 0.62f
 #define WORLD_SKY_G 0.74f
 #define WORLD_SKY_B 0.86f
-#define WORLD_FOG_START 950.0f
-#define WORLD_FOG_END   1450.0f
 
-/** How far a ground offset (dx, dy) from the camera's centre is into the fog:
- *  0 is clear, 1 is sky. Matches the shaders. */
-static inline float world_fog(float dx, float dy) {
-    float d = sqrtf(dx * dx + dy * dy);
-    float t = (d - WORLD_FOG_START) / (WORLD_FOG_END - WORLD_FOG_START);
-    if (t <= 0.0f) return 0.0f;
-    if (t >= 1.0f) return 1.0f;
-    return t * t * (3.0f - 2.0f * t);
+/** How far from the camera's centre a name plate or health bar is drawn,
+ *  world units. Far past this they would only clutter the screen. */
+#define WORLD_LABEL_RANGE 1200.0f
+
+/** Whether a ground offset (dx, dy) from the camera's centre is near enough
+ *  for a name plate. */
+static inline int world_in_label_range(float dx, float dy) {
+    return dx * dx + dy * dy <= WORLD_LABEL_RANGE * WORLD_LABEL_RANGE;
 }
 
 #endif /* WORLD_LIGHT_H */

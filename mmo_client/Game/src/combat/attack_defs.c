@@ -84,18 +84,6 @@ static const AttackDef g_attack_defs[CLASS_COUNT] = {
 };
 
 /**
- * Select the attack definition for a class identifier.
- *
- * @return      The indexed definition, or the Gladiator definition for an out-of-range identifier.
- */
-const AttackDef* attack_def_get(ClassId class_id) {
-    if (class_id >= CLASS_COUNT) {
-        return &g_attack_defs[CLASS_GLADIATOR]; // Fallback
-    }
-    return &g_attack_defs[class_id];
-}
-
-/**
  * Select the first class attack with a given targeting shape.
  *
  * @return      The matching definition, or the Gladiator definition when none matches.

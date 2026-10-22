@@ -14,8 +14,29 @@
 #include "render/gl_loader.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include "core/client_log.h"
 
+
+/**
+ * Log one line saying why an image did not load.
+ *
+ * A missing file is the usual cause, and it is as often the wrong working
+ * directory as a missing asset, so that case names the directory the relative
+ * path was resolved from.
+ */
+static void log_load_failure(const char* what, const char* filepath) {
+    const char* reason = stbi_failure_reason();
+    if (reason && strcmp(reason, "can't fopen") == 0) {
+        char cwd[256];
+        if (!getcwd(cwd, sizeof(cwd)))
+            snprintf(cwd, sizeof(cwd), "?");
+        CLOG_ERROR("%s not found: %s (looked in %s)", what, filepath, cwd);
+    } else {
+        CLOG_ERROR("%s unreadable: %s (%s)", what, filepath, reason ? reason : "unknown error");
+    }
+}
 
 /**
  * Load an image file into a nearest-filtered OpenGL texture.
@@ -32,8 +53,7 @@ unsigned int texture_load(const char* filepath) {
     unsigned char* data = stbi_load(filepath, &width, &height, &channels, 0);
     
     if (!data) {
-        CLOG_ERROR("Failed to load texture: %s", filepath);
-        CLOG_ERROR("STB Error: %s", stbi_failure_reason());
+        log_load_failure("Texture", filepath);
         return 0;
     }
     
@@ -66,6 +86,35 @@ unsigned int texture_load(const char* filepath) {
     return texture_id;
 }
 
+// Pixels out from an icon's opaque pixels that colour is bled, enough for the mip levels
+#define ICON_BLEED_PASSES 4
+
+unsigned int texture_load_icon(const char* filepath) {
+	unsigned int texture_id;
+	int width, height, channels;
+	unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);
+
+	if(!data) {
+		log_load_failure("Icon", filepath);
+		return 0;
+	}
+
+	texture_bleed_color(data, width, height, ICON_BLEED_PASSES);
+
+	glGenTextures(1, &texture_id);
+	glBindTexture(GL_TEXTURE_2D, texture_id);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+	glGenerateMipmap(GL_TEXTURE_2D);
+
+	stbi_image_free(data);
+	CLOG_DEBUG("Loaded icon: %s (%dx%d)", filepath, width, height);
+	return texture_id;
+}
+
 /** Gutter width for ground tilesets: two mip levels before it drops under a
  *  texel, which is as far as a 55-degree view minifies nearby ground. */
 #define TILESET_PAD 4
@@ -78,7 +127,7 @@ unsigned int texture_load_tileset(const char* filepath, int cols, int rows,
     int width, height, channels;
     unsigned char* data = stbi_load(filepath, &width, &height, &channels, 4);
     if (!data) {
-        CLOG_ERROR("Failed to load tileset: %s (%s)", filepath, stbi_failure_reason());
+        log_load_failure("Tileset", filepath);
         return 0;
     }
 
@@ -138,18 +187,4 @@ void texture_unload(unsigned int texture_id) {
         glDeleteTextures(1, &texture_id);
         CLOG_DEBUG("Unloaded texture ID: %u", texture_id);
     }
-}
-
-/**
- * Query the level-zero dimensions of an OpenGL texture.
- *
- * A current OpenGL context must exist before this call.
- *
- * @param width  Destination for the texture width in pixels.
- * @param height  Destination for the texture height in pixels.
- */
-void texture_get_size(unsigned int texture_id, int* width, int* height) {
-    glBindTexture(GL_TEXTURE_2D, texture_id);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, width);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, height);
 }

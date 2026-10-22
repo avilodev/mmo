@@ -74,17 +74,3 @@ double fps_get_current(const FPSCounter* fps) {
 double fps_get_delta_time(const FPSCounter* fps) {
     return fps->delta_time;
 }
-
-/**
- * Check whether the recorded frame interval meets the configured target.
- *
- * @return      Nonzero when rendering is due or limiting is disabled; otherwise zero.
- */
-int fps_should_render(FPSCounter* fps) {
-    if (fps->target_fps <= 0) {
-        return 1; // Unlimited FPS
-    }
-    
-    double target_frame_time = 1.0 / fps->target_fps;
-    return fps->delta_time >= target_frame_time;
-}

@@ -25,7 +25,7 @@ int character_database_init(const char* c) { (void)c; return 1; }
 /** Stub database shutdown. */
 void character_database_close(void) {}
 /** Stub successful character persistence. */
-int character_update_full_data(const CharacterInfo* d) { (void)d; return 1; }
+int character_update_full_data(const character_record* d) { (void)d; return 1; }
 
 /** Stub loading empty inventory and equipment arrays. */
 int character_items_load(uint32_t c, ItemInstance* inv, int n_inv,
@@ -40,22 +40,37 @@ int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
                          const ItemInstance* eq, int n_eq) {
     (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
+/** Stub the old quest folder setting. */
+void quest_legacy_set_dir(const char* dir) {
+	(void)dir;
+}
+
+/** Stub an empty persisted instance-id range. */
+int character_items_max_instance_id_checked(uint64_t* out_highest) {
+	*out_highest = 0;
+	return 1;
+}
+
 /** Stub the whole-character save that commits scalars, currency and items together. */
-int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
-                       const ItemInstance* eq, int n_eq) {
+int character_save_all(const character_record* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq,
+                       const PlayerQuestState* quests) {
+	(void)quests;
     (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
 /** Stub recording that a character is live in a world. */
 int world_session_mark(uint32_t character_id, uint32_t world_id) {
     (void)character_id; (void)world_id; return 1;
 }
+/** Stub renewing an account's login session. */
+int session_touch(uint32_t account_id) { (void)account_id; return 1; }
 /** Stub clearing that record. */
 void world_session_clear(uint32_t character_id) { (void)character_id; }
 /** Stub an empty persisted instance-id range. */
 uint64_t character_items_max_instance_id(void) { return 0; }
 
 /** Stub a populated level-one character record. */
-int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
+int character_get_full_data(uint32_t character_id, character_record* out) {
     memset(out, 0, sizeof(*out));
     out->character_id = character_id;
     snprintf(out->name, sizeof(out->name), "char%u", character_id);
@@ -78,8 +93,6 @@ int  ability_get_class_abilities(uint8_t c, uint16_t* o, int m) { (void)c;(void)
 const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 /** Stub an empty persisted quest list. */
 int  quest_player_load(uint32_t c, PlayerQuestState* s) { (void)c;(void)s; return 0; }
-/** Stub successful quest persistence. */
-int  quest_player_save(uint32_t c, const PlayerQuestState* s) { (void)c;(void)s; return 1; }
 /** Stub quest storage teardown; these tests never allocate any. */
 void quest_state_release(PlayerQuestState* s) { (void)s; }
 int  quest_state_copy(PlayerQuestState* out, const PlayerQuestState* src) {
@@ -88,7 +101,7 @@ int  quest_state_copy(PlayerQuestState* out, const PlayerQuestState* src) {
 /** Stub the completion set; these tests never record one. */
 int  quest_history_add(QuestHistory* h, uint32_t id) { (void)h; (void)id; return 1; }
 /** Stub successful packet transmission. */
-ssize_t server_send(int fd, void* d, size_t n) { (void)fd;(void)d;(void)n; return (ssize_t)n; }
+ssize_t outbox_send(int fd, void* d, size_t n) { (void)fd;(void)d;(void)n; return (ssize_t)n; }
 
 /** Return the synthetic collision-map extent used by the snapshot grid. */
 void world_collision_extent(float* w, float* h) { *w = 8192.0f; *h = 8192.0f; }
@@ -148,6 +161,25 @@ int main(void) {
     }
     assert(tick_snapshot_find(&snap, 999999) == -1);
     printf("  %d players snapshotted; all findable by id, unknown id rejected\n", N);
+
+    printf("\nTEST 1b: the snapshot carries the player's height\n");
+    {
+        int slot = spawn_at(900, 90, 300.0f, 300.0f);
+        assert(slot >= 0);
+        ActivePlayer* hp = player_acquire_slot(slot, 900);
+        assert(hp != NULL);
+        hp->pos_z = 24.0f;
+        player_release(hp);
+        tick_snapshot_build(&snap);
+        int d = tick_snapshot_find(&snap, 900);
+        assert(d >= 0 && snap.pos_z[d] == 24.0f);
+        int d0 = tick_snapshot_find(&snap, 500);
+        assert(d0 >= 0 && snap.pos_z[d0] == 0.0f);
+        player_remove_active(900);
+        tick_snapshot_build(&snap);
+        assert(snap.count == N);
+    }
+    printf("  pos_z 24 reaches the snapshot; others stay at 0\n");
 
     printf("\nTEST 2: queries agree with brute force\n");
     const float radii[] = { 50.0f, 150.0f, 400.0f, 1200.0f, 100000.0f };

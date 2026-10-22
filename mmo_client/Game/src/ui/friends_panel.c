@@ -29,8 +29,6 @@ static void clamp_scroll(FriendsState* fs) {
     if (fs->scroll < 0) fs->scroll = 0;
 }
 
-/* --- Lifecycle ----------------------------------------------------------- */
-
 void friends_panel_init(FriendsState* fs) {
     if (!fs) return;
     memset(fs, 0, sizeof(*fs));
@@ -50,8 +48,6 @@ void friends_panel_toggle(FriendsState* fs) {
         fs->pending_name[0] = '\0';
     }
 }
-
-/* --- Server updates ------------------------------------------------------ */
 
 /** Copy a wire name into a terminated buffer.
  *
@@ -143,36 +139,47 @@ void friends_panel_apply_presence(FriendsState* fs,
         }
         return;
     }
-    /* Not in the list: the list is behind, and the next refresh fixes it. */
 }
-
-/* --- Notices ------------------------------------------------------------- */
 
 /** Phrase one result for the player. */
 static const char* result_text(uint8_t action, uint8_t result) {
     switch (result) {
         case FRIEND_WIRE_OK:
             switch (action) {
-                case FRIEND_ACTION_REQUEST: return "Friend request sent to %s.";
-                case FRIEND_ACTION_ACCEPT:  return "You are now friends with %s.";
-                case FRIEND_ACTION_DECLINE: return "Declined %s's request.";
-                case FRIEND_ACTION_REMOVE:  return "Removed %s.";
-                case FRIEND_ACTION_BLOCK:   return "Blocked %s.";
-                case FRIEND_ACTION_UNBLOCK: return "Unblocked %s.";
-                default:                    return "Done.";
+                case FRIEND_ACTION_REQUEST: 
+                    return "Friend request sent to %s.";
+                case FRIEND_ACTION_ACCEPT:  
+                    return "You are now friends with %s.";
+                case FRIEND_ACTION_DECLINE: 
+                    return "Declined %s's request.";
+                case FRIEND_ACTION_REMOVE:  
+                    return "Removed %s.";
+                case FRIEND_ACTION_BLOCK:   
+                    return "Blocked %s.";
+                case FRIEND_ACTION_UNBLOCK: 
+                    return "Unblocked %s.";
+                default:                    
+                    return "Done.";
             }
-        case FRIEND_WIRE_ALREADY_FRIENDS: return "You are already friends with %s.";
-        case FRIEND_WIRE_ALREADY_PENDING: return "You have already asked %s.";
-        case FRIEND_WIRE_MUTUAL:          return "%s had already asked - you are now friends.";
-        case FRIEND_WIRE_SELF:            return "You cannot befriend yourself.";
-        /* Deliberately the same answer for "no such player" and "they blocked
-         * you": the server never distinguishes them, so neither can this. */
-        case FRIEND_WIRE_NOT_FOUND:       return "No player named %s was found.";
-        case FRIEND_WIRE_FRIEND_CAP:      return "Your friends list is full.";
-        case FRIEND_WIRE_PENDING_CAP:     return "Too many requests are pending.";
-        case FRIEND_WIRE_UNAVAILABLE:     return "Friends are unavailable right now.";
+        case FRIEND_WIRE_ALREADY_FRIENDS: 
+            return "You are already friends with %s.";
+        case FRIEND_WIRE_ALREADY_PENDING: 
+            return "You have already asked %s.";
+        case FRIEND_WIRE_MUTUAL:          
+            return "%s had already asked - you are now friends.";
+        case FRIEND_WIRE_SELF:            
+            return "You cannot befriend yourself.";
+        case FRIEND_WIRE_NOT_FOUND:       
+            return "No player named %s was found.";
+        case FRIEND_WIRE_FRIEND_CAP:      
+            return "Your friends list is full.";
+        case FRIEND_WIRE_PENDING_CAP:     
+            return "Too many requests are pending.";
+        case FRIEND_WIRE_UNAVAILABLE:     
+            return "Friends are unavailable right now.";
         case FRIEND_WIRE_ERROR:
-        default:                          return "That did not work. Try again.";
+        default:                          
+            return "That did not work. Try again.";
     }
 }
 
@@ -197,7 +204,8 @@ void friends_panel_notice(FriendsState* fs, const char* text) {
 }
 
 void friends_panel_update(FriendsState* fs, float delta_time) {
-    if (!fs) return;
+    if (!fs) 
+        return;
     if (fs->notice_timer > 0.0f) {
         fs->notice_timer -= delta_time;
         if (fs->notice_timer <= 0.0f) {
@@ -209,20 +217,19 @@ void friends_panel_update(FriendsState* fs, float delta_time) {
 
 FriendPendingKind friends_panel_take_pending(FriendsState* fs, char* out_name,
                                              size_t out_size) {
-    if (!fs) return FRIEND_PENDING_NONE;
+    if (!fs) 
+        return FRIEND_PENDING_NONE;
 
     FriendPendingKind kind = fs->pending_kind;
-    if (kind == FRIEND_PENDING_NONE) return FRIEND_PENDING_NONE;
+    if (kind == FRIEND_PENDING_NONE) 
+        return FRIEND_PENDING_NONE;
 
-    if (out_name && out_size) snprintf(out_name, out_size, "%s", fs->pending_name);
+    if (out_name && out_size) 
+        snprintf(out_name, out_size, "%s", fs->pending_name);
 
     fs->pending_kind = FRIEND_PENDING_NONE;
     fs->pending_name[0] = '\0';
     return kind;
-}
-
-int friends_panel_request_count(const FriendsState* fs) {
-    return fs ? fs->request_count : 0;
 }
 
 /* --- Input --------------------------------------------------------------- */
@@ -236,10 +243,12 @@ static void queue(FriendsState* fs, FriendPendingKind kind, const char* name) {
 /** Hit-test the row strip. @return the row index, or -1. */
 static int row_at(const FriendsState* fs, float py, float my) {
     float top = fp_rows_top(py);
-    if (my < top) return -1;
+    if (my < top) 
+        return -1;
 
     int offset = (int)((my - top) / FP_ROW_H);
-    if (offset < 0 || offset >= FP_VISIBLE) return -1;
+    if (offset < 0 || offset >= FP_VISIBLE) 
+        return -1;
 
     int index = fs->scroll + offset;
     return (index < fp_row_count(fs)) ? index : -1;
@@ -248,18 +257,17 @@ static int row_at(const FriendsState* fs, float py, float my) {
 /** Act on a click that landed on a friends-tab row. */
 static void click_friend_row(FriendsState* fs, int index, float px, float mx, float row_y_off) {
     float btn_x = px + FP_PW - FP_PAD - FP_BTN_W;
-    if (mx >= btn_x && mx <= btn_x + FP_BTN_W && row_y_off >= 5.0f
-        && row_y_off <= 5.0f + FP_BTN_H) {
+    if (mx >= btn_x && mx <= btn_x + FP_BTN_W && row_y_off >= FP_BTN_Y && row_y_off <= FP_BTN_Y + FP_BTN_H) {
         queue(fs, FRIEND_PENDING_REMOVE, fs->friends[index].name);
     }
 }
 
 /** Act on a click that landed on a requests-tab row. */
 static void click_request_row(FriendsState* fs, int index, float px, float mx, float row_y_off) {
-    if (row_y_off < 5.0f || row_y_off > 5.0f + FP_BTN_H) return;
+    if (row_y_off < FP_BTN_Y || row_y_off > FP_BTN_Y + FP_BTN_H) return;
 
     float decline_x = px + FP_PW - FP_PAD - FP_BTN_W;
-    float accept_x  = decline_x - FP_BTN_W - 6.0f;
+    float accept_x  = decline_x - FP_BTN_W - 4.0f;
 
     if (mx >= decline_x && mx <= decline_x + FP_BTN_W)
         queue(fs, FRIEND_PENDING_DECLINE, fs->requests[index].from_name);
@@ -268,19 +276,35 @@ static void click_request_row(FriendsState* fs, int index, float px, float mx, f
 }
 
 int friends_panel_handle_input(FriendsState* fs,
-                               float mx, float my, int clicked,
+                               float mx, float my, int clicked, int down,
                                int key_toggle, int key_esc,
                                int page_up, int page_down,
                                int vw, int vh) {
-    if (!fs) return 0;
+    if (!fs) 
+        return 0;
 
-    if (key_toggle) { friends_panel_toggle(fs); return 1; }
-    if (!fs->is_open) return 0;
-    if (key_esc)     { fs->is_open = 0; return 1; }
+    if (key_toggle) { 
+        friends_panel_toggle(fs); 
+        return 1; 
+    }
+
+    if (!fs->is_open) 
+        return 0;
+
+    if (key_esc) { 
+        fs->is_open = 0; 
+        return 1; 
+    }
 
     float ph = fp_panel_height();
     float px, py;
-    fp_panel_origin(vw, vh, &px, &py);
+
+    /* The title strip carries the panel about; the close button is left out of it. */
+    if (window_pos_drag(&fs->win, (float)vw, (float)vh, FP_PW, ph, FP_PW - FP_CLOSE - 16.0f,
+                        FP_TITLE_H, mx, my, clicked, down))
+        return 1;
+
+    fp_panel_origin(fs, vw, vh, &px, &py);
 
     int inside = (mx >= px && mx <= px + FP_PW && my >= py && my <= py + ph);
 
@@ -292,9 +316,19 @@ int friends_panel_handle_input(FriendsState* fs,
         return 1;
     }
 
-    if (!clicked) return inside;
+    if (!clicked) 
+        return inside;
 
-    if (!inside) { fs->is_open = 0; return 1; }
+    if (!inside) { 
+        fs->is_open = 0; 
+        return 1; 
+    }
+
+    if (mx >= px + FP_PW - FP_CLOSE - 8.0f && mx <= px + FP_PW - 8.0f &&
+        my >= py + 8.0f && my <= py + 8.0f + FP_CLOSE) {
+        fs->is_open = 0;
+        return 1;
+    }
 
     /* Tabs. Switching resets the scroll, because the two lists have unrelated
      * lengths and carrying an offset across them lands past the end. */
@@ -312,8 +346,10 @@ int friends_panel_handle_input(FriendsState* fs,
     int index = row_at(fs, py, my);
     if (index >= 0) {
         float row_y_off = my - (fp_rows_top(py) + (float)(index - fs->scroll) * FP_ROW_H);
-        if (fs->tab == FRIENDS_TAB_REQUESTS) click_request_row(fs, index, px, mx, row_y_off);
-        else                                 click_friend_row(fs, index, px, mx, row_y_off);
+        if (fs->tab == FRIENDS_TAB_REQUESTS) 
+            click_request_row(fs, index, px, mx, row_y_off);
+        else                                 
+            click_friend_row(fs, index, px, mx, row_y_off);
     }
 
     return 1;

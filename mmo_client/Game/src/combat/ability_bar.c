@@ -368,25 +368,6 @@ void ability_bar_on_cast_cancel(AbilityBarState* bar, uint16_t ability_id) {
 }
 
 /**
- * Apply a server-provided cooldown to an ability slot.
- *
- * @param cooldown  Cooldown duration in seconds.
- */
-void ability_bar_on_cooldown(AbilityBarState* bar, uint16_t ability_id, float cooldown) {
-    /* Search both forms: an ability that started a cooldown may belong to the bar the
-     * player has since swapped away from, and that cooldown still has to be recorded. */
-    for (int form = 0; form < FORM_COUNT; form++) {
-        for (int i = 0; i < bar->forms[form].slot_count; i++) {
-            if (bar->forms[form].slots[i].id != ability_id) continue;
-
-            bar->forms[form].slots[i].cooldown_remaining = cooldown;
-            bar->forms[form].slots[i].cooldown_total = cooldown;
-            return;
-        }
-    }
-}
-
-/**
  * Replace the displayed resource pool.
  *
  * Whichever pool the active form carries — mana, stamina, or rage — travels on the

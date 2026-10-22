@@ -18,6 +18,8 @@
  */
 
 #include "audio/audio.h"
+#include "audio/mixer.h"
+#include "audio/weather_sound.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -36,8 +38,10 @@ static int   g_music_open = 0;  // 1 if MCI alias "bgm" is open
 
 // Convert 0.0-1.0 to Windows WORD volume (0-0xFFFF) and pack stereo
 static DWORD vol_to_dword(float v) {
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
+    if (v < 0.0f) 
+        v = 0.0f;
+    if (v > 1.0f) 
+        v = 1.0f;
     DWORD w = (DWORD)(v * 0xFFFF);
     return (w << 16) | w;
 }
@@ -49,10 +53,15 @@ static void push_wave_volume(void) {
 
 // Push music volume to the open MCI stream
 static void push_music_volume(void) {
-    if (!g_music_open) return;
+    if (!g_music_open) 
+        return;
+    
     int vol = (int)(g_master * g_music * 1000.0f);  // MCI range 0-1000
-    if (vol < 0)    vol = 0;
-    if (vol > 1000) vol = 1000;
+    if (vol < 0)    
+        vol = 0;
+    if (vol > 1000) 
+        vol = 1000;
+
     char cmd[64];
     snprintf(cmd, sizeof(cmd), "setaudio bgm volume to %d", vol);
     mciSendStringA(cmd, NULL, 0, NULL);
@@ -63,6 +72,9 @@ static void push_music_volume(void) {
  */
 void audio_init(void) {
     CLOG_INFO("[AUDIO] Initialized (winmm backend)");
+	// The weather's beds and thunder play through the mixer, not PlaySound
+	mixer_init();
+	weather_sound_init();
 }
 
 /**
@@ -74,6 +86,8 @@ void audio_cleanup(void) {
     // before touching MCI keeps the two subsystems from tearing down at once.
     PlaySoundA(NULL, NULL, 0);
 
+	weather_sound_shutdown();
+	mixer_shutdown();
     audio_stop_music();
 
     // Belt and braces: close every MCI device this process still owns, even one
@@ -127,7 +141,8 @@ void audio_play_sfx(const char* path) {
  * @param loop  Nonzero to repeat playback.
  */
 void audio_play_music(const char* path, int loop) {
-    if (!path || path[0] == '\0') return;
+    if (!path || path[0] == '\0') 
+        return;
 
     // Close any previously opened stream
     if (g_music_open) {
@@ -209,9 +224,14 @@ static float clamp01(float v) {
 
 void audio_init(void) {
     CLOG_INFO("[AUDIO] Initialized (silent backend: no audio on this platform)");
+	mixer_init();
+	weather_sound_init();
 }
 
-void audio_cleanup(void) {}
+void audio_cleanup(void) {
+	weather_sound_shutdown();
+	mixer_shutdown();
+}
 
 void audio_set_master_volume(float v) { g_master = clamp01(v); }
 void audio_set_music_volume(float v)  { g_music  = clamp01(v); }

@@ -5,13 +5,18 @@
 #include <GLFW/glfw3.h>
 
 #include "protocol.h"
+#include "world_motion.h"
+#include "network/net_ping.h"
+#include "player/player_vertical.h"
 #include "player/locomotion.h"
+#include "player/emote.h"
 #include "ability_bar.h"
 #include "camera.h"
 #include "combat_state.h"
 #include "ui/quest_log.h"
 #include "ui/currency_panel.h"
 #include "ui/friends_panel.h"
+#include "ui/character_view.h"
 typedef struct GameState GameState;
 typedef struct CharacterScreenState CharacterScreenState;
 typedef struct WorldState WorldState;
@@ -29,7 +34,6 @@ typedef struct WorldState WorldState;
 
 /** Bound fixed-capacity client presentation collections. */
 #define MAX_VISIBLE_NPCS        64
-#define MAX_DAMAGE_NUMBERS      10
 #define MAX_REWARD_POPUPS       5
 #define MAX_WORLDS              10
 #define MAX_VISIBLE_PROJECTILES 64
@@ -38,6 +42,7 @@ typedef struct WorldState WorldState;
 #define MAX_GROUND_ITEMS        64
 #define MAX_CHAT_LINES          50
 #define MAX_CHAT_INPUT_LEN      256
+#define CHAT_HISTORY_LINES      20
 #define MAX_HEAL_VFXS           8
 
 #define INVENTORY_SIZE 150
@@ -120,9 +125,12 @@ typedef struct {
     EquipSlot equip_slot;
     int16_t damage;
     int16_t defense;
-    int16_t strength;
-    int16_t dexterity;
-    int16_t intelligence;
+	int16_t bonus_stats[STAT_COUNT]; // indexed by StatId
+	uint8_t level_req;
+	uint8_t bind_on_pickup;
+	uint8_t bind_on_equip;
+	uint8_t race_req[4]; // race ids that may use it; 0 ends the list
+	float use_cooldown; // seconds, 0 when the item has none
     uint32_t vendor_price;
     uint16_t sprite_id;
 } ItemTemplate;
@@ -173,6 +181,8 @@ typedef struct {
     int mouse_right_clicked;
     int mouse_right_down;        /**< Nonzero while held (camera drag). */
     int mouse_middle_down;       /**< Nonzero while held (camera drag). */
+	int mouse_buttons_down[5];       // Buttons 1-5 held, for bindings
+	int mouse_buttons_pressed[5];    // Buttons 1-5 pressed this frame
     float mouse_dx;              /**< Logical-pixel movement since last frame. */
     float mouse_dy;
     int keys_pressed[GLFW_KEY_LAST + 1];
@@ -196,6 +206,7 @@ typedef struct {
     uint32_t sequence;   /**< Zero for an unused slot; sequences start at 1. */
     float    x;          /**< The position this proposal claimed... */
     float    y;          /**< ...which is the base a replay measures from. */
+    float    z;          /**< The height it claimed. */
 } PlayerMoveRecord;
 
 /** Track local player movement and server character data. */
@@ -209,6 +220,8 @@ typedef struct {
     float speed;         /**< Running speed, from the server; walking is a fraction of it. */
     Locomotion loco;     /**< Heading, current speed, pivoting (player/locomotion.h). */
     LocoMode   move_mode; /**< Walk, run or sprint; Ctrl toggles walk and run. */
+	int sprint_toggle;   // the sprint key toggles (settings) rather than being held
+	int sprinting;       // sprinting now, whichever way the key works
     int needs_position_reset;
     CharacterInfo info;
     int info_loaded;
@@ -228,6 +241,14 @@ typedef struct {
      */
     PlayerMoveRecord move_history[PLAYER_MOVE_HISTORY];
     int              move_history_head;   /**< Next slot to write. */
+    vertical_state   vstate;              /**< Height, vertical speed, grounded. */
+    vertical_clock   vclock;              /**< Fixed-step time and the jump buffer. */
+    float            visual_z;            /**< Eased height the body is drawn at. */
+	emote_state     emote;               /**< Sitting, dancing...; see player/emote.h. */
+	float           slide_speed;         // down a slope too steep to walk, then its run-out
+	float           slide_x;             // the downhill direction of that slide
+	float           slide_y;
+	int             wall_slide;          // pushed along a wall: faces the way it moves
 } PlayerState;
 
 /** Track one server-visible NPC and its interpolation state. */
@@ -235,10 +256,13 @@ typedef struct {
     uint32_t npc_id;
     float pos_x;
     float pos_y;
+    float pos_z;             /**< Drawn height, eased with x and y. */
     float target_x;          /**< Server target position for interpolation. */
     float target_y;
+    float target_z;
     float prev_x;            /**< Previous interpolation position. */
     float prev_y;
+    float prev_z;
     float interp_t;          /**< Interpolation progress from 0.0 to 1.0. */
     uint32_t health;
     uint32_t max_health;
@@ -280,6 +304,10 @@ typedef struct {
      * makes and it fills both wire fields. */
     uint32_t selected_race;
 
+	/** The body chosen beside it (AppearanceBody). Packed with appearance_pack
+	 *  when sent. */
+	uint8_t selected_body;
+
     /** The race registry as the server reported it.
      *
      * The client carries no race table of its own. Everything the creation screen
@@ -302,6 +330,11 @@ typedef struct {
     unsigned int background;
     unsigned int session_panel_bg;
     unsigned int session_entry_bg;
+
+	// The icons of the info bar in the upper right of the HUD
+	unsigned int weather_icons[WEATHER_CONDITION_COUNT]; // one per condition; 0 when the art is missing
+	unsigned int weather_clear_night;                // the clear sky after dusk; 0 when the art is missing
+	unsigned int hud_ping[NET_PING_LEVELS];          // the worst level (red) to the best (green)
 } GameTextures;
 
 /** Mirror one SessionPlayerEntry for the session panel. */
@@ -309,7 +342,7 @@ typedef struct {
     uint32_t player_id;
     char     name[32];
     uint8_t  level;
-    uint8_t  player_class;
+    uint8_t  status;    /**< SESSION_STATUS_*. */
     uint8_t  player_race;
     uint16_t ping_ms;
 } SessionPlayer;
@@ -358,6 +391,9 @@ typedef struct {
 typedef struct {
     uint32_t player_id;
     float pos_x, pos_y;      /**< Drawn position; interpolated toward target. */
+    float pos_z;             /**< Drawn height, eased with x and y. */
+    float target_z, prev_z;
+    uint8_t airborne;        /**< 0 while standing on a surface. */
 
     /* Interpolation, exactly as VisibleNPC does it.
      *
@@ -372,17 +408,24 @@ typedef struct {
     int32_t health, max_health;
     uint8_t player_class;
     uint8_t player_race;
+	uint32_t appearance;       // host order; see appearance_pack in protocol.h
     uint8_t level;
     uint8_t is_dead;
     uint16_t ping_ms;
+	float speed;               // ground speed in units per second, 0 when standing
+	uint8_t heading;           // facing as a wire byte; see heading_wire.h
+	uint8_t idle_fidget;       // 0 standing; else 1 + the idle variation they play
     char name[32];
+    /** What the server says they are doing. Carried across broadcasts by player
+     *  id (the array is rebuilt in broadcast order), and advanced each frame. */
+	emote_state emote;
 } NearbyPlayer;
 
 /** Track one visible server projectile. */
 typedef struct {
     uint32_t id;
-    float pos_x, pos_y;
-    float dir_x, dir_y;
+    float pos_x, pos_y, pos_z;   /**< pos_z includes the chest offset. */
+    float dir_x, dir_y, dir_z;
     float speed;
     uint8_t active;
 } VisibleProjectile;
@@ -391,7 +434,7 @@ typedef struct {
 typedef struct {
     uint32_t npc_id;
     uint8_t shape;          /**< 0 circle, 1 cone, 2 rectangle, or 3 line. */
-    float pos_x, pos_y;
+    float pos_x, pos_y, pos_z;
     float dir_x, dir_y;
     float radius, angle, width, length;
     float cast_time;
@@ -402,27 +445,37 @@ typedef struct {
 /** Track one visible timed area-of-effect zone. */
 typedef struct {
     uint32_t zone_id;
-    float pos_x, pos_y;
+    float pos_x, pos_y, pos_z;
     float radius;
     float duration;
     float elapsed;
     uint8_t active;
 } VisibleZone;
-
+ 
 /** Track one visible ground-item stack. */
 typedef struct {
     uint32_t ground_item_id;
     uint32_t item_id;
     uint8_t quantity;
-    float pos_x, pos_y;
+    float pos_x, pos_y, pos_z;
     uint8_t active;
 } GroundItem;
+
+/** How a chat line is shown. Set it on every line you add: slots are reused. */
+typedef enum {
+	CHAT_STYLE_NORMAL = 0,   /**< "[G] sender: text". */
+	CHAT_STYLE_ERROR,        /**< The text alone, in red. */
+	CHAT_STYLE_EMOTE,        /**< The text alone: "Panda Sits". */
+	CHAT_STYLE_SYSTEM        /**< The text alone, as a notice: "Unknown command". */
+} chat_style;
 
 /** Store one rendered chat line. */
 typedef struct {
     char sender[32];
     char text[256];
     uint8_t channel;
+	uint8_t style;           /**< chat_style. */
+	uint8_t flags;           /**< CHAT_FLAG_* from the packet; 0 for client lines. */
 } ChatLine;
 
 /** Track chat history, input, channel, and whisper reply state. */
@@ -435,12 +488,18 @@ typedef struct {
     uint8_t active_channel;
     float backspace_timer;
     int   backspace_first;
-    char whisper_reply_target[32];  /**< Last whisper sender used by /r. */
+    char whisper_reply_target[32];  /**< The player last whispered with, for /r and Tab. */
+	int scroll;                     /**< Messages scrolled back from the newest. */
+	char history[CHAT_HISTORY_LINES][MAX_CHAT_INPUT_LEN];  /**< Sent lines, oldest first. */
+	int history_count;
+	int history_pos;                /**< -1 typing fresh; else how far back it is. */
+	char history_draft[MAX_CHAT_INPUT_LEN];  /**< What was typed before browsing. */
+	window_pos win;                 /**< Where the box was dragged to; unplaced is the corner. */
 } ChatState;
 
 /** Track one client-only expanding heal ring. */
 typedef struct {
-    float pos_x, pos_y;
+    float pos_x, pos_y, pos_z;
     float age;
     float duration;
     float max_radius;
@@ -492,8 +551,12 @@ typedef struct {
     float master_volume;   /**< Range 0.0 to 1.0. */
     float music_volume;    /**< Range 0.0 to 1.0. */
     float sfx_volume;      /**< Range 0.0 to 1.0. */
+	float weather_volume;  /**< Range 0.0 to 1.0: every weather sound. */
+	float rain_volume;     /**< Range 0.0 to 1.0: rain, within the weather volume. */
+	float wind_volume;     /**< Range 0.0 to 1.0: wind, within the weather volume. */
+	float thunder_volume;  /**< Range 0.0 to 1.0: thunder, within the weather volume. */
     int   show_fps;
-    int   fullscreen;
+    int   window_mode;     /**< WINDOW_MODE_WINDOWED, _BORDERLESS or _FULLSCREEN. */
     float ui_scale;        /**< Range 0.75 to 1.5. */
 
     /** Wait for the display's refresh before presenting a frame.
@@ -516,7 +579,31 @@ typedef struct {
      * only behaviour.
      */
     int   fps_limit;
+
+	// Sprint (Left Shift) toggles on a tap instead of working while held
+	int   sprint_toggle;
+
+	/** Window size choice: 0 is the screen's own size, 1 to 5 are fixed 16:9
+	 *  sizes (ui/settings_fields.c lists them). Fullscreen always uses the
+	 *  screen's size and keeps this value for when the window mode changes. */
+	int   resolution;
+
+	// The clock shows 24-hour time (14:30) rather than 12-hour (2:30 PM)
+	int   clock_24h;
+
+	// The forecast shows degrees Celsius rather than Fahrenheit
+	int   temp_celsius;
+
+	// Ears, tails and the like are drawn on everyone; off draws everyone as a human
+	int   show_animal_features;
 } GameSettings;
+
+/** How the game window sits on the display. */
+typedef enum {
+    WINDOW_MODE_WINDOWED,     /**< Title bar with minimize, maximize and close. */
+    WINDOW_MODE_BORDERLESS,   /**< No title bar; the default. */
+    WINDOW_MODE_FULLSCREEN,   /**< Exclusive: takes the display over at its own size. */
+} window_mode_kind;
 
 /** Frame rate the client caps at when VSync is off and no limit is configured. */
 #define DEFAULT_FPS_LIMIT 120
@@ -556,11 +643,14 @@ typedef struct {
     QuestLogState     quest_log;
     CurrencyPanelState currency_panel;
     HUDLayout         hud;
+	InspectData inspect;
     CombatState       combat;
     AbilityBarState   ability_bar;
 
     /** Session-panel pagination and rows. */
     int               show_session_panel;
+    window_pos        session_win;   // where the panel sits; centred until dragged
+    uint8_t           own_status;   /**< SESSION_STATUS_* the server last showed for us. */
     SessionPlayer     session_list[SESSION_LIST_PAGE_SIZE];
     int               session_list_count;
     uint32_t          session_total_players;
@@ -598,9 +688,17 @@ typedef struct {
     int               is_paused;
 
     int               show_map;   /**< Full map open; zoom clamped to [MAP_ZOOM_MIN, MAP_ZOOM_MAX]. */
+    int               map_weather; /**< The storm cover is drawn over the full map. */
     float             map_zoom;
+    float             map_pan_x;     /**< Map view offset from the player, world units. */
+    float             map_pan_y;
+    int               map_dragging;  /**< The map is being dragged with the mouse. */
 
     uint32_t          target_player_id;
+
+    /** Which NPC types have a quest for this character, as the server last said. */
+    NPCQuestMarkEntry npc_quest_marks[MAX_NPC_QUEST_MARKS];
+    int               npc_quest_mark_count;
 
     char              current_zone_name[48];
     char              zone_banner_name[48];
@@ -621,7 +719,13 @@ typedef struct {
         double last_any_send;    /**< ...of the last packet of any kind, for the heartbeat. */
         float  last_sent_x;
         float  last_sent_y;
+        float  last_sent_z;      /**< The height the server was last told. */
+        int    jumped;           /**< A jump started since the last move was sent. */
+        int    vertical_ran;     /**< Input already stepped the vertical motion this frame. */
         int    initialized;      /**< Zero until the first position has been sent. */
+		int     last_sent_moving;  // the server's last word was that the body was moving
+		uint8_t last_sent_heading; // the facing the server was last told, as a wire byte
+		int     last_sent_fidget;  // the idle variation the server was last told of: 0 none, else 1 + which
     } move_sync;
 
     /** Buff icon the cursor is over, or -1. Set by input, read by the tooltip. */
@@ -651,6 +755,7 @@ struct GameState {
 
     InventoryState* inventory;
     CharacterScreenState* character_screen;
+	CharacterScreenState* inspect_screen; // the character window again, showing another player
 
     char session_key[65];
     uint32_t account_id;

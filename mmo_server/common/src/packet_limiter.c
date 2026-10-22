@@ -333,13 +333,3 @@ PacketLimitClass packet_limiter_class_of(uint8_t packet_type) {
     if (!g_slots) return LIMIT_DEFAULT_CLASS;
     return (PacketLimitClass)g_profile.opcodes[packet_type].cls;
 }
-
-/**
- * Return the display name for a limiter class.
- *
- * @return      The class name, or "unknown" for an invalid class.
- */
-const char* packet_limiter_class_name(PacketLimitClass cls) {
-    if (cls < 0 || cls >= LIMIT_CLASS_COUNT) return "unknown";
-    return CLASS_NAMES[cls];
-}

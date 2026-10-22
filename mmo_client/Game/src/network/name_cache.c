@@ -118,6 +118,12 @@ const char* name_cache_lookup(uint32_t character_id) {
     return returned;
 }
 
+int name_cache_is_known(uint32_t character_id) {
+    const NameEntry* entry = find(character_id);
+
+    return entry && entry->name[0] != '\0';
+}
+
 void name_cache_store(uint32_t character_id, const char* name) {
     if (character_id == 0 || !name || name[0] == '\0') return;
 

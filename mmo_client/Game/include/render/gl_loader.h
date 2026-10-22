@@ -69,6 +69,27 @@ typedef ptrdiff_t mmo_GLsizeiptr;
 #ifndef GL_MAX_TEXTURE_MAX_ANISOTROPY
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY   0x84FF
 #endif
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER                  0x8D40
+#endif
+#ifndef GL_RENDERBUFFER
+#define GL_RENDERBUFFER                 0x8D41
+#endif
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0            0x8CE0
+#endif
+#ifndef GL_DEPTH_ATTACHMENT
+#define GL_DEPTH_ATTACHMENT             0x8D00
+#endif
+#ifndef GL_DEPTH_COMPONENT24
+#define GL_DEPTH_COMPONENT24            0x81A6
+#endif
+#ifndef GL_FRAMEBUFFER_COMPLETE
+#define GL_FRAMEBUFFER_COMPLETE         0x8CD5
+#endif
+#ifndef GL_FRAMEBUFFER_BINDING
+#define GL_FRAMEBUFFER_BINDING          0x8CA6
+#endif
 
 #define MMO_GL_FUNCTIONS(X)                                                                  \
     X(void,   GenBuffers,              (GLsizei n, GLuint* buffers))                         \
@@ -110,8 +131,23 @@ typedef ptrdiff_t mmo_GLsizeiptr;
     X(void,   Uniform1f,               (GLint location, GLfloat v0))                         \
     X(void,   Uniform2f,               (GLint location, GLfloat v0, GLfloat v1))             \
     X(void,   Uniform3f,               (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
+    X(void,   Uniform4f,               (GLint location, GLfloat v0, GLfloat v1, GLfloat v2,  \
+                                        GLfloat v3))                                         \
     X(void,   ActiveTexture,           (GLenum texture))                                     \
-    X(void,   GenerateMipmap,          (GLenum target))
+    X(void,   GenerateMipmap,          (GLenum target))                                      \
+	X(void,   GenFramebuffers,         (GLsizei n, GLuint* ids))                             \
+	X(void,   DeleteFramebuffers,      (GLsizei n, const GLuint* ids))                       \
+	X(void,   BindFramebuffer,         (GLenum target, GLuint framebuffer))                  \
+	X(void,   FramebufferTexture2D,    (GLenum target, GLenum attachment, GLenum textarget,  \
+	                                    GLuint texture, GLint level))                        \
+	X(void,   FramebufferRenderbuffer, (GLenum target, GLenum attachment,                    \
+	                                    GLenum renderbuffertarget, GLuint renderbuffer))     \
+	X(GLenum, CheckFramebufferStatus,  (GLenum target))                                      \
+	X(void,   GenRenderbuffers,        (GLsizei n, GLuint* ids))                             \
+	X(void,   DeleteRenderbuffers,     (GLsizei n, const GLuint* ids))                       \
+	X(void,   BindRenderbuffer,        (GLenum target, GLuint renderbuffer))                 \
+	X(void,   RenderbufferStorage,     (GLenum target, GLenum internalformat,                \
+	                                    GLsizei width, GLsizei height))
 
 #define MMO_GL_DECLARE(ret, name, args)                  \
     typedef ret (APIENTRY* mmo_PFN_##name) args;         \
@@ -149,8 +185,19 @@ MMO_GL_FUNCTIONS(MMO_GL_DECLARE)
 #define glUniform1f               mmo_glUniform1f
 #define glUniform2f               mmo_glUniform2f
 #define glUniform3f               mmo_glUniform3f
+#define glUniform4f               mmo_glUniform4f
 #define glActiveTexture           mmo_glActiveTexture
 #define glGenerateMipmap          mmo_glGenerateMipmap
+#define glGenFramebuffers         mmo_glGenFramebuffers
+#define glDeleteFramebuffers      mmo_glDeleteFramebuffers
+#define glBindFramebuffer         mmo_glBindFramebuffer
+#define glFramebufferTexture2D    mmo_glFramebufferTexture2D
+#define glFramebufferRenderbuffer mmo_glFramebufferRenderbuffer
+#define glCheckFramebufferStatus  mmo_glCheckFramebufferStatus
+#define glGenRenderbuffers        mmo_glGenRenderbuffers
+#define glDeleteRenderbuffers     mmo_glDeleteRenderbuffers
+#define glBindRenderbuffer        mmo_glBindRenderbuffer
+#define glRenderbufferStorage     mmo_glRenderbufferStorage
 
 /** Request a context this loader can serve. Call before glfwCreateWindow.
  *

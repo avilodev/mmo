@@ -14,17 +14,20 @@
  */
 
 #include "ui/friends_panel.h"
+#include "ui/window_pos.h"
 
-#define FP_PW        480.0f   /**< Panel width. */
-#define FP_TITLE_H    44.0f   /**< Title bar height. */
+#define FP_PW        340.0f   /**< Panel width. */
+#define FP_TITLE_H    40.0f   /**< Title bar height. */
 #define FP_TAB_H      30.0f   /**< Tab strip height. */
-#define FP_ROW_H      34.0f   /**< Height per list row. */
-#define FP_PAD        14.0f   /**< Inner padding. */
-#define FP_FOOT_H     34.0f   /**< Footer: the notice line and the key hint. */
-#define FP_VISIBLE    10      /**< Rows drawn at once; the rest are paged. */
+#define FP_ROW_H      28.0f   /**< Height per list row. */
+#define FP_PAD        12.0f   /**< Inner padding. */
+#define FP_FOOT_H     26.0f   /**< Footer: the notice line and the key hint. */
+#define FP_VISIBLE     8      /**< Rows drawn at once; the rest are paged. */
 
-#define FP_BTN_W      74.0f   /**< Width of a row's action button. */
+#define FP_BTN_W      64.0f   /**< Width of a row's action button. */
 #define FP_BTN_H      22.0f   /**< Height of a row's action button. */
+#define FP_BTN_Y       3.0f   /**< Gap above a row's button. */
+#define FP_CLOSE      24.0f   /**< Side of the close button. */
 
 /** Report the panel's height, which is fixed. */
 static inline float fp_panel_height(void) {
@@ -32,10 +35,10 @@ static inline float fp_panel_height(void) {
          + (float)FP_VISIBLE * FP_ROW_H + FP_FOOT_H;
 }
 
-/** Report the panel's top-left corner, centred in the viewport. */
-static inline void fp_panel_origin(int vw, int vh, float* out_x, float* out_y) {
-    *out_x = ((float)vw - FP_PW)             * 0.5f;
-    *out_y = ((float)vh - fp_panel_height()) * 0.5f;
+/** Report the panel's top-left corner: where it was dragged, else centred. */
+static inline void fp_panel_origin(const FriendsState* fs, int vw, int vh,
+                                   float* out_x, float* out_y) {
+    window_pos_origin(&fs->win, (float)vw, (float)vh, FP_PW, fp_panel_height(), out_x, out_y);
 }
 
 /** Report the y of the first list row. */

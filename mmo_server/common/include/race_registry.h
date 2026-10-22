@@ -157,9 +157,6 @@ ResourceType role_resource(CombatRole role);
 /** Return the stat that sizes a role's resource pool. */
 StatId role_resource_stat(CombatRole role);
 
-/** Return the lowercase name of a role, for logging and client display. */
-const char* role_name(CombatRole role);
-
 /** Return the total value of one passive modifier kind for a given ally count.
  *
  * @param passive     The race's passive; may be NULL, which contributes nothing.

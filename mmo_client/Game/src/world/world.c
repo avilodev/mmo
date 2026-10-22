@@ -11,6 +11,7 @@
 #include "world/structure_mesh.h"
 #include "render/ground_renderer.h"
 #include "world_format.h"
+#include "world_spans.h"
 #include <GLFW/glfw3.h>
 #include <math.h>
 #include <limits.h>
@@ -19,6 +20,29 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "core/client_log.h"
+
+/**
+ * Load the walkable spans that sit beside the world file. A missing or bad
+ * file leaves the world flat (everything at height 0), as the server does.
+ */
+static void load_spans(const WorldState* world, const char* world_file_path) {
+	char path[512];
+	const char* slash = strrchr(world_file_path, '/');
+	int dir_len = slash ? (int)(slash - world_file_path) + 1 : 0;
+
+	world_spans_init(world->world_width, world->world_height, world->tile_size);
+	if(snprintf(path, sizeof(path), "%.*sworld_spans.bin", dir_len, world_file_path) >=
+	   (int)sizeof(path))
+		return;
+	if(world_spans_load(path))
+		CLOG_INFO("[WORLD] Spans loaded from %s", path);
+	else
+		CLOG_WARN("[WORLD] No valid %s; the world is flat", path);
+	if(world_spans_mask_loaded())
+		CLOG_INFO("[WORLD] Fine floor mask loaded beside the spans");
+	else
+		CLOG_WARN("[WORLD] No world_footing.bin; barriers stay tile-sized");
+}
 
 /**
  * Open a world file, read its layer metadata, and load tileset textures.
@@ -181,9 +205,7 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
         world->tilesets[slot].tile_w = layout.tile_w;
         world->tilesets[slot].tile_h = layout.tile_h;
         world->tilesets[slot].pad    = layout.pad;
-        if (!world->tileset_textures[slot])
-            CLOG_ERROR("[WORLD] Warning: failed to load tileset %s", path);
-        else
+        if (world->tileset_textures[slot])
             CLOG_INFO("[WORLD] Tileset [%d] loaded: %s (%dx%d tiles)", slot, path, cols, rows);
     }
 
@@ -200,6 +222,8 @@ int world_init(WorldState* world, const char* world_file_path, int tile_size) {
 
     // Companion overview for the full map screen; absence is not fatal.
     world_overview_load(world_file_path);
+
+	load_spans(world, world_file_path);
 
     CLOG_INFO("[WORLD] Initialized %dx%d tiles (%dx%d chunks), %d tilesets%s",
            world->world_width, world->world_height,
@@ -271,6 +295,7 @@ static Chunk* peek_chunk(const WorldState* world, int chunk_x, int chunk_y) {
  * A current OpenGL context must exist while buffers and textures are released.
  */
 void world_cleanup(WorldState* world) {
+	world_spans_shutdown();
     if (world->world_file) {
         fclose(world->world_file);
         world->world_file = NULL;
@@ -438,37 +463,6 @@ Chunk* world_load_chunk(WorldState* world, int chunk_x, int chunk_y) {
 }
 
 /**
- * Read the effective base tile at world tile coordinates.
- *
- * @return      Packed tile value, or -1 outside the world or on chunk-load failure.
- */
-int world_get_tile(const WorldState* world, int tx, int ty) {
-    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
-        return -1;
-
-    for (int i = 0; i < world->modification_count; i++) {
-        if (world->modifications[i].tile_x == tx &&
-            world->modifications[i].tile_y == ty)
-            return world->modifications[i].modified_tile;
-    }
-
-    Chunk* chunk = world_get_chunk((WorldState*)world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
-    if (!chunk) return -1;
-    return chunk->tiles[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)];
-}
-
-/**
- * Replace a resident base tile when its coordinates are valid.
- */
-void world_set_tile(WorldState* world, int tx, int ty, int tile_type) {
-    if (tx < 0 || tx >= world->world_width || ty < 0 || ty >= world->world_height)
-        return;
-    Chunk* chunk = world_get_chunk(world, tx / CHUNK_SIZE, ty / CHUNK_SIZE);
-    if (!chunk) return;
-    chunk->tiles[(ty % CHUNK_SIZE) * CHUNK_SIZE + (tx % CHUNK_SIZE)] = (uint16_t)tile_type;
-}
-
-/**
  * Check collision at a world-space point.
  *
  * @return      Nonzero for blocked, out-of-range, or unavailable tiles; otherwise zero.
@@ -501,95 +495,6 @@ int world_check_box_collision(const WorldState* world, float x, float y, float h
     if (world_check_tile_collision(world, x - half_size, y + half_size)) return 1;
     if (world_check_tile_collision(world, x + half_size, y + half_size)) return 1;
     return 0;
-}
-
-/**
- * Convert a world position to containing tile coordinates.
- */
-void world_to_tile(const WorldState* world, float wx, float wy, int* tx, int* ty) {
-    *tx = (int)(wx / world->tile_size);
-    *ty = (int)(wy / world->tile_size);
-}
-
-/**
- * Convert tile coordinates to the tile center in world space.
- */
-void tile_to_world(const WorldState* world, int tx, int ty, float* wx, float* wy) {
-    *wx = tx * world->tile_size + world->tile_size / 2.0f;
-    *wy = ty * world->tile_size + world->tile_size / 2.0f;
-}
-
-/* Mark the chunk containing (tile_x, tile_y) as needing its vertex buffers
- * rebuilt, and its neighbours too: their structures read across the border
- * (a roof's slope, a wall's side), so a changed tile can change them. */
-static void mark_chunk_dirty(WorldState* world, int tile_x, int tile_y) {
-    int cx = tile_x / CHUNK_SIZE;
-    int cy = tile_y / CHUNK_SIZE;
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            Chunk* c = peek_chunk(world, cx + dx, cy + dy);
-            if (c) c->gpu_dirty = 1;
-        }
-    }
-}
-
-/**
- * Add or replace a dynamic tile and collision override.
- *
- * @param duration  Lifetime in seconds, or a non-positive value for no expiry.
- * @return      Nonzero when stored; otherwise zero when capacity is exhausted.
- */
-int world_add_modification(WorldState* world, int tile_x, int tile_y,
-                            uint16_t tile_type, uint8_t collision, float duration) {
-    if (world->modification_count >= MAX_MODIFICATIONS) {
-        CLOG_WARN("[WORLD] Max modifications reached!");
-        return 0;
-    }
-    for (int i = 0; i < world->modification_count; i++) {
-        if (world->modifications[i].tile_x == tile_x &&
-            world->modifications[i].tile_y == tile_y) {
-            world->modifications[i].modified_tile      = tile_type;
-            world->modifications[i].modified_collision = collision;
-            world->modifications[i].duration           = duration;
-            world->modifications[i].time_remaining     = duration;
-            mark_chunk_dirty(world, tile_x, tile_y);
-            return 1;
-        }
-    }
-    TileModification* m = &world->modifications[world->modification_count++];
-    m->tile_x             = tile_x;
-    m->tile_y             = tile_y;
-    m->modified_tile      = tile_type;
-    m->modified_collision = collision;
-    m->duration           = duration;
-    m->time_remaining     = duration;
-    mark_chunk_dirty(world, tile_x, tile_y);
-    return 1;
-}
-
-/**
- * Remove a dynamic override at tile coordinates.
- */
-void world_remove_modification(WorldState* world, int tile_x, int tile_y) {
-    for (int i = 0; i < world->modification_count; i++) {
-        if (world->modifications[i].tile_x == tile_x &&
-            world->modifications[i].tile_y == tile_y) {
-            world->modifications[i] = world->modifications[--world->modification_count];
-            mark_chunk_dirty(world, tile_x, tile_y);
-            return;
-        }
-    }
-}
-
-/**
- * Clear every dynamic tile override and invalidate resident vertex buffers.
- */
-void world_clear_modifications(WorldState* world) {
-    // Mark all loaded chunks dirty since any could have had modifications
-    for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
-        if (world->chunks[i].is_loaded)
-            world->chunks[i].gpu_dirty = 1;
-    world->modification_count = 0;
 }
 
 /**

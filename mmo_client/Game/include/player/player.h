@@ -2,6 +2,7 @@
 #define PLAYER_H
 
 #include "core/game_types.h"
+#include "player/move_correction.h"
 
 #include <stdint.h>
 
@@ -24,13 +25,19 @@ void player_reset_position(PlayerState* player, float x, float y);
 int player_update_movement(PlayerState* player, const InputState* input, 
                            const WorldState* world, float delta_time, float input_yaw);
 
+/** Gravity, once per frame, wherever the body stands. Jumping is off for
+ *  now. Call after player_update_movement.
+ *  @return Nonzero when a jump started this frame (never, while it is off). */
+int player_update_vertical(PlayerState* player, const WorldState* world,
+                           float delta_time);
+
 /** Record a position proposal so a correction naming it can be reconciled.
  *
  * Call once for every PlayerMovePacket sent, with the sequence it carried and
  * the position it claimed.
  */
 void player_record_sent_move(PlayerState* player, uint32_t sequence,
-                             float x, float y);
+                             float x, float y, float z);
 
 /** Rewind to the server's position and replay what was sent after it.
  *
@@ -40,21 +47,31 @@ void player_record_sent_move(PlayerState* player, uint32_t sequence,
  * whatever you have done since", which is what this computes.
  *
  * The replayed tail is walked against the world rather than added, so a rewind
- * cannot put the player inside a wall or step them through one.
+ * cannot put the player inside a wall or step them through one. The server's
+ * vertical state is taken whole (height, fall speed, standing or not), so both
+ * fall alike from there. A body in the air is not replayed; it falls on by
+ * `lead` seconds, the round trip the server's body has fallen meanwhile.
  *
  * When the correction agrees with what the client predicted, the tail lands
  * exactly where the player already is and nothing moves -- which is the point,
  * and is most corrections.
  *
  * @param world     For the collision the replay is checked against.
- * @param sequence  The refused proposal, from network_get_server_correction().
+ * @param c         The correction, from network_get_server_correction().
+ * @param lead      Seconds to fall on in the air: the measured round trip.
  * @return Nonzero when the player visibly moved, zero when the replay agreed
  *         with the prediction and the correction was invisible.
  */
 int player_apply_correction(PlayerState* player, const WorldState* world,
-                            uint32_t sequence, float x, float y);
+                            const move_correction* c, float lead);
 
 void player_load_info(PlayerState* player, const CharacterInfo* info);
+
+/** Player collision-box half-extent in world pixels. Must equal the server's
+ *  MOVE_PLAYER_HALF_SIZE (move_validator.h). Under a tile (16 px) so a
+ *  character fits a doorway the baked city collision leaves one tile wide
+ *  (export_city_collision.py). */
+#define PLAYER_HALF_SIZE_PX 6.0f
 
 float player_get_half_size(const PlayerState* player, int tile_size);
 

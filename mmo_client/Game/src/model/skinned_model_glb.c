@@ -2,6 +2,7 @@
 #include "model/glb.h"
 #include "utils/stb_image.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -194,13 +195,30 @@ static int parse_skin(const Glb* glb, Skeleton* skeleton, char* error, int error
 
 /* ---- meshes ------------------------------------------------------------- */
 
+// How a material takes a tint, when a body is drawn with one: the tint times the
+// result, or 0 for its own colour. "M_Joints" is the darker shade of the tint;
+// any other name is left as authored. No material at all takes the plain tint.
+static float material_shade(const char* name) {
+	if(name[0] == '\0')
+		return 1.0f;
+	if(strncmp(name, "M_Joints", 8) == 0)
+		return 0.45f;
+	if(strncmp(name, "M_Main", 6) == 0)
+		return 1.0f;
+	return 0.0f;
+}
+
 static void read_material(const Glb* glb, JsonSlice primitive, SkinnedMesh* mesh) {
     JsonSlice materials, material, pbr, factor, value;
     int index = 0;
     mesh->base_color[0] = mesh->base_color[1] = mesh->base_color[2] = 1.0f;
+	mesh->material[0] = '\0';
+	mesh->tint_shade = material_shade(mesh->material);
     if (!read_int_member(primitive, "material", &index)) return;
     if (!json_member(glb->root, "materials", &materials) ||
         !json_array_at(materials, index, &material)) return;
+	read_name(material, mesh->material, sizeof(mesh->material));
+	mesh->tint_shade = material_shade(mesh->material);
     /* json.c has no boolean reader, so the literal is matched as raw text. */
     if (json_member(material, "doubleSided", &value))
         mesh->double_sided = value.length == 4 && memcmp(value.begin, "true", 4) == 0;
@@ -309,64 +327,127 @@ static int parse_primitive(const Glb* glb, JsonSlice primitive, int joint_count,
     return ok;
 }
 
-/* The mesh to draw is the one a node hangs on a skin. Picking by node rather
-   than taking mesh zero is what keeps a file that also ships a prop or a
-   collision shape from drawing the wrong object. */
-static int find_skinned_mesh(const Glb* glb, int* mesh_index, char* error, int error_size) {
-    JsonSlice nodes, node;
-    if (!json_member(glb->root, "nodes", &nodes))
-        return glb_fail(error, error_size, "glb has no nodes");
-    int count = json_array_count(nodes);
-    for (int i = 0; i < count; ++i) {
-        int index = 0, skin = 0;
-        if (!json_array_at(nodes, i, &node)) continue;
-        if (read_int_member(node, "mesh", &index) && read_int_member(node, "skin", &skin)) {
-            *mesh_index = index;
-            return 1;
-        }
-    }
-    return glb_fail(error, error_size, "no node in this glb carries a skinned mesh");
+// Blender names a copy "Name.001"; the suffix means nothing here
+static void strip_copy_suffix(char* name) {
+	size_t length = strlen(name);
+	size_t digits = 0;
+
+	while(digits < length && name[length - 1 - digits] >= '0' &&
+	      name[length - 1 - digits] <= '9')
+		digits++;
+
+	if(digits > 0 && length - digits >= 2 && name[length - digits - 1] == '.')
+		name[length - digits - 1] = '\0';
+}
+
+// Read every primitive of one skinned node's mesh into the next free meshes
+static int parse_mesh_node(const Glb* glb, SkinnedModel* model, JsonSlice node,
+                           JsonSlice meshes, int mesh_index, char* error, int error_size) {
+	JsonSlice mesh;
+	char name[SKIN_NAME_MAX];
+
+	if(!json_array_at(meshes, mesh_index, &mesh))
+		return glb_fail(error, error_size, "mesh %d is missing", mesh_index);
+
+	int count = 0;
+	JsonSlice* primitives = index_member_array(mesh, "primitives", &count);
+
+	if(!primitives)
+		return glb_fail(error, error_size, "mesh %d has no primitives", mesh_index);
+
+	if(model->mesh_count + count > SKIN_MAX_MESHES) {
+		free(primitives);
+		return glb_fail(error, error_size, "the model has more than %d primitives",
+		                SKIN_MAX_MESHES);
+	}
+
+	// The node's name is the object's name in Blender, the one a person sets
+	read_name(node, name, sizeof(name));
+	if(name[0] == '\0')
+		read_name(mesh, name, sizeof(name));
+	strip_copy_suffix(name);
+
+	int ok = 1;
+
+	for(int i = 0; i < count && ok; ++i) {
+		// Counted first, so a primitive that fails halfway is still freed
+		SkinnedMesh* target = &model->meshes[model->mesh_count];
+
+		model->mesh_count++;
+		snprintf(target->name, sizeof(target->name), "%s", name);
+		ok = parse_primitive(glb, primitives[i], model->skeleton.joint_count,
+		                     target, error, error_size);
+	}
+
+	free(primitives);
+	return ok;
+}
+
+// A model that names its bodies measures its height from them alone, so the
+// ears standing above the head do not change how tall a character is
+static int is_body_mesh(const SkinnedMesh* mesh) {
+	return strncmp(mesh->name, "Body_", 5) == 0;
 }
 
 static int parse_meshes(const Glb* glb, SkinnedModel* model, char* error, int error_size) {
-    JsonSlice meshes, mesh;
-    int mesh_index = 0;
-    if (!find_skinned_mesh(glb, &mesh_index, error, error_size)) return 0;
-    if (!json_member(glb->root, "meshes", &meshes) ||
-        !json_array_at(meshes, mesh_index, &mesh))
-        return glb_fail(error, error_size, "mesh %d is missing", mesh_index);
+	JsonSlice nodes, node, meshes;
 
-    int count = 0;
-    JsonSlice* primitives = index_member_array(mesh, "primitives", &count);
-    if (!primitives) return glb_fail(error, error_size, "mesh %d has no primitives", mesh_index);
-    if (count > SKIN_MAX_MESHES) {
-        free(primitives);
-        return glb_fail(error, error_size, "mesh has %d primitives; the limit is %d",
-                        count, SKIN_MAX_MESHES);
-    }
+	if(!json_member(glb->root, "nodes", &nodes))
+		return glb_fail(error, error_size, "glb has no nodes");
+	if(!json_member(glb->root, "meshes", &meshes))
+		return glb_fail(error, error_size, "glb has no meshes");
 
-    int ok = 1;
-    for (int i = 0; i < count && ok; ++i) {
-        /* Counted before parsing, so a primitive that fails halfway is still
-           inside the range skinned_model_free walks and its arrays are freed. */
-        model->mesh_count = i + 1;
-        ok = parse_primitive(glb, primitives[i], model->skeleton.joint_count,
-                             &model->meshes[i], error, error_size);
-    }
-    free(primitives);
-    if (!ok) return 0;
+	// Every node that hangs a mesh on a skin is read; a kit keeps parts apart
+	int node_count = json_array_count(nodes);
+	int found = 0;
 
-    model->min_y = model->max_y = 0;
-    for (int m = 0; m < model->mesh_count; ++m) {
-        const SkinnedMesh* it = &model->meshes[m];
-        for (int i = 0; i < it->vertex_count; ++i) {
-            float y = it->positions[i * 3 + 1];
-            if (m == 0 && i == 0) model->min_y = model->max_y = y;
-            if (y < model->min_y) model->min_y = y;
-            if (y > model->max_y) model->max_y = y;
-        }
-    }
-    return 1;
+	for(int i = 0; i < node_count; ++i) {
+		int mesh_index = 0, skin = 0;
+
+		if(!json_array_at(nodes, i, &node))
+			continue;
+		if(!read_int_member(node, "mesh", &mesh_index) ||
+		   !read_int_member(node, "skin", &skin))
+			continue;
+
+		found++;
+		if(!parse_mesh_node(glb, model, node, meshes, mesh_index, error, error_size))
+			return 0;
+	}
+
+	if(!found)
+		return glb_fail(error, error_size, "no node in this glb carries a skinned mesh");
+
+	int bodies = 0;
+
+	for(int m = 0; m < model->mesh_count; ++m)
+		if(is_body_mesh(&model->meshes[m]))
+			bodies++;
+
+	model->min_y = model->max_y = 0;
+
+	int first = 1;
+
+	for(int m = 0; m < model->mesh_count; ++m) {
+		const SkinnedMesh* it = &model->meshes[m];
+
+		if(bodies > 0 && !is_body_mesh(it))
+			continue;
+
+		for(int i = 0; i < it->vertex_count; ++i) {
+			float y = it->positions[i * 3 + 1];
+
+			if(first)
+				model->min_y = model->max_y = y;
+			first = 0;
+			if(y < model->min_y)
+				model->min_y = y;
+			if(y > model->max_y)
+				model->max_y = y;
+		}
+	}
+
+	return 1;
 }
 
 /* ---- animations --------------------------------------------------------- */
@@ -548,46 +629,6 @@ int skinned_model_load_glb(SkinnedModel* model, const char* path,
 
     glb_close(&glb);
     if (!ok) skinned_model_free(model);
-    return ok;
-}
-
-int skinned_model_add_clips(SkinnedModel* model, const char* path,
-                            char* error, int error_size) {
-    if (!model || model->skeleton.node_count == 0)
-        return glb_fail(error, error_size, "no skeleton to add clips to");
-
-    Glb glb;
-    if (!glb_open(path, &glb, error, error_size)) return 0;
-
-    /* The other file's skeleton, read only far enough to learn its node names
-       so its channels can be pointed at our bones. */
-    Skeleton other;
-    memset(&other, 0, sizeof other);
-    int ok = parse_nodes(&glb, &other, error, error_size);
-
-    int remap[SKIN_MAX_NODES];
-    if (ok) {
-        int matched = 0;
-        for (int i = 0; i < other.node_count; ++i) {
-            remap[i] = -1;
-            for (int j = 0; j < model->skeleton.node_count; ++j)
-                if (strcmp(other.node_names[i], model->skeleton.node_names[j]) == 0) {
-                    remap[i] = j;
-                    matched++;
-                    break;
-                }
-        }
-        /* Sharing a skeleton is the whole premise: a file whose bones are
-           mostly strangers would animate a handful of joints and leave the
-           rest frozen, which looks like a bug rather than a missing feature. */
-        if (matched * 2 < model->skeleton.joint_count)
-            ok = glb_fail(error, error_size,
-                          "only %d of %d bones matched; this file rigs a different skeleton",
-                          matched, model->skeleton.joint_count);
-    }
-    if (ok) ok = parse_animations(&glb, model, remap, other.node_count, error, error_size);
-
-    glb_close(&glb);
     return ok;
 }
 

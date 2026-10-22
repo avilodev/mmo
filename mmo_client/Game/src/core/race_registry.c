@@ -19,6 +19,14 @@
 static RaceInfo g_races[MAX_RACE_LIST];
 static volatile int g_count = 0;
 
+// A packet's uint32 field as the host reads it; the wire is big-endian
+static uint32_t wire_to_host(uint32_t wire) {
+	const unsigned char* bytes = (const unsigned char*)&wire;
+
+	return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+	       ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+}
+
 void client_races_store(const RaceListResponsePacket* packet) {
     if (!packet) { g_count = 0; return; }
 
@@ -29,7 +37,12 @@ void client_races_store(const RaceListResponsePacket* packet) {
     /* Cleared, then filled, then counted. */
     g_count = 0;
     memset(g_races, 0, sizeof(g_races));
-    for (int i = 0; i < count; i++) g_races[i] = packet->races[i];
+    for (int i = 0; i < count; i++) {
+		g_races[i] = packet->races[i];
+		// The id is the one field here that is not a byte or text, and the
+		// server sends it big-endian; every lookup is by the host's value
+		g_races[i].race_id = wire_to_host(packet->races[i].race_id);
+	}
     g_count = count;
 }
 

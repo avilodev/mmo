@@ -23,6 +23,47 @@
 #define SLOT_BLESSING   7  // NEW
 
 /**
+ * Place every part of the panel relative to its window position.
+ */
+static void layout(CharacterScreenState* char_screen) {
+	float weapons_width = char_screen->slot_size + char_screen->slot_padding * 2;
+	float weapon_x = char_screen->window_x + char_screen->slot_padding;
+	float weapon_start_y = char_screen->window_y + 80.0f;
+	float armor_x = char_screen->window_x + weapons_width + char_screen->char_display_width +
+	                char_screen->slot_padding * 3;
+	float armor_start_y = char_screen->window_y + 80.0f;
+	float armor_spacing = char_screen->slot_size + char_screen->slot_padding;
+	EquipSlotUI* armor[] = {
+		&char_screen->helmet_slot, &char_screen->chest_slot, &char_screen->gloves_slot,
+		&char_screen->leggings_slot, &char_screen->boots_slot, &char_screen->blessing_slot
+	};
+
+	char_screen->char_display_x = char_screen->window_x + weapons_width +
+	                              char_screen->slot_padding * 2;
+	char_screen->char_display_y = char_screen->window_y + 50.0f;
+
+	// Left side - weapons (vertical)
+	char_screen->main_hand_slot.x = weapon_x;
+	char_screen->main_hand_slot.y = weapon_start_y;
+	char_screen->main_hand_slot.size = char_screen->slot_size;
+	char_screen->off_hand_slot.x = weapon_x;
+	char_screen->off_hand_slot.y = weapon_start_y + armor_spacing;
+	char_screen->off_hand_slot.size = char_screen->slot_size;
+
+	// Right side - armor (vertical), blessing last
+	for(int i = 0; i < 6; i++) {
+		armor[i]->x = armor_x;
+		armor[i]->y = armor_start_y + armor_spacing * (float)i;
+		armor[i]->size = char_screen->slot_size;
+	}
+
+	// Close button (top right corner)
+	char_screen->close_button_x = char_screen->window_x + char_screen->window_width -
+	                              char_screen->close_button_size - 5.0f;
+	char_screen->close_button_y = char_screen->window_y + 5.0f;
+}
+
+/**
  * Initialize character-panel layout and interaction state.
  *
  * @param screen_width  Logical screen width in pixels.
@@ -52,61 +93,31 @@ void character_screen_init(CharacterScreenState* char_screen, float screen_width
     // Character display area (center)
     char_screen->char_display_width = char_display_width;
     char_screen->char_display_height = 200.0f;
-    char_screen->char_display_x = char_screen->window_x + weapons_width + char_screen->slot_padding * 2;
-    char_screen->char_display_y = char_screen->window_y + 50.0f;
 
-    // Left side - Weapons (vertical)
-    float weapon_x = char_screen->window_x + char_screen->slot_padding;
-    float weapon_start_y = char_screen->window_y + 80.0f;
-
-    char_screen->main_hand_slot.x = weapon_x;
-    char_screen->main_hand_slot.y = weapon_start_y;
-    char_screen->main_hand_slot.size = char_screen->slot_size;
-
-    char_screen->off_hand_slot.x = weapon_x;
-    char_screen->off_hand_slot.y = weapon_start_y + char_screen->slot_size + char_screen->slot_padding;
-    char_screen->off_hand_slot.size = char_screen->slot_size;
-
-    // Right side - Armor (vertical) - 6 slots now including blessing
-    float armor_x = char_screen->window_x + weapons_width + char_display_width + char_screen->slot_padding * 3;
-    float armor_start_y = char_screen->window_y + 80.0f;
-    float armor_spacing = char_screen->slot_size + char_screen->slot_padding;
-
-    char_screen->helmet_slot.x = armor_x;
-    char_screen->helmet_slot.y = armor_start_y;
-    char_screen->helmet_slot.size = char_screen->slot_size;
-
-    char_screen->chest_slot.x = armor_x;
-    char_screen->chest_slot.y = armor_start_y + armor_spacing;
-    char_screen->chest_slot.size = char_screen->slot_size;
-
-    char_screen->gloves_slot.x = armor_x;
-    char_screen->gloves_slot.y = armor_start_y + armor_spacing * 2;
-    char_screen->gloves_slot.size = char_screen->slot_size;
-
-    char_screen->leggings_slot.x = armor_x;
-    char_screen->leggings_slot.y = armor_start_y + armor_spacing * 3;
-    char_screen->leggings_slot.size = char_screen->slot_size;
-
-    char_screen->boots_slot.x = armor_x;
-    char_screen->boots_slot.y = armor_start_y + armor_spacing * 4;
-    char_screen->boots_slot.size = char_screen->slot_size;
-
-    // NEW: Blessing slot (6th armor slot)
-    char_screen->blessing_slot.x = armor_x;
-    char_screen->blessing_slot.y = armor_start_y + armor_spacing * 5;
-    char_screen->blessing_slot.size = char_screen->slot_size;
-
-    // Close button (top right corner)
     char_screen->close_button_size = 25.0f;
-    char_screen->close_button_x = char_screen->window_x + char_screen->window_width - char_screen->close_button_size - 5.0f;
-    char_screen->close_button_y = char_screen->window_y + 5.0f;
+    layout(char_screen);
 
     char_screen->hovered_slot = -1;
     char_screen->is_open = 0;
 
     CLOG_INFO("[CHAR_SCREEN] Initialized %.0fx%.0f window with blessing slot",
            char_screen->window_width, char_screen->window_height);
+}
+
+/**
+ * Move the window, keeping all of it on screen, and lay out its parts again.
+ */
+void character_screen_place(CharacterScreenState* char_screen, float x, float y) {
+	float max_x = char_screen->screen_width - char_screen->window_width;
+	float max_y = char_screen->screen_height - char_screen->window_height;
+
+	char_screen->window_x = x > max_x ? max_x : x;
+	char_screen->window_y = y > max_y ? max_y : y;
+	if(char_screen->window_x < 0)
+		char_screen->window_x = 0;
+	if(char_screen->window_y < 0)
+		char_screen->window_y = 0;
+	layout(char_screen);
 }
 
 /**
@@ -138,7 +149,7 @@ static int get_slot_at_position(const CharacterScreenState* char_screen, float m
         &char_screen->gloves_slot,      // 4
         &char_screen->leggings_slot,    // 5
         &char_screen->boots_slot,       // 6
-        &char_screen->blessing_slot     // 7 - NEW
+        &char_screen->blessing_slot     // 7 
     };
 
     for (int i = 0; i < 8; i++) {
@@ -218,57 +229,7 @@ void character_screen_update(CharacterScreenState* char_screen, float mouse_x, f
             char_screen->window_x = mouse_x - char_screen->drag_offset_x;
             char_screen->window_y = mouse_y - char_screen->drag_offset_y;
 
-            // Clamp to screen bounds
-            if (char_screen->window_x < 0) char_screen->window_x = 0;
-            if (char_screen->window_y < 0) char_screen->window_y = 0;
-            if (char_screen->window_x + char_screen->window_width > char_screen->screen_width) {
-                char_screen->window_x = char_screen->screen_width - char_screen->window_width;
-            }
-            if (char_screen->window_y + char_screen->window_height > char_screen->screen_height) {
-                char_screen->window_y = char_screen->screen_height - char_screen->window_height;
-            }
-
-            // Update all slot positions when window moves
-            float weapons_width = char_screen->slot_size + char_screen->slot_padding * 2;
-
-            // Recalculate positions
-            float weapon_x = char_screen->window_x + char_screen->slot_padding;
-            float weapon_start_y = char_screen->window_y + 80.0f;
-
-            char_screen->main_hand_slot.x = weapon_x;
-            char_screen->main_hand_slot.y = weapon_start_y;
-
-            char_screen->off_hand_slot.x = weapon_x;
-            char_screen->off_hand_slot.y = weapon_start_y + char_screen->slot_size + char_screen->slot_padding;
-
-            float armor_x = char_screen->window_x + weapons_width + char_screen->char_display_width + char_screen->slot_padding * 3;
-            float armor_start_y = char_screen->window_y + 80.0f;
-            float armor_spacing = char_screen->slot_size + char_screen->slot_padding;
-
-            char_screen->helmet_slot.x = armor_x;
-            char_screen->helmet_slot.y = armor_start_y;
-
-            char_screen->chest_slot.x = armor_x;
-            char_screen->chest_slot.y = armor_start_y + armor_spacing;
-
-            char_screen->gloves_slot.x = armor_x;
-            char_screen->gloves_slot.y = armor_start_y + armor_spacing * 2;
-
-            char_screen->leggings_slot.x = armor_x;
-            char_screen->leggings_slot.y = armor_start_y + armor_spacing * 3;
-
-            char_screen->boots_slot.x = armor_x;
-            char_screen->boots_slot.y = armor_start_y + armor_spacing * 4;
-
-            // NEW: Update blessing slot position
-            char_screen->blessing_slot.x = armor_x;
-            char_screen->blessing_slot.y = armor_start_y + armor_spacing * 5;
-
-            char_screen->char_display_x = char_screen->window_x + weapons_width + char_screen->slot_padding * 2;
-            char_screen->char_display_y = char_screen->window_y + 50.0f;
-
-            char_screen->close_button_x = char_screen->window_x + char_screen->window_width - char_screen->close_button_size - 5.0f;
-            char_screen->close_button_y = char_screen->window_y + 5.0f;
+            character_screen_place(char_screen, char_screen->window_x, char_screen->window_y);
 
             char_screen->hovered_slot = -1;
             char_screen->tooltip_visible = 0;
@@ -343,7 +304,7 @@ static void render_equipment_slot(const EquipSlotUI* slot, int is_hovered,
             renderer_draw_rect(x+ip, y+ip, size-ip*2, size-ip*2, ir, ig, ib, 0.8f);
         }
     } else {
-        // Empty slot - show slot name
+        // Empty slot
         renderer_draw_text(x + 5, y + size / 2, slot_name);
     }
 }
@@ -351,23 +312,39 @@ static void render_equipment_slot(const EquipSlotUI* slot, int is_hovered,
 /**
  * Draw the hovered equipment slot's bounded tooltip.
  */
-static void render_tooltip(const CharacterScreenState* char_screen, const GameState* game) {
+static void render_tooltip(const CharacterScreenState* char_screen, const CharacterView* view) {
     if (!char_screen->tooltip_visible || char_screen->hovered_slot < 0) return;
-    if (!game->player.info_loaded) return;
+    if (!view->loaded) return;
 
     // Get item ID based on hovered slot
     uint32_t item_id = 0;
     const char* slot_name = "";
 
     switch (char_screen->hovered_slot) {
-        case SLOT_MAIN_HAND:  item_id = game->player.info.equipment[EQUIP_MAIN_HAND].item_id; slot_name = "Main Hand"; break;
-        case SLOT_OFF_HAND:   item_id = game->player.info.equipment[EQUIP_SECOND_HAND].item_id; slot_name = "Off Hand"; break;
-        case SLOT_HELMET:     item_id = game->player.info.equipment[EQUIP_HELMET].item_id; slot_name = "Helmet"; break;
-        case SLOT_CHEST:      item_id = game->player.info.equipment[EQUIP_CHEST].item_id; slot_name = "Chest"; break;
-        case SLOT_GLOVES:     item_id = game->player.info.equipment[EQUIP_GLOVES].item_id; slot_name = "Gloves"; break;
-        case SLOT_LEGGINGS:   item_id = game->player.info.equipment[EQUIP_LEGGINGS].item_id; slot_name = "Leggings"; break;
-        case SLOT_BOOTS:      item_id = game->player.info.equipment[EQUIP_BOOTS].item_id; slot_name = "Boots"; break;
-        case SLOT_BLESSING:   item_id = game->player.info.equipment[EQUIP_BLESSING].item_id; slot_name = "Blessing"; break;  // NEW
+        case SLOT_MAIN_HAND:  
+            item_id = view->equipment[EQUIP_MAIN_HAND]; slot_name = "Main Hand"; 
+            break;
+        case SLOT_OFF_HAND:   
+            item_id = view->equipment[EQUIP_SECOND_HAND]; slot_name = "Off Hand"; 
+            break;
+        case SLOT_HELMET:     
+            item_id = view->equipment[EQUIP_HELMET]; slot_name = "Helmet"; 
+            break;
+        case SLOT_CHEST:     
+            item_id = view->equipment[EQUIP_CHEST]; slot_name = "Chest"; 
+            break;
+        case SLOT_GLOVES:     
+            item_id = view->equipment[EQUIP_GLOVES]; slot_name = "Gloves"; 
+            break;
+        case SLOT_LEGGINGS:   
+            item_id = view->equipment[EQUIP_LEGGINGS]; slot_name = "Leggings"; 
+            break;
+        case SLOT_BOOTS:      
+            item_id = view->equipment[EQUIP_BOOTS]; slot_name = "Boots"; 
+            break;
+        case SLOT_BLESSING:   
+            item_id = view->equipment[EQUIP_BLESSING]; slot_name = "Blessing"; 
+            break; 
     }
 
     if (item_id == 0) {
@@ -376,8 +353,11 @@ static void render_tooltip(const CharacterScreenState* char_screen, const GameSt
         float x = char_screen->tooltip_x + 10;
         float y = char_screen->tooltip_y + 10;
 
-        if (x + w > char_screen->screen_width) x = char_screen->screen_width - w - 10;
-        if (y + h > char_screen->screen_height) y = char_screen->screen_height - h - 10;
+        if (x + w > char_screen->screen_width) 
+            x = char_screen->screen_width - w - 10;
+
+        if (y + h > char_screen->screen_height) 
+            y = char_screen->screen_height - h - 10;
 
         renderer_draw_rect(x, y, w, h, 0.05f, 0.05f, 0.1f, 0.95f);
         renderer_draw_rect(x, y, w, 2, 0.6f, 0.6f, 0.6f, 1.0f);
@@ -387,59 +367,41 @@ static void render_tooltip(const CharacterScreenState* char_screen, const GameSt
         return;
     }
 
-    const ItemTemplate* item = item_db_get(item_id);
-    if (!item) return;
+	const ItemTemplate* item = item_db_get(item_id);
+	if(!item)
+		return;
 
-    // Show item tooltip
-    float w = 220.0f, h = 120.0f;
-    float x = char_screen->tooltip_x + 10;
-    float y = char_screen->tooltip_y + 10;
-
-    if (x + w > char_screen->screen_width) x = char_screen->screen_width - w - 10;
-    if (y + h > char_screen->screen_height) y = char_screen->screen_height - h - 10;
-
-    renderer_draw_rect(x, y, w, h, 0.05f, 0.05f, 0.1f, 0.95f);
-
-    // Rarity border
-    float r = 0.5f, g = 0.5f, b = 0.5f;
-    switch (item->rarity) {
-        case ITEM_RARITY_COMMON: r=0.8f; g=0.8f; b=0.8f; break;
-        case ITEM_RARITY_UNCOMMON: r=0.2f; g=1.0f; b=0.2f; break;
-        case ITEM_RARITY_RARE: r=0.3f; g=0.5f; b=1.0f; break;
-        case ITEM_RARITY_EPIC: r=0.8f; g=0.3f; b=1.0f; break;
-        case ITEM_RARITY_LEGENDARY: r=1.0f; g=0.6f; b=0.0f; break;
-    }
-
-    renderer_draw_rect(x, y, w, 2, r, g, b, 1.0f);
-    renderer_draw_rect(x, y+h-2, w, 2, r, g, b, 1.0f);
-    renderer_draw_rect(x, y, 2, h, r, g, b, 1.0f);
-    renderer_draw_rect(x+w-2, y, 2, h, r, g, b, 1.0f);
-
-    renderer_draw_text(x + 5, y + 15, item->name);
-    renderer_draw_text(x + 5, y + 50, item->description);
-
-    if (item->damage > 0) {
-        char s[32];
-        snprintf(s, 32, "+%d Damage", item->damage);
-        renderer_draw_text(x+5, y+70, s);
-    }
-    if (item->defense > 0) {
-        char s[32];
-        snprintf(s, 32, "+%d Defense", item->defense);
-        renderer_draw_text(x+5, y+85, s);
-    }
+	inventory_draw_item_tooltip(item, char_screen->tooltip_x + 10,
+	                            char_screen->tooltip_y + 10,
+	                            char_screen->screen_width, char_screen->screen_height);
 }
 
 static void doll_rarity_color(uint32_t item_id, float* r, float* g, float* b) {
     const ItemTemplate* item = item_db_get(item_id);
-    if (!item || item_id == 0) { *r=0.28f; *g=0.28f; *b=0.32f; return; }
+    if (!item || item_id == 0) { 
+        *r=0.28f; *g=0.28f; *b=0.32f; 
+        return; 
+    }
+
     switch (item->rarity) {
-        case ITEM_RARITY_COMMON:    *r=0.50f; *g=0.50f; *b=0.52f; break;
-        case ITEM_RARITY_UNCOMMON:  *r=0.15f; *g=0.65f; *b=0.20f; break;
-        case ITEM_RARITY_RARE:      *r=0.20f; *g=0.40f; *b=0.80f; break;
-        case ITEM_RARITY_EPIC:      *r=0.55f; *g=0.15f; *b=0.80f; break;
-        case ITEM_RARITY_LEGENDARY: *r=0.80f; *g=0.45f; *b=0.00f; break;
-        default:                    *r=0.28f; *g=0.28f; *b=0.32f; break;
+        case ITEM_RARITY_COMMON:    
+            *r=0.50f; *g=0.50f; *b=0.52f; 
+            break;
+        case ITEM_RARITY_UNCOMMON:  
+            *r=0.15f; *g=0.65f; *b=0.20f; 
+            break;
+        case ITEM_RARITY_RARE:      
+            *r=0.20f; *g=0.40f; *b=0.80f; 
+            break;
+        case ITEM_RARITY_EPIC:      
+            *r=0.55f; *g=0.15f; *b=0.80f; 
+            break;
+        case ITEM_RARITY_LEGENDARY: 
+            *r=0.80f; *g=0.45f; *b=0.00f; 
+            break;
+        default:                    
+            *r=0.28f; *g=0.28f; *b=0.32f; 
+            break;
     }
 }
 
@@ -469,7 +431,7 @@ static void doll_rect(float x, float y, float w, float h, float r, float g, floa
 /**
  * Draw the character doll using class and equipped-item rarity colors.
  */
-static void render_character_doll(const CharacterScreenState* cs, const GameState* game) {
+static void render_character_doll(const CharacterScreenState* cs, const CharacterView* view) {
     float dx = cs->char_display_x;
     float dy = cs->char_display_y;
     float dw = cs->char_display_width;
@@ -479,7 +441,7 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     // Panel background
     renderer_draw_rect(dx, dy, dw, dh, 0.10f, 0.08f, 0.13f, 1.0f);
 
-    if (!game->player.info_loaded) {
+    if (!view->loaded) {
         renderer_draw_text_centered(dx, dy + dh * 0.5f, dw, 0.0f, "Loading...");
         return;
     }
@@ -487,14 +449,15 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     // Name + level
     char name_label[48];
     snprintf(name_label, sizeof(name_label), "%u - %s",
-             (unsigned)game->player.info.level, game->player.info.name);
+             (unsigned)view->level, view->name);
     renderer_draw_text_centered(dx, dy + 14.0f, dw, 0.0f, name_label);
 
     /* Form, dimmed, beneath the name. The race's own name comes from the server's
      * registry and is shown at character select rather than duplicated here. */
     const char* form_label =
-        game->playing->player_form == FORM_ANIMAL ? "Animal Form" : "Human Form";
-    renderer_draw_text_primitive(cx - 34.0f, dy + 28.0f, form_label, 0.55f, 0.55f, 0.65f);
+        view->form == FORM_ANIMAL ? "Animal Form" : "Human Form";
+    renderer_draw_text_colored(cx - renderer_text_width(form_label) * 0.5f, dy + 37.0f,
+                               form_label, 0.55f, 0.55f, 0.65f);
 
     float r, g, b;
     float fy = dy + 42.0f; // figure top
@@ -502,26 +465,26 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     // HEAD (22×22) — helmet color
     float head_w = 22.0f, head_h = 22.0f;
     float head_x = cx - head_w * 0.5f;
-    if (game->player.info.equipment[EQUIP_HELMET].item_id)
-        doll_rarity_color(game->player.info.equipment[EQUIP_HELMET].item_id, &r, &g, &b);
+    if (view->equipment[EQUIP_HELMET])
+        doll_rarity_color(view->equipment[EQUIP_HELMET], &r, &g, &b);
     else
-        race_base_color(game->player.info.race_id, &r, &g, &b);
+        race_base_color(view->race_id, &r, &g, &b);
     doll_rect(head_x, fy, head_w, head_h, r, g, b);
 
     // NECK (8×8) — always class base, darker
     float neck_w = 8.0f, neck_h = 8.0f;
     float neck_y = fy + head_h;
-    race_base_color(game->player.info.race_id, &r, &g, &b);
+    race_base_color(view->race_id, &r, &g, &b);
     renderer_draw_rect(cx - neck_w * 0.5f, neck_y, neck_w, neck_h, r * 0.6f, g * 0.6f, b * 0.6f, 1.0f);
 
     // TORSO (48×44) — chest armor color
     float torso_w = 48.0f, torso_h = 44.0f;
     float torso_x = cx - torso_w * 0.5f;
     float torso_y = neck_y + neck_h;
-    if (game->player.info.equipment[EQUIP_CHEST].item_id)
-        doll_rarity_color(game->player.info.equipment[EQUIP_CHEST].item_id, &r, &g, &b);
+    if (view->equipment[EQUIP_CHEST])
+        doll_rarity_color(view->equipment[EQUIP_CHEST], &r, &g, &b);
     else
-        race_base_color(game->player.info.race_id, &r, &g, &b);
+        race_base_color(view->race_id, &r, &g, &b);
     doll_rect(torso_x, torso_y, torso_w, torso_h, r, g, b);
 
     // ARMS — upper half class base, lower half gloves color
@@ -530,15 +493,15 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     float left_arm_x  = torso_x - arm_w - 2.0f;
     float right_arm_x = torso_x + torso_w + 2.0f;
 
-    race_base_color(game->player.info.race_id, &r, &g, &b);
+    race_base_color(view->race_id, &r, &g, &b);
     doll_rect(left_arm_x,  arm_y, arm_w, arm_upper_h, r, g, b);
     doll_rect(right_arm_x, arm_y, arm_w, arm_upper_h, r, g, b);
 
     float glove_y = arm_y + arm_upper_h;
-    if (game->player.info.equipment[EQUIP_GLOVES].item_id)
-        doll_rarity_color(game->player.info.equipment[EQUIP_GLOVES].item_id, &r, &g, &b);
+    if (view->equipment[EQUIP_GLOVES])
+        doll_rarity_color(view->equipment[EQUIP_GLOVES], &r, &g, &b);
     else
-        race_base_color(game->player.info.race_id, &r, &g, &b);
+        race_base_color(view->race_id, &r, &g, &b);
     r *= 0.8f; g *= 0.8f; b *= 0.8f;
     doll_rect(left_arm_x,  glove_y, arm_w, arm_lower_h, r, g, b);
     doll_rect(right_arm_x, glove_y, arm_w, arm_lower_h, r, g, b);
@@ -548,20 +511,20 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
     float leg_y = torso_y + torso_h;
     float left_leg_x  = cx - leg_w - 2.0f;
     float right_leg_x = cx + 2.0f;
-    if (game->player.info.equipment[EQUIP_LEGGINGS].item_id)
-        doll_rarity_color(game->player.info.equipment[EQUIP_LEGGINGS].item_id, &r, &g, &b);
+    if (view->equipment[EQUIP_LEGGINGS])
+        doll_rarity_color(view->equipment[EQUIP_LEGGINGS], &r, &g, &b);
     else
-        race_base_color(game->player.info.race_id, &r, &g, &b);
+        race_base_color(view->race_id, &r, &g, &b);
     doll_rect(left_leg_x,  leg_y, leg_w, leg_h, r, g, b);
     doll_rect(right_leg_x, leg_y, leg_w, leg_h, r, g, b);
 
     // FEET (boots color, slightly wider than legs)
     float foot_w = 22.0f, foot_h = 11.0f;
     float foot_y = leg_y + leg_h;
-    if (game->player.info.equipment[EQUIP_BOOTS].item_id)
-        doll_rarity_color(game->player.info.equipment[EQUIP_BOOTS].item_id, &r, &g, &b);
+    if (view->equipment[EQUIP_BOOTS])
+        doll_rarity_color(view->equipment[EQUIP_BOOTS], &r, &g, &b);
     else
-        race_base_color(game->player.info.race_id, &r, &g, &b);
+        race_base_color(view->race_id, &r, &g, &b);
     doll_rect(left_leg_x  - 1.0f, foot_y, foot_w, foot_h, r, g, b);
     doll_rect(right_leg_x - 1.0f, foot_y, foot_w, foot_h, r, g, b);
 }
@@ -569,8 +532,8 @@ static void render_character_doll(const CharacterScreenState* cs, const GameStat
 /**
  * Draw the loaded character's combat-stat grid.
  */
-static void render_character_stats(const CharacterScreenState* cs, const GameState* game) {
-    if (!game->player.info_loaded) return;
+static void render_character_stats(const CharacterScreenState* cs, const CharacterView* view) {
+    if (!view->loaded) return;
 
     float sx = cs->char_display_x;
     float sy = cs->char_display_y + cs->char_display_height + 6.0f;
@@ -583,26 +546,23 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
     renderer_draw_rect(sx, sy, sw, 1.5f, 0.30f, 0.30f, 0.45f, 1.0f);
 
     // "STATS" header
-    renderer_draw_text_centered(sx, sy + 14.0f, sw, 0.0f, "STATS");
+    renderer_draw_text_centered(sx, sy + 8.0f, sw, 0.0f, "STATS");
 
     // Center vertical divider
-    renderer_draw_rect(mid - 0.75f, sy + 20.0f, 1.5f, sh - 22.0f, 0.22f, 0.22f, 0.32f, 1.0f);
+    renderer_draw_rect(mid - 0.75f, sy + 22.0f, 1.5f, sh - 24.0f, 0.22f, 0.22f, 0.32f, 1.0f);
 
     char buf[16];
     float row_h = 18.0f;
     float lx = sx + 6.0f;
     float rx = mid + 6.0f;
-    float ry = sy + 30.0f;
+    float ry = sy + 42.0f;
 
-    /* One row per attribute, driven by the stat array rather than named fields, so a
-     * new stat appears here the moment it exists on the wire. Weapon damage leads
-     * because it is derived rather than an attribute of its own. */
     static const char* const stat_labels[STAT_COUNT] = {
         "STR", "DEX", "VIT", "INT", "FOC", "END", "FER", "STA", "PRE", "FRL", "ARM"
     };
 
-    renderer_draw_text_primitive(lx, ry, "ATK", 0.60f, 0.60f, 0.70f);
-    snprintf(buf, sizeof(buf), "%d", game->playing->player_weapon_damage);
+    renderer_draw_text_colored(lx, ry, "ATK", 0.60f, 0.60f, 0.70f);
+    snprintf(buf, sizeof(buf), "%d", view->weapon_damage);
     renderer_draw_text(lx + 46.0f, ry, buf);
 
     /* Split the attributes down the panel's two columns, filling the left first. */
@@ -612,10 +572,27 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
         float col_x = in_left ? lx : rx;
         float row_y = ry + ((in_left ? i + 1 : i - left_rows) * row_h);
 
-        renderer_draw_text_primitive(col_x, row_y, stat_labels[i], 0.60f, 0.60f, 0.70f);
-        snprintf(buf, sizeof(buf), "%d", game->playing->player_stats[i]);
+        renderer_draw_text_colored(col_x, row_y, stat_labels[i], 0.60f, 0.60f, 0.70f);
+        snprintf(buf, sizeof(buf), "%d", view->stats[i]);
         renderer_draw_text(col_x + 46.0f, row_y, buf);
     }
+}
+
+void character_view_from_self(const GameState* game, CharacterView* out) {
+	memset(out, 0, sizeof(*out));
+	if(!game->player.info_loaded)
+		return;
+
+	out->loaded = 1;
+	memcpy(out->name, game->player.info.name, sizeof(out->name) - 1);
+	out->level = game->player.info.level;
+	out->race_id = game->player.info.race_id;
+	out->form = game->playing->player_form;
+	out->weapon_damage = game->playing->player_weapon_damage;
+	for(int i = 0; i < EQUIP_SLOTS; i++)
+		out->equipment[i] = game->player.info.equipment[i].item_id;
+	for(int i = 0; i < STAT_COUNT; i++)
+		out->stats[i] = game->playing->player_stats[i];
 }
 
 /**
@@ -623,7 +600,8 @@ static void render_character_stats(const CharacterScreenState* cs, const GameSta
  *
  * The function preserves the current OpenGL projection and model-view matrices.
  */
-void character_screen_render(const CharacterScreenState* char_screen, const GameState* game) {
+void character_screen_render(const CharacterScreenState* char_screen, const CharacterView* view,
+                             const char* title) {
     if (!char_screen->is_open) return;
 
     renderer_begin_screen_space();
@@ -646,7 +624,7 @@ void character_screen_render(const CharacterScreenState* char_screen, const Game
     renderer_draw_rect(char_screen->window_x + char_screen->window_width - b, char_screen->window_y, b, char_screen->window_height, 0.6f, 0.6f, 0.6f, 1.0f);
 
     // Title text
-    renderer_draw_text(char_screen->window_x + 10, char_screen->window_y + 20, "Character");
+    renderer_draw_text(char_screen->window_x + 10, char_screen->window_y + 20, title);
 
     // Close button (X)
     float close_x = char_screen->close_button_x;
@@ -661,8 +639,8 @@ void character_screen_render(const CharacterScreenState* char_screen, const Game
     renderer_draw_text(close_x + 7, close_y + 18, "X");
 
     // Character doll + stats
-    render_character_doll(char_screen, game);
-    render_character_stats(char_screen, game);
+    render_character_doll(char_screen, view);
+    render_character_stats(char_screen, view);
 
     // Section labels
     renderer_draw_text(char_screen->window_x + 10, char_screen->window_y + 60, "Weapons");
@@ -670,43 +648,43 @@ void character_screen_render(const CharacterScreenState* char_screen, const Game
                       char_screen->window_y + 60, "Armor");
 
     // Render equipment slots
-    if (game->player.info_loaded) {
+    if (view->loaded) {
         render_equipment_slot(&char_screen->main_hand_slot,
                              char_screen->hovered_slot == SLOT_MAIN_HAND,
-                             game->player.info.equipment[EQUIP_MAIN_HAND].item_id, "Main");
+                             view->equipment[EQUIP_MAIN_HAND], "Main");
 
         render_equipment_slot(&char_screen->off_hand_slot,
                              char_screen->hovered_slot == SLOT_OFF_HAND,
-                             game->player.info.equipment[EQUIP_SECOND_HAND].item_id, "Off");
+                             view->equipment[EQUIP_SECOND_HAND], "Off");
 
         render_equipment_slot(&char_screen->helmet_slot,
                              char_screen->hovered_slot == SLOT_HELMET,
-                             game->player.info.equipment[EQUIP_HELMET].item_id, "Head");
+                             view->equipment[EQUIP_HELMET], "Head");
 
         render_equipment_slot(&char_screen->chest_slot,
                              char_screen->hovered_slot == SLOT_CHEST,
-                             game->player.info.equipment[EQUIP_CHEST].item_id, "Chest");
+                             view->equipment[EQUIP_CHEST], "Chest");
 
         render_equipment_slot(&char_screen->gloves_slot,
                              char_screen->hovered_slot == SLOT_GLOVES,
-                             game->player.info.equipment[EQUIP_GLOVES].item_id, "Hands");
+                             view->equipment[EQUIP_GLOVES], "Hands");
 
         render_equipment_slot(&char_screen->leggings_slot,
                              char_screen->hovered_slot == SLOT_LEGGINGS,
-                             game->player.info.equipment[EQUIP_LEGGINGS].item_id, "Legs");
+                             view->equipment[EQUIP_LEGGINGS], "Legs");
 
         render_equipment_slot(&char_screen->boots_slot,
                              char_screen->hovered_slot == SLOT_BOOTS,
-                             game->player.info.equipment[EQUIP_BOOTS].item_id, "Feet");
+                             view->equipment[EQUIP_BOOTS], "Feet");
 
         // NEW: Render blessing slot
         render_equipment_slot(&char_screen->blessing_slot,
                              char_screen->hovered_slot == SLOT_BLESSING,
-                             game->player.info.equipment[EQUIP_BLESSING].item_id, "Blessing");
+                             view->equipment[EQUIP_BLESSING], "Blessing");
     }
 
     // Render tooltip
-    render_tooltip(char_screen, game);
+    render_tooltip(char_screen, view);
 
     renderer_end_screen_space();
 }

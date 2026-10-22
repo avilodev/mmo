@@ -73,3 +73,70 @@ int texture_atlas_mip_levels(int pad) {
     }
     return levels;
 }
+
+// Whether the pixel at (x, y) is inside the image and already has a colour
+static int has_colour(const unsigned char* has, int w, int h, int x, int y) {
+	return x >= 0 && y >= 0 && x < w && y < h && has[y * w + x];
+}
+
+void texture_bleed_color(unsigned char* rgba, int w, int h, int passes) {
+	unsigned char* has;
+	unsigned char* next;
+
+	if(!rgba || w <= 0 || h <= 0 || passes <= 0)
+		return;
+
+	has = malloc((size_t)w * h);
+	next = malloc((size_t)w * h);
+	if(!has || !next) {
+		free(has);
+		free(next);
+		return;
+	}
+
+	// Anything not fully transparent already has its own colour
+	for(int i = 0; i < w * h; i++)
+		has[i] = rgba[i * 4 + 3] != 0;
+
+	for(int pass = 0; pass < passes; pass++) {
+		memcpy(next, has, (size_t)w * h);
+
+		for(int y = 0; y < h; y++) {
+			for(int x = 0; x < w; x++) {
+				int sum[3] = { 0, 0, 0 };
+				int count = 0;
+
+				if(has[y * w + x])
+					continue;
+
+				for(int dy = -1; dy <= 1; dy++) {
+					for(int dx = -1; dx <= 1; dx++) {
+						const unsigned char* p;
+
+						if(!has_colour(has, w, h, x + dx, y + dy))
+							continue;
+
+						p = rgba + ((y + dy) * w + (x + dx)) * 4;
+						sum[0] += p[0];
+						sum[1] += p[1];
+						sum[2] += p[2];
+						count++;
+					}
+				}
+
+				if(count == 0)
+					continue;
+
+				rgba[(y * w + x) * 4 + 0] = (unsigned char)(sum[0] / count);
+				rgba[(y * w + x) * 4 + 1] = (unsigned char)(sum[1] / count);
+				rgba[(y * w + x) * 4 + 2] = (unsigned char)(sum[2] / count);
+				next[y * w + x] = 1;
+			}
+		}
+
+		memcpy(has, next, (size_t)w * h);
+	}
+
+	free(has);
+	free(next);
+}

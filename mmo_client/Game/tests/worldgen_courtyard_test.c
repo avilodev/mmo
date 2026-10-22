@@ -1,16 +1,10 @@
 /**
  * @file
- * Check the courtyard's solid features against the NPCs that live in it.
+ * Check the courtyard generator's own layout: its features and its gates.
  *
- * The NPCs stand at fixed world coordinates the server reads from its own
- * spawns.json, and the server validates every step against the collision this
- * generator writes. So a lamp or a column placed a few tiles wrong is not a
- * cosmetic bug: it is an NPC standing inside a wall, or a new player who
- * cannot walk from where they wake up to the person the quest sends them to.
- *
- * The spawns are read from the server tree rather than copied here, so moving
- * an NPC in Story/gen_opening.py re-checks it against the map. A client-only
- * checkout skips that part and says so.
+ * This layout no longer decides collision (3d_refactor.md D42, D43); it is kept
+ * for when it comes back. Where the NPCs stand is checked against the city
+ * scene's collision in worldgen_city_collision_test.
  */
 #include "world/worldgen.h"
 #include "world/tile_palette.h"
@@ -20,9 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define SPAWNS_PATH "../mmo_server/world_server/data/spawns.json"
-#define MAX_SPAWNS  256
 
 /** The player's collision box half-size, in world pixels (player.c: one tile). */
 #define PLAYER_HALF ((float)WORLDGEN_TILE_PX)
@@ -51,34 +42,6 @@ static int line_clear(float x0, float y0, float x1, float y1) {
         if (!box_clear(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) return 0;
     }
     return 1;
-}
-
-typedef struct { float x, y; int quest; char name[48]; } Spawn;
-
-/** Read name/x/y/category from spawns.json without a JSON library: the file is
- *  generated, flat, and one field per line. */
-static int load_spawns(Spawn* out, int max) {
-    FILE* f = fopen(SPAWNS_PATH, "r");
-    if (!f) return -1;
-    char line[512];
-    int n = -1;
-    while (fgets(line, sizeof(line), f)) {
-        char* p;
-        if ((p = strstr(line, "\"name\":")) != NULL) {
-            if (++n >= max) break;
-            memset(&out[n], 0, sizeof(out[n]));
-            char* q = strchr(p + 7, '"');
-            if (q) sscanf(q + 1, "%47[^\"]", out[n].name);
-        } else if (n >= 0 && (p = strstr(line, "\"x\":")) != NULL) {
-            out[n].x = strtof(p + 4, NULL);
-        } else if (n >= 0 && (p = strstr(line, "\"y\":")) != NULL) {
-            out[n].y = strtof(p + 4, NULL);
-        } else if (n >= 0 && strstr(line, "\"category\": \"quest\"")) {
-            out[n].quest = 1;
-        }
-    }
-    fclose(f);
-    return n + 1;
 }
 
 int main(void) {
@@ -124,35 +87,9 @@ int main(void) {
         assert(t.collision == 1 && t.base == PAL_COURTYARD_WALL);
     }
 
-    Spawn spawns[MAX_SPAWNS];
-    int n = load_spawns(spawns, MAX_SPAWNS);
-    if (n < 0) {
-        printf("worldgen_courtyard_test: OK (no server tree at %s; spawn checks skipped)\n",
-               SPAWNS_PATH);
-        return 0;
-    }
-    assert(n > 0);
-
-    int quest = 0;
-    for (int i = 0; i < n; i++) {
-        // Every NPC, hostile or not, stands on open ground. (Its own tile: an
-        // NPC is not a player-sized box, and some camps stand by buildings.)
-        if (solid_at_px(spawns[i].x, spawns[i].y)) {
-            fprintf(stderr, "%s at (%.1f, %.1f) is inside something solid\n",
-                    spawns[i].name, spawns[i].x, spawns[i].y);
-            assert(0);
-        }
-        // And a new player can walk straight from the spawn to anyone who talks.
-        if (spawns[i].quest) {
-            quest++;
-            if (!line_clear(cx, cy, spawns[i].x, spawns[i].y)) {
-                fprintf(stderr, "the walk from the spawn to %s is blocked\n", spawns[i].name);
-                assert(0);
-            }
-        }
-    }
-    assert(quest > 0);
-
-    printf("worldgen_courtyard_test: OK (%d spawns, %d with dialogue)\n", n, quest);
+    // Where the NPCs stand is no longer decided by this layout: the city
+    // scene's collision is what is live, and worldgen_city_collision_test
+    // checks every spawn against it (3d_refactor.md D43).
+    printf("worldgen_courtyard_test: OK\n");
     return 0;
 }

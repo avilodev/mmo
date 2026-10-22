@@ -17,4 +17,8 @@
  */
 int net_tuning_workers(const char* variable);
 
+
+// bound the broadcast pool, matching NET_LOOP_MAX_LOOPS so shards align with loops
+#define BROADCAST_POOL_MAX_SHARDS 8
+
 #endif // NET_TUNING_H

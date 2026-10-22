@@ -77,7 +77,7 @@ check_uses_header() {
     fi
 }
 
-check_uses_header "world_server/src/world_collision.c"        "the server collision reader"
+check_uses_header "world_server/world/src/world_collision.c"        "the server collision reader"
 check_uses_header "../mmo_client/Game/src/world/world.c"      "the client world reader"
 check_uses_header "../mmo_client/Game/data/src/worldgen_write.c" "the world generator"
 

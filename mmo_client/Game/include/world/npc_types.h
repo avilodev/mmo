@@ -33,4 +33,15 @@ int npc_type_get_style(uint8_t type_id, float* out_rgb, float* out_size);
  */
 int npc_type_get_outline(uint8_t type_id, float* out_rgb);
 
+/** What an NPC type does for the player, read from the type's "roles" list.
+ *
+ * Authored once per type in npc_types.json, so the client never has to guess a
+ * role from where an NPC stands or what it is called. */
+typedef enum {
+	NPC_ROLE_MERCHANT = 1   // sells to and buys from the player
+} npc_role;
+
+/** Report whether a type has a role. @return 1 when it does, 0 otherwise. */
+int npc_type_has_role(uint8_t type_id, npc_role role);
+
 #endif // NPC_TYPES_H

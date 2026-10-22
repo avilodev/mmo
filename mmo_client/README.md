@@ -153,18 +153,24 @@ Register or sign in through the launcher, then select **Start Game**. The launch
 
 ## Default controls
 
-- `W`, `A`, `S`, and `D` move, relative to the camera. You run by default; `Left Ctrl` toggles walking. The character turns toward the keys, and turns on the spot before walking the other way.
+- `W`, `A`, `S`, and `D` move, relative to the camera. You run by default; `Left Ctrl` toggles walking and `Left Shift` sprints. The character turns toward the keys, and turns on the spot before walking the other way.
 - `Q` and `E` turn the camera. Dragging with the middle or right mouse button orbits it freely: sideways to turn, up and down to tilt. The mouse wheel zooms from far overhead down to over the shoulder; `Home` resets the view.
-- `Space` performs the basic attack.
-- `1` through `5` activate abilities.
+- Left click talks to or uses what is under the cursor. Right click performs the basic attack.
+- `F` swaps between Human and Animal Form.
+- `1` through `9`, `0`, `-`, and `=` activate the twelve hotbar slots.
+- `T` or `Enter` opens chat, and `Tab` cycles the chat channel while typing.
 - `I` opens the inventory.
 - `C` opens the character screen.
 - `J` opens the quest log.
+- `U` opens the friends list.
+- `G` opens the currency window.
+- `O` opens the session panel.
+- `M` opens the full map.
 - `P` leaves the current party.
-- `Enter` opens chat.
+- `Esc` closes the open window, or opens the pause menu.
 - `F11` toggles fullscreen mode.
 
-To change gameplay bindings, create `Game/data/keybinds.cfg` and assign supported key names to the binding names defined in `Game/src/core/keybinds.c`. Restart the game after editing the file. Display and audio settings are stored in `Game/data/settings.cfg`.
+To change gameplay bindings, use Settings > Key Bindings. Choices are saved to `Game/data/player_keybinds.cfg`, which is copied from `Game/data/default_keybinds.cfg` on first run; the default file is never written. Display and audio settings are stored in `Game/data/settings.cfg`.
 
 ## Project layout
 
@@ -174,7 +180,9 @@ Launcher/        Native Windows launcher source and headers
 Game/src/        Game source, grouped by system
 Game/include/    Game headers and vendored headers
 Game/Sprites/    Fonts, ability icons, and UI images
-Game/assets/     3D models (assets/models) and UI atlas data
-Game/data/       World generator source, gameplay data, and local settings
+Game/assets/     3D models (assets/models), UI atlas data, and baked world files (assets/baked)
+Game/tests/      C tests; tests/tools holds the Python bake-math tests
+Game/data/       Settings, key bindings, and NPC type data
+Game/tools/      Blender bake scripts and the world generator source (tools/worldgen)
 Game/lib/        Vendored GLFW libraries
 ```

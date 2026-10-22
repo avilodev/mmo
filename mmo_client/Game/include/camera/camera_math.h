@@ -52,6 +52,15 @@ int camera_view_project(const CameraView* v, float wx, float wy, float height,
 int camera_view_pick_ground(const CameraView* v, float sx, float sy,
                             float* wx, float* wy);
 
+/** The ray under a screen point, in world coordinates (x, y, z up): `origin` is
+ *  on the near plane and `dir` is a unit vector away from the eye. It is the
+ *  ray camera_view_pick_ground() intersects with the ground. */
+void camera_view_screen_ray(const CameraView* v, float sx, float sy,
+                            float origin[3], float dir[3]);
+
+/** Where the eye is, in GL space (x, up, z). */
+void camera_view_eye(const CameraView* v, float eye[3]);
+
 /** The axis-aligned world rectangle containing all ground on screen. */
 void camera_view_ground_bounds(const CameraView* v, float* min_x, float* min_y,
                                float* max_x, float* max_y);
@@ -68,9 +77,33 @@ float camera_view_pixels_per_unit(const CameraView* v, float wx, float wy, float
 void camera_math_rotate_input(float yaw, float ix, float iy, float* wx, float* wy);
 
 /** The orbit distance actually used: `distance`, shortened when the eye
- *  would otherwise sit lower than `min_eye_h` above the ground -- a camera
- *  tilted below the target slides in along the floor rather than through it. */
-float camera_math_floor_distance(float pitch, float target_h, float distance, float min_eye_h);
+ *  would otherwise sit lower than `min_eye_h` above the floor -- a camera
+ *  tilted below the target slides in along the floor rather than through it.
+ *  `floor_z` is the height of that floor (0 on level ground); `target_h` is
+ *  an absolute height, so it includes the floor the target stands on. */
+float camera_math_floor_distance(float pitch, float target_h, float distance, float min_eye_h,
+                                 float floor_z);
+
+/** Height of whatever is solid at a world point, in world units; 0 where
+ *  nothing is. `ctx` is whatever the caller registered with it. */
+typedef float (*CameraHeightFn)(void* ctx, float world_x, float world_y);
+
+/** Whether a world point at height `h` is free walkable air: above a floor
+ *  and under its ceiling. The height source is flat -- one top per tile -- so
+ *  a stair tile beside a wall reads as solid; air the player can stand in is
+ *  not inside that wall. `ctx` is the caller's, as for CameraHeightFn. */
+typedef int (*camera_open_fn)(void* ctx, float world_x, float world_y, float h);
+
+/** The orbit distance the eye can reach before it would sit inside something
+ *  solid: `distance`, shortened to just short of the first point along the
+ *  line from the target to the eye (by `margin`) that is lower than the solid
+ *  there and is not free walkable air (`open_at`, NULL for none). The line is
+ *  sampled every `step` units; `distance` is returned unchanged when nothing
+ *  is in the way or `height_at` is NULL. */
+float camera_math_clear_distance(float target_x, float target_y, float target_h,
+                                 float yaw, float pitch, float distance,
+                                 float step, float margin, CameraHeightFn height_at,
+                                 camera_open_fn open_at, void* ctx);
 
 /** Eye distance at which a world unit at the target is `zoom` pixels tall. */
 float camera_math_distance_for_zoom(float zoom, int viewport_h, float fovy);

@@ -32,10 +32,10 @@ if [ ! -d "$CLIENT_ROOT" ]; then
 fi
 
 # server path | client path
-PAIRS="common/include/cert_pin.h:common/cert_pin.h
-common/src/cert_pin.c:common/cert_pin.c
-common/include/cert_spki.h:common/cert_spki.h
-common/src/cert_spki.c:common/cert_spki.c
+PAIRS="network/include/cert_pin.h:common/cert_pin.h
+network/src/cert_pin.c:common/cert_pin.c
+network/include/cert_spki.h:common/cert_spki.h
+network/src/cert_spki.c:common/cert_spki.c
 tests/cert_pin_digest_test.c:Game/tests/cert_pin_digest_test.c"
 
 status=0

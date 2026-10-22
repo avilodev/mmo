@@ -27,6 +27,18 @@ static int g_failures = 0;
         }                                                                   \
     } while (0)
 
+// A race id as the realm sends it: big-endian bytes, whatever this host is
+static uint32_t on_wire(uint32_t id) {
+	uint32_t out;
+	unsigned char* bytes = (unsigned char*)&out;
+
+	bytes[0] = (unsigned char)(id >> 24);
+	bytes[1] = (unsigned char)(id >> 16);
+	bytes[2] = (unsigned char)(id >> 8);
+	bytes[3] = (unsigned char)id;
+	return out;
+}
+
 /** Build a race list the way the realm would send one. */
 static void build(RaceListResponsePacket* pkt, int count) {
     memset(pkt, 0, sizeof(*pkt));
@@ -34,7 +46,7 @@ static void build(RaceListResponsePacket* pkt, int count) {
 
     static const char* keys[] = { "wolf", "bear", "fox", "crow", "hawk" };
     for (int i = 0; i < count; i++) {
-        pkt->races[i].race_id = (uint32_t)(i + 1);
+        pkt->races[i].race_id = on_wire((uint32_t)(i + 1));
         snprintf(pkt->races[i].key, sizeof(pkt->races[i].key), "%s",
                  keys[i % (int)(sizeof(keys) / sizeof(keys[0]))]);
         snprintf(pkt->races[i].name, sizeof(pkt->races[i].name), "Race %d", i + 1);
@@ -108,7 +120,7 @@ int main(void) {
         build(&pkt, 5);
         /* A sixth race, of a kind this client has never heard of. */
         pkt.count = 6;
-        pkt.races[5].race_id = 6;
+        pkt.races[5].race_id = on_wire(6);
         snprintf(pkt.races[5].key, sizeof(pkt.races[5].key), "pangolin");
         pkt.races[5].playable     = 1;
         pkt.races[5].default_role = ROLE_TANK;
@@ -142,6 +154,22 @@ int main(void) {
         CHECK(client_races_count() <= MAX_RACE_LIST,
               "the count is clamped to what the packet can hold");
     }
+
+	printf("\nTEST 8: ids arrive in network order and are looked up in host order\n");
+	{
+		RaceListResponsePacket pkt;
+
+		build(&pkt, 5);
+		client_races_store(&pkt);
+
+		const RaceInfo* wolf = client_race_find(1);
+
+		CHECK(wolf != NULL, "race 1 is found by its host-order id");
+		CHECK(wolf && strcmp(wolf->key, "wolf") == 0, "and it is the wolf");
+		CHECK(client_race_find(5) != NULL, "so is the last one");
+		CHECK(client_race_find(on_wire(1)) == NULL || on_wire(1) == 1,
+		      "the wire-order value does not stand in for the id");
+	}
 
     printf("\n");
     if (g_failures) {

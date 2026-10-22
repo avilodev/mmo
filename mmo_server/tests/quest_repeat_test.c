@@ -24,7 +24,7 @@
 
 #include "quest_system.h"
 #include "item_instance.h"
-#include "items_database.h"
+#include "item_registry.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -59,7 +59,7 @@ uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
                                  bind_on_pickup, NULL, 0, NULL);
 }
 int inventory_first_free(const ItemInstance* slots) { (void)slots; return -1; }
-ssize_t server_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }
+ssize_t outbox_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }
 
 typedef struct NPCWorldStub { int unused; } NPCWorldStub;
 NPCWorldStub g_npc_world;

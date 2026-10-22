@@ -352,7 +352,7 @@ void combat_render_damage_numbers(CombatState* combat) {
         float text_y = evt->world_y + offset_y;
 
         /* Upright over the target in 3D, rising from mid-body. */
-        camera_billboard_begin(evt->world_x, evt->world_y, CAMERA_DAMAGE_TEXT_RISE, 0.0f);
+        camera_billboard_begin(evt->world_x, evt->world_y, CAMERA_DAMAGE_TEXT_RISE, evt->world_z);
         
         renderer_draw_rect(text_x - 20 * scale, text_y - 8 * scale,
                           40 * scale, 18 * scale,
@@ -428,28 +428,4 @@ void combat_render_cast_bar(const CombatState* combat, float screen_width, float
     if (remaining < 0) remaining = 0;
     snprintf(time_buf, sizeof(time_buf), "%.1fs", remaining);
     renderer_draw_text(bar_x + bar_width + 10, bar_y + bar_height - 5, time_buf);
-}
-
-/**
- * Render the active cooldown overlay for an ability icon.
- */
-void combat_render_cooldown(const CombatState* combat, float x, float y, float size) {
-    if (!combat || combat->cooldown_remaining <= 0.0f) {
-        return;
-    }
-    
-    // Darkened overlay
-    renderer_draw_rect(x, y, size, size, 0.0f, 0.0f, 0.0f, 0.6f);
-    
-    // Cooldown sweep (simplified - just show remaining as vertical wipe)
-    float pct = combat->cooldown_remaining / combat->cooldown_total;
-    if (pct > 1.0f) pct = 1.0f;
-    
-    float wipe_height = size * pct;
-    renderer_draw_rect(x, y, size, wipe_height, 0.0f, 0.0f, 0.0f, 0.4f);
-    
-    // Cooldown time text
-    char cd_buf[8];
-    snprintf(cd_buf, sizeof(cd_buf), "%.1f", combat->cooldown_remaining);
-    renderer_draw_text(x + size/4, y + size/2 + 5, cd_buf);
 }

@@ -54,7 +54,7 @@ int character_database_init(const char* c) { (void)c; return 1; }
 /** Stub database shutdown. */
 void character_database_close(void) {}
 /** Stub successful character persistence. */
-int character_update_full_data(const CharacterInfo* d) { (void)d; return 1; }
+int character_update_full_data(const character_record* d) { (void)d; return 1; }
 /** Stub loading empty inventory and equipment arrays. */
 int character_items_load(uint32_t c, ItemInstance* inv, int n_inv,
                          ItemInstance* eq, int n_eq) {
@@ -68,15 +68,24 @@ int character_items_save(uint32_t c, const ItemInstance* inv, int n_inv,
                          const ItemInstance* eq, int n_eq) {
     (void)c; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
+/** Stub the old quest folder setting. */
+void quest_legacy_set_dir(const char* dir) {
+	(void)dir;
+}
+
 /** Stub the whole-character save that commits scalars, currency and items together. */
-int character_save_all(const CharacterInfo* d, const ItemInstance* inv, int n_inv,
-                       const ItemInstance* eq, int n_eq) {
+int character_save_all(const character_record* d, const ItemInstance* inv, int n_inv,
+                       const ItemInstance* eq, int n_eq,
+                       const PlayerQuestState* quests) {
+	(void)quests;
     (void)d; (void)inv; (void)n_inv; (void)eq; (void)n_eq; return 1;
 }
 /** Stub recording that a character is live in a world. */
 int world_session_mark(uint32_t character_id, uint32_t world_id) {
     (void)character_id; (void)world_id; return 1;
 }
+/** Stub renewing an account's login session. */
+int session_touch(uint32_t account_id) { (void)account_id; return 1; }
 /** Stub clearing that record. */
 void world_session_clear(uint32_t character_id) { (void)character_id; }
 /** Stub an empty persisted instance-id range. */
@@ -87,7 +96,7 @@ int character_items_max_instance_id_checked(uint64_t* out) {
     return 1;
 }
 /** Stub a populated level-one character record. */
-int character_get_full_data(uint32_t character_id, CharacterInfo* out) {
+int character_get_full_data(uint32_t character_id, character_record* out) {
     memset(out, 0, sizeof(*out));
     out->character_id = character_id;
     snprintf(out->name, sizeof(out->name), "char%u", character_id);
@@ -112,8 +121,6 @@ void player_recompute_stats(ActivePlayer* p) { (void)p; }
 const AbilityDef* ability_get(uint16_t id) { (void)id; return NULL; }
 /** Stub an empty persisted quest list. */
 int quest_player_load(uint32_t c, PlayerQuestState* s) { (void)c; (void)s; return 0; }
-/** Stub successful quest persistence. */
-int quest_player_save(uint32_t c, const PlayerQuestState* s) { (void)c; (void)s; return 1; }
 /** Stub quest storage teardown. */
 void quest_state_release(PlayerQuestState* s) { (void)s; }
 /** Stub the snapshot's deep copy. */
@@ -124,7 +131,7 @@ int quest_state_copy(PlayerQuestState* out, const PlayerQuestState* src) {
 int quest_history_add(QuestHistory* h, uint32_t id) { (void)h; (void)id; return 1; }
 /** Count packets rather than sending them. */
 static _Atomic int g_sends = 0;
-ssize_t server_send(int fd, void* d, size_t n) {
+ssize_t outbox_send(int fd, void* d, size_t n) {
     (void)fd; (void)d;
     atomic_fetch_add(&g_sends, 1);
     return (ssize_t)n;
@@ -132,6 +139,12 @@ ssize_t server_send(int fd, void* d, size_t n) {
 /** Record awarded XP on the player, which is all the party split needs. */
 void player_award_xp_locked(ActivePlayer* p, uint64_t amount) {
     if (p) p->experience += amount;
+}
+
+// Stub the quest refresh a level gain asks for.
+void quest_offers_changed(uint32_t character_id, int client_fd) {
+	(void)character_id;
+	(void)client_fd;
 }
 
 /* --- Helpers ------------------------------------------------------------- */

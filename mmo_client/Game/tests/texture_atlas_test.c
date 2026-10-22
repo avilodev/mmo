@@ -99,6 +99,65 @@ int main(void) {
               "mip levels stop while the gutter is still a whole pixel");
     }
 
+	printf("\nTEST: colour bleeds into transparent pixels, so smoothing does not darken edges\n");
+	{
+		// A 5x5 image: one opaque orange pixel in the middle, the rest transparent black
+		unsigned char px[5 * 5 * 4];
+		unsigned char before[5 * 5 * 4];
+
+		memset(px, 0, sizeof(px));
+		px[(2 * 5 + 2) * 4 + 0] = 255;
+		px[(2 * 5 + 2) * 4 + 1] = 128;
+		px[(2 * 5 + 2) * 4 + 3] = 255;
+		memcpy(before, px, sizeof(px));
+
+		texture_bleed_color(px, 5, 5, 1);
+		CHECK(px[(2 * 5 + 3) * 4 + 0] == 255 && px[(2 * 5 + 3) * 4 + 1] == 128,
+		      "a neighbour takes the orange");
+		CHECK(px[(3 * 5 + 3) * 4 + 0] == 255, "a diagonal neighbour does too");
+		CHECK(px[(0 * 5 + 0) * 4 + 0] == 0, "one pass reaches one pixel, not two");
+
+		int alpha_kept = 1;
+		for (int i = 0; i < 25; i++)
+			if (px[i * 4 + 3] != before[i * 4 + 3]) alpha_kept = 0;
+		CHECK(alpha_kept, "no alpha changes");
+		CHECK(px[(2 * 5 + 2) * 4 + 0] == 255 && px[(2 * 5 + 2) * 4 + 1] == 128,
+		      "the opaque pixel is untouched");
+
+		// Two passes in one call reach two pixels out
+		memcpy(px, before, sizeof(px));
+		texture_bleed_color(px, 5, 5, 2);
+		CHECK(px[(0 * 5 + 0) * 4 + 0] == 255, "two passes reach two pixels");
+	}
+	{
+		// A transparent pixel between a red and a blue one takes their average
+		unsigned char px[3 * 4] = {
+			255, 0, 0, 255,
+			0, 0, 0, 0,
+			0, 0, 255, 255,
+		};
+
+		texture_bleed_color(px, 3, 1, 1);
+		CHECK(px[4] == 127 && px[5] == 0 && px[6] == 127 && px[7] == 0,
+		      "it averages the opaque pixels beside it");
+	}
+	{
+		// Half-transparent pixels keep their own colour, and nothing is invented
+		unsigned char px[2 * 4] = { 10, 20, 30, 100, 0, 0, 0, 0 };
+		unsigned char empty[2 * 4] = { 0 };
+
+		texture_bleed_color(px, 2, 1, 3);
+		CHECK(px[0] == 10 && px[1] == 20 && px[2] == 30 && px[3] == 100,
+		      "a half-transparent pixel is left alone");
+		CHECK(px[4] == 10 && px[5] == 20 && px[6] == 30, "and it colours its neighbour");
+
+		texture_bleed_color(empty, 2, 1, 3);
+		CHECK(empty[0] == 0 && empty[4] == 0, "an empty image stays empty");
+		texture_bleed_color(NULL, 2, 1, 3);
+		texture_bleed_color(empty, 0, 0, 3);
+		CHECK(1, "a missing or empty image is refused without a fault");
+	}
+
     free(out);
 
     printf("\n");

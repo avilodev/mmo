@@ -776,12 +776,28 @@ make help
 
 ## Project layout
 
+The server is built in five layers. Each folder says which layer its code is in,
+and `tests/check_layers.sh` (part of `make test`) fails if a file includes a
+header from a layer it may not use.
+
 ```text
-common/         Shared protocol, session, Redis, and database mapping code
-database/       SQLite and PostgreSQL access code
-login_server/   TLS account and session service
-realm_server/   Character selection and world discovery service
-world_server/   Gameplay simulation, collision data, zones, and other world data
-scripts/        Full-stack start and stop supervisors
-tests/          Development and integration tests
+5 Network   network/                 TLS, event loop and rate-limit code shared by all three servers
+            login_server/            Login connections and the login protocol
+            realm_server/            Realm connections and the realm protocol
+            world_server/network/    World connections, packet parsing, broadcast threads
+4 Systems   services/                Account, realm and world-entry rules, realm friends
+            world_server/systems/    Game logic: combat, abilities, loot, quests, chat, parties
+3 World     world_server/world/      Game data in memory: players, NPCs, items, quests, tiles
+2 Storage   storage/                 The only code that talks to PostgreSQL, SQLite and Redis
+1 Database  database/databases/      The database files themselves (git-ignored)
+Base        common/                  Wire format, shared data types, rules tables, logging
+            world_server/base/       World server config types and the clock
+Root        world_server/main.c      Starts each server and wires the layers together
+            world_server/config.c    Reads the world's .conf and sets up the other modules
+            scripts/, setup/, tests/
 ```
+
+A file may include its own layer, the layer directly below it, and base.
+`services/` may also include storage, because the login and realm servers have no
+world layer. Game logic sends packets through `world_server/world/include/outbox.h`
+and the network layer registers the sender at startup, so game logic never sees a socket.

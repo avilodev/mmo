@@ -20,7 +20,7 @@
 
 #include "quest_system.h"
 #include "item_instance.h"
-#include "items_database.h"
+#include "item_registry.h"
 
 #include <arpa/inet.h>
 #include <stdarg.h>
@@ -77,7 +77,7 @@ static struct {
     uint32_t last_quest_id;
 } g_sent;
 
-ssize_t server_send(int fd, void* buf, size_t len) {
+ssize_t outbox_send(int fd, void* buf, size_t len) {
     (void)fd;
     const PacketHeader* header = (const PacketHeader*)buf;
     g_sent.count++;

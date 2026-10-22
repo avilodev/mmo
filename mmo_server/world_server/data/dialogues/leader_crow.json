@@ -8,69 +8,13 @@
       "options": [
         {
           "option_id": 1,
-          "text": "The Warden sent me.",
-          "next_page": 1,
-          "fail_page": -1,
-          "action": "quest_turnin",
-          "action_value": 104,
-          "conditions": [
-            {
-              "type": "quest_complete",
-              "value": 104
-            }
-          ]
+          "text": "What can you teach me?",
+          "next_page": 1
         },
         {
           "option_id": 2,
-          "text": "The Warden sent me.",
-          "next_page": 0,
-          "conditions": [
-            {
-              "type": "quest_active",
-              "value": 104
-            }
-          ]
-        },
-        {
-          "option_id": 3,
-          "text": "I was not sent here.",
-          "next_page": 3,
-          "conditions": [
-            {
-              "type": "quest_not_started",
-              "value": 104
-            }
-          ]
-        },
-        {
-          "option_id": 4,
-          "text": "Where is the gate again?",
-          "next_page": 2,
-          "conditions": [
-            {
-              "type": "quest_turned_in",
-              "value": 104
-            },
-            {
-              "type": "quest_active",
-              "value": 200
-            }
-          ]
-        },
-        {
-          "option_id": 5,
           "text": "Nothing. Just passing.",
-          "next_page": 4,
-          "conditions": [
-            {
-              "type": "quest_turned_in",
-              "value": 104
-            },
-            {
-              "type": "quest_turned_in",
-              "value": 200
-            }
-          ]
+          "next_page": 4
         }
       ]
     },
@@ -80,20 +24,7 @@
       "options": [
         {
           "option_id": 1,
-          "text": "What are you waiting for?",
-          "next_page": 2,
-          "action": "quest_accept",
-          "action_value": 200,
-          "conditions": [
-            {
-              "type": "quest_available",
-              "value": 200
-            }
-          ]
-        },
-        {
-          "option_id": 2,
-          "text": "What are you waiting for?",
+          "text": "How far?",
           "next_page": 2
         }
       ]
@@ -105,17 +36,6 @@
         {
           "option_id": 1,
           "text": "I will go.",
-          "next_page": -1
-        }
-      ]
-    },
-    {
-      "page_num": 3,
-      "text": "No one sent you. That happens more than people admit.\n\nThe Warden is in the middle of the courtyard, and she is easier to find than I am.",
-      "options": [
-        {
-          "option_id": 1,
-          "text": "The Warden, then.",
           "next_page": -1
         }
       ]

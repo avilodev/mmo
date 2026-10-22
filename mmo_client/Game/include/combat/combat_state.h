@@ -12,6 +12,7 @@ typedef struct {
     uint32_t target_id;
     float    world_x;
     float    world_y;
+    float    world_z;   /**< Height of the floor the target stands on. */
     int      amount;
     int      is_kill;
     int      is_crit;

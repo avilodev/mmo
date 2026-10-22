@@ -84,11 +84,11 @@ int main(void) {
         assert(t.base != PAL_EMPTY);   // base layer is always painted
     }
 
-    // The spawn point matches the documented Ennara courtyard centre.
+    // The spawn point is the Ennara courtyard centre moved by the city's spawn offset.
     float sx = 0.0f, sy = 0.0f;
     worldgen_spawn_point(&sx, &sy);
-    assert(sx == (float)ENNARA_X * WORLDGEN_TILE_PX);
-    assert(sy == (float)ENNARA_Y * WORLDGEN_TILE_PX);
+    assert(sx == (float)(ENNARA_X + world_city_find(CITY_ENNARA)->spawn_dx) * WORLDGEN_TILE_PX);
+    assert(sy == (float)(ENNARA_Y + world_city_find(CITY_ENNARA)->spawn_dy) * WORLDGEN_TILE_PX);
 
     printf("worldgen_tile_test: OK\n");
     return 0;

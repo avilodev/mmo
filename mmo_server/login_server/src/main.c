@@ -8,10 +8,9 @@
 #include "types.h"
 #include "metrics_server.h"
 #include "log.h"
-#include "session.h"
+#include "account_service.h"
 #include "auth.h"
 #include "rate_limiter.h"
-#include "users_database.h"
 #include "config.h"
 #include "routes.h"
 #include "patch_notes.h"
@@ -153,7 +152,7 @@ static int login_health(char* reason, size_t reason_size, void* user) {
         snprintf(reason, reason_size, "shutting down");
         return 0;
     }
-    if (!session_is_ready()) {
+    if (!account_service_ready()) {
         snprintf(reason, reason_size, "Redis is unavailable; no session can be created");
         return 0;
     }
@@ -198,17 +197,18 @@ int main(int argc, char** argv) {
     }
 
     // Initialize database
-    if (!db_init(USERS_DB)) {
-        LOG_ERROR("Failed to initialize database");
-        return 1;
-    }
-    
-    if (!session_init()) {
-        LOG_ERROR("Failed to initialize session system");
-        LOG_INFO("Make sure Redis is running: redis-cli PING");
-        db_close();
-        return 1;
-    }
+	account_start_result started = account_service_start(USERS_DB);
+
+	if(started == ACCOUNT_START_NO_DATABASE) {
+		LOG_ERROR("Failed to initialize database");
+		return 1;
+	}
+
+	if(started == ACCOUNT_START_NO_SESSIONS) {
+		LOG_ERROR("Failed to initialize session system");
+		LOG_INFO("Make sure Redis is running: redis-cli PING");
+		return 1;
+	}
     LOG_INFO("✓ Session system initialized");
     LOG_INFO("✓ Two-stage authentication enabled");
     LOG_INFO("  - PACKET_AUTH_LOGIN (3) = Validate credentials");
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
         g_server.port = atoi(argv[1]); 
         if (g_server.port <= 0) {
             LOG_ERROR("Invalid port: %s", argv[1]);
-            db_close();
+            account_service_stop();
             return 1;
         }
     }
@@ -233,14 +233,14 @@ int main(int argc, char** argv) {
     g_server.tcp_sockfd = create_tcp_server_socket(g_server.port);
     if (g_server.tcp_sockfd < 0) {
         LOG_ERROR("Failed to create server socket");
-        db_close();
+        account_service_stop();
         return 1;
     }
     
     if (login_net_start(g_tls_ctx, net_tuning_workers("MMO_LOGIN_WORKERS")) != 0) {
         LOG_ERROR("Failed to start the login event loops");
         close(g_server.tcp_sockfd);
-        db_close();
+        account_service_stop();
         return 1;
     }
 
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
         LOG_ERROR("Failed to create accept thread");
         login_net_stop();
         close(g_server.tcp_sockfd);
-        db_close();
+        account_service_stop();
         return 1;
     }
     
@@ -273,8 +273,7 @@ int main(int argc, char** argv) {
     pthread_join(g_server.accept_thread, NULL);
     login_net_stop();
 
-    session_close();
-    db_close();
+    account_service_stop();
     tls_server_cleanup(g_tls_ctx);
     LOG_INFO("Login Server stopped");
 

@@ -282,21 +282,6 @@ int tls_client_recv_packet(SSL* ssl, void* buf, int capacity) {
     return packet_size;
 }
 
-/**
- * Read up to a requested byte count from a TLS session.
- *
- * @return      The result from SSL_read.
- */
-int tls_client_recv(SSL* ssl, void* buf, int len) {
-    int ret = SSL_read(ssl, buf, len);
-    if (ret <= 0) {
-        int err = SSL_get_error(ssl, ret);
-        if (err != SSL_ERROR_ZERO_RETURN)
-            fprintf(stderr, "[TLS] SSL_read error: %d\n", err);
-    }
-    return ret;
-}
-
 /** Shut down and release a TLS session without closing its socket. */
 void tls_client_close(SSL* ssl) {
     if (!ssl) return;

@@ -7,6 +7,7 @@
  */
 
 #include "net_internal.h"
+#include "states/join_data.h"
 #include "ability_bar.h"
 #include "combat_system.h"
 #include "combat_render.h"
@@ -68,18 +69,20 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                 uint32_t new_health = ntohl(pkt->target_new_health);
 
                 if (g_current_game && g_current_game->playing) {
-                    float tx = 0, ty = 0;
+                    float tx = 0, ty = 0, tz = 0;
 
                     if (target == g_net.character_id) {
                         // Player is the target — update health bar
                         g_current_game->player.info.health = new_health;
                         tx = g_current_game->player.x;
                         ty = g_current_game->player.y;
+                        tz = g_current_game->player.visual_z;
                     } else {
                         for (int i = 0; i < g_current_game->playing->visible_npc_count; i++) {
                             if (g_current_game->playing->visible_npcs[i].npc_id == target) {
                                 tx = g_current_game->playing->visible_npcs[i].pos_x;
                                 ty = g_current_game->playing->visible_npcs[i].pos_y;
+                                tz = g_current_game->playing->visible_npcs[i].pos_z;
                                 break;
                             }
                         }
@@ -87,10 +90,10 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
 
                     if (damage == 0 && !pkt->is_kill) {
                         combat_on_damage(&g_current_game->playing->combat,
-                                         target, -1, 0, 0, 0, tx, ty);
+                                         target, -1, 0, 0, 0, tx, ty, tz);
                     } else {
                         combat_on_damage(&g_current_game->playing->combat,
-                                         target, (int)damage, pkt->is_crit, pkt->is_kill, 0, tx, ty);
+                                         target, (int)damage, pkt->is_crit, pkt->is_kill, 0, tx, ty, tz);
                     }
 
                     if (pkt->is_kill) {
@@ -134,7 +137,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
 
                     ability_bar_on_cast_resolve(&g_current_game->playing->ability_bar, ability_id);
 
-                    float tx = 0, ty = 0;
+                    float tx = 0, ty = 0, tz = 0;
 
                     if (target == g_net.character_id) {
                         // Player is the target — update health bar
@@ -143,11 +146,13 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                         }
                         tx = g_current_game->player.x;
                         ty = g_current_game->player.y;
+                        tz = g_current_game->player.visual_z;
                     } else {
                         for (int i = 0; i < g_current_game->playing->visible_npc_count; i++) {
                             if (g_current_game->playing->visible_npcs[i].npc_id == target) {
                                 tx = g_current_game->playing->visible_npcs[i].pos_x;
                                 ty = g_current_game->playing->visible_npcs[i].pos_y;
+                                tz = g_current_game->playing->visible_npcs[i].pos_z;
                                 break;
                             }
                         }
@@ -155,13 +160,13 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
 
                     if (damage == 0 && healing == 0 && !pkt->is_kill) {
                         combat_on_damage(&g_current_game->playing->combat,
-                                         target, -1, 0, 0, 0, tx, ty);
+                                         target, -1, 0, 0, 0, tx, ty, tz);
                     } else if (damage > 0) {
                         combat_on_damage(&g_current_game->playing->combat,
-                                         target, damage, pkt->is_crit, pkt->is_kill, 0, tx, ty);
+                                         target, damage, pkt->is_crit, pkt->is_kill, 0, tx, ty, tz);
                     } else if (healing > 0) {
                         combat_on_damage(&g_current_game->playing->combat,
-                                         target, healing, pkt->is_crit, 0, 1, tx, ty);
+                                         target, healing, pkt->is_crit, 0, 1, tx, ty, tz);
 
                         // Spawn a green pulse ring at the healed target's position
                         for (int v = 0; v < MAX_HEAL_VFXS; v++) {
@@ -169,6 +174,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                                 g_current_game->playing->heal_vfxs[v].active     = 1;
                                 g_current_game->playing->heal_vfxs[v].pos_x      = tx;
                                 g_current_game->playing->heal_vfxs[v].pos_y      = ty;
+                                g_current_game->playing->heal_vfxs[v].pos_z      = tz;
                                 g_current_game->playing->heal_vfxs[v].age        = 0.0f;
                                 g_current_game->playing->heal_vfxs[v].duration   = 0.7f;
                                 g_current_game->playing->heal_vfxs[v].max_radius = 55.0f;
@@ -248,6 +254,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                 ability_bar_set_form_abilities(&g_current_game->playing->ability_bar, form,
                                                ids, names, cooldowns, cast_times, costs,
                                                images, count);
+                join_data_note(form == FORM_ANIMAL ? JOIN_ABILITIES_ANIMAL : JOIN_ABILITIES_HUMAN);
                 NET_LOG("[NET] Ability data received: %d slots for %s form\n",
                        count, form == FORM_ANIMAL ? "animal" : "human");
             }
@@ -288,6 +295,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                             g_current_game->playing->zones[i].zone_id = ntohl(pkt->zone_id);
                             g_current_game->playing->zones[i].pos_x = pkt->pos_x;
                             g_current_game->playing->zones[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->zones[i].pos_z = pkt->pos_z;
                             g_current_game->playing->zones[i].radius = pkt->radius;
                             g_current_game->playing->zones[i].duration = pkt->duration;
                             g_current_game->playing->zones[i].elapsed = 0.0f;
@@ -384,6 +392,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                         g_current_game->player.speed = g_current_game->playing->player_move_speed;
                     }
 
+                    join_data_note(JOIN_STATS);
                     net_log_player_stats("[NET] Stats received");
                     NET_LOG("[NET]   speed=%.0f wdmg=%d HP=%d/%d resource=%d/%d form=%s\n",
                            g_current_game->playing->player_move_speed,
@@ -404,6 +413,10 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                     /* Kills pay experience only. The enemy's coin value arrives
                      * as loot the player sells to a kingdom's NPCs. */
                     g_current_game->player.info.experience = total_xp;
+
+                    // A zero reward only refreshes the total, such as quest XP
+                    if(xp_gained == 0)
+                        break;
 
                     // Find an empty reward notification slot and spawn the notification
                     for (int i = 0; i < MAX_REWARD_POPUPS; i++) {
@@ -431,8 +444,10 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                             g_current_game->playing->projectiles[i].id = ntohl(pkt->projectile_id);
                             g_current_game->playing->projectiles[i].pos_x = pkt->pos_x;
                             g_current_game->playing->projectiles[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->projectiles[i].pos_z = pkt->pos_z;
                             g_current_game->playing->projectiles[i].dir_x = pkt->dir_x;
                             g_current_game->playing->projectiles[i].dir_y = pkt->dir_y;
+                            g_current_game->playing->projectiles[i].dir_z = pkt->dir_z;
                             g_current_game->playing->projectiles[i].speed = pkt->speed;
                             g_current_game->playing->projectiles[i].active = 1;
                             break;
@@ -470,6 +485,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                             g_current_game->playing->projectiles[i].id == pid) {
                             g_current_game->playing->projectiles[i].pos_x = pkt->projectiles[p].pos_x;
                             g_current_game->playing->projectiles[i].pos_y = pkt->projectiles[p].pos_y;
+                            g_current_game->playing->projectiles[i].pos_z = pkt->projectiles[p].pos_z;
                             break;
                         }
                     }
@@ -520,6 +536,13 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                     g_current_game->playing->death_timer = 0.0f;
                     g_current_game->player.x = pkt->pos_x;
                     g_current_game->player.y = pkt->pos_y;
+                    // Standing where the server put them, at that height.
+                    if (isfinite(pkt->pos_z)) {
+                        g_current_game->player.vstate.z = pkt->pos_z;
+                        g_current_game->player.vstate.vz = 0.0f;
+                        g_current_game->player.vstate.grounded = 1;
+                        g_current_game->player.visual_z = pkt->pos_z;
+                    }
                     g_current_game->player.info.health = (uint32_t)ntohl(pkt->health);
                     g_current_game->player.info.max_health = (uint32_t)ntohl(pkt->max_health);
                     g_current_game->player.needs_position_reset = 1;
@@ -542,6 +565,7 @@ int net_dispatch_combat(uint8_t type, const char* data, int length) {
                             g_current_game->playing->telegraphs[i].shape = pkt->shape;
                             g_current_game->playing->telegraphs[i].pos_x = pkt->pos_x;
                             g_current_game->playing->telegraphs[i].pos_y = pkt->pos_y;
+                            g_current_game->playing->telegraphs[i].pos_z = pkt->pos_z;
                             g_current_game->playing->telegraphs[i].dir_x = pkt->dir_x;
                             g_current_game->playing->telegraphs[i].dir_y = pkt->dir_y;
                             g_current_game->playing->telegraphs[i].radius = pkt->radius;

@@ -14,9 +14,13 @@
 #include "render/character_tuning.h"
 #include "world_regions.h"
 
-#define CITY_OBJ_PATH   "Game/assets/models/all_assets/example_city.obj"
+#define CITY_OBJ_PATH   "Game/assets/models/all_assets/test_town.obj"
+/** The baked seats (SIT_ markers), read with world_seats_load(). */
+#define CITY_SEATS_PATH "Game/assets/baked/test_town_seats.bin"
+/** The street lamps that light the city at night (world/city_lamps.h). */
+#define CITY_LAMPS_PATH "Game/data/city_lights.json"
 /** Binary copy of the parsed OBJ, rebuilt whenever the OBJ changes. */
-#define CITY_CACHE_PATH "Game/assets/models/all_assets/example_city.objcache"
+#define CITY_CACHE_PATH "Game/assets/models/all_assets/test_town.objcache"
 
 /** The scene is in metres (a bench is 1 m, a street lamp 3.7 m); this is the
  *  same scale the character model is drawn at (character_tuning.h). */
@@ -36,8 +40,26 @@
 int  city_renderer_init(void);
 void city_renderer_shutdown(void);
 
-/** Draw the cells in view and inside the fog around (focus_x, focus_y), with
+/** Draw the cells in view of the camera, with
  *  depth writes on so what stands in front of them later is sorted by depth. */
-void city_renderer_draw(const CameraView* view, float focus_x, float focus_y);
+void city_renderer_draw(const CameraView* view);
+
+/** Draw the whole scene through a clip-from-world matrix (column-major), for a
+ *  map: no distance cull, and nothing above clip_y (world units, the
+ *  height a floor plan is cut at; pass a huge value to keep the roofs). */
+void city_renderer_draw_map(const float* viewproj, float clip_y);
+
+/** Draw the whole scene as shadow casters through a light's clip-from-world
+ *  matrix (column-major), into the shadow map being drawn (render/shadow_map.h):
+ *  positions only, no textures. */
+void city_renderer_draw_shadow(const float* light_viewproj);
+
+/** The scene's footprint in world units.
+ *  @return Nonzero when a scene is loaded and the rectangle was filled. */
+int  city_renderer_bounds(float* min_x, float* min_y, float* max_x, float* max_y);
+
+/** The lowest and highest point of the scene, as heights in world units.
+ *  @return Nonzero when a scene is loaded and both were filled. */
+int  city_renderer_height_range(float* low, float* high);
 
 #endif /* CITY_RENDERER_H */

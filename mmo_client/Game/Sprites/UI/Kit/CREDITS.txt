@@ -1,0 +1,11 @@
+UI sprites used by the menus (ui_kit.c).
+
+UI_Flat_*.png
+  "Complete UI Essential Pack" (Flat theme) by Crusenho Agus Hennihuno
+  https://crusenho.itch.io
+  Licence: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+  Changes: a subset of the sprites, drawn scaled with nearest filtering.
+
+kenney_*.png
+  "UI Pack - Pixel Adventure" by Kenney (www.kenney.nl)
+  Licence: CC0, https://creativecommons.org/publicdomain/zero/1.0/

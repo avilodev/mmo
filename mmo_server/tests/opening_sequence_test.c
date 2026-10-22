@@ -32,10 +32,15 @@
 #include "npc_spawns.h"
 #include "race_registry.h"
 #include "item_instance.h"
-#include "items_database.h"
+#include "item_registry.h"
 #include "world_regions.h"
+#include "world_motion.h"
+#include "world_seats.h"
+#include "world_spans.h"
+#include "shop.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +73,7 @@ uint16_t inventory_add(ItemInstance* slots, uint32_t item_id, uint16_t quantity,
                                  bind_on_pickup, NULL, 0, NULL);
 }
 int inventory_first_free(const ItemInstance* slots) { (void)slots; return -1; }
-ssize_t server_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }
+ssize_t outbox_send(int fd, void* buf, size_t len) { (void)fd; (void)buf; return (ssize_t)len; }
 
 /* --- Helpers ------------------------------------------------------------- */
 
@@ -102,7 +107,9 @@ static void check(int condition, const char* fmt, ...) {
 /** Record which NPC types the world actually spawns. */
 static int g_spawned_type[NPC_TYPE_ID_LIMIT];
 
-/** Record which dialogue ids the spawned NPCs point at. */
+/** Record which dialogue each spawned NPC type speaks (the first one found). */
+static uint32_t g_type_dialogue[NPC_TYPE_ID_LIMIT];
+
 static int g_spawn_count;
 
 /**
@@ -110,6 +117,7 @@ static int g_spawn_count;
  */
 static void survey_spawns(void) {
     memset(g_spawned_type, 0, sizeof(g_spawned_type));
+    memset(g_type_dialogue, 0, sizeof(g_type_dialogue));
     g_spawn_count = 0;
 
     npc_world_read_begin(&g_npc_world);
@@ -122,8 +130,11 @@ static void survey_spawns(void) {
         npc_world_slot_lock(&g_npc_world, slot);
         if (npc->id != 0) {
             g_spawn_count++;
-            if (npc->npc_type_id < NPC_TYPE_ID_LIMIT)
+            if (npc->npc_type_id < NPC_TYPE_ID_LIMIT) {
                 g_spawned_type[npc->npc_type_id] = 1;
+                if (g_type_dialogue[npc->npc_type_id] == 0)
+                    g_type_dialogue[npc->npc_type_id] = npc->dialogue_id;
+            }
 
             /* An interactable NPC with no dialogue is a right-click that does
              * nothing, which reads in game as a broken NPC. */
@@ -197,6 +208,20 @@ static void test_condition_quest_references(void) {
                                   "which does not exist",
                                   id, page->page_num, option->option_id, cond->value);
                             break;
+                        case DIALOGUE_COND_QUEST_STEP: {
+                            const QuestDef* stepped = quest_get(cond->value);
+
+                            check(stepped != NULL,
+                                  "dialogue %u page %d option %u tests a step of quest "
+                                  "%u, which does not exist",
+                                  id, page->page_num, option->option_id, cond->value);
+                            check(cond->step >= 1 && cond->step <= stepped->step_count,
+                                  "dialogue %u page %d option %u tests step %u of quest "
+                                  "%u, which has %u",
+                                  id, page->page_num, option->option_id, cond->step,
+                                  cond->value, stepped->step_count);
+                            break;
+                        }
                         case DIALOGUE_COND_RACE:
                         case DIALOGUE_COND_NOT_RACE:
                             check(race_get(cond->value) != NULL,
@@ -216,6 +241,46 @@ static void test_condition_quest_references(void) {
 /**
  * Confirm every objective has something in the world to advance it.
  */
+static uint32_t shop_of(const DialogueDef* d);
+
+/** Whether a shop stocks an item. */
+static int shop_stocks(uint32_t shop_id, uint32_t item_id) {
+    ShopDef* shop = shop_find(shop_id);
+
+    for (int i = 0; shop && i < shop->item_count; i++)
+        if (shop->items[i].item_id == item_id) return 1;
+
+    return 0;
+}
+
+/**
+ * Follow a buy or sell objective to the merchant it points at.
+ *
+ * The item has no position, so the objective names an NPC to mark. That NPC has
+ * to be spawned and has to run a shop -- and for a purchase the shop has to
+ * stock the item, or the objective can never be completed.
+ */
+static void check_trade_objective(const QuestDef* q, int index, const QuestObjectiveDef* obj) {
+    const char* verb = obj->type == QUEST_OBJECTIVE_BUY ? "buys" : "sells";
+
+    check(item_exists(obj->target_id),
+          "quest %u '%s' objective %d %s item %u, which is not in items.json",
+          q->quest_id, q->title, index, verb, obj->target_id);
+    check(obj->marker_npc != 0 && obj->marker_npc < NPC_TYPE_ID_LIMIT &&
+          g_spawned_type[obj->marker_npc] != 0,
+          "quest %u '%s' objective %d %s an item but names no spawned merchant to mark",
+          q->quest_id, q->title, index, verb);
+
+    uint32_t shop_id = shop_of(dialogue_get(g_type_dialogue[obj->marker_npc]));
+
+    check(shop_id != 0, "quest %u '%s' objective %d marks NPC type %u, which opens no shop",
+          q->quest_id, q->title, index, obj->marker_npc);
+    if (obj->type == QUEST_OBJECTIVE_BUY)
+        check(shop_stocks(shop_id, obj->target_id),
+              "quest %u '%s' objective %d buys item %u, which shop %u does not stock",
+              q->quest_id, q->title, index, obj->target_id, shop_id);
+}
+
 static void test_quest_targets_are_spawned(void) {
     printf("every objective points at something that exists in the world\n");
 
@@ -225,10 +290,19 @@ static void test_quest_targets_are_spawned(void) {
         const QuestDef* q = quest_get(id);
         if (!q) continue;
 
-        check(q->obj_count > 0, "quest %u '%s' has no objectives", id, q->title);
+        check(q->step_count > 0, "quest %u '%s' has no steps", id, q->title);
 
-        for (int i = 0; i < q->obj_count; i++) {
-            const QuestObjectiveDef* obj = &q->objectives[i];
+        for (int step_index = 0; step_index < q->step_count; step_index++) {
+        const QuestStepDef* step = quest_step_get(q, step_index);
+
+        check(step->obj_count > 0, "quest %u '%s' step %d has no objectives",
+              id, q->title, step_index + 1);
+        if (q->step_count > 1)
+            check(step->title[0] != '\0', "quest %u '%s' step %d has no name",
+                  id, q->title, step_index + 1);
+
+        for (int i = 0; i < step->obj_count; i++) {
+            const QuestObjectiveDef* obj = &step->objectives[i];
             check(obj->required_count > 0,
                   "quest %u objective %d requires nothing", id, i);
             check(obj->description[0] != '\0',
@@ -252,6 +326,9 @@ static void test_quest_targets_are_spawned(void) {
                       "which nothing in spawns.json spawns",
                       id, q->title, i, verb, obj->target_id);
                 checked++;
+            } else if (obj->type == QUEST_OBJECTIVE_BUY || obj->type == QUEST_OBJECTIVE_SELL) {
+                check_trade_objective(q, i, obj);
+                checked++;
             } else if (obj->type == QUEST_OBJECTIVE_COLLECT) {
                 check(item_exists(obj->target_id),
                       "quest %u '%s' objective %d collects item %u, which is not "
@@ -261,6 +338,7 @@ static void test_quest_targets_are_spawned(void) {
                 check(0, "quest %u objective %d has type %u, which this build does "
                          "not know how to point at", id, i, obj->type);
             }
+        }
         }
     }
 
@@ -396,16 +474,21 @@ static void test_rewards_resolve(void) {
                   "quest %u '%s' requires race %u, which does not exist",
                   id, q->title, q->require_race_id);
 
-        for (int i = 0; i < q->item_reward_count; i++) {
-            const QuestItemReward* reward = &q->item_rewards[i];
-            check(reward->item_id != 0,
-                  "quest %u '%s' reward %d names item id zero", id, q->title, i);
-            check(item_exists(reward->item_id),
-                  "quest %u '%s' rewards item %u, which is not in items.json",
-                  id, q->title, reward->item_id);
-            check(reward->quantity > 0,
-                  "quest %u '%s' rewards zero of item %u",
-                  id, q->title, reward->item_id);
+        for (int step_index = 0; step_index < q->step_count; step_index++) {
+            const QuestStepDef* step = quest_step_get(q, step_index);
+
+            for (int i = 0; i < step->item_reward_count; i++) {
+                const QuestItemReward* reward = &step->item_rewards[i];
+                check(reward->item_id != 0,
+                      "quest %u '%s' step %d reward %d names item id zero",
+                      id, q->title, step_index + 1, i);
+                check(item_exists(reward->item_id),
+                      "quest %u '%s' rewards item %u, which is not in items.json",
+                      id, q->title, reward->item_id);
+                check(reward->quantity > 0,
+                      "quest %u '%s' rewards zero of item %u",
+                      id, q->title, reward->item_id);
+            }
         }
     }
 }
@@ -530,15 +613,34 @@ static void test_quest_chain(void) {
     printf("\n");
 }
 
+/** Whether some conversation offers a quest. */
+static int quest_is_offered(uint32_t quest_id) {
+    for (uint32_t d = 1; d < QUEST_ID_LIMIT; d++) {
+        const DialogueDef* dialogue = dialogue_get(d);
+
+        for (int p = 0; dialogue && p < dialogue->page_count; p++)
+            for (int o = 0; o < dialogue->pages[p].option_count; o++) {
+                const DialogueOptionDef* option = &dialogue->pages[p].options[o];
+
+                if (option->action == DIALOGUE_ACTION_QUEST_ACCEPT &&
+                    option->action_value == quest_id)
+                    return 1;
+            }
+    }
+
+    return 0;
+}
+
 /**
- * Confirm every playable race can start and finish the opening sequence.
+ * Confirm every playable race can start the opening line.
  *
- * The check is deliberately race-driven rather than id-driven: it fails when a
- * race is made playable without content, which is the mistake this sequence is
- * most likely to meet next.
+ * Race-driven rather than id-driven: it fails when a race is made playable
+ * and the line is gated away from it, which is the mistake most likely to be
+ * made next. A starting quest is one with no prerequisites that some
+ * conversation offers.
  */
-static void test_every_playable_race_has_a_path(void) {
-    printf("every playable race has a leader, a quest, and a way to be offered it\n");
+static void test_every_playable_race_can_start(void) {
+    printf("every playable race can be offered a first quest\n");
 
     int races = race_registry_count();
     check(races > 0, "races are loaded");
@@ -549,42 +651,103 @@ static void test_every_playable_race_has_a_path(void) {
         const RaceDef* race = race_at(i);
         if (!race || !race->playable) continue;
 
-        /* Find the quest gated to this race. */
-        const QuestDef* called = NULL;
-        for (uint32_t q = 1; q < QUEST_ID_LIMIT && !called; q++) {
-            const QuestDef* candidate = quest_get(q);
-            if (candidate && candidate->require_race_id == race->id) called = candidate;
-        }
-        check(called != NULL,
-              "playable race '%s' has no quest gated to it", race->key);
+        int startable = 0;
 
-        /* Its talk target must be spawned, and that spawn must have dialogue. */
-        check(called->objectives[0].type == QUEST_OBJECTIVE_TALK,
-              "'%s' opens with something other than a conversation", called->title);
-        check(g_spawned_type[called->objectives[0].target_id] != 0,
-              "'%s' sends the player to an NPC type that is not spawned", called->title);
+        for (uint32_t id = 1; id < QUEST_ID_LIMIT && !startable; id++) {
+            const QuestDef* q = quest_get(id);
 
-        /* Some dialogue option must offer that quest to that race. */
-        int offered = 0;
-        for (uint32_t d = 1; d < QUEST_ID_LIMIT && !offered; d++) {
-            const DialogueDef* dialogue = dialogue_get(d);
-            if (!dialogue) continue;
-            for (int p = 0; p < dialogue->page_count && !offered; p++) {
-                const DialoguePageDef* page = &dialogue->pages[p];
-                for (int o = 0; o < page->option_count; o++) {
-                    const DialogueOptionDef* option = &page->options[o];
-                    if (option->action != DIALOGUE_ACTION_QUEST_ACCEPT) continue;
-                    if (option->action_value != called->quest_id) continue;
-                    offered = 1;
-                    break;
-                }
-            }
+            if (!q || q->require_all_count > 0 || q->require_any_count > 0) continue;
+            if (q->require_race_id != 0 && q->require_race_id != race->id) continue;
+            startable = quest_is_offered(id);
         }
-        check(offered, "nothing offers '%s' to race '%s'", called->title, race->key);
+        check(startable, "nothing offers race '%s' a first quest", race->key);
         covered++;
     }
 
     check(covered > 0, "at least one playable race was covered");
+}
+
+/**
+ * Check the shopkeepers: each sits on a keeper seat, can be talked to, opens a
+ * stocked shop, and stands at a height a customer in front of the counter can
+ * reach. The spans under a seat read the counter's top, which is out of reach.
+ */
+#define WORLD_TILES_X 5133
+#define WORLD_TILES_Y 2567
+#define CUSTOMER_STEP_UNITS 60.0f
+
+// The first option anywhere in the dialogue that opens a shop, or 0.
+static uint32_t shop_of(const DialogueDef* d) {
+	for(int p = 0; d && p < d->page_count; p++)
+		for(int o = 0; o < d->pages[p].option_count; o++)
+			if(d->pages[p].options[o].action == DIALOGUE_ACTION_OPEN_SHOP)
+				return d->pages[p].options[o].action_value;
+
+	return 0;
+}
+
+static void check_keeper(const NPCEntity* npc, int seat_index, int spans_ok) {
+	const world_seat* seat = world_seats_get(seat_index);
+	const DialogueDef* d = dialogue_get(npc->dialogue_id);
+	ShopDef* shop = shop_find(shop_of(d));
+
+	check(npc->is_interactable, "shopkeeper '%s' is not interactable", npc->name);
+	check(npc->category == NPC_CATEGORY_PASSIVE, "shopkeeper '%s' is not passive", npc->name);
+	check(shop != NULL && shop->item_count > 0,
+	      "shopkeeper '%s' opens no stocked shop", npc->name);
+	check(npc->pos_z == seat->z - WORLD_SEAT_HEIGHT_UNITS && npc->spawn_z == npc->pos_z,
+	      "shopkeeper '%s' height is not its seat's", npc->name);
+
+	if(spans_ok) {
+		float floor_z = 0.0f;
+		float step_x = seat->x + sinf(seat->heading) * CUSTOMER_STEP_UNITS;
+		float step_y = seat->y + cosf(seat->heading) * CUSTOMER_STEP_UNITS;
+
+		check(world_spans_snap(step_x, step_y, 0.0f, &floor_z) &&
+		      world_vertical_ok(floor_z, npc->pos_z),
+		      "shopkeeper '%s' is out of vertical reach of a customer", npc->name);
+	}
+}
+
+static void test_shopkeepers(void) {
+	int reserved = 0;
+	int keepers = 0;
+	int spans_ok;
+
+	check(world_seats_load("world_server/data/world_seats.bin"), "seats load");
+	world_spans_init(WORLD_TILES_X, WORLD_TILES_Y, 16);
+	spans_ok = world_spans_load("world_server/data/world_spans.bin");
+	if(!spans_ok)
+		printf("no matching spans file; shopkeeper reach is not checked\n");
+
+	// spawned before the seats were known, so respawn them now
+	npc_world_shutdown(&g_npc_world);
+	check(npc_world_init(&g_npc_world, NPC_CAPACITY_DEFAULT), "NPC pool ready again");
+	check(npc_spawns_load("world_server/data/spawns.json", &g_npc_world) > 0, "spawns reload");
+
+	for(int i = 0; i < world_seats_count(); i++)
+		reserved += world_seat_is_reserved(world_seats_get(i));
+
+	npc_world_read_begin(&g_npc_world);
+	for(int slot = 0; slot < npc_world_capacity(&g_npc_world); slot++) {
+		NPCEntity* npc = npc_world_slot(&g_npc_world, slot);
+		int seat_index;
+
+		if(!npc || npc->id == 0)
+			continue;
+		seat_index = world_seats_keeper_near(npc->pos_x, npc->pos_y,
+		                                     WORLD_SEAT_KEEPER_MATCH_UNITS);
+		if(seat_index < 0)
+			continue;
+		keepers++;
+		check_keeper(npc, seat_index, spans_ok);
+	}
+	npc_world_read_end(&g_npc_world);
+
+	check(reserved > 0, "the shipped seats hold a keeper seat");
+	check(keepers == reserved, "%d keeper seats but %d shopkeepers", reserved, keepers);
+	shop_cleanup();
+	world_seats_free();
 }
 
 int main(void) {
@@ -597,6 +760,7 @@ int main(void) {
      * nothing in it is a world with no items, not a broken one. Rewards and
      * collect objectives are checked against whatever it does hold. */
     items_init("world_server/data/items.json");
+    check(shop_init("world_server/data/shops.json") == 1, "shops load");
 
     check(npc_world_init(&g_npc_world, NPC_CAPACITY_DEFAULT), "NPC pool ready");
     check(npc_spawns_load("world_server/data/spawns.json", &g_npc_world) > 0,
@@ -613,7 +777,8 @@ int main(void) {
     test_rewards_resolve();
     test_repeat_declarations_are_coherent();
     test_quest_chain();
-    test_every_playable_race_has_a_path();
+    test_every_playable_race_can_start();
+    test_shopkeepers();
 
     npc_world_shutdown(&g_npc_world);
     items_cleanup();

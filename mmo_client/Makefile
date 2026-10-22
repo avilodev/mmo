@@ -428,10 +428,12 @@ TEST_DIR = Game/tests
 TEST_BIN = Game/tests/bin
 TEST_CFLAGS = -Wall -Wextra -std=c11 -g -I$(GAME_INCLUDE_DIR) -I$(COMMON_DIR)
 
-WORLDGEN_SRC = Game/data/src/worldgen_noise.c Game/data/src/worldgen_biome.c \
-               Game/data/src/worldgen_city.c Game/data/src/worldgen_courtyard.c \
-               Game/data/src/worldgen_tile.c \
-               Game/data/src/worldgen_write.c Game/data/src/worldgen_overview.c
+WORLDGEN_SRC = Game/tools/worldgen/worldgen_noise.c Game/tools/worldgen/worldgen_biome.c \
+               Game/tools/worldgen/worldgen_city.c Game/tools/worldgen/worldgen_courtyard.c \
+               Game/tools/worldgen/worldgen_city_collision.c \
+               Game/tools/worldgen/worldgen_city_spans.c \
+               Game/tools/worldgen/worldgen_tile.c \
+               Game/tools/worldgen/worldgen_write.c Game/tools/worldgen/worldgen_overview.c
 
 TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/worldgen_biome_test \
@@ -440,22 +442,79 @@ TESTS = $(TEST_BIN)/tile_palette_test \
         $(TEST_BIN)/worldgen_format_test \
         $(TEST_BIN)/worldgen_overview_test \
         $(TEST_BIN)/worldgen_courtyard_test \
+        $(TEST_BIN)/worldgen_city_collision_test \
+        $(TEST_BIN)/worldgen_city_spans_test \
         $(TEST_BIN)/cert_pin_test \
         $(TEST_BIN)/cert_pin_digest_test \
         $(TEST_BIN)/net_dispatch_test \
         $(TEST_BIN)/net_connect_test \
         $(TEST_BIN)/race_registry_test \
         $(TEST_BIN)/name_cache_test \
+        $(TEST_BIN)/net_ping_test \
+        $(TEST_BIN)/net_ping_watch_test \
         $(TEST_BIN)/client_log_test \
         $(TEST_BIN)/player_reconcile_test \
         $(TEST_BIN)/camera_math_test \
+        $(TEST_BIN)/city_heights_test \
+        $(TEST_BIN)/item_db_test \
+        $(TEST_BIN)/world_seats_test \
+        $(TEST_BIN)/emote_test \
+        $(TEST_BIN)/emote_hub_test \
+        $(TEST_BIN)/char_select_nav_test \
+        $(TEST_BIN)/key_icon_file_test \
+        $(TEST_BIN)/settings_fields_test \
+        $(TEST_BIN)/letterbox_test \
+        $(TEST_BIN)/load_queue_test \
+        $(TEST_BIN)/join_data_test \
+        $(TEST_BIN)/world_clock_test \
+        $(TEST_BIN)/weather_state_test \
+        $(TEST_BIN)/weather_now_test \
+        $(TEST_BIN)/cover_field_test \
+        $(TEST_BIN)/weather_cells_test \
+        $(TEST_BIN)/wind_gust_test \
+        $(TEST_BIN)/weather_synth_test \
+        $(TEST_BIN)/mixer_test \
+        $(TEST_BIN)/weather_sound_test \
+        $(TEST_BIN)/weather_field_test \
+        $(TEST_BIN)/window_pos_test \
+        $(TEST_BIN)/font_levels_test \
+        $(TEST_BIN)/weather_layout_test \
+        $(TEST_BIN)/weather_drawer_view_test \
+        $(TEST_BIN)/sky_test \
+        $(TEST_BIN)/world_lighting_test \
+        $(TEST_BIN)/shadow_math_test \
+        $(TEST_BIN)/city_lamps_test \
+        $(TEST_BIN)/lamp_shadow_math_test \
+        $(TEST_BIN)/chat_commands_test \
+        $(TEST_BIN)/status_client_test \
+        $(TEST_BIN)/inspect_client_test \
+        $(TEST_BIN)/chat_ui_test \
+        $(TEST_BIN)/world_spans_test \
+        $(TEST_BIN)/world_motion_test \
+        $(TEST_BIN)/player_vertical_test \
+        $(TEST_BIN)/height_smooth_test \
+        $(TEST_BIN)/world_pick_test \
         $(TEST_BIN)/texture_atlas_test \
         $(TEST_BIN)/chunk_mesh_test \
         $(TEST_BIN)/model_test \
         $(TEST_BIN)/obj_mesh_test \
         $(TEST_BIN)/character_motion_test \
+        $(TEST_BIN)/character_pose_test \
+        $(TEST_BIN)/footing_test \
+        $(TEST_BIN)/character_foot_ik_test \
+        $(TEST_BIN)/character_legs_test \
+        $(TEST_BIN)/character_feet_test \
         $(TEST_BIN)/structure_mesh_test \
-        $(TEST_BIN)/locomotion_test
+        $(TEST_BIN)/locomotion_test \
+        $(TEST_BIN)/appearance_test \
+        $(TEST_BIN)/character_look_test \
+        $(TEST_BIN)/character_retarget_test \
+        $(TEST_BIN)/character_spring_test \
+        $(TEST_BIN)/character_spring_collide_test \
+        $(TEST_BIN)/quest_available_test \
+        $(TEST_BIN)/quest_finished_test \
+        $(TEST_BIN)/quest_steps_test \
+        $(TEST_BIN)/quest_distance_test
 
 # ---------------------------------------------------------------------------
 # Host builds of the network sources
@@ -472,11 +531,13 @@ TESTS = $(TEST_BIN)/tile_palette_test \
 # race_registry.c is here rather than stubbed: net_session.c stores the race
 # list into it, and a stub would test that the call compiles rather than that
 # the list survives the packet.
-NET_SRC = Game/src/network/net_session.c Game/src/network/net_world.c \
+NET_SRC = Game/src/states/join_data.c Game/src/network/net_session.c Game/src/network/net_world.c Game/src/network/net_dispatch.c \
           Game/src/network/net_combat.c Game/src/network/net_inventory.c \
           Game/src/network/net_friends.c Game/src/ui/friends_panel.c \
           Game/src/core/race_registry.c Game/src/network/name_cache.c \
-          Game/src/core/client_log.c
+          Game/src/player/emote.c Game/src/player/emote_clips.c $(COMMON_DIR)/world_seats.c \
+          Game/src/states/chat_log.c Game/src/core/client_log.c \
+          Game/src/network/net_ping.c Game/src/network/net_ping_watch.c
 
 # gnu11 and _GNU_SOURCE: the shim maps CRITICAL_SECTION onto a recursive
 # pthread mutex, and PTHREAD_MUTEX_RECURSIVE is a GNU extension.
@@ -507,6 +568,27 @@ $(TEST_BIN)/client_log_test: $(TEST_DIR)/client_log_test.c Game/src/core/client_
 $(TEST_BIN)/name_cache_test: $(TEST_DIR)/name_cache_test.c Game/src/network/name_cache.c | $(TEST_BIN)
 	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm -pthread
 
+# The ping arithmetic: the window, the half trip and the packet. No sockets.
+$(TEST_BIN)/net_ping_test: $(TEST_DIR)/net_ping_test.c Game/src/network/net_ping.c | $(TEST_BIN)
+	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm
+
+# The ping watch against a real socket pair, with the frame reading late.
+$(TEST_BIN)/net_ping_watch_test: $(TEST_DIR)/net_ping_watch_test.c Game/src/network/net_ping_watch.c \
+                                 Game/src/network/net_ping.c | $(TEST_BIN)
+	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm -pthread
+
+# The list of quests the server says may be taken: plain state, no GL.
+$(TEST_BIN)/quest_available_test: $(TEST_DIR)/quest_available_test.c Game/src/ui/quest_available.c | $(TEST_BIN)
+	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm
+
+# The quests the server says were finished: plain state, no GL.
+$(TEST_BIN)/quest_finished_test: $(TEST_DIR)/quest_finished_test.c Game/src/ui/quest_finished.c | $(TEST_BIN)
+	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm
+
+# The step a quest is on, and how it is worded: plain state, no GL.
+$(TEST_BIN)/quest_steps_test: $(TEST_DIR)/quest_steps_test.c Game/src/ui/quest_steps.c | $(TEST_BIN)
+	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm
+
 # The client-side race registry: no GLFW, no sockets, just the list the server
 # sent and what the client derives from it.
 $(TEST_BIN)/race_registry_test: $(TEST_DIR)/race_registry_test.c Game/src/core/race_registry.c | $(TEST_BIN)
@@ -520,7 +602,11 @@ $(TEST_BIN)/race_registry_test: $(TEST_DIR)/race_registry_test.c Game/src/core/r
 # headless build does not have and this does not need.
 $(TEST_BIN)/player_reconcile_test: $(TEST_DIR)/player_reconcile_test.c \
                                    Game/src/player/player.c \
+                                   Game/src/player/move_refusal.c \
                                    Game/src/player/locomotion.c \
+                                   Game/src/player/player_vertical.c \
+                                   $(COMMON_DIR)/world_motion.c \
+                                   $(COMMON_DIR)/world_spans.c \
                                    Game/src/camera/camera_math.c \
                                    Game/src/core/client_log.c | $(TEST_BIN)
 	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
@@ -530,7 +616,8 @@ $(TEST_BIN)/player_reconcile_test: $(TEST_DIR)/player_reconcile_test.c \
 # plays is present, and skins a frame. Pure arithmetic, no GL; stb_image's
 # implementation comes from the test itself, not texture.c.
 $(TEST_BIN)/model_test: $(TEST_DIR)/model_test.c Game/src/model/json.c Game/src/model/glb.c \
-                        Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c | $(TEST_BIN)
+                        Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c \
+                        Game/src/render/character_look.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 # The OBJ loader behind the city scene, on a small scene the test writes itself
@@ -542,14 +629,297 @@ $(TEST_BIN)/obj_mesh_test: $(TEST_DIR)/obj_mesh_test.c Game/src/model/obj_mesh.c
 $(TEST_BIN)/locomotion_test: $(TEST_DIR)/locomotion_test.c Game/src/player/locomotion.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
-# How a body picks, times and blends its clip from its drawn movement.
-$(TEST_BIN)/character_motion_test: $(TEST_DIR)/character_motion_test.c Game/src/render/character_motion.c | $(TEST_BIN)
+# The appearance word's layout and validation, from the shared protocol.h.
+$(TEST_BIN)/appearance_test: $(TEST_DIR)/appearance_test.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Which meshes of the character kit a body wears, on a model that is only names.
+$(TEST_BIN)/character_look_test: $(TEST_DIR)/character_look_test.c Game/src/render/character_look.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The kit's clips played on the players' models: matched by bone name, with the twist bones.
+$(TEST_BIN)/character_retarget_test: $(TEST_DIR)/character_retarget_test.c Game/src/model/json.c Game/src/model/glb.c \
+                                     Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c \
+                                     Game/src/render/character_pose.c Game/src/render/character_retarget.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The players' hair swinging with the body, on the shipped models.
+$(TEST_BIN)/character_spring_test: $(TEST_DIR)/character_spring_test.c Game/src/model/json.c Game/src/model/glb.c \
+                                   Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c \
+                                   Game/src/render/character_pose.c Game/src/render/character_spring.c \
+                                   Game/src/render/character_spring_collide.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The hair and tail kept out of the body by colliders fitted to the shipped models.
+$(TEST_BIN)/character_spring_collide_test: $(TEST_DIR)/character_spring_collide_test.c Game/src/model/json.c \
+                                           Game/src/model/glb.c Game/src/model/skinned_model_glb.c \
+                                           Game/src/model/skinned_pose.c Game/src/render/character_pose.c \
+                                           Game/src/render/character_retarget.c Game/src/render/character_spring.c \
+                                           Game/src/render/character_spring_collide.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# How a body picks, times and blends its clip from its drawn movement.
+$(TEST_BIN)/character_motion_test: $(TEST_DIR)/character_motion_test.c Game/src/render/character_motion.c \
+                                   Game/src/render/character_procedural.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The procedural offsets applied to the shipped rig, and masked blending.
+$(TEST_BIN)/character_pose_test: $(TEST_DIR)/character_pose_test.c Game/src/model/json.c Game/src/model/glb.c \
+                                 Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c \
+                                 Game/src/render/character_pose.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The two-bone leg solver and pelvis rule for stairs and slopes.
+$(TEST_BIN)/character_foot_ik_test: $(TEST_DIR)/character_foot_ik_test.c \
+                                    Game/src/render/character_foot_ik.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The legs of the shipped rig: found, read off a pose, bent to a solution.
+$(TEST_BIN)/character_legs_test: $(TEST_DIR)/character_legs_test.c Game/src/model/json.c Game/src/model/glb.c \
+                                 Game/src/model/skinned_model_glb.c Game/src/model/skinned_pose.c \
+                                 Game/src/render/character_pose.c Game/src/render/character_legs.c \
+                                 Game/src/render/character_foot_ik.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Where the feet and the body go on stairs, ramps and flat ground.
+$(TEST_BIN)/character_feet_test: $(TEST_DIR)/character_feet_test.c Game/src/render/character_feet.c \
+                                 Game/src/render/character_foot_ik.c Game/src/world/footing.c \
+                                 $(COMMON_DIR)/world_spans.c Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -D_GNU_SOURCE -o $@ $^ -lm -pthread
 
 # The 3D camera's projection, picking, culling bounds and movement rotation.
 # Pure math over cglm, so it runs headless like the generator tests.
 $(TEST_BIN)/camera_math_test: $(TEST_DIR)/camera_math_test.c Game/src/camera/camera_math.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -I$(GAME_INCLUDE_DIR)/camera -o $@ $^ -lm
+
+# The slash-command table, with the network calls stubbed by the test.
+$(TEST_BIN)/chat_commands_test: $(TEST_DIR)/chat_commands_test.c Game/src/states/chat_commands.c \
+                                Game/src/states/chat_log.c Game/src/player/emote.c Game/src/player/emote_clips.c $(COMMON_DIR)/world_seats.c \
+                                Game/src/core/client_log.c Game/src/core/session_status.c \
+                                Game/src/world/world_clock.c Game/src/world/weather_now.c Game/src/world/weather_cells.c \
+                                Game/src/world/weather_state.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
+
+# The player's status: its names, and what chat says when the server changes it.
+$(TEST_BIN)/status_client_test: $(TEST_DIR)/status_client_test.c Game/src/states/status_client.c \
+                                Game/src/core/session_status.c Game/src/states/chat_log.c \
+                                Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
+
+# Inspecting another player: the reply decoded, and the window or chat line it earns.
+$(TEST_BIN)/inspect_client_test: $(TEST_DIR)/inspect_client_test.c Game/src/states/inspect_client.c \
+                                 Game/src/ui/character_view.c Game/src/states/chat_log.c \
+                                 Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
+
+# The chat box: channels, wrapping, scrolling, the input line and the log.
+$(TEST_BIN)/chat_ui_test: $(TEST_DIR)/chat_ui_test.c Game/src/states/chat_channels.c \
+                          Game/src/states/chat_layout.c Game/src/states/chat_input.c \
+                          Game/src/states/chat_log.c Game/src/ui/window_pos.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The emote state machine and registry behind /sit and /dance. Writes a seats
+# file to /tmp.
+$(TEST_BIN)/emote_test: $(TEST_DIR)/emote_test.c Game/src/player/emote.c Game/src/player/emote_clips.c \
+                        $(COMMON_DIR)/world_seats.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The emote hub: the clip table, the six slots and their file, and where the boxes sit.
+$(TEST_BIN)/emote_hub_test: $(TEST_DIR)/emote_hub_test.c Game/src/player/emote_clips.c \
+                            Game/src/player/emote_slots.c Game/src/ui/emote_hub_layout.c \
+                            Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
+
+# The character select cycle: characters, then the new character entry; no GL.
+$(TEST_BIN)/char_select_nav_test: $(TEST_DIR)/char_select_nav_test.c Game/src/ui/char_select_nav.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^
+
+# The sprite each bindable key gets on the key bindings page; no GL.
+$(TEST_BIN)/key_icon_file_test: $(TEST_DIR)/key_icon_file_test.c Game/src/ui/key_icon_file.c \
+                                Game/src/core/keybinds.c Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm -pthread
+
+# The settings table the settings menu is built from; no GL.
+$(TEST_BIN)/settings_fields_test: $(TEST_DIR)/settings_fields_test.c Game/src/ui/settings_fields.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The 16:9 box the game draws into and the cursor mapping through it; no GL.
+$(TEST_BIN)/letterbox_test: $(TEST_DIR)/letterbox_test.c Game/src/render/letterbox.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The step queue the loading screen runs on; no GL.
+$(TEST_BIN)/load_queue_test: $(TEST_DIR)/load_queue_test.c Game/src/states/load_queue.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^
+
+# Which join packets have arrived; no GL.
+$(TEST_BIN)/join_data_test: $(TEST_DIR)/join_data_test.c Game/src/states/join_data.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^
+
+# The world clock between server syncs; no GL.
+$(TEST_BIN)/world_clock_test: $(TEST_DIR)/world_clock_test.c Game/src/world/world_clock.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# Where the weather window puts things; no GL.
+$(TEST_BIN)/weather_layout_test: $(TEST_DIR)/weather_layout_test.c Game/src/ui/weather_layout.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# What the weather drawer's map shows; no GL.
+$(TEST_BIN)/weather_drawer_view_test: $(TEST_DIR)/weather_drawer_view_test.c Game/src/ui/weather_drawer_view.c Game/src/ui/weather_layout.c Game/src/ui/map_layout.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# How far a quest is from the player; no GL.
+$(TEST_BIN)/quest_distance_test: $(TEST_DIR)/quest_distance_test.c Game/src/ui/quest_distance.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The weather blended over the map; no GL.
+$(TEST_BIN)/weather_field_test: $(TEST_DIR)/weather_field_test.c Game/src/world/weather_field.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# Where a window sits and how it is dragged; no GL.
+$(TEST_BIN)/window_pos_test: $(TEST_DIR)/window_pos_test.c Game/src/ui/window_pos.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# Which font bake suits a size on screen; no GL.
+$(TEST_BIN)/font_levels_test: $(TEST_DIR)/font_levels_test.c Game/src/render/font_levels.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The forecast the client keeps between server packets; no GL.
+$(TEST_BIN)/weather_state_test: $(TEST_DIR)/weather_state_test.c Game/src/world/weather_state.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The weather this moment, eased from the forecast; no GL.
+$(TEST_BIN)/weather_now_test: $(TEST_DIR)/weather_now_test.c Game/src/world/weather_now.c Game/src/world/weather_cells.c \
+                              Game/src/world/weather_state.c Game/src/world/sky.c \
+                              Game/src/world/world_lighting.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The patches of weather over the ground, and the fronts that bring a new day's; no GL.
+$(TEST_BIN)/weather_cells_test: $(TEST_DIR)/weather_cells_test.c Game/src/world/weather_cells.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# Gusts of wind sweeping over the city and leaning hair; no GL.
+$(TEST_BIN)/wind_gust_test: $(TEST_DIR)/wind_gust_test.c Game/src/world/wind_gust.c Game/src/world/weather_cells.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The heights of the roofs over the city; no GL.
+$(TEST_BIN)/cover_field_test: $(TEST_DIR)/cover_field_test.c Game/src/world/cover_field.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The weather sounds made from noise, the mixer that plays them, and the code that
+# follows the sky with them; no sound card needed.
+$(TEST_BIN)/weather_synth_test: $(TEST_DIR)/weather_synth_test.c Game/src/audio/weather_synth.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+$(TEST_BIN)/mixer_test: $(TEST_DIR)/mixer_test.c Game/src/audio/mixer.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+$(TEST_BIN)/weather_sound_test: $(TEST_DIR)/weather_sound_test.c Game/src/audio/weather_sound.c \
+                                Game/src/audio/mixer.c Game/src/audio/weather_synth.c \
+                                Game/src/world/weather_now.c Game/src/world/weather_cells.c Game/src/world/weather_state.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The sky's colours and lights by hour of day; no GL.
+$(TEST_BIN)/sky_test: $(TEST_DIR)/sky_test.c Game/src/world/sky.c Game/src/world/world_clock.c \
+                       Game/src/world/weather_now.c Game/src/world/weather_cells.c Game/src/world/weather_state.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The world's lighting by hour of day; no GL.
+$(TEST_BIN)/world_lighting_test: $(TEST_DIR)/world_lighting_test.c Game/src/world/world_lighting.c Game/src/world/sky.c \
+                                 Game/src/world/weather_now.c Game/src/world/weather_cells.c Game/src/world/weather_state.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The shadow map's matrices; no GL.
+$(TEST_BIN)/shadow_math_test: $(TEST_DIR)/shadow_math_test.c Game/src/world/shadow_math.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The city's lamp list; no GL.
+$(TEST_BIN)/city_lamps_test: $(TEST_DIR)/city_lamps_test.c Game/src/world/city_lamps.c Game/src/model/json.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The lamp shadow views; no GL.
+$(TEST_BIN)/lamp_shadow_math_test: $(TEST_DIR)/lamp_shadow_math_test.c Game/src/world/lamp_shadow_math.c | $(TEST_BIN)
+	$(CC) -Wall -Wextra -std=gnu11 -D_GNU_SOURCE -g -DGLFW_INCLUDE_NONE \
+	  -I$(TEST_DIR) -I$(TEST_DIR)/hostcompat $(GAME_INCLUDES) -o $@ $^ -lm
+
+# The seats module shared with the server, and the baked file the client reads.
+$(TEST_BIN)/world_seats_test: $(TEST_DIR)/world_seats_test.c $(COMMON_DIR)/world_seats.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -D_GNU_SOURCE -DWORLD_SEATS_BAKED_PATH='"Game/assets/baked/test_town_seats.bin"' \
+	  -o $@ $^ -lm
+
+# The baked wall heights the camera stays out of. Reads Game/assets/baked/test_town_heights.bin.
+$(TEST_BIN)/city_heights_test: $(TEST_DIR)/city_heights_test.c Game/src/world/city_heights.c \
+                               Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -D_GNU_SOURCE -o $@ $^ -lm -pthread
+
+# The client item database: the generated items.json, its parser and the tooltip text.
+$(TEST_BIN)/item_db_test: $(TEST_DIR)/item_db_test.c Game/src/player/item_db.c \
+                          Game/src/core/race_registry.c Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm -pthread
+
+# The fine floor heights under the feet: tiles, edges, ramps, levels, bad files.
+$(TEST_BIN)/footing_test: $(TEST_DIR)/footing_test.c Game/src/world/footing.c \
+                          $(COMMON_DIR)/world_spans.c Game/src/core/client_log.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -D_GNU_SOURCE -o $@ $^ -lm -pthread
+
+# The span-column queries shared with the server (copy of its common/ files).
+$(TEST_BIN)/world_spans_test: $(TEST_DIR)/world_spans_test.c $(COMMON_DIR)/world_spans.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The baked spans become the sidecar the span queries read back.
+$(TEST_BIN)/worldgen_city_spans_test: $(TEST_DIR)/worldgen_city_spans_test.c $(WORLDGEN_SRC) \
+    $(COMMON_DIR)/world_spans.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Picking a point on the surface under a ray, against the spans.
+$(TEST_BIN)/world_pick_test: $(TEST_DIR)/world_pick_test.c Game/src/world/world_pick.c \
+    $(COMMON_DIR)/world_spans.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The eased height bodies and the camera are drawn at.
+$(TEST_BIN)/height_smooth_test: $(TEST_DIR)/height_smooth_test.c Game/src/render/height_smooth.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# The client's fixed-step use of the shared vertical motion.
+$(TEST_BIN)/player_vertical_test: $(TEST_DIR)/player_vertical_test.c \
+    Game/src/player/player_vertical.c $(COMMON_DIR)/world_motion.c \
+    $(COMMON_DIR)/world_spans.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
+
+# Shared vertical motion (copy of the server's common/ files).
+$(TEST_BIN)/world_motion_test: $(TEST_DIR)/world_motion_test.c $(COMMON_DIR)/world_motion.c \
+    $(COMMON_DIR)/world_spans.c | $(TEST_BIN)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ -lm
 
 # Tileset gutter padding, so mipmapped ground tiles do not bleed into each other.
 $(TEST_BIN)/texture_atlas_test: $(TEST_DIR)/texture_atlas_test.c Game/src/texture/texture_atlas.c | $(TEST_BIN)
@@ -568,7 +938,8 @@ $(TEST_BIN)/chunk_mesh_test: $(TEST_DIR)/chunk_mesh_test.c Game/src/world/chunk_
 $(TEST_BIN)/structure_mesh_test: $(TEST_DIR)/structure_mesh_test.c Game/src/world/structure_mesh.c | $(TEST_BIN)
 	$(CC) $(TEST_CFLAGS) -DGLFW_INCLUDE_NONE $(GLFW_CFLAGS) -I$(GAME_INCLUDE_DIR)/camera -o $@ $^ -lm
 
-$(TEST_BIN)/net_dispatch_test: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c | $(TEST_BIN)
+$(TEST_BIN)/net_dispatch_test: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c \
+                               Game/src/player/item_db.c | $(TEST_BIN)
 	$(CC) $(NET_TEST_CFLAGS) -o $@ $^ -lm -pthread
 
 # The connection state machine, including network.c itself: what this measures
@@ -619,7 +990,8 @@ strict:
 # -fno-sanitize-recover=all makes the first violation the exit status rather
 # than a line in the output nobody reads.
 .PHONY: net-sanitize
-net-sanitize: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c | $(TEST_BIN)
+net-sanitize: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/inventory.c \
+              Game/src/player/item_db.c | $(TEST_BIN)
 	$(CC) $(NET_TEST_CFLAGS) -O0 \
 	  -fsanitize=address,undefined -fsanitize=bounds-strict \
 	  -fno-sanitize-recover=all -fno-omit-frame-pointer \
@@ -636,19 +1008,39 @@ net-sanitize: $(TEST_DIR)/net_dispatch_test.c $(NET_SRC) Game/src/player/invento
 # rule's prerequisites as it reads the rule, so placing it earlier would build
 # worldgen from world_generator.c alone and fail to link every worldgen_ symbol.
 # ---------------------------------------------------------------------------
-WORLDGEN_BIN     = Game/data/bin
+WORLDGEN_BIN     = Game/bin
 SERVER_DATA_DIR ?= ../mmo_server/world_server/data
 
 $(WORLDGEN_BIN):
 	mkdir -p $(WORLDGEN_BIN)
 
-$(WORLDGEN_BIN)/worldgen: Game/data/src/world_generator.c $(WORLDGEN_SRC) | $(WORLDGEN_BIN)
+$(WORLDGEN_BIN)/worldgen: Game/tools/worldgen/world_generator.c $(WORLDGEN_SRC) | $(WORLDGEN_BIN)
 	$(CC) $(CFLAGS) -I$(GAME_INCLUDE_DIR) -I$(COMMON_DIR) -o $@ $^ -lm
 
 world: $(WORLDGEN_BIN)/worldgen
 	./$(WORLDGEN_BIN)/worldgen $(GAME_BIN_DIR)/world.dat
 	@echo "Copying world.dat to the world server..."
 	cp $(GAME_BIN_DIR)/world.dat $(SERVER_DATA_DIR)/world.dat
-	@echo "world.dat installed to $(GAME_BIN_DIR) and $(SERVER_DATA_DIR)"
+	cp $(GAME_BIN_DIR)/world_spans.bin $(SERVER_DATA_DIR)/world_spans.bin
+	@# The fine floor mask sits beside the spans in both places; baked by export_city_spans.py.
+	@if [ -f Game/assets/baked/test_town_footing.bin ]; then \
+	  cp Game/assets/baked/test_town_footing.bin $(GAME_BIN_DIR)/world_footing.bin; \
+	  cp Game/assets/baked/test_town_footing.bin $(SERVER_DATA_DIR)/world_footing.bin; \
+	else \
+	  echo "NOTE: no baked floor mask; removing any old one so it cannot outlive its spans"; \
+	  rm -f $(GAME_BIN_DIR)/world_footing.bin $(SERVER_DATA_DIR)/world_footing.bin; \
+	fi
+	@# The baked seats (SIT_ markers) go to the server so it can check a sit.
+	@[ -f Game/assets/baked/test_town_seats.bin ] && cp Game/assets/baked/test_town_seats.bin $(SERVER_DATA_DIR)/world_seats.bin || true
+	@echo "world.dat and world_spans.bin installed to $(GAME_BIN_DIR) and $(SERVER_DATA_DIR)"
 
-.PHONY: all launcher game dirs clean clean-launcher clean-game run run-launcher run-game list-sources list-objects test net-sanitize world
+.PHONY: all launcher game dirs clean clean-launcher clean-game run run-launcher run-game list-sources list-objects test net-sanitize world items
+
+# ---------------------------------------------------------------------------
+# Client item data: the server's items.json cut down to the fields a player sees.
+# Run after the server file changes; the output is Game/data/items.json.
+# ---------------------------------------------------------------------------
+PYTHON ?= python3
+
+items:
+	$(PYTHON) Game/tools/sync_items.py

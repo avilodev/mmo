@@ -23,6 +23,7 @@
  */
 
 #include "protocol.h"
+#include "ui/window_pos.h"
 
 #include <stdint.h>
 
@@ -100,6 +101,8 @@ typedef struct {
     /** The last result the server reported, shown for FRIEND_NOTICE_SECONDS. */
     char              notice[96];
     float             notice_timer;
+
+    window_pos        win;            /**< Where the panel sits; centred until dragged. */
 } FriendsState;
 
 void friends_panel_init(FriendsState* fs);
@@ -147,9 +150,6 @@ void friends_panel_update(FriendsState* fs, float delta_time);
 FriendPendingKind friends_panel_take_pending(FriendsState* fs, char* out_name,
                                              size_t out_size);
 
-/** Report how many requests are waiting, for the HUD badge. */
-int friends_panel_request_count(const FriendsState* fs);
-
 void friends_panel_render(const FriendsState* fs, int vw, int vh);
 
 /**
@@ -166,7 +166,7 @@ void friends_panel_render(const FriendsState* fs, int vw, int vh);
  * panel would be a change to the input system rather than to this one.
  */
 int friends_panel_handle_input(FriendsState* fs,
-                               float mx, float my, int clicked,
+                               float mx, float my, int clicked, int down,
                                int key_toggle, int key_esc,
                                int page_up, int page_down,
                                int vw, int vh);

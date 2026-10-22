@@ -21,7 +21,6 @@ void ShowStartGameButton(HWND hwndParent);
 void HideLoginPanel(void);
 void ShowLoginPanel(void);
 void HideStartGameButton(void);
-void ShowStartGameButtonOnly(void);
 void StartGame(HWND hwnd);
 HBRUSH HandleEditControlColor(HWND hwnd, HDC hdc);
 

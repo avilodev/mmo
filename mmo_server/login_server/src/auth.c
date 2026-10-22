@@ -5,8 +5,7 @@
 #include "auth.h"
 #include "log.h"
 #include "rate_limiter.h"
-#include "users_database.h"
-#include "session.h"
+#include "account_service.h"
 #include "utils.h"
 #include "tls.h"
 
@@ -14,6 +13,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+
+_Static_assert(sizeof(((AuthLoginResponsePacket*)0)->auth_token) == ACCOUNT_TOKEN_SIZE,
+               "the wire token must match the service token size");
 
 /**
  * Validate credentials and return a short-lived single-use authentication token.
@@ -49,8 +51,8 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
     }
 
     // Verify credentials
-    uint32_t db_player_id = db_verify_user(packet->username, packet->password);
-    LOG_DEBUG("[STAGE 1] db_verify_user returned player_id=%u", db_player_id);
+    uint32_t db_player_id = account_verify(packet->username, packet->password);
+    LOG_DEBUG("[STAGE 1] account_verify returned player_id=%u", db_player_id);
     
     AuthLoginResponsePacket response;
     memset(&response, 0, sizeof(response));
@@ -59,22 +61,18 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
     response.header.payload_size = htons(sizeof(response) - sizeof(PacketHeader));
     
     if (db_player_id > 0) {
-        char* auth_token = generate_session_key();
-        if (!auth_token || !auth_token_store(auth_token, db_player_id)) {
-            response.success = 0;
-            response.header.player_id = 0;
-            response.player_id = 0;
-            strncpy(response.message, "Authentication service unavailable", 127);
-            free(auth_token);
-        } else {
-            // The token, not the client-provided player ID, authorizes stage 2.
-            response.success = 1;
-            response.player_id = htonl(db_player_id);
-            memcpy(response.auth_token, auth_token, sizeof(response.auth_token));
-            strncpy(response.message, "Credentials validated", 127);
-            free(auth_token);
-        }
-        
+		if(!account_issue_login_token(db_player_id, response.auth_token)) {
+			response.success = 0;
+			response.header.player_id = 0;
+			response.player_id = 0;
+			strncpy(response.message, "Authentication service unavailable", 127);
+		} else {
+			// The token, not the client-provided player ID, authorizes stage 2.
+			response.success = 1;
+			response.player_id = htonl(db_player_id);
+			strncpy(response.message, "Credentials validated", 127);
+		}
+		
         if (response.success) {
             // Clear accumulated failures so an honest user who mistyped a few
             // times is not left one slip away from a block.
@@ -115,7 +113,7 @@ void auth_handle_login(int client_fd, AuthLoginPacket* packet) {
 void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
     // Consume the single-use stage-1 proof and derive identity from Redis.
     // Never authorize using the player ID supplied by the client.
-    uint32_t player_id = auth_token_consume(packet->auth_token);
+    uint32_t player_id = account_redeem_login_token(packet->auth_token);
     
     LOG_INFO("[STAGE 2] Start game request for validated player_id=%u", player_id);
     
@@ -136,9 +134,9 @@ void auth_handle_start_game(int client_fd, StartGameRequestPacket* packet) {
     rate_limiter_peer_ip(client_fd, peer_ip, sizeof(peer_ip));
 
     // Create session in Redis
-    char session_key[SESSION_KEY_LENGTH];
+    char session_key[ACCOUNT_SESSION_KEY_SIZE];
     
-    if (session_create(player_id, peer_ip[0] ? peer_ip : "unknown", session_key)) {
+    if(account_open_session(player_id, peer_ip[0] ? peer_ip : "unknown", session_key)) {
         // SUCCESS: Return session key
         response.success = 1;
         memcpy(response.header.session_key, session_key, 32);
@@ -238,7 +236,7 @@ void auth_handle_register(int client_fd, AuthRegisterPacket* packet) {
     }
     
     // Create user
-    uint32_t new_player_id = db_create_user(packet->username, packet->password,
+    uint32_t new_player_id = account_register(packet->username, packet->password,
                                              packet->email, packet->birthday);
     
     if (new_player_id > 0) {

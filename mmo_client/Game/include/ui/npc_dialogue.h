@@ -6,7 +6,8 @@
  * Present the dialogue page the server sent.
  *
  * The client holds no dialogue data of its own. It used to: a copy of every
- * conversation shipped in Game/data/dialogues, indexed by page number, and the
+ * conversation shipped in Game/data/dialogues (now gone; the only copy is the
+ * server's world_server/data/dialogues), indexed by page number, and the
  * server sent only the numbers. That made the text a second source of truth
  * that could drift from the server's, and it meant an option the server had
  * hidden could still be rendered from the local copy. Both packets now carry

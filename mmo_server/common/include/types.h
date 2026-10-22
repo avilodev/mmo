@@ -11,8 +11,13 @@
  * A separate file rather than more tables in users.db: the login server owns
  * that one and has no use for any of this, and the realm owns this one and
  * never writes accounts. Two owners, two files.
+ *
+ * Relative to the directory holding the executable (realm_server/bin), which
+ * is the same file the login server reaches by moving to its install root. The
+ * realm is launched from the project root and never moves, so a path relative
+ * to the working directory pointed at a folder that does not exist.
  */
-#define SOCIAL_DB "../database/databases/users_data/social.db"
+#define SOCIAL_DB_FROM_EXE "/../../database/databases/users_data/social.db"
 
 /** Define fixed protocol framing sizes in bytes. */
 #define MIN_HEADER_SIZE 7
@@ -30,7 +35,7 @@
  *   * TICK_RATE (60.0f) was read by nothing at all, and it disagreed with the
  *     20Hz gameplay tick the world server actually runs -- so the one thing it
  *     could have been used for was getting the tick rate wrong. The real rate
- *     is per-world configuration; see world_server/include/config.h.
+ *     is per-world configuration; see world_server/base/include/config.h.
  *   * TIMEOUT_SECONDS (30.0f) was likewise unreferenced. Idle timeouts belong
  *     to the reactor and are set in net_tuning.h.
  *   * SESSION_EXPIRY_SECONDS was defined here *and* in session.h with the same
